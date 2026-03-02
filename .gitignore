@@ -9,6 +9,9 @@
 # Module output
 **/ProgramData/
 
+# Generated deployment parameter files (contain environment-specific values)
+**/deployment-parameter-files/
+
 # IDE
 .vscode/settings.json
 .idea/

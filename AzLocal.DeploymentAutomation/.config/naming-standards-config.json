@@ -1,0 +1,49 @@
+{
+    "_description": "Naming configuration for Azure Local deployments. Customize the naming standards below to match your environment.",
+    "_azureNamingLimits": {
+        "storageAccount":  { "maxLength": 24, "allowedCharacters": "Lowercase alphanumeric only (no hyphens or uppercase)" },
+        "keyVault":        { "maxLength": 24, "allowedCharacters": "Alphanumeric and hyphens, must start with a letter" },
+        "clusterName":     { "maxLength": 15, "allowedCharacters": "Alphanumeric only (NetBIOS computer name)" },
+        "nodeName":        { "maxLength": 15, "allowedCharacters": "Alphanumeric only (NetBIOS computer name)" },
+        "customLocation":  { "maxLength": 63, "allowedCharacters": "Alphanumeric and hyphens, cannot start or end with a hyphen" },
+        "resourceBridge":  { "maxLength": 63, "allowedCharacters": "Alphanumeric and hyphens, cannot start or end with a hyphen" },
+        "resourceGroup":   { "maxLength": 90, "allowedCharacters": "Alphanumeric, hyphens, underscores, periods, parentheses" },
+        "deploymentName":  { "maxLength": 64, "allowedCharacters": "Alphanumeric, hyphens, underscores, periods" }
+    },
+    "_placeholders": {
+        "{UniqueID}": "Replaced at runtime with the Unique ID entered during deployment (e.g., a store number, site code, or location identifier).",
+        "{NodeNumber}": "Replaced at runtime with the zero-padded node number (e.g., 01, 02). Generated automatically based on deployment type and node count.",
+        "{TypeOfDeployment}": "Replaced at runtime with the deployment type (e.g., SingleNode, MultiNode, Switchless, RackAware)."
+    },
+    "namingStandards": {
+        "clusterName": "AZCLUSTER{UniqueID}",
+        "resourceGroupName": "rg-{UniqueID}-azurelocal-prod",
+        "keyVaultName": "kv-{UniqueID}-azlocal",
+        "customLocation": "{UniqueID}-azlocal-customlocation",
+        "resourceBridgeName": "{UniqueID}-azlocal-arcbridge",
+        "diagnosticStorageAccountName": "{UniqueID}azlocaldiag",
+        "clusterWitnessStorageAccountName": "{UniqueID}azlocalwitness",
+        "nodeNamePattern": "{UniqueID}NODE{NodeNumber}",
+        "adouPath": "OU=AzLocal-{UniqueID},OU=AzureLocal,DC=contoso,DC=com",
+        "deploymentName": "azlocal-{UniqueID}-{TypeOfDeployment}-deployment"
+    },
+    "defaults": {
+        "location": "westeurope",
+        "domainFqdn": "contoso.com",
+        "namingPrefix": "HCI01",
+        "azureStackLCMAdminUsername": "LCMAdminUserName",
+        "storageAccountType": "Standard_LRS",
+        "dnsServers": [
+            "10.0.0.1",
+            "10.0.0.2"
+        ],
+        "computeManagementAdapters": [
+            "MGMT_COMP_Slot1_Port1",
+            "MGMT_COMP_Slot1_Port2"
+        ],
+        "storageAdapters": [
+            "SMB_Slot2_Port1",
+            "SMB_Slot2_Port2"
+        ]
+    }
+}

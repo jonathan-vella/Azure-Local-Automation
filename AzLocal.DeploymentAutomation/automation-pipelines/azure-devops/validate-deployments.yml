@@ -1,0 +1,191 @@
+# Validate Azure Local Cluster Deployments
+# This pipeline reads a CSV file from source control, runs pre-flight checks,
+# and submits ARM Validate deployments for eligible clusters.
+#
+# AUTHENTICATION:
+# Uses an Azure DevOps Service Connection (OIDC or Service Principal).
+# See: https://learn.microsoft.com/en-us/azure/devops/pipelines/library/connect-to-azure
+#
+# PREREQUISITES:
+# 1. Azure DevOps Service Connection with OIDC or Service Principal
+# 2. RBAC: Azure Stack HCI Administrator + Key Vault Secrets User
+# 3. All physical nodes registered with Azure Arc in expected resource groups
+# 4. Credentials stored in Azure Key Vault (referenced in CSV)
+
+trigger: none
+
+parameters:
+  - name: csvFilePath
+    displayName: 'Path to cluster deployments CSV file'
+    type: string
+    default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+
+  - name: dryRun
+    displayName: 'Preview which clusters would be validated (WhatIf mode)'
+    type: boolean
+    default: false
+
+variables:
+  - name: modulePath
+    value: '$(System.DefaultWorkingDirectory)/AzLocal.DeploymentAutomation'
+
+pool:
+  vmImage: 'windows-latest'
+
+stages:
+  # Stage 1: Pre-Flight Checks
+  - stage: PreFlightChecks
+    displayName: 'Pre-Flight Checks'
+    jobs:
+      - job: PreFlight
+        displayName: 'Run Pre-Flight Checks'
+
+        steps:
+          - checkout: self
+            displayName: 'Checkout Repository'
+
+          - task: AzureCLI@2
+            displayName: 'Run Pre-Flight Checks'
+            name: preflight
+            inputs:
+              azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              addSpnToEnvironment: true
+              inlineScript: |
+                Import-Module "$(modulePath)/AzLocal.DeploymentAutomation.psd1" -Force
+
+                $csvPath = "${{ parameters.csvFilePath }}"
+
+                if (-not (Test-Path $csvPath)) {
+                    Write-Error "CSV file not found: $csvPath"
+                    exit 1
+                }
+
+                # Create output directory
+                $outputDir = "$(Build.ArtifactStagingDirectory)"
+                $junitPath = Join-Path $outputDir "preflight-results.xml"
+                $logPath = Join-Path $outputDir "preflight.log"
+
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Pre-Flight Checks" -ForegroundColor Cyan
+                Write-Host "CSV File: $csvPath" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+
+                # Import CSV to get count
+                $csvData = Import-Csv $csvPath
+                $readyCount = @($csvData | Where-Object { $_.ReadyToDeploy -eq 'TRUE' -or $_.ReadyToDeploy -eq 'true' -or $_.ReadyToDeploy -eq 'True' }).Count
+                $totalCount = $csvData.Count
+
+                Write-Host "Total clusters in CSV: $totalCount"
+                Write-Host "Clusters with ReadyToDeploy=TRUE: $readyCount"
+
+                $dryRun = [System.Convert]::ToBoolean("${{ parameters.dryRun }}")
+
+                $params = @{
+                    CsvFilePath     = $csvPath
+                    DeploymentMode  = 'Validate'
+                    JUnitOutputPath = $junitPath
+                    LogFilePath     = $logPath
+                    WhatIf          = $dryRun
+                    Confirm         = $false
+                }
+
+                $results = Start-AzLocalCsvDeployment @params
+
+                $eligible = @($results | Where-Object { $_.Status -eq 'Passed' -or $_.Status -eq 'Skipped' }).Count
+
+                Write-Host "##vso[task.setvariable variable=EligibleCount;isOutput=true]$eligible"
+                Write-Host "##vso[task.setvariable variable=TotalCount;isOutput=true]$readyCount"
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Pre-Flight Results'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/preflight-results.xml'
+              searchFolder: '$(Build.ArtifactStagingDirectory)'
+              testRunTitle: 'Pre-Flight Check Results'
+              failTaskOnFailedTests: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Pre-Flight Reports'
+            condition: always()
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'preflight-reports'
+              publishLocation: 'Container'
+
+  # Stage 2: ARM Validate
+  - stage: ValidateDeployments
+    displayName: 'ARM Validate'
+    dependsOn: PreFlightChecks
+    condition: and(succeeded(), gt(dependencies.PreFlightChecks.outputs['PreFlight.preflight.EligibleCount'], 0), ne('${{ parameters.dryRun }}', 'true'))
+
+    jobs:
+      - job: Validate
+        displayName: 'Run ARM Validate'
+
+        variables:
+          totalCount: $[ stageDependencies.PreFlightChecks.PreFlight.outputs['preflight.TotalCount'] ]
+
+        steps:
+          - checkout: self
+            displayName: 'Checkout Repository'
+
+          - task: AzureCLI@2
+            displayName: 'ARM Validate Deployments'
+            name: validate
+            inputs:
+              azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              addSpnToEnvironment: true
+              inlineScript: |
+                Import-Module "$(modulePath)/AzLocal.DeploymentAutomation.psd1" -Force
+
+                $csvPath = "${{ parameters.csvFilePath }}"
+                $outputDir = "$(Build.ArtifactStagingDirectory)"
+                $junitPath = Join-Path $outputDir "validate-results.xml"
+                $logPath = Join-Path $outputDir "validate.log"
+
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "ARM Validate Deployments" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+
+                $results = Start-AzLocalCsvDeployment `
+                    -CsvFilePath $csvPath `
+                    -DeploymentMode 'Validate' `
+                    -JUnitOutputPath $junitPath `
+                    -LogFilePath $logPath `
+                    -Confirm:$false
+
+                $passed = @($results | Where-Object { $_.Status -eq 'Passed' }).Count
+                $failed = @($results | Where-Object { $_.Status -eq 'Failed' }).Count
+                $skipped = @($results | Where-Object { $_.Status -eq 'Skipped' }).Count
+
+                Write-Host "##vso[task.setvariable variable=Passed;isOutput=true]$passed"
+                Write-Host "##vso[task.setvariable variable=Failed;isOutput=true]$failed"
+                Write-Host "##vso[task.setvariable variable=Skipped;isOutput=true]$skipped"
+
+                if ($failed -gt 0) {
+                    Write-Host "##vso[task.logissue type=error]$failed cluster(s) failed validation."
+                }
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Validation Results'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/validate-results.xml'
+              searchFolder: '$(Build.ArtifactStagingDirectory)'
+              testRunTitle: 'Validation Results'
+              failTaskOnFailedTests: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Validate Reports'
+            condition: always()
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'validate-reports'
+              publishLocation: 'Container'

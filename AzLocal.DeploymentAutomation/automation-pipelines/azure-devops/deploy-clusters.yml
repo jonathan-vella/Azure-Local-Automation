@@ -1,0 +1,193 @@
+# Deploy Azure Local Clusters
+# This pipeline reads a CSV file from source control and submits ARM Deploy
+# requests for eligible clusters that passed validation.
+#
+# IMPORTANT: This pipeline performs ACTUAL deployments. Ensure clusters have
+# been validated successfully using the 'Validate Deployments' pipeline first.
+#
+# AUTHENTICATION:
+# Uses an Azure DevOps Service Connection (OIDC or Service Principal).
+# See: https://learn.microsoft.com/en-us/azure/devops/pipelines/library/connect-to-azure
+#
+# PREREQUISITES:
+# 1. Azure DevOps Service Connection with OIDC or Service Principal
+# 2. RBAC: Azure Stack HCI Administrator + Key Vault Secrets User
+# 3. Successful validation pass completed via validate-deployments.yml
+# 4. Credentials stored in Azure Key Vault (referenced in CSV)
+
+trigger: none
+
+parameters:
+  - name: csvFilePath
+    displayName: 'Path to cluster deployments CSV file'
+    type: string
+    default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+
+  - name: requireValidation
+    displayName: 'Require successful validation before deploying'
+    type: boolean
+    default: true
+
+variables:
+  - name: modulePath
+    value: '$(System.DefaultWorkingDirectory)/AzLocal.DeploymentAutomation'
+
+pool:
+  vmImage: 'windows-latest'
+
+stages:
+  # Stage 1: Validation Check (optional gate)
+  - stage: ValidationCheck
+    displayName: 'Check Validation Status'
+    condition: eq('${{ parameters.requireValidation }}', 'true')
+    jobs:
+      - job: CheckValidation
+        displayName: 'Check Previous Validation'
+
+        steps:
+          - checkout: self
+            displayName: 'Checkout Repository'
+
+          - task: AzureCLI@2
+            displayName: 'Check Validation Status'
+            name: validationCheck
+            inputs:
+              azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              addSpnToEnvironment: true
+              inlineScript: |
+                Import-Module "$(modulePath)/AzLocal.DeploymentAutomation.psd1" -Force
+
+                $csvPath = "${{ parameters.csvFilePath }}"
+
+                if (-not (Test-Path $csvPath)) {
+                    Write-Error "CSV file not found: $csvPath"
+                    exit 1
+                }
+
+                $outputDir = "$(Build.ArtifactStagingDirectory)"
+
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Checking Validation Status" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+
+                $statusResults = Get-AzLocalDeploymentStatus `
+                    -CsvFilePath $csvPath `
+                    -JUnitOutputPath (Join-Path $outputDir "pre-deploy-status.xml")
+
+                $failedValidation = @($statusResults | Where-Object { $_.Status -eq 'Failed' -and $_.TestName -like '*Validate*' })
+
+                if ($failedValidation.Count -gt 0) {
+                    Write-Host "##vso[task.logissue type=error]$($failedValidation.Count) cluster(s) have failed validation. Run the Validate pipeline first."
+                    foreach ($fail in $failedValidation) {
+                        Write-Host "  - $($fail.TestName): $($fail.Message)" -ForegroundColor Red
+                    }
+                    exit 1
+                }
+
+                Write-Host "Validation status check passed." -ForegroundColor Green
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Validation Check Results'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/pre-deploy-status.xml'
+              searchFolder: '$(Build.ArtifactStagingDirectory)'
+              testRunTitle: 'Pre-Deploy Validation Check'
+              failTaskOnFailedTests: true
+
+  # Stage 2: Deploy Clusters
+  - stage: DeployClusters
+    displayName: 'Deploy Clusters'
+    dependsOn:
+      - ${{ if eq(parameters.requireValidation, true) }}:
+        - ValidationCheck
+    condition: |
+      or(
+        eq('${{ parameters.requireValidation }}', 'false'),
+        succeeded('ValidationCheck')
+      )
+
+    # Optional: Add environment with approval for production deployments
+    # Uncomment the following lines to enable manual approval
+    # jobs:
+    #   - deployment: DeployWithApproval
+    #     environment: 'Production'
+    #     strategy:
+    #       runOnce:
+    #         deploy:
+
+    jobs:
+      - job: Deploy
+        displayName: 'Deploy Clusters'
+
+        steps:
+          - checkout: self
+            displayName: 'Checkout Repository'
+
+          - task: AzureCLI@2
+            displayName: 'Deploy Clusters'
+            name: deploy
+            inputs:
+              azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              addSpnToEnvironment: true
+              inlineScript: |
+                Import-Module "$(modulePath)/AzLocal.DeploymentAutomation.psd1" -Force
+
+                $csvPath = "${{ parameters.csvFilePath }}"
+                $outputDir = "$(Build.ArtifactStagingDirectory)"
+                $junitPath = Join-Path $outputDir "deploy-results.xml"
+                $logPath = Join-Path $outputDir "deploy.log"
+
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Deploying Clusters" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+
+                $results = Start-AzLocalCsvDeployment `
+                    -CsvFilePath $csvPath `
+                    -DeploymentMode 'Deploy' `
+                    -JUnitOutputPath $junitPath `
+                    -LogFilePath $logPath `
+                    -Confirm:$false
+
+                $passed = @($results | Where-Object { $_.Status -eq 'Passed' }).Count
+                $failed = @($results | Where-Object { $_.Status -eq 'Failed' }).Count
+                $skipped = @($results | Where-Object { $_.Status -eq 'Skipped' }).Count
+
+                Write-Host "##vso[task.setvariable variable=Passed;isOutput=true]$passed"
+                Write-Host "##vso[task.setvariable variable=Failed;isOutput=true]$failed"
+                Write-Host "##vso[task.setvariable variable=Skipped;isOutput=true]$skipped"
+
+                if ($failed -gt 0) {
+                    Write-Host "##vso[task.logissue type=error]$failed cluster(s) failed to deploy."
+                }
+
+                Write-Host ""
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Deployment Summary" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Submitted: $passed"
+                Write-Host "Failed: $failed"
+                Write-Host "Skipped: $skipped"
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Deployment Results'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/deploy-results.xml'
+              searchFolder: '$(Build.ArtifactStagingDirectory)'
+              testRunTitle: 'Deployment Results'
+              failTaskOnFailedTests: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Deploy Reports'
+            condition: always()
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'deploy-reports'
+              publishLocation: 'Container'

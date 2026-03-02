@@ -1,0 +1,7 @@
+{
+    // Pester test runner configuration for VS Code
+    // Limits output verbosity to prevent the terminal from becoming unresponsive
+    "pester.outputVerbosity": "Normal",
+    "pester.runTestsInNewProcess": false,
+    "powershell.pester.outputVerbosity": "Normal"
+}

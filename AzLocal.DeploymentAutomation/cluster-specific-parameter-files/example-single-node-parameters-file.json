@@ -1,0 +1,209 @@
+﻿{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "deploymentMode": {
+            "value": "Validate"
+        },
+        "keyVaultName": {
+            "value": "kv-XYZ-cluster"
+        },
+        "softDeleteRetentionDays": {
+            "value": 30
+        },
+        "diagnosticStorageAccountName": {
+            "value": "xyzclusterdiagnostics"
+        },
+        "logsRetentionInDays": {
+            "value": 30
+        },
+        "storageAccountType": {
+            "value": "Standard_LRS"
+        },
+        "clusterName": {
+            "value": "xyzcluster"
+        },
+        "location": {
+            "value": "westeurope"
+        },
+        "tenantId": {
+            "value": "72f988bf-86f1-41af-91ab-2d7cd011db47"
+        },
+        "witnessType": {
+            "value": "No Witness"
+        },
+        "clusterWitnessStorageAccountName": {
+            "value": "xyzclusterwitness"
+        },
+        "localAdminUserName": {
+            "value": "administrator"
+        },
+        "localAdminPassword": {
+            "value": null
+        },
+        "AzureStackLCMAdminUsername": {
+            "value": "LCMUser"
+        },
+        "AzureStackLCMAdminPassword": {
+            "value": null
+        },
+        "hciResourceProviderObjectID": {
+            "value": "f57be460-ae5d-444a-9317-bbfa416ab4b9"
+        },
+        "arcNodeResourceIds": {
+            "value": [
+                "/subscriptions/37d5e7b2-27c2-4d64-be2c-953db0ad1167/resourceGroups/rg-xyz-azurelocal-prod/providers/Microsoft.HybridCompute/machines/xyznodE01"
+            ]
+        },
+        "domainFqdn": {
+            "value": "contoso.com"
+        },
+        "namingPrefix": {
+            "value": "HCI01"
+        },
+        "adouPath": {
+            "value": "OU=HCIxyz,OU=AzureLocal,DC=contoso,DC=com"
+        },
+        "securityLevel": {
+            "value": "Recommended"
+        },
+        "driftControlEnforced": {
+            "value": true
+        },
+        "credentialGuardEnforced": {
+            "value": true
+        },
+        "smbSigningEnforced": {
+            "value": true
+        },
+        "smbClusterEncryption": {
+            "value": false
+        },
+        "bitlockerBootVolume": {
+            "value": true
+        },
+        "bitlockerDataVolumes": {
+            "value": true
+        },
+        "wdacEnforced": {
+            "value": true
+        },
+        "streamingDataClient": {
+            "value": true
+        },
+        "euLocation": {
+            "value": true
+        },
+        "episodicDataUpload": {
+            "value": true
+        },
+        "configurationMode": {
+            "value": "Express"
+        },
+        "subnetMask": {
+            "value": "255.255.255.224"
+        },
+        "defaultGateway": {
+            "value": "10.0.0.254"
+        },
+        "startingIPAddress": {
+            "value": "10.0.0.1"
+        },
+        "endingIPAddress": {
+            "value": "10.0.0.9"
+        },
+        "dnsServers": {
+            "value": [
+                "10.0.0.100",
+                "10.0.0.101"
+            ]
+        },
+        "useDhcp": {
+            "value": false
+        },
+        "physicalNodesSettings": {
+            "value": [
+                {
+                    "name": "XYZNODE01",
+                    "ipv4Address": "10.0.0.1"
+                }
+            ]
+        },
+        "networkingType": {
+            "value": "singleServerDeployment"
+        },
+        "networkingPattern": {
+            "value": "hyperConverged"
+        },
+        "intentList": {
+            "value": [
+                {
+                    "name": "Compute_Management",
+                    "trafficType": [
+                        "Compute",
+                        "Management"
+                    ],
+                    "adapter": [
+                        "Management_Compute_1",
+                        "Management_Compute_2"
+                    ],
+                    "overrideVirtualSwitchConfiguration": false,
+                    "virtualSwitchConfigurationOverrides": {
+                        "enableIov": "",
+                        "loadBalancingAlgorithm": ""
+                    },
+                    "overrideQosPolicy": false,
+                    "qosPolicyOverrides": {
+                        "priorityValue8021Action_Cluster": "7",
+                        "priorityValue8021Action_SMB": "3",
+                        "bandwidthPercentage_SMB": "50"
+                    },
+                    "overrideAdapterProperty": true,
+                    "adapterPropertyOverrides": {
+                        "jumboPacket": "1514",
+                        "networkDirect": "Disabled"
+                    }
+                }
+            ]
+        },
+        "storageNetworkList": {
+            "value": [
+                
+            ]
+        },
+        "storageConnectivitySwitchless": {
+            "value": true
+        },
+        "enableStorageAutoIp": {
+            "value": true
+        },
+        "customLocation": {
+            "value": "XYZAzureLocal"
+        },
+        "sbeVersion": {
+            "value": ""
+        },
+        "sbeFamily": {
+            "value": ""
+        },
+        "sbePublisher": {
+            "value": ""
+        },
+        "sbeManifestSource": {
+            "value": ""
+        },
+        "sbeManifestCreationDate": {
+            "value": ""
+        },
+        "partnerProperties": {
+            "value": [
+                
+            ]
+        },
+        "partnerCredentiallist": {
+            "value": [
+                
+            ]
+        }
+    }
+}

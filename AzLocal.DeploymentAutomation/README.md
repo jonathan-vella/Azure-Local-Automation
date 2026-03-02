@@ -1,0 +1,782 @@
+# AzLocal.DeploymentAutomation
+
+PowerShell module for deploying Azure Local (formerly Azure Stack HCI) clusters using ARM templates and parameter files. Supports SingleNode, MultiNode (2–16 nodes switched), Switchless (2–4 nodes), and Rack-Aware Cluster (2, 4, 6 and 8) deployment topologies with configurable resource naming standards and automated two-phase deployment process. This requires the physical nodes to have a running OS installed, with hardware component drivers installed, and Azure Arc Agent registered and resources present in an Azure subscription.
+
+> **Disclaimer:** This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](../LICENSE) for further information.
+
+## Overview
+
+Azure Local cluster deployments via ARM templates require a **two-phase process**: first a **Validate** deployment to verify configuration, then a **Deploy** deployment to provision the cluster. This module provides four exported functions:
+
+| Function | Purpose |
+|----------|---------|
+| **`Start-AzLocalTemplateDeployment`** | Orchestrates the end-to-end deployment workflow for a **single cluster** (parameter collection, naming resolution, ARM template submission). Supports interactive and non-interactive usage. |
+| **`Watch-AzLocalDeployment`** | Monitors a running ARM deployment by polling for status changes. Useful for tracking long-running validate/deploy operations from the same or a separate PowerShell session. |
+| **`Start-AzLocalCsvDeployment`** | **Batch/CI/CD function.** Reads a CSV file of cluster definitions, runs pre-flight checks, and submits ARM deployments for all eligible clusters. Generates JUnit XML reports. |
+| **`Get-AzLocalDeploymentStatus`** | **Batch/CI/CD function.** Checks the current ARM deployment status for all clusters in a CSV file. Generates JUnit XML reports for dashboards. |
+
+> **Reference:** [Deploy Azure Local using ARM templates](https://learn.microsoft.com/azure/azure-local/deploy/deployment-azure-resource-manager-template)
+
+---
+
+## Prerequisites
+
+- **PowerShell** 5.1 or later
+- **Az PowerShell modules:**
+  - `Az.Accounts` (v2.0.0+)
+  - `Az.Resources` (v6.0.0+)
+  - `Az.KeyVault` (v4.0.0+) — required when retrieving credentials from Azure Key Vault
+- Azure subscription with appropriate permissions
+- Arc-enabled servers (Azure Local physical node(s)) already registered in the target subscription and resource group
+- Active Directory OU structure prepared for the deployment, more information and 'AD preparation module' is documented here: https://learn.microsoft.com/azure/azure-local/deploy/deployment-prep-active-directory
+
+Install the required Az modules if not already present:
+
+```powershell
+Install-Module -Name Az.Accounts -MinimumVersion 2.0.0 -Scope CurrentUser
+Install-Module -Name Az.Resources -MinimumVersion 6.0.0 -Scope CurrentUser
+Install-Module -Name Az.KeyVault -MinimumVersion 4.0.0 -Scope CurrentUser
+```
+
+---
+
+## Module Structure
+
+```
+AzLocal.DeploymentAutomation/
+├── AzLocal.DeploymentAutomation.psm1          # Module loader (dot-sources Public/ and Private/)
+├── AzLocal.DeploymentAutomation.psd1          # Module manifest
+├── Public/                                    # Exported functions
+│   ├── Start-AzLocalTemplateDeployment.ps1    # Deploy a single Azure Local cluster
+│   ├── Start-AzLocalCsvDeployment.ps1         # CSV-driven batch deployment
+│   ├── Watch-AzLocalDeployment.ps1            # Poll deployment status until completion
+│   └── Get-AzLocalDeploymentStatus.ps1        # Query deployment status across clusters
+├── Private/                                   # Internal helper functions
+│   ├── Write-AzLocalLog.ps1                   # Logging helper
+│   ├── Initialize-AzLocalLogFile.ps1          # Log file initialisation
+│   ├── Get-ValidUniqueID.ps1                  # Unique ID generation
+│   ├── Get-AzLocalDeploymentNetworkSettings.ps1
+│   ├── Get-AzLocalNetworkSettingsFromJson.ps1
+│   ├── Get-AzLocalParameterFilePath.ps1
+│   ├── Get-AzLocalParameterFileSettings.ps1
+│   ├── New-AzLocalDeploymentParameterFile.ps1
+│   ├── Test-AzLocalResourceNames.ps1
+│   ├── Get-AzLocalNamingConfig.ps1
+│   ├── Resolve-AzLocalResourceName.ps1
+│   ├── Format-Json.ps1                        # JSON pretty-printer (PS 5.1 compatible)
+│   ├── New-AzLocalJUnitXml.ps1                # JUnit XML report generation
+│   ├── Import-AzLocalDeploymentCsv.ps1        # CSV import and validation
+│   └── Test-AzLocalClusterPreFlight.ps1       # Pre-flight validation checks
+├── .config/
+│   └── naming-standards-config.json           # Naming standards and default values
+├── templates/
+│   └── azure-local-deployment-template.json      # ARM deployment template
+├── template-parameter-files/                  # Base parameter templates (do not edit directly)
+│   ├── single-node-parameters-file.json
+│   ├── switchless-parameters-file.json
+│   ├── multi-node-switched-parameters-file.json
+│   └── rack-aware-parameters-file.json
+├── cluster-specific-parameter-files/          # Example cluster-specific files
+├── deployment-parameter-files/                # Generated per-deployment parameter files (auto-created)
+├── automation-pipelines/                      # CI/CD pipeline examples (GitHub Actions & Azure DevOps)
+│   ├── cluster-deployments.csv                # Example CSV for batch deployments
+│   ├── github-actions/                        # GitHub Actions workflow YAML files
+│   └── azure-devops/                          # Azure DevOps pipeline YAML files
+└── Tests/                                     # Pester unit tests
+    ├── AzLocal.DeploymentAutomation.Tests.ps1 # Test definitions
+    ├── Invoke-Tests.ps1                       # Test runner with HTML report
+    └── TestResults/                           # Generated test output (git-ignored)
+```
+
+---
+
+## Getting Started — Standalone (Single Cluster)
+
+Use `Start-AzLocalTemplateDeployment` to deploy a single Azure Local cluster interactively or via parameters.
+
+### Step 1: Import the Module
+
+```powershell
+Import-Module .\AzLocal.DeploymentAutomation.psd1
+```
+
+### Step 2: Authenticate to Azure
+
+```powershell
+Connect-AzAccount -SubscriptionId "<your-subscription-id>" -TenantId "<your-tenant-id>"
+```
+
+### Step 3: Customise the Configuration
+
+Edit `.config/naming-standards-config.json` to match your environment's naming standards and defaults before running a deployment. See [Configuration](#configuration) for details on placeholders and naming patterns.
+
+### Step 4: Run a Deployment
+
+```powershell
+# Interactive — prompts for Unique ID, network settings, and credentials
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "<subscription-guid>" `
+    -TypeOfDeployment "SingleNode" `
+    -TenantId "<tenant-guid>" `
+    -DeploymentMode "ValidateAndDeploy"
+```
+
+The function will interactively prompt for (unless supplied via parameters):
+
+- **Unique ID** — A 2–8 character alphanumeric identifier (e.g., store number, site code). Override with `-UniqueID`
+- **Network settings** — Subnet mask, default gateway, management IP range, and node IP addresses. Override with `-NetworkSettingsJson`
+- **Passwords** — Local admin password and LCM domain user account password. Override with `-LocalAdminCredential`/`-LCMAdminCredential` or `-CredentialKeyVaultName`
+
+### Step 5 (Optional): Monitor the Deployment
+
+```powershell
+# Monitor from the same or a separate PowerShell session
+Watch-AzLocalDeployment `
+    -DeploymentName "azlocal-NYC01-SingleNode-deployment" `
+    -ResourceGroupName "rg-NYC01-azurelocal-prod"
+```
+
+---
+
+## Getting Started — CI/CD (Batch Deployment at Scale)
+
+Use `Start-AzLocalCsvDeployment` and `Get-AzLocalDeploymentStatus` to deploy multiple clusters from a CSV file. These functions are designed for CI/CD pipelines with JUnit XML reporting.
+
+> **Full CI/CD setup guide:** See [automation-pipelines/README.md](automation-pipelines/README.md) for GitHub Actions and Azure DevOps pipeline examples, authentication options (OIDC, Managed Identity, Service Principal), and CSV file format.
+
+### Step 1: Prepare the CSV File
+
+Create a CSV file with one row per cluster. See [automation-pipelines/cluster-deployments.csv](automation-pipelines/cluster-deployments.csv) for the format. Key columns:
+
+| Column | Description |
+|--------|-------------|
+| `UniqueID` | 2–8 character alphanumeric identifier |
+| `ReadyToDeploy` | `TRUE` or `FALSE` — only TRUE rows are processed |
+| `SubscriptionId` / `TenantId` | Azure identifiers for the target environment |
+| `TypeOfDeployment` | `SingleNode`, `MultiNode`, `Switchless`, or `RackAware` |
+| `NodeCount` | Number of physical nodes |
+| `CredentialKeyVaultName` | Key Vault containing deployment credentials |
+| Network columns | `SubnetMask`, `DefaultGateway`, `StartingIPAddress`, `EndingIPAddress`, `DnsServers`, `NodeIPAddresses` |
+
+### Step 2: Import the Module and Authenticate
+
+```powershell
+Import-Module .\AzLocal.DeploymentAutomation.psd1
+Connect-AzAccount  # Or use OIDC/Managed Identity in CI/CD
+```
+
+### Step 3: Validate Clusters (Pre-Flight + ARM Validate)
+
+```powershell
+Start-AzLocalCsvDeployment `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -DeploymentMode 'Validate' `
+    -JUnitOutputPath './reports/validate-results.xml' `
+    -Confirm:$false
+```
+
+This runs automated pre-flight checks (resource group exists, Arc nodes registered, no duplicate cluster, no in-progress deployment) and then submits ARM Validate for eligible clusters.
+
+### Step 4: Deploy Clusters
+
+```powershell
+Start-AzLocalCsvDeployment `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -DeploymentMode 'Deploy' `
+    -JUnitOutputPath './reports/deploy-results.xml' `
+    -Confirm:$false
+```
+
+### Step 5: Monitor Deployment Progress
+
+```powershell
+Get-AzLocalDeploymentStatus `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -JUnitOutputPath './reports/status-results.xml'
+```
+
+---
+
+## Function Reference
+
+### `Start-AzLocalTemplateDeployment`
+
+Main entry point for deploying a single Azure Local cluster.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `-SubscriptionId` | `[guid]` | Yes | Azure subscription ID |
+| `-TypeOfDeployment` | `[string]` | Yes | Deployment topology (see below) |
+| `-TenantId` | `[guid]` | Yes | Azure tenant ID |
+| `-DeploymentMode` | `[string]` | Yes | `Validate`, `Deploy`, or `ValidateAndDeploy` |
+| `-NodeCount` | `[int]` | No | Number of nodes for Switchless (2–4), MultiNode (2–16), or RackAware (2, 4, 6, 8) |
+| `-Location` | `[string]` | No | Azure region override (default: config value) |
+| `-DnsServers` | `[string[]]` | No | DNS server IPs override (default: config value) |
+| `-ComputeManagementAdapters` | `[string[]]` | No | Compute/Management NIC names override (default: config value) |
+| `-StorageAdapters` | `[string[]]` | No | Storage NIC names override (default: config value) |
+| `-LogFilePath` | `[string]` | No | Path to a log file for debug/diagnostic output |
+| `-UniqueID` | `[string]` | No | Unique identifier (2–8 alphanumeric chars) to skip interactive prompt |
+| `-NetworkSettingsJson` | `[string]` | No | JSON file path or inline JSON string with network settings (skips interactive prompts) |
+| `-LocalAdminCredential` | `[PSCredential]` | No | Local admin credential (password used for deployment) |
+| `-LCMAdminCredential` | `[PSCredential]` | No | LCM domain admin credential (password used for deployment) |
+| `-CredentialKeyVaultName` | `[string]` | No | Azure Key Vault name to retrieve credentials from |
+| `-LocalAdminSecretName` | `[string]` | No | Key Vault secret name for local admin password (default: `LocalAdminCredential`) |
+| `-LCMAdminSecretName` | `[string]` | No | Key Vault secret name for LCM admin password (default: `AzureStackLCMUserCredential`) |
+| `-WhatIf` | `[switch]` | No | Shows what deployment actions would be taken without executing them |
+| `-Confirm` | `[switch]` | No | Prompts for confirmation before each deployment phase |
+
+#### Deployment Types
+
+| Value | Description | Nodes |
+|-------|-------------|-------|
+| `SingleNode` | Single server deployment | 1 |
+| `Switchless` | Switchless deployment (requires `-NodeCount`) | 2–4 |
+| `MultiNode` | Multi-node switched deployment (requires `-NodeCount`) | 2–16 |
+| `RackAware` | Rack-aware deployment with availability zones (requires `-NodeCount`) | 2, 4, 6, 8 |
+
+#### Deployment Modes
+
+| Mode | Description |
+|------|-------------|
+| `Validate` | Runs only the validation phase — verifies configuration without provisioning resources |
+| `Deploy` | Runs only the deploy phase — use this if validation was previously completed separately |
+| `ValidateAndDeploy` | **Recommended.** Runs validation first, then automatically proceeds to deploy if validation succeeds |
+
+> **Important:** Azure Local ARM deployments require a successful `Validate` deployment before a `Deploy` deployment can proceed. The `ValidateAndDeploy` mode automates this two-phase requirement.
+> See: [Deploy Azure Local using ARM templates](https://learn.microsoft.com/azure/azure-local/deploy/deployment-azure-resource-manager-template)
+
+#### Credential Handling
+
+Credentials (local admin password and LCM domain account password) are resolved in priority order:
+
+| Priority | Method | Parameters | Use Case |
+|----------|--------|------------|----------|
+| 1 | **Azure Key Vault** | `-CredentialKeyVaultName` | CI/CD pipelines with secrets in Key Vault |
+| 2 | **PSCredential** | `-LocalAdminCredential`, `-LCMAdminCredential` | Automation scripts with pre-built credentials |
+| 3 | **Interactive** | *(none)* | Manual deployments with `Read-Host -AsSecureString` prompts |
+
+**Key Vault retrieval** uses `Get-AzKeyVaultSecret` (requires `Az.KeyVault` module) with default secret names `LocalAdminCredential` and `AzureStackLCMUserCredential`. Override with `-LocalAdminSecretName` and `-LCMAdminSecretName` if your secrets use different names.
+
+> **Note:** Only the password portion of each credential is used by the ARM deployment. The LCM admin username is defined in `.config/naming-standards-config.json` (`azureStackLCMAdminUsername`).
+
+#### Network Settings JSON
+
+For non-interactive deployments, supply network settings via `-NetworkSettingsJson` as either a file path or an inline JSON string:
+
+```json
+{
+    "subnetMask": "255.255.255.0",
+    "defaultGateway": "10.0.0.1",
+    "startingIPAddress": "10.0.0.10",
+    "endingIPAddress": "10.0.0.50",
+    "nodeIPAddresses": ["10.0.0.100", "10.0.0.101"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `subnetMask` | `string` | Subnet mask for the management network |
+| `defaultGateway` | `string` | Default gateway IP address |
+| `startingIPAddress` | `string` | Start of management IP range |
+| `endingIPAddress` | `string` | End of management IP range |
+| `nodeIPAddresses` | `string[]` | IP addresses for each node (count must match deployment type/node count) |
+
+All IP address fields are validated at parse time. The number of entries in `nodeIPAddresses` must match the expected node count for the deployment type (e.g., 1 for SingleNode, 2 for MultiNode with `-NodeCount 2`).
+
+#### ShouldProcess Support (-WhatIf / -Confirm)
+
+`Start-AzLocalTemplateDeployment` supports `-WhatIf` and `-Confirm` via `SupportsShouldProcess` with `ConfirmImpact = 'High'`. Each deployment phase (Validate, Deploy) is individually gated:
+
+```powershell
+# Preview what would happen without executing
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "SingleNode" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy" `
+    -UniqueID "NYC01" `
+    -WhatIf
+
+# Prompt for confirmation before each deployment phase
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "SingleNode" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy" `
+    -Confirm
+```
+
+---
+
+### `Watch-AzLocalDeployment`
+
+Monitors a running ARM deployment by polling for status changes. Displays timestamped status transitions and a summary when the deployment reaches a terminal state (`Succeeded`, `Failed`, or `Canceled`).
+
+#### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `-DeploymentName` | `[string]` | Yes | — | The name of the ARM deployment to monitor |
+| `-ResourceGroupName` | `[string]` | Yes | — | The resource group containing the deployment |
+| `-PollingIntervalSeconds` | `[int]` | No | `30` | How often (in seconds) to poll for status changes (10–600) |
+| `-TimeoutMinutes` | `[int]` | No | `0` | Maximum monitoring time in minutes. `0` = no timeout (0–1440) |
+| `-PassThru` | `[switch]` | No | — | Returns the final deployment object when monitoring completes |
+| `-LogFilePath` | `[string]` | No | — | Path to a log file for debug/diagnostic output |
+
+#### Usage
+
+```powershell
+# Monitor a deployment with default settings (poll every 30 seconds, no timeout)
+Watch-AzLocalDeployment -DeploymentName "azlocal-NYC01-SingleNode-deployment" `
+    -ResourceGroupName "rg-NYC01-azurelocal-prod"
+
+# Monitor with custom polling interval and timeout
+Watch-AzLocalDeployment -DeploymentName "azlocal-NYC01-SingleNode-deployment" `
+    -ResourceGroupName "rg-NYC01-azurelocal-prod" `
+    -PollingIntervalSeconds 60 `
+    -TimeoutMinutes 120
+
+# Monitor and capture the final deployment object
+$deployment = Watch-AzLocalDeployment -DeploymentName "azlocal-NYC01-SingleNode-deployment" `
+    -ResourceGroupName "rg-NYC01-azurelocal-prod" `
+    -PassThru
+
+# Monitor with debug log file output
+Watch-AzLocalDeployment -DeploymentName "azlocal-NYC01-SingleNode-deployment" `
+    -ResourceGroupName "rg-NYC01-azurelocal-prod" `
+    -LogFilePath "C:\Logs\deployment-monitor.log"
+```
+
+> **Tip:** `Watch-AzLocalDeployment` can be run from a separate PowerShell session to monitor a deployment started by `Start-AzLocalTemplateDeployment` or directly from the Azure Portal. The deployment name follows the pattern defined in `.config/naming-standards-config.json` (default: `azlocal-{UniqueID}-{TypeOfDeployment}-deployment`).
+
+---
+
+### `Start-AzLocalCsvDeployment`
+
+Reads a CSV file and submits ARM deployments for all eligible clusters (where `ReadyToDeploy = TRUE`). Runs pre-flight checks before each deployment and generates JUnit XML reports for CI/CD pipeline visibility.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `-CsvFilePath` | `[string]` | Yes | Path to the cluster deployments CSV file |
+| `-DeploymentMode` | `[string]` | Yes | `Validate` or `Deploy` |
+| `-JUnitOutputPath` | `[string]` | No | Path to write JUnit XML test results |
+| `-LogFilePath` | `[string]` | No | Path to write a log file for diagnostic output |
+| `-WhatIf` | `[switch]` | No | Preview mode — runs pre-flight checks without submitting deployments |
+| `-Confirm` | `[switch]` | No | Prompts for confirmation (use `-Confirm:$false` for CI/CD) |
+
+#### Usage
+
+```powershell
+# Validate all ready clusters
+Start-AzLocalCsvDeployment `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -DeploymentMode 'Validate' `
+    -JUnitOutputPath './reports/validate-results.xml' `
+    -Confirm:$false
+
+# Deploy all ready clusters
+Start-AzLocalCsvDeployment `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -DeploymentMode 'Deploy' `
+    -JUnitOutputPath './reports/deploy-results.xml' `
+    -Confirm:$false
+
+# Preview what would happen (WhatIf)
+Start-AzLocalCsvDeployment `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -DeploymentMode 'Validate' `
+    -WhatIf
+```
+
+---
+
+### `Get-AzLocalDeploymentStatus`
+
+Checks the current ARM deployment status for all clusters with `ReadyToDeploy = TRUE` in a CSV file. Designed to run on a schedule (e.g., every 15 minutes) to track long-running deployments.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `-CsvFilePath` | `[string]` | Yes | Path to the cluster deployments CSV file |
+| `-JUnitOutputPath` | `[string]` | No | Path to write JUnit XML test results |
+| `-LogFilePath` | `[string]` | No | Path to write a log file for diagnostic output |
+
+#### Status Values
+
+| Status | Description |
+|--------|-------------|
+| `NotStarted` | No deployment found for this cluster |
+| `ValidateInProgress` | ARM Validate is running |
+| `ValidateSucceeded` | ARM Validate completed successfully |
+| `ValidateFailed` | ARM Validate failed |
+| `DeployInProgress` | ARM Deploy is running |
+| `DeploySucceeded` | ARM Deploy completed successfully |
+| `DeployFailed` | ARM Deploy failed |
+| `ClusterExists` | Cluster resource already exists in Azure |
+
+#### Usage
+
+```powershell
+# Check status of all deployments
+Get-AzLocalDeploymentStatus `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -JUnitOutputPath './reports/status-results.xml'
+```
+
+---
+
+## Usage Examples
+
+### Single Node — Validate and Deploy
+
+```powershell
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "SingleNode" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy"
+```
+
+### Two-Node Switched — Validate Only
+
+```powershell
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "MultiNode" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "Validate" `
+    -NodeCount 2
+```
+
+### Switchless (3 nodes) — Deploy Only (after prior validation)
+
+```powershell
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "Switchless" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "Deploy" `
+    -NodeCount 3
+```
+
+### MultiNode (4 nodes) with Overrides
+
+```powershell
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "MultiNode" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy" `
+    -NodeCount 4 `
+    -Location "eastus" `
+    -DnsServers "10.1.1.1","10.1.1.2" `
+    -ComputeManagementAdapters "NIC1","NIC2" `
+    -StorageAdapters "STORAGE1","STORAGE2"
+```
+
+### RackAware (4 nodes) — Validate and Deploy
+
+```powershell
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "RackAware" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy" `
+    -NodeCount 4
+```
+
+> **RackAware:** Nodes are automatically split evenly into two local availability zones (ZoneA and ZoneB). For example, with 4 nodes, nodes 1–2 are assigned to ZoneA and nodes 3–4 to ZoneB. Only even node counts (2, 4, 6, 8) are supported.
+
+### Fully Non-Interactive (CI/CD Pipeline)
+
+Supply all inputs via parameters to avoid interactive prompts:
+
+```powershell
+# Credentials from Azure Key Vault
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "SingleNode" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy" `
+    -UniqueID "NYC01" `
+    -CredentialKeyVaultName "kv-deployments-prod" `
+    -NetworkSettingsJson "C:\Pipeline\network-settings.json" `
+    -LogFilePath "C:\Pipeline\deployment.log" `
+    -Confirm:$false
+```
+
+### Credentials via PSCredential
+
+```powershell
+$localAdmin = Get-Credential -UserName "Administrator" -Message "Local Admin"
+$lcmAdmin = Get-Credential -UserName "LCMAdminUserName" -Message "LCM Admin"
+
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "MultiNode" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy" `
+    -NodeCount 2 `
+    -UniqueID "STORE42" `
+    -LocalAdminCredential $localAdmin `
+    -LCMAdminCredential $lcmAdmin `
+    -NetworkSettingsJson '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["10.0.0.100","10.0.0.101"]}'
+```
+
+### Key Vault with Custom Secret Names
+
+```powershell
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "MultiNode" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy" `
+    -NodeCount 4 `
+    -UniqueID "DC02" `
+    -CredentialKeyVaultName "kv-secrets-prod" `
+    -LocalAdminSecretName "azlocal-local-admin" `
+    -LCMAdminSecretName "azlocal-lcm-admin" `
+    -NetworkSettingsJson "C:\Config\dc02-network.json"
+```
+
+---
+
+## Configuration
+
+All naming standards and environment defaults are managed centrally in `.config/naming-standards-config.json`. This file is loaded at runtime and values are applied to the ARM template parameters.
+
+### Naming Standards
+
+Naming patterns use placeholders that are replaced at runtime:
+
+| Placeholder | Description | Example |
+|------------|-------------|---------|
+| `{UniqueID}` | The Unique ID entered during deployment (2–8 alphanumeric characters) | `STORE01`, `NYC01`, `AB` |
+| `{NodeNumber}` | Zero-padded node number (auto-generated, 2 digits) | `01`, `02` |
+| `{TypeOfDeployment}` | The deployment type | `SingleNode`, `Switchless`, `MultiNode`, `RackAware` |
+
+#### Default Naming Patterns
+
+| Resource | Pattern | Example (UniqueID=`NYC01`) |
+|----------|---------|----------------------------|
+| Cluster Name | `AZCLUSTER{UniqueID}` | `AZCLUSTERNYC01` |
+| Resource Group | `rg-{UniqueID}-azurelocal-prod` | `rg-NYC01-azurelocal-prod` |
+| Key Vault | `kv-{UniqueID}-azlocal` | `kv-NYC01-azlocal` |
+| Custom Location | `{UniqueID}-azlocal-customlocation` | `NYC01-azlocal-customlocation` |
+| Resource Bridge | `{UniqueID}-azlocal-arcbridge` | `NYC01-azlocal-arcbridge` |
+| Diagnostics Storage | `{UniqueID}azlocaldiag` | `nyc01azlocaldiag` |
+| Witness Storage | `{UniqueID}azlocalwitness` | `nyc01azlocalwitness` |
+| Node Name | `{UniqueID}NODE{NodeNumber}` | `NYC01NODE01` |
+| AD OU Path | `OU=AzLocal-{UniqueID},OU=AzureLocal,DC=contoso,DC=com` | `OU=AzLocal-NYC01,OU=AzureLocal,DC=contoso,DC=com` |
+| Deployment Name | `azlocal-{UniqueID}-{TypeOfDeployment}-deployment` | `azlocal-NYC01-SingleNode-deployment` |
+
+#### Azure Resource Naming Limits
+
+When customising naming patterns, ensure the resolved names stay within Azure resource naming constraints. The table below shows the Azure limits and the maximum UniqueID length supported by each default pattern:
+
+| Resource Type | Azure Limit | Allowed Characters | Default Pattern | Fixed Chars | Max UniqueID |
+|---------------|-------------|-------------------|-----------------|-------------|--------------|
+| Storage Account (diagnostic) | 3–24 chars | Lowercase alphanumeric only | `{UniqueID}azlocaldiag` | 10 | **14** |
+| Storage Account (witness) | 3–24 chars | Lowercase alphanumeric only | `{UniqueID}azlocalwitness` | 14 | **10** |
+| Cluster Name (NetBIOS) | 1–15 chars | Alphanumeric only | `AZCLUSTER{UniqueID}` | 9 | **6** |
+| Node Name (NetBIOS) | 1–15 chars | Alphanumeric only | `{UniqueID}NODE{NodeNumber}` | 6 (4 + 2) | **9** |
+| Key Vault | 3–24 chars | Alphanumeric + hyphens, must start with letter | `kv-{UniqueID}-azlocal` | 12 | **12** |
+| Custom Location | 1–63 chars | Alphanumeric + hyphens | `{UniqueID}-azlocal-customlocation` | 25 | **38** |
+| Resource Bridge | 1–63 chars | Alphanumeric + hyphens | `{UniqueID}-azlocal-arcbridge` | 20 | **43** |
+| Deployment Name | 1–64 chars | Alphanumeric, hyphens, underscores, periods | `azlocal-{UniqueID}-{TypeOfDeployment}-deployment` | ~30 | **34** |
+
+> **Note:** With the default patterns, the **cluster name** is the tightest constraint — limiting UniqueID to **6 characters**. If you need longer UniqueIDs, shorten the fixed portions of the patterns (e.g., change `AZCLUSTER{UniqueID}` to `AZC{UniqueID}`). All resolved names are validated at runtime by `Test-AzLocalResourceNames` before deployment begins.
+
+### Default Values
+
+These values are used unless overridden by function parameters:
+
+| Setting | Default Value | Override Parameter |
+|---------|---------------|--------------------|
+| `location` | `westeurope` | `-Location` |
+| `domainFqdn` | `contoso.com` | — (edit config) |
+| `namingPrefix` | `HCI01` | — (edit config) |
+| `azureStackLCMAdminUsername` | `LCMAdminUserName` | — (edit config) |
+| `storageAccountType` | `Standard_LRS` | — (edit config) |
+| `dnsServers` | `["10.0.0.1", "10.0.0.2"]` | `-DnsServers` |
+| `computeManagementAdapters` | `["MGMT_COMP_Slot1_Port1", "MGMT_COMP_Slot1_Port2"]` | `-ComputeManagementAdapters` |
+| `storageAdapters` | `["SMB_Slot2_Port1", "SMB_Slot2_Port2"]` | `-StorageAdapters` |
+
+### Example Configuration
+
+```json
+{
+    "namingStandards": {
+        "clusterName": "AZCLUSTER{UniqueID}",
+        "resourceGroupName": "rg-{UniqueID}-azurelocal-prod",
+        "keyVaultName": "kv-{UniqueID}-azlocal",
+        "nodeNamePattern": "{UniqueID}NODE{NodeNumber}"
+    },
+    "defaults": {
+        "location": "westeurope",
+        "domainFqdn": "contoso.com",
+        "dnsServers": ["10.0.0.1", "10.0.0.2"],
+        "computeManagementAdapters": ["MGMT_COMP_Slot1_Port1", "MGMT_COMP_Slot1_Port2"],
+        "storageAdapters": ["SMB_Slot2_Port1", "SMB_Slot2_Port2"]
+    }
+}
+```
+
+---
+
+## Deployment Workflow
+
+The following describes what happens when you run `Start-AzLocalTemplateDeployment`:
+
+1. **Load Configuration** — Naming standards and defaults are loaded from `.config/naming-standards-config.json`
+2. **Collect Unique ID** — Uses `-UniqueID` parameter or prompts interactively (2–8 alphanumeric chars)
+3. **Collect Network Settings** — Uses `-NetworkSettingsJson` (file path or inline JSON) or prompts interactively for subnet mask, gateway, IP range, and node IPs
+4. **Resolve Credentials** — Key Vault (`-CredentialKeyVaultName`) > PSCredential parameters > interactive `Read-Host -AsSecureString`
+5. **Resolve Resource Names** — All resource names are generated from naming patterns + Unique ID
+6. **Verify Prerequisites** — Checks that the resource group and Arc-registered nodes exist in Azure
+7. **Generate Parameter File** — A deployment-specific parameter file is created in `deployment-parameter-files/`
+8. **Execute Deployment** — ARM template deployment is submitted to Azure (subject to `-WhatIf` / `-Confirm` gates)
+   - If `ValidateAndDeploy`: runs Validate first, then Deploy on success
+   - If `Validate` or `Deploy`: runs only that single phase
+
+### Two-Phase Deployment Flow (`ValidateAndDeploy`)
+
+```
+┌─────────────────────────────────────────────┐
+│  Phase 1: Validate                          │
+│  - deploymentMode = "Validate"              │
+│  - ARM template deployment submitted        │
+│  - Waits for completion                     │
+├─────────────────────────────────────────────┤
+│  ✓ Validation Succeeded?                    │
+│    Yes → Proceed to Phase 2                 │
+│    No  → Stop and report error              │
+├─────────────────────────────────────────────┤
+│  Phase 2: Deploy                            │
+│  - deploymentMode = "Deploy"                │
+│  - ARM template deployment submitted        │
+│  - Waits for completion                     │
+├─────────────────────────────────────────────┤
+│  ✓ Deployment Succeeded                     │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## Template Parameter Files
+
+The `template-parameter-files/` directory contains base parameter templates for each deployment type. Values marked as `<calculated>` are populated automatically by the module at runtime. **Do not edit these files** unless you need to change static deployment settings (e.g., security policies, networking patterns).
+
+Key static settings in the parameter files that you may wish to review:
+
+- **Security settings** — `securityLevel`, `driftControlEnforced`, `wdacEnforced`, etc.
+- **Networking pattern** — `networkingPattern`, `intentList` structure
+- **Storage network** — `storageNetworkList` VLAN IDs
+- **SBE (Solution Builder Extension)** — `sbeVersion`, `sbeFamily`, `sbePublisher`, etc.
+
+## Deployment Parameter Files
+
+When a deployment is executed, the module generates a deployment-specific parameter file in the `deployment-parameter-files/` directory. These files contain the fully resolved parameters for the deployment and are named using the pattern:
+
+```
+{UniqueID}-{deployment-type}-parameters-file.json
+```
+
+For example: `NYC01-single-node-parameters-file.json`
+
+---
+
+## Troubleshooting
+
+| Issue | Resolution |
+|-------|------------|
+| Resource group not found | Ensure the resource group exists and Arc nodes are registered before running the deployment |
+| Arc node not found | Verify nodes are Arc-enabled and registered in the correct resource group |
+| HCI Resource Provider not found | Run `Get-AzADServicePrincipal -DisplayName "Microsoft.AzureStackHCI Resource Provider"` to verify |
+| Validation fails | Review the Azure portal deployment details for specific validation errors |
+| Deploy fails after Validate | Check the deployment phase output for the specific error. Ensure Validate completed successfully first |
+| Naming config not found | Ensure `.config/naming-standards-config.json` exists in the module directory |
+| Template file not found | Ensure `templates/azure-local-deployment-template.json` exists |
+| Key Vault access denied | Ensure `Az.KeyVault` module is installed and the identity has **Key Vault Secrets User** role on the vault |
+
+---
+
+## Testing
+
+The module includes a comprehensive Pester test suite in the `Tests/` folder.
+
+### Prerequisites
+
+- [Pester](https://pester.dev/) v5.0 or higher (auto-installed by the runner if missing)
+
+### Running Tests
+
+```powershell
+# Basic run (Normal verbosity)
+.\Tests\Invoke-Tests.ps1
+
+# Open HTML report in browser after completion
+.\Tests\Invoke-Tests.ps1 -OpenReport
+
+# Detailed output (saved to log file)
+.\Tests\Invoke-Tests.ps1 -Full
+
+# Custom output path
+.\Tests\Invoke-Tests.ps1 -OutputPath "C:\TestResults"
+```
+
+### Test Coverage
+
+The test suite validates:
+
+| Area | What Is Tested |
+|------|----------------|
+| Module Load | Manifest validity, exported functions, required modules (`Az.Accounts`, `Az.Resources`, `Az.KeyVault`) |
+| Parameter Validation | Types, ValidateSet values, ValidateRange, mandatory flags |
+| Credential Parameters | PSCredential types, Key Vault secret name defaults, non-mandatory validation |
+| ShouldProcess | SupportsShouldProcess enabled, ConfirmImpact = High |
+| UniqueID Parameter | ValidatePattern attribute, regex validation (2–8 alphanumeric characters) |
+| NetworkSettingsJson | JSON parsing, file/string input, required field validation, IP format validation, node count validation |
+| Naming Resolution | `Resolve-AzLocalResourceName` placeholder replacement (2-digit node numbers) |
+| Resource Name Validation | `Test-AzLocalResourceNames` Azure naming limits (length, allowed characters) |
+| Config Loading | `Get-AzLocalNamingConfig` structure and completeness |
+| Parameter File Paths | Correct file mapping for each deployment type |
+| Parameter File Settings | `Get-AzLocalParameterFileSettings` loading and content structure |
+| Parameter File Generation | `New-AzLocalDeploymentParameterFile` parameter definitions |
+| UniqueID Validation | Valid/invalid input handling via mocked `Read-Host` |
+| Network Settings | Node count resolution, IP address prompting |
+| Format-Json | Prettify, minify, and custom indentation |
+| Deployment Logic | Node count per type, deployment phase splitting |
+| File Integrity | Template/config existence, no deprecated references |
+| Watch-AzLocalDeployment | Parameter definitions, types, mandatory flags, ValidateRange bounds, terminal state detection |
+| Write-AzLocalLog | Function existence, parameter definitions (Message, Level, NoTimestamp), log file output |
+| LogFilePath Parameter | Presence, type, and non-mandatory flag on exported functions |
+| Pre-Flight Checks | Resource group, Arc node, cluster existence, deployment state checks (mocked) |
+| CSV Deployment | Batch deployment with pre-flight, JUnit output, skip logic (mocked) |
+| Deployment Status | Status monitoring with all status categories (mocked) |
+| CI/CD Pipelines | Automation pipeline file structure, CSV format, workflow file existence |
+| Code Quality | `Set-StrictMode` declaration, `OutputType` attributes, `Join-Path` usage, credential cleanup in `finally` block, `Az.KeyVault` availability check, no dead code patterns |
+
+### Output
+
+The test runner generates:
+- **NUnit XML** — For CI/CD pipeline integration
+- **HTML Report** — Human-readable results with pass/fail summary
+- **Log file** — Detailed output when using `-Full` or `-Verbosity Detailed`
+
+---
+
+## References
+
+- [Deploy Azure Local using ARM templates](https://learn.microsoft.com/azure/azure-local/deploy/deployment-azure-resource-manager-template)
+- [Azure Local documentation](https://learn.microsoft.com/azure/azure-local/)
+- [Azure Quickstart Templates — Azure Stack HCI](https://github.com/Azure/azure-quickstart-templates/tree/master/quickstarts/microsoft.azurestackhci/create-cluster)
+
+## License
+
+This project contains example / sample code that is provided "AS IS", without warranty of any kind. See [LICENSE](../LICENSE) for details.

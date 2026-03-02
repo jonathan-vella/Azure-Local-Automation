@@ -1,0 +1,123 @@
+# Deployment Monitor
+# This pipeline monitors the status of Azure Local cluster deployments.
+# It can run on a schedule or be triggered manually.
+#
+# AUTHENTICATION:
+# Uses an Azure DevOps Service Connection (OIDC or Service Principal).
+# See: https://learn.microsoft.com/en-us/azure/devops/pipelines/library/connect-to-azure
+#
+# This pipeline is read-only - it checks deployment statuses but does not
+# modify any Azure resources.
+
+trigger: none
+
+schedules:
+  # Run every 15 minutes (adjust as needed)
+  - cron: '*/15 * * * *'
+    displayName: 'Every 15 minutes'
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: csvFilePath
+    displayName: 'Path to cluster deployments CSV file'
+    type: string
+    default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+
+variables:
+  - name: modulePath
+    value: '$(System.DefaultWorkingDirectory)/AzLocal.DeploymentAutomation'
+
+pool:
+  vmImage: 'windows-latest'
+
+jobs:
+  - job: MonitorDeployments
+    displayName: 'Check Deployment Status'
+
+    steps:
+      - checkout: self
+        displayName: 'Checkout Repository'
+
+      - task: AzureCLI@2
+        displayName: 'Check Deployment Status'
+        name: status
+        inputs:
+          azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
+          scriptType: 'pscore'
+          scriptLocation: 'inlineScript'
+          addSpnToEnvironment: true
+          inlineScript: |
+            Import-Module "$(modulePath)/AzLocal.DeploymentAutomation.psd1" -Force
+
+            $csvPath = "${{ parameters.csvFilePath }}"
+
+            if (-not (Test-Path $csvPath)) {
+                Write-Error "CSV file not found: $csvPath"
+                exit 1
+            }
+
+            $outputDir = "$(Build.ArtifactStagingDirectory)"
+            $junitPath = Join-Path $outputDir "monitor-results.xml"
+
+            Write-Host "========================================" -ForegroundColor Cyan
+            Write-Host "Deployment Status Monitor" -ForegroundColor Cyan
+            Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')" -ForegroundColor Cyan
+            Write-Host "========================================" -ForegroundColor Cyan
+
+            $results = Get-AzLocalDeploymentStatus `
+                -CsvFilePath $csvPath `
+                -JUnitOutputPath $junitPath
+
+            # Build status counts
+            $notStarted = @($results | Where-Object { $_.Status -eq 'Passed' -and $_.Message -like '*NotStarted*' }).Count
+            $inProgress = @($results | Where-Object { $_.Status -eq 'Passed' -and $_.Message -like '*InProgress*' }).Count
+            $succeeded = @($results | Where-Object { $_.Status -eq 'Passed' -and ($_.Message -like '*Succeeded*' -or $_.Message -like '*ClusterExists*') }).Count
+            $failed = @($results | Where-Object { $_.Status -eq 'Failed' }).Count
+            $total = $results.Count
+
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Cyan
+            Write-Host "Status Summary" -ForegroundColor Cyan
+            Write-Host "========================================" -ForegroundColor Cyan
+            Write-Host "Not Started: $notStarted"
+            Write-Host "In Progress: $inProgress"
+            Write-Host "Succeeded:   $succeeded"
+            Write-Host "Failed:      $failed"
+            Write-Host "Total:       $total"
+
+            Write-Host "##vso[task.setvariable variable=NotStarted;isOutput=true]$notStarted"
+            Write-Host "##vso[task.setvariable variable=InProgress;isOutput=true]$inProgress"
+            Write-Host "##vso[task.setvariable variable=Succeeded;isOutput=true]$succeeded"
+            Write-Host "##vso[task.setvariable variable=Failed;isOutput=true]$failed"
+            Write-Host "##vso[task.setvariable variable=Total;isOutput=true]$total"
+
+            if ($failed -gt 0) {
+                Write-Host "##vso[task.logissue type=error]$failed cluster(s) have failed deployments."
+            }
+            elseif ($inProgress -gt 0) {
+                Write-Host "##vso[task.logissue type=warning]$inProgress cluster(s) still in progress."
+            }
+            elseif ($succeeded -eq $total -and $total -gt 0) {
+                Write-Host "All $total cluster(s) deployed successfully!" -ForegroundColor Green
+            }
+
+      - task: PublishTestResults@2
+        displayName: 'Publish Monitor Results'
+        condition: always()
+        inputs:
+          testResultsFormat: 'JUnit'
+          testResultsFiles: '**/monitor-results.xml'
+          searchFolder: '$(Build.ArtifactStagingDirectory)'
+          testRunTitle: 'Deployment Status Monitor'
+          failTaskOnFailedTests: false
+
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish Monitor Reports'
+        condition: always()
+        inputs:
+          PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+          ArtifactName: 'monitor-reports'
+          publishLocation: 'Container'

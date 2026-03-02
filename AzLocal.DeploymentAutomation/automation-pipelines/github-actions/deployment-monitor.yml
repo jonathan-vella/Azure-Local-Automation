@@ -1,0 +1,156 @@
+# Deployment Monitor
+# This workflow monitors the status of Azure Local cluster deployments.
+# It can run on a schedule (every 15 minutes) or be triggered manually.
+#
+# AUTHENTICATION:
+# Uses OpenID Connect (OIDC) - recommended for secretless authentication.
+# See: https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect
+#
+# This workflow is read-only - it checks deployment statuses but does not
+# modify any Azure resources.
+
+name: Deployment Monitor
+
+on:
+  schedule:
+    # Run every 15 minutes during business hours (adjust as needed)
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      csv_file_path:
+        description: 'Path to cluster deployments CSV file'
+        required: true
+        default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+
+env:
+  MODULE_PATH: './AzLocal.DeploymentAutomation'
+  DEFAULT_CSV_PATH: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+
+jobs:
+  monitor-deployments:
+    name: Check Deployment Status
+    runs-on: windows-latest
+    permissions:
+      id-token: write
+      contents: read
+      checks: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # OPTION 1: OpenID Connect (OIDC) - RECOMMENDED
+    - name: Azure Login (OIDC)
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    # OPTION 2: Client Secret - LEGACY (uncomment if OIDC not available)
+    # - name: Azure Login (Client Secret)
+    #   uses: azure/login@v2
+    #   with:
+    #     creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+
+    - name: Install Az PowerShell Modules
+      shell: pwsh
+      run: |
+        Install-Module Az.Accounts -Force -AllowClobber -Scope CurrentUser
+        Install-Module Az.Resources -Force -AllowClobber -Scope CurrentUser
+
+    - name: Check Deployment Status
+      shell: pwsh
+      id: status
+      run: |
+        Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
+
+        # Use input path if manually triggered, otherwise use default
+        $csvPath = "${{ github.event.inputs.csv_file_path }}"
+        if ([string]::IsNullOrEmpty($csvPath)) {
+            $csvPath = "${{ env.DEFAULT_CSV_PATH }}"
+        }
+
+        if (-not (Test-Path $csvPath)) {
+            Write-Error "CSV file not found: $csvPath"
+            exit 1
+        }
+
+        $outputDir = "./reports"
+        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+        $junitPath = Join-Path $outputDir "monitor-results.xml"
+
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host "Deployment Status Monitor" -ForegroundColor Cyan
+        Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC' -AsUTC)" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+
+        $results = Get-AzLocalDeploymentStatus `
+            -CsvFilePath $csvPath `
+            -JUnitOutputPath $junitPath
+
+        # Build status counts
+        $notStarted = @($results | Where-Object { $_.Status -eq 'Passed' -and $_.Message -like '*NotStarted*' }).Count
+        $inProgress = @($results | Where-Object { $_.Status -eq 'Passed' -and $_.Message -like '*InProgress*' }).Count
+        $succeeded = @($results | Where-Object { $_.Status -eq 'Passed' -and ($_.Message -like '*Succeeded*' -or $_.Message -like '*ClusterExists*') }).Count
+        $failed = @($results | Where-Object { $_.Status -eq 'Failed' }).Count
+        $total = $results.Count
+
+        echo "NOT_STARTED=$notStarted" >> $env:GITHUB_OUTPUT
+        echo "IN_PROGRESS=$inProgress" >> $env:GITHUB_OUTPUT
+        echo "SUCCEEDED=$succeeded" >> $env:GITHUB_OUTPUT
+        echo "FAILED=$failed" >> $env:GITHUB_OUTPUT
+        echo "TOTAL=$total" >> $env:GITHUB_OUTPUT
+
+        # Determine overall status
+        if ($failed -gt 0) {
+            Write-Host "##[error]$failed cluster(s) have failed deployments."
+        }
+        elseif ($inProgress -gt 0) {
+            Write-Host "##[warning]$inProgress cluster(s) still in progress."
+        }
+        elseif ($succeeded -eq $total -and $total -gt 0) {
+            Write-Host "All $total cluster(s) deployed successfully!" -ForegroundColor Green
+        }
+
+    - name: Upload Monitor Reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: monitor-reports-${{ github.run_number }}
+        path: ./reports/
+        retention-days: 7
+
+    - name: Publish Test Results
+      uses: dorny/test-reporter@v1
+      if: always()
+      with:
+        name: Deployment Status (${{ github.run_number }})
+        path: ./reports/monitor-results.xml
+        reporter: java-junit
+        fail-on-error: false
+
+    - name: Summary
+      if: always()
+      shell: pwsh
+      run: |
+        $notStarted = "${{ steps.status.outputs.NOT_STARTED }}"
+        $inProgress = "${{ steps.status.outputs.IN_PROGRESS }}"
+        $succeeded = "${{ steps.status.outputs.SUCCEEDED }}"
+        $failed = "${{ steps.status.outputs.FAILED }}"
+        $total = "${{ steps.status.outputs.TOTAL }}"
+
+        @"
+        ## Deployment Monitor - $(Get-Date -Format 'yyyy-MM-dd HH:mm UTC' -AsUTC)
+
+        | Status | Count |
+        |--------|-------|
+        | Not Started | $notStarted |
+        | In Progress | $inProgress |
+        | Succeeded | $succeeded |
+        | Failed | $failed |
+        | **Total** | **$total** |
+
+        Download the monitor report artifact for detailed per-cluster status.
+        "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

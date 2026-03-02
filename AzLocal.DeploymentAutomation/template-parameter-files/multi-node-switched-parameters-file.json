@@ -1,0 +1,239 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "deploymentMode": {
+            "value": "Validate"
+        },
+        "keyVaultName": {
+            "value": "<calculated>"
+        },
+        "softDeleteRetentionDays": {
+            "value": 30
+        },
+        "diagnosticStorageAccountName": {
+            "value": "<calculated>"
+        },
+        "logsRetentionInDays": {
+            "value": 30
+        },
+        "storageAccountType": {
+            "value": "Standard_LRS"
+        },
+        "clusterName": {
+            "value": "<calculated>"
+        },
+        "location": {
+            "value": "<calculated>"
+        },
+        "tenantId": {
+            "value": ""
+        },
+        "witnessType": {
+            "value": "<calculated>"
+        },
+        "clusterWitnessStorageAccountName": {
+            "value": "<calculated>"
+        },
+        "localAdminUserName": {
+            "value": "administrator"
+        },
+        "localAdminPassword": {
+            "value": null
+        },
+        "AzureStackLCMAdminUsername": {
+            "value": "<calculated>"
+        },
+        "AzureStackLCMAdminPassword": {
+            "value": null
+        },
+        "hciResourceProviderObjectID": {
+            "value": "<calculated>"
+        },
+        "arcNodeResourceIds": {
+            "value": [
+                "<calculated>"
+            ]
+        },
+        "domainFqdn": {
+            "value": "<calculated>"
+        },
+        "namingPrefix": {
+            "value": "<calculated>"
+        },
+        "adouPath": {
+            "value": "<calculated>"
+        },
+        "securityLevel": {
+            "value": "Recommended"
+        },
+        "driftControlEnforced": {
+            "value": true
+        },
+        "credentialGuardEnforced": {
+            "value": true
+        },
+        "smbSigningEnforced": {
+            "value": true
+        },
+        "smbClusterEncryption": {
+            "value": false
+        },
+        "bitlockerBootVolume": {
+            "value": true
+        },
+        "bitlockerDataVolumes": {
+            "value": true
+        },
+        "wdacEnforced": {
+            "value": true
+        },
+        "streamingDataClient": {
+            "value": true
+        },
+        "euLocation": {
+            "value": true
+        },
+        "episodicDataUpload": {
+            "value": true
+        },
+        "configurationMode": {
+            "value": "Express"
+        },
+        "subnetMask": {
+            "value": "<calculated>"
+        },
+        "defaultGateway": {
+            "value": "<calculated>"
+        },
+        "startingIPAddress": {
+            "value": "<calculated>"
+        },
+        "endingIPAddress": {
+            "value": "<calculated>"
+        },
+        "dnsServers": {
+            "value": "<calculated>"
+        },
+        "useDhcp": {
+            "value": false
+        },
+        "physicalNodesSettings": {
+            "value": [
+                {
+                    "name": "<calculated>",
+                    "ipv4Address": "<calculated>"
+                }
+            ]
+        },
+        "networkingType": {
+            "value": "switchedMultiServerDeployment"
+        },
+        "networkingPattern": {
+            "value": "convergedManagementCompute"
+        },
+        "intentList": {
+            "value": [
+                {
+                    "name": "Compute_Management",
+                    "trafficType": [
+                        "Compute",
+                        "Management"
+                    ],
+                    "adapter": [
+                        "<calculated>"
+                    ],
+                    "overrideVirtualSwitchConfiguration": false,
+                    "virtualSwitchConfigurationOverrides": {
+                        "enableIov": "",
+                        "loadBalancingAlgorithm": ""
+                    },
+                    "overrideQosPolicy": false,
+                    "qosPolicyOverrides": {
+                        "priorityValue8021Action_Cluster": "7",
+                        "priorityValue8021Action_SMB": "3",
+                        "bandwidthPercentage_SMB": "50"
+                    },
+                    "overrideAdapterProperty": true,
+                    "adapterPropertyOverrides": {
+                        "jumboPacket": "1514",
+                        "networkDirect": "Disabled"
+                    }
+            },
+            {
+            "name": "Storage",
+            "trafficType": [
+                "Storage"
+            ],
+            "adapter": [
+                "<calculated>"
+            ],
+            "overrideVirtualSwitchConfiguration": false,
+            "virtualSwitchConfigurationOverrides": {
+                "enableIov": "",
+                "loadBalancingAlgorithm": ""
+            },
+            "overrideQosPolicy": false,
+            "qosPolicyOverrides": {
+                "priorityValue8021Action_Cluster": "7",
+                "priorityValue8021Action_SMB": "3",
+                "bandwidthPercentage_SMB": "50"
+            },
+            "overrideAdapterProperty": false,
+            "adapterPropertyOverrides": {
+                "jumboPacket": "9014",
+                "networkDirect": "Enabled",
+                "networkDirectTechnology": "RoCEv2"
+            }
+            }
+        ]
+        },
+        "storageNetworkList": {
+            "value": [
+                {
+                    "name": "Storage1",
+                    "networkAdapterName": "<calculated>",
+                    "vlanId": "711",
+                    "storageAdapterIPInfo": []
+                },
+                {
+                    "name": "Storage2",
+                    "networkAdapterName": "<calculated>",
+                    "vlanId": "712",
+                    "storageAdapterIPInfo": []
+                }
+            ]
+        },
+        "storageConnectivitySwitchless": {
+            "value": false
+        },
+        "enableStorageAutoIp": {
+            "value": true
+        },
+        "customLocation": {
+            "value": "<caculated>"
+        },
+        "sbeVersion":{
+            "value": ""
+          },
+          "sbeFamily":{
+            "value": ""
+          },
+          "sbePublisher":{
+            "value": ""
+          },
+          "sbeManifestSource":{
+            "value": ""
+          },
+          "sbeManifestCreationDate":{
+            "value": ""
+          },
+          "partnerProperties": {
+            "value":[
+            ]
+          },
+        "partnerCredentiallist": {
+            "value": []
+          }
+    }
+}
