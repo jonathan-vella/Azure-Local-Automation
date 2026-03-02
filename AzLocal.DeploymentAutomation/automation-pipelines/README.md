@@ -51,6 +51,7 @@ Before using these pipelines, you need:
 4. **Az PowerShell modules** — `Az.Accounts` (v2.0.0+), `Az.Resources` (v6.0.0+), and `Az.KeyVault` (v4.0.0+)
 5. **Arc-registered nodes** — All physical nodes must be registered with Azure Arc in their target resource groups
 6. **Key Vault** — Deployment credentials (Local Admin and LCM Admin passwords) stored in Azure Key Vault
+7. **Resource providers** — 12 required providers (auto-registered during pre-flight if the identity has `*/register/action`, or [pre-register manually](https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions))
 
 ---
 
@@ -111,6 +112,7 @@ Before submitting any deployment, the pipeline runs these automated checks for e
 |-------|-------------|
 | **Resource Naming** | Validates all resource names against Azure naming rules via `Test-AzLocalResourceNames` |
 | **Resource Group** | Confirms the target resource group exists |
+| **Azure Prerequisites** | Validates 12 required resource providers are registered (auto-registers any missing) and checks 6 RBAC role assignments (advisory). See [Required Permissions](https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions). |
 | **Arc Nodes** | Verifies all expected nodes are registered with Azure Arc (`Microsoft.HybridCompute/machines`) |
 | **Existing Cluster** | Checks for existing `Microsoft.AzureStackHCI/clusters` resource to prevent duplicate deployments |
 | **In-Progress Deployment** | Checks for running ARM deployments in the resource group |
@@ -162,6 +164,12 @@ az ad sp create --id {app-id-from-step-1}
 az role assignment create \
     --assignee {app-id-from-step-1} \
     --role "Azure Stack HCI Administrator" \
+    --scope "/subscriptions/{your-subscription-id}"
+
+# Assign Reader role (required for RBAC checks)
+az role assignment create \
+    --assignee {app-id-from-step-1} \
+    --role "Reader" \
     --scope "/subscriptions/{your-subscription-id}"
 
 # Assign Key Vault Secrets User role (for credential retrieval)
@@ -234,6 +242,11 @@ az role assignment create \
 
 az role assignment create \
     --assignee {principal-id} \
+    --role "Reader" \
+    --scope "/subscriptions/{your-subscription-id}"
+
+az role assignment create \
+    --assignee {principal-id} \
     --role "Key Vault Secrets User" \
     --scope "/subscriptions/{your-subscription-id}/resourceGroups/{rg}/providers/Microsoft.KeyVault/vaults/{vault-name}"
 ```
@@ -261,9 +274,14 @@ az ad sp create-for-rbac \
 | `Microsoft.HybridCompute/machines/read` | Verify Arc node registration |
 | `Microsoft.Resources/deployments/*` | Create and monitor ARM deployments |
 | `Microsoft.Resources/subscriptions/resourceGroups/read` | Verify resource group exists |
+| `Microsoft.Resources/subscriptions/providers/read` | Check resource provider registration status |
+| `*/register/action` | Auto-register missing resource providers |
+| `Microsoft.Authorization/roleAssignments/read` | Check RBAC role assignments (advisory) |
 | `Microsoft.KeyVault/vaults/secrets/getSecret/action` | Retrieve deployment credentials |
 
-The built-in **Azure Stack HCI Administrator** role covers most requirements. Add **Key Vault Secrets User** for credential access.
+The built-in **Azure Stack HCI Administrator** role covers most requirements. Add **Key Vault Secrets User** for credential access. The `*/register/action` permission (needed to auto-register resource providers) is **not** included in Azure Stack HCI Administrator — either pre-register all required providers before first deployment, or assign **Contributor** at subscription scope.
+
+> **Note:** If all 12 required resource providers are already registered in your subscription (common for established environments), the `*/register/action` permission is not needed. The module checks registration status first and only attempts registration for providers that are not yet registered. See the [Azure Prerequisites](../README.md#azure-prerequisites) section in the main README for the full list of required providers and RBAC roles.
 
 ### Grant Access to Multiple Subscriptions
 
@@ -446,6 +464,7 @@ automation-pipelines/
 | `CSV file not found` | Ensure the CSV path parameter matches the file location in your repository |
 | `Arc nodes not registered` | Check that nodes appear in the expected resource group as `Microsoft.HybridCompute/machines` resources |
 | `Resource group does not exist` | Create the resource group before running the pipeline: `az group create --name {rg-name} --location {location}` |
+| `Resource provider registration failed` | The CI/CD identity lacks `*/register/action`. Either pre-register providers manually (`az provider register --namespace Microsoft.HybridCompute`, etc.) or grant **Contributor** at subscription scope. See [Required Permissions](#required-permissions). |
 | `Key Vault access denied` | Ensure the pipeline identity has **Key Vault Secrets User** role on the vault |
 | `OIDC token request failed` | Verify federated credential subject matches your workflow trigger (branch, environment, etc.) |
 | `Deployment already in progress` | Wait for the current deployment to complete or cancel it before retrying |

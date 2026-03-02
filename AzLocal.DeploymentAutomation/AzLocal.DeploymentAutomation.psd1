@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.1'
+    ModuleVersion = '0.9.2'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -62,6 +62,15 @@
 
             # Release notes for this version
             ReleaseNotes = @'
+## v0.9.2 - March 2026
+- Added Azure prerequisite checks: automatic resource provider registration and RBAC role assignment validation
+- New internal function: Test-AzLocalAzurePrerequisites — checks 12 required resource providers (auto-registers missing ones) and 6 required RBAC roles (advisory)
+- Integrated prerequisite checks into both Start-AzLocalTemplateDeployment (standalone) and Test-AzLocalClusterPreFlight (CSV batch) paths
+- RBAC checks are advisory (warnings) — missing roles are reported but do not block deployment
+- Resource provider registration failures are hard failures — deployment cannot proceed without required providers
+- Reference: https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions
+- Updated Pester tests with prerequisite check coverage
+
 ## v0.9.1 - March 2026
 - Split switchless template into per-node-count files: switchless-2node, switchless-3node, switchless-4node (dual-link mesh: 2×(N-1) storage networks)
 - Added -NodeCount parameter to Get-AzLocalParameterFilePath and New-AzLocalDeploymentParameterFile for switchless file selection

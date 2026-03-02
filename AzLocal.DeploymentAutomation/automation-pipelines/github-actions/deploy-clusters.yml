@@ -12,6 +12,7 @@
 # PREREQUISITES:
 # 1. Azure App Registration with OIDC federated credentials
 # 2. RBAC: Azure Stack HCI Administrator + Key Vault Secrets User
+#    (plus */register/action if resource providers are not pre-registered — see README)
 # 3. Successful validation pass completed via validate-deployments.yml
 # 4. Credentials stored in Azure Key Vault (referenced in CSV)
 

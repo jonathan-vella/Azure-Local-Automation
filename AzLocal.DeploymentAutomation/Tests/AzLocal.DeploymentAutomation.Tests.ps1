@@ -50,9 +50,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.9.1 in manifest' {
+        It 'Should have version 0.9.2 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '0.9.1'
+            $manifest.ModuleVersion | Should -Be '0.9.2'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -142,8 +142,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 0.9.1' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.1'
+        It 'Should have version 0.9.2' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.2'
         }
     }
 }
@@ -2918,6 +2918,14 @@ Describe 'Function: Test-AzLocalClusterPreFlight' {
             }
         }
 
+        BeforeEach {
+            # Mock the Azure prerequisites check (resource providers + RBAC) to return Passed
+            # so pre-flight tests can focus on their own check scenarios.
+            Mock Test-AzLocalAzurePrerequisites {
+                return [PSCustomObject]@{ Status = 'Passed'; Messages = @('Prerequisites check mocked.') }
+            } -ModuleName AzLocal.DeploymentAutomation
+        }
+
         It 'Should return Passed when all checks pass' {
             Mock Get-AzResourceGroup { return @{ ResourceGroupName = 'rg-tst001-azurelocal-prod' } } -ModuleName AzLocal.DeploymentAutomation
             Mock Get-AzResource {
@@ -3025,6 +3033,244 @@ Describe 'Function: Test-AzLocalClusterPreFlight' {
             $result.ResourceGroupName | Should -Not -BeNullOrEmpty
             $result.ClusterName | Should -Not -BeNullOrEmpty
             $result.DeploymentName | Should -Not -BeNullOrEmpty
+        }
+    }
+}
+
+# ============================================================================
+# Test-AzLocalAzurePrerequisites
+# ============================================================================
+Describe 'Function: Test-AzLocalAzurePrerequisites' {
+
+    Context 'Parameter Validation' {
+        It 'Should have mandatory SubscriptionId parameter' {
+            $cmd = Get-Command Test-AzLocalAzurePrerequisites
+            $cmd.Parameters['SubscriptionId'].Attributes.Where({ $_ -is [System.Management.Automation.ParameterAttribute] }).Mandatory | Should -Be $true
+        }
+
+        It 'Should have mandatory ResourceGroupName parameter' {
+            $cmd = Get-Command Test-AzLocalAzurePrerequisites
+            $cmd.Parameters['ResourceGroupName'].Attributes.Where({ $_ -is [System.Management.Automation.ParameterAttribute] }).Mandatory | Should -Be $true
+        }
+
+        It 'Should have OutputType of PSCustomObject' {
+            $cmd = Get-Command Test-AzLocalAzurePrerequisites
+            $cmd.OutputType.Type | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    Context 'Resource Provider Checks (Mocked)' {
+        It 'Should return Passed when all resource providers are registered' {
+            Mock Get-AzResourceProvider {
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Owner' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            $result.Status | Should -Be 'Passed'
+            ($result.Messages -join '; ') | Should -Match 'PASSED'
+        }
+
+        It 'Should auto-register unregistered providers and return Passed' {
+            Mock Get-AzResourceProvider {
+                param($ProviderNamespace)
+                if ($ProviderNamespace -eq 'Microsoft.HybridCompute') {
+                    return @([PSCustomObject]@{ RegistrationState = 'NotRegistered' })
+                }
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Register-AzResourceProvider { return $null } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Owner' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            $result.Status | Should -Be 'Passed'
+            ($result.Messages -join '; ') | Should -Match 'AUTO-REGISTERED'
+            Should -Invoke Register-AzResourceProvider -Times 1 -ModuleName AzLocal.DeploymentAutomation
+        }
+
+        It 'Should return Failed when provider registration fails' {
+            Mock Get-AzResourceProvider {
+                return @([PSCustomObject]@{ RegistrationState = 'NotRegistered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Register-AzResourceProvider { throw "Insufficient permissions" } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Owner' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            $result.Status | Should -Be 'Failed'
+            ($result.Messages -join '; ') | Should -Match 'FAILED'
+        }
+
+        It 'Should return Failed when Get-AzResourceProvider throws an error' {
+            Mock Get-AzResourceProvider { throw "Network error" } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Owner' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            $result.Status | Should -Be 'Failed'
+        }
+
+        It 'Should check all 12 required resource providers' {
+            $script:ProvidersChecked = @()
+            Mock Get-AzResourceProvider {
+                param($ProviderNamespace)
+                $script:ProvidersChecked += $ProviderNamespace
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Owner' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            Should -Invoke Get-AzResourceProvider -Times 12 -ModuleName AzLocal.DeploymentAutomation
+        }
+    }
+
+    Context 'RBAC Role Checks (Mocked)' {
+        It 'Should report Owner at subscription as satisfying all requirements' {
+            Mock Get-AzResourceProvider {
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Owner' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            $result.Status | Should -Be 'Passed'
+            ($result.Messages -join '; ') | Should -Match 'Owner'
+        }
+
+        It 'Should warn about missing RBAC roles without failing' {
+            Mock Get-AzResourceProvider {
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                # Only has Reader, missing other required roles
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Reader' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            # RBAC is advisory — status should still be Passed (only RP failures cause Failed)
+            $result.Status | Should -Be 'Passed'
+            ($result.Messages -join '; ') | Should -Match 'NOT FOUND'
+            ($result.Messages -join '; ') | Should -Match 'Reader.*ASSIGNED'
+        }
+
+        It 'Should handle RBAC check failure gracefully (still Passed)' {
+            Mock Get-AzResourceProvider {
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext { throw "No Azure context" } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            # RBAC failure is advisory — status still Passed since RPs are OK
+            $result.Status | Should -Be 'Passed'
+            ($result.Messages -join '; ') | Should -Match 'SKIPPED'
+        }
+
+        It 'Should check both subscription and resource group scope roles' {
+            Mock Get-AzResourceProvider {
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @(
+                    [PSCustomObject]@{ RoleDefinitionName = 'Azure Stack HCI Administrator' },
+                    [PSCustomObject]@{ RoleDefinitionName = 'Reader' },
+                    [PSCustomObject]@{ RoleDefinitionName = 'Key Vault Data Access Administrator' },
+                    [PSCustomObject]@{ RoleDefinitionName = 'Key Vault Secrets Officer' },
+                    [PSCustomObject]@{ RoleDefinitionName = 'Key Vault Contributor' },
+                    [PSCustomObject]@{ RoleDefinitionName = 'Storage Account Contributor' }
+                )
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            $result.Status | Should -Be 'Passed'
+            ($result.Messages -join '; ') | Should -Match 'Azure Stack HCI Administrator.*ASSIGNED'
+            ($result.Messages -join '; ') | Should -Match 'Key Vault Contributor.*ASSIGNED'
+            ($result.Messages -join '; ') | Should -Match 'Storage Account Contributor.*ASSIGNED'
+        }
+
+        It 'Should handle service principal identity via Get-AzADServicePrincipal' {
+            Mock Get-AzResourceProvider {
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = '00000000-0000-0000-0000-000000000001'; Type = 'ServicePrincipal' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzADServicePrincipal {
+                return @{ Id = 'sp-object-id-001' }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Owner' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            $result.Status | Should -Be 'Passed'
+            Should -Invoke Get-AzADServicePrincipal -Times 1 -ModuleName AzLocal.DeploymentAutomation
+        }
+    }
+
+    Context 'Result Object Shape' {
+        It 'Should return object with Status and Messages properties' {
+            Mock Get-AzResourceProvider {
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Owner' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            $result.PSObject.Properties.Name | Should -Contain 'Status'
+            $result.PSObject.Properties.Name | Should -Contain 'Messages'
+            $result.Messages | Should -BeOfType [string]
+        }
+
+        It 'Should return Status as either Passed or Failed' {
+            Mock Get-AzResourceProvider {
+                return @([PSCustomObject]@{ RegistrationState = 'Registered' })
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzContext {
+                return @{ Account = @{ Id = 'user@contoso.com'; Type = 'User' } }
+            } -ModuleName AzLocal.DeploymentAutomation
+            Mock Get-AzRoleAssignment {
+                return @([PSCustomObject]@{ RoleDefinitionName = 'Owner' })
+            } -ModuleName AzLocal.DeploymentAutomation
+
+            $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
+            $result.Status | Should -BeIn @('Passed', 'Failed')
         }
     }
 }
@@ -3422,6 +3668,10 @@ Describe 'Code Quality: CI/CD Automation Functions' {
         $script:ModuleSource | Should -Match 'Function Test-AzLocalClusterPreFlight[\s\S]*?\[OutputType'
     }
 
+    It 'Test-AzLocalAzurePrerequisites should have OutputType declaration' {
+        $script:ModuleSource | Should -Match 'Function Test-AzLocalAzurePrerequisites[\s\S]*?\[OutputType'
+    }
+
     It 'Start-AzLocalCsvDeployment should have OutputType declaration' {
         $script:ModuleSource | Should -Match 'Function Start-AzLocalCsvDeployment[\s\S]*?\[OutputType'
     }
@@ -3448,6 +3698,25 @@ Describe 'Code Quality: CI/CD Automation Functions' {
 
     It 'Test-AzLocalClusterPreFlight should check for existing cluster via AzureStackHCI' {
         $script:ModuleSource | Should -Match 'Microsoft\.AzureStackHCI/clusters'
+    }
+
+    It 'Test-AzLocalAzurePrerequisites should check all required resource providers' {
+        $requiredProviders = @(
+            'Microsoft.HybridCompute', 'Microsoft.GuestConfiguration', 'Microsoft.HybridConnectivity',
+            'Microsoft.AzureStackHCI', 'Microsoft.Kubernetes', 'Microsoft.KubernetesConfiguration',
+            'Microsoft.ExtendedLocation', 'Microsoft.ResourceConnector', 'Microsoft.HybridContainerService',
+            'Microsoft.Attestation', 'Microsoft.Storage', 'Microsoft.Insights'
+        )
+        foreach ($provider in $requiredProviders) {
+            $script:ModuleSource | Should -Match ([regex]::Escape($provider))
+        }
+    }
+
+    It 'Test-AzLocalAzurePrerequisites should check required RBAC roles' {
+        $script:ModuleSource | Should -Match 'Azure Stack HCI Administrator'
+        $script:ModuleSource | Should -Match 'Key Vault Data Access Administrator'
+        $script:ModuleSource | Should -Match 'Key Vault Secrets Officer'
+        $script:ModuleSource | Should -Match 'Storage Account Contributor'
     }
 }
 

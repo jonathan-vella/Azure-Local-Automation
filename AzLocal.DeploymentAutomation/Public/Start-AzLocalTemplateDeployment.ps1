@@ -435,8 +435,18 @@
 
     } else {
 
-        # Resource group exists, check if the Arc Nodes exist in the resource group
+        # Resource group exists — run Azure prerequisite checks before proceeding
         Write-AzLocalLog "Found target resource group '$ResourceGroupName' for deployment." -Level Success
+
+        # Check Azure prerequisites (resource providers registered + RBAC advisory)
+        $prereqResult = Test-AzLocalAzurePrerequisites -SubscriptionId $SubscriptionId -ResourceGroupName $ResourceGroupName
+        if ($prereqResult.Status -eq 'Failed') {
+            foreach ($msg in $prereqResult.Messages) { Write-AzLocalLog $msg -Level Warning }
+            Write-AzLocalLog "Azure prerequisite checks failed. See messages above for details." -Level Error
+            throw "Azure prerequisite checks failed. Ensure all required resource providers are registered. Reference: https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions"
+        }
+
+        # Check if the Arc Nodes exist in the resource group
         ForEach($arcNodeResourceId in $arcNodeResourceIds) {
             Write-AzLocalLog "Checking Arc Node is registered in resource group: '$ResourceGroupName'" -Level Warning
             Write-Verbose "Arc Node Resource ID: '$arcNodeResourceId'"

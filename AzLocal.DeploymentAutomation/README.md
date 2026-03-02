@@ -26,7 +26,7 @@ Azure Local cluster deployments via ARM templates require a **two-phase process*
   - `Az.Accounts` (v2.0.0+)
   - `Az.Resources` (v6.0.0+)
   - `Az.KeyVault` (v4.0.0+) — required when retrieving credentials from Azure Key Vault
-- Azure subscription with appropriate permissions
+- Azure subscription with [required permissions and resource providers registered](https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions). The module **automatically checks and registers** the 12 required resource providers at deployment time, and provides advisory warnings for any missing RBAC role assignments. See [Azure Prerequisites](#azure-prerequisites) below.
 - Arc-enabled servers (Azure Local physical node(s)) already registered in the target subscription and resource group
 - Active Directory OU structure prepared for the deployment, more information and 'AD preparation module' is documented here: https://learn.microsoft.com/azure/azure-local/deploy/deployment-prep-active-directory
 
@@ -37,6 +37,42 @@ Install-Module -Name Az.Accounts -MinimumVersion 2.0.0 -Scope CurrentUser
 Install-Module -Name Az.Resources -MinimumVersion 6.0.0 -Scope CurrentUser
 Install-Module -Name Az.KeyVault -MinimumVersion 4.0.0 -Scope CurrentUser
 ```
+
+### Azure Prerequisites
+
+Before deploying, your Azure subscription must have the required resource providers registered and the deploying identity must have appropriate RBAC role assignments. Full details are documented in the official Microsoft guide: [Assign required permissions for Azure Local deployment](https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions).
+
+**This module automatically checks and handles these prerequisites at deployment time:**
+
+**Resource Providers (12 required)** — The module checks the registration state of all required providers and **automatically registers** any that are missing. Registration may take a few minutes to propagate. If auto-registration fails (e.g., insufficient subscription permissions), the deployment is blocked with a clear error message.
+
+| Resource Provider | Purpose |
+|-------------------|---------|
+| `Microsoft.HybridCompute` | Arc-enabled server management |
+| `Microsoft.GuestConfiguration` | Guest configuration policies |
+| `Microsoft.HybridConnectivity` | Hybrid connectivity endpoints |
+| `Microsoft.AzureStackHCI` | Azure Stack HCI / Azure Local cluster resources |
+| `Microsoft.Kubernetes` | Kubernetes cluster management |
+| `Microsoft.KubernetesConfiguration` | Kubernetes configuration extensions |
+| `Microsoft.ExtendedLocation` | Custom locations for hybrid resources |
+| `Microsoft.ResourceConnector` | Resource bridge for hybrid hosting |
+| `Microsoft.HybridContainerService` | Hybrid container services |
+| `Microsoft.Attestation` | Hardware attestation services |
+| `Microsoft.Storage` | Storage account resources |
+| `Microsoft.Insights` | Monitoring, diagnostics, and Key Vault audit logging |
+
+**RBAC Role Assignments** — The module checks the deploying identity's role assignments and reports any missing roles as **advisory warnings**. Missing RBAC roles do not block deployment, but the ARM deployment itself will fail if permissions are insufficient.
+
+| Scope | Required Role |
+|-------|---------------|
+| Subscription | `Azure Stack HCI Administrator` |
+| Subscription | `Reader` |
+| Resource Group | `Key Vault Data Access Administrator` |
+| Resource Group | `Key Vault Secrets Officer` |
+| Resource Group | `Key Vault Contributor` |
+| Resource Group | `Storage Account Contributor` |
+
+> **Note:** If the deploying identity has the `Owner` role at subscription scope, all RBAC requirements are automatically satisfied. The RBAC check handles both user accounts and service principal identities (CI/CD pipelines).
 
 ---
 
@@ -66,7 +102,8 @@ AzLocal.DeploymentAutomation/
 │   ├── Format-Json.ps1                        # JSON pretty-printer (PS 5.1 compatible)
 │   ├── New-AzLocalJUnitXml.ps1                # JUnit XML report generation
 │   ├── Import-AzLocalDeploymentCsv.ps1        # CSV import and validation
-│   └── Test-AzLocalClusterPreFlight.ps1       # Pre-flight validation checks
+│   ├── Test-AzLocalClusterPreFlight.ps1       # Pre-flight validation checks
+│   └── Test-AzLocalAzurePrerequisites.ps1     # Azure RP registration + RBAC checks
 ├── .config/
 │   └── naming-standards-config.json           # Naming standards and default values
 ├── templates/
@@ -187,7 +224,7 @@ Start-AzLocalCsvDeployment `
     -Confirm:$false
 ```
 
-This runs automated pre-flight checks (resource group exists, Arc nodes registered, no duplicate cluster, no in-progress deployment) and then submits ARM Validate for eligible clusters.
+This runs automated pre-flight checks (Azure prerequisite validation, resource group exists, Arc nodes registered, no duplicate cluster, no in-progress deployment) and then submits ARM Validate for eligible clusters.
 
 ### Step 4: Deploy Clusters
 
@@ -783,7 +820,8 @@ The test suite validates:
 | Watch-AzLocalDeployment | Parameter definitions, types, mandatory flags, ValidateRange bounds, terminal state detection |
 | Write-AzLocalLog | Function existence, parameter definitions (Message, Level, NoTimestamp), log file output |
 | LogFilePath Parameter | Presence, type, and non-mandatory flag on exported functions |
-| Pre-Flight Checks | Resource group, Arc node, cluster existence, deployment state checks (mocked) |
+| Pre-Flight Checks | Resource group, Azure prerequisites (RP registration + RBAC), Arc node, cluster existence, deployment state checks (mocked) |
+| Azure Prerequisites | Resource provider registration (12 providers), auto-registration, RBAC role validation, identity type handling (mocked) |
 | CSV Deployment | Batch deployment with pre-flight, JUnit output, skip logic (mocked) |
 | Deployment Status | Status monitoring with all status categories (mocked) |
 | CI/CD Pipelines | Automation pipeline file structure, CSV format, workflow file existence |
@@ -801,6 +839,7 @@ The test runner generates:
 ## References
 
 - [Deploy Azure Local using ARM templates](https://learn.microsoft.com/azure/azure-local/deploy/deployment-azure-resource-manager-template)
+- [Assign required permissions for Azure Local deployment](https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions) — resource provider registration and RBAC role requirements
 - [Azure Local documentation](https://learn.microsoft.com/azure/azure-local/)
 - [Azure Quickstart Templates — Azure Stack HCI](https://github.com/Azure/azure-quickstart-templates/tree/master/quickstarts/microsoft.azurestackhci/create-cluster)
 

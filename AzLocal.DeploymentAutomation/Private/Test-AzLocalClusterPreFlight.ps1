@@ -9,9 +9,11 @@
     Validates that a cluster is ready for deployment by checking:
     1. Resource names pass Azure naming validation (Test-AzLocalResourceNames)
     2. Resource group exists in the target subscription
-    3. All expected Arc node resources (Microsoft.HybridCompute/machines) are registered
-    4. No ARM deployment is currently in-progress for this cluster
-    5. The cluster resource does not already exist (already deployed)
+    3. Azure prerequisites: required resource providers are registered (auto-registers
+       missing ones) and RBAC role assignments are present (advisory)
+    4. All expected Arc node resources (Microsoft.HybridCompute/machines) are registered
+    5. No ARM deployment is currently in-progress for this cluster
+    6. The cluster resource does not already exist (already deployed)
 
     Returns a result object with Status (Passed/Failed/Skipped) and diagnostic Messages.
 
@@ -119,7 +121,26 @@
     }
     $messages += "Resource group '$resourceGroupName': EXISTS"
 
-    # 3. Check all Arc nodes are registered
+    # 3. Check Azure prerequisites (resource providers and RBAC)
+    $prereqResult = Test-AzLocalAzurePrerequisites -SubscriptionId $ClusterRow.SubscriptionId -ResourceGroupName $resourceGroupName
+    $messages += $prereqResult.Messages
+    if ($prereqResult.Status -eq 'Failed') {
+        $status = 'Failed'
+        $messages += "Azure prerequisite checks: FAILED"
+        $duration = ((Get-Date) - $startTime).TotalSeconds
+        return [PSCustomObject]@{
+            UniqueID          = $uniqueID
+            ClusterName       = $clusterName
+            ResourceGroupName = $resourceGroupName
+            DeploymentName    = $deploymentName
+            Status            = $status
+            Messages          = $messages
+            Duration          = [math]::Round($duration, 2)
+        }
+    }
+    $messages += "Azure prerequisite checks: PASSED"
+
+    # 4. Check all Arc nodes are registered
     $allNodesPresent = $true
     foreach ($nodeName in $nodeNames) {
         $arcResourceId = "/subscriptions/$($ClusterRow.SubscriptionId)/resourceGroups/$resourceGroupName/providers/Microsoft.HybridCompute/machines/$nodeName"
@@ -146,7 +167,7 @@
         }
     }
 
-    # 4. Check for existing cluster resource (already deployed)
+    # 5. Check for existing cluster resource (already deployed)
     $clusterResourceId = "/subscriptions/$($ClusterRow.SubscriptionId)/resourceGroups/$resourceGroupName/providers/Microsoft.AzureStackHCI/clusters/$clusterName"
     $existingCluster = Get-AzResource -ResourceId $clusterResourceId -ErrorAction SilentlyContinue
     if ($existingCluster) {
@@ -165,7 +186,7 @@
     }
     $messages += "Cluster '$clusterName': Not yet deployed (eligible)"
 
-    # 5. Check for in-progress deployment
+    # 6. Check for in-progress deployment
     $existingDeployment = Get-AzResourceGroupDeployment -ResourceGroupName $resourceGroupName -Name $deploymentName -ErrorAction SilentlyContinue
     if ($existingDeployment) {
         $provState = $existingDeployment.ProvisioningState
