@@ -27,7 +27,7 @@
             "value": "westeurope"
         },
         "tenantId": {
-            "value": "72f988bf-86f1-41af-91ab-2d7cd011db47"
+            "value": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
         },
         "witnessType": {
             "value": "No Witness"
@@ -48,11 +48,11 @@
             "value": null
         },
         "hciResourceProviderObjectID": {
-            "value": "f57be460-ae5d-444a-9317-bbfa416ab4b9"
+            "value": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
         },
         "arcNodeResourceIds": {
             "value": [
-                "/subscriptions/37d5e7b2-27c2-4d64-be2c-953db0ad1167/resourceGroups/rg-xyz-azurelocal-prod/providers/Microsoft.HybridCompute/machines/xyznodE01"
+                "/subscriptions/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/resourceGroups/rg-xyz-azurelocal-prod/providers/Microsoft.HybridCompute/machines/xyznodE01"
             ]
         },
         "domainFqdn": {

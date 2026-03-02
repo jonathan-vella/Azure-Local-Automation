@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.0'
+    ModuleVersion = '0.9.1'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -62,6 +62,17 @@
 
             # Release notes for this version
             ReleaseNotes = @'
+## v0.9.1 - March 2026
+- Split switchless template into per-node-count files: switchless-2node, switchless-3node, switchless-4node (dual-link mesh: 2×(N-1) storage networks)
+- Added -NodeCount parameter to Get-AzLocalParameterFilePath and New-AzLocalDeploymentParameterFile for switchless file selection
+- Added environment section to .config/naming-standards-config.json for tenantId and hciResourceProviderObjectID
+- HCI Resource Provider lookup now falls back to config value when Get-AzADServicePrincipal is unavailable
+- Replaced real Azure GUIDs in example-single-node-parameters-file.json with placeholder values
+- Fixed switchless networkingType from switchedMultiServerDeployment to switchlessMultiServerDeployment
+- Fixed <caculated> typo to <calculated> in switchless template customLocation field
+- Updated README with environment configuration steps, deployment type storage network details, and per-node-count file structure
+- Updated Pester tests for new switchless file names and node-count selection (402 tests)
+
 ## v0.9.0 - February 2026
 - Added CI/CD automation pipeline support for CSV-driven multi-cluster deployments
 - New exported function: Start-AzLocalCsvDeployment — reads deployment CSV and submits ARM Validate/Deploy for eligible clusters

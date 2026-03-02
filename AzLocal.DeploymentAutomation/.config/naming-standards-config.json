@@ -45,5 +45,10 @@
             "SMB_Slot2_Port1",
             "SMB_Slot2_Port2"
         ]
+    },
+    "_environmentDescription": "Azure environment-specific values. You MUST update these for your tenant before running deployments. You can get this value using this PowerShell command: (Get-AzADServicePrincipal -DisplayName 'Microsoft.AzureStackHCI Resource Provider').Id",
+    "environment": {
+        "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "hciResourceProviderObjectID": ""
     }
 }

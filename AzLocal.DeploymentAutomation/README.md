@@ -73,7 +73,9 @@ AzLocal.DeploymentAutomation/
 │   └── azure-local-deployment-template.json      # ARM deployment template
 ├── template-parameter-files/                  # Base parameter templates (do not edit directly)
 │   ├── single-node-parameters-file.json
-│   ├── switchless-parameters-file.json
+│   ├── switchless-2node-parameters-file.json
+│   ├── switchless-3node-parameters-file.json
+│   ├── switchless-4node-parameters-file.json
 │   ├── multi-node-switched-parameters-file.json
 │   └── rack-aware-parameters-file.json
 ├── cluster-specific-parameter-files/          # Example cluster-specific files
@@ -108,7 +110,17 @@ Connect-AzAccount -SubscriptionId "<your-subscription-id>" -TenantId "<your-tena
 
 ### Step 3: Customise the Configuration
 
-Edit `.config/naming-standards-config.json` to match your environment's naming standards and defaults before running a deployment. See [Configuration](#configuration) for details on placeholders and naming patterns.
+Edit `.config/naming-standards-config.json` to match your environment before running a deployment:
+
+1. **`environment.tenantId`** — Set to your Entra ID (Azure AD) tenant ID. Find it with `(Get-AzContext).Tenant.Id`
+2. **`environment.hciResourceProviderObjectID`** — *(Optional)* Set to the Object ID of the HCI Resource Provider in your tenant. If left empty, the module will look it up at runtime via `Get-AzADServicePrincipal`. Find it with:
+   ```powershell
+   (Get-AzADServicePrincipal -DisplayName "Microsoft.AzureStackHCI Resource Provider").Id
+   ```
+3. **`defaults`** — Review and update domain FQDN, DNS servers, network adapter names, location, and other defaults
+4. **`namingStandards`** — Adjust naming patterns if your organisation requires different conventions
+
+See [Configuration](#configuration) for full details on placeholders, naming patterns, and Azure naming limits.
 
 ### Step 4: Run a Deployment
 
@@ -232,7 +244,7 @@ Main entry point for deploying a single Azure Local cluster.
 | Value | Description | Nodes |
 |-------|-------------|-------|
 | `SingleNode` | Single server deployment | 1 |
-| `Switchless` | Switchless deployment (requires `-NodeCount`) | 2–4 |
+| `Switchless` | Switchless deployment (requires `-NodeCount`). Uses a node-count-specific template with the correct number of storage networks: 2 for 2-node, 4 for 3-node, 6 for 4-node (formula: 2×(N-1) for dual-link mesh). | 2–4 |
 | `MultiNode` | Multi-node switched deployment (requires `-NodeCount`) | 2–16 |
 | `RackAware` | Rack-aware deployment with availability zones (requires `-NodeCount`) | 2, 4, 6, 8 |
 
@@ -607,6 +619,17 @@ These values are used unless overridden by function parameters:
 | `computeManagementAdapters` | `["MGMT_COMP_Slot1_Port1", "MGMT_COMP_Slot1_Port2"]` | `-ComputeManagementAdapters` |
 | `storageAdapters` | `["SMB_Slot2_Port1", "SMB_Slot2_Port2"]` | `-StorageAdapters` |
 
+### Environment Settings
+
+The `environment` section contains tenant-specific values that **must be updated** before running deployments:
+
+| Setting | Description | How to Find |
+|---------|-------------|-------------|
+| `tenantId` | Your Entra ID (Azure AD) tenant GUID | `(Get-AzContext).Tenant.Id` |
+| `hciResourceProviderObjectID` | Object ID of the HCI Resource Provider service principal in your tenant. If left empty, the module will look it up at runtime via `Get-AzADServicePrincipal`. | `(Get-AzADServicePrincipal -DisplayName "Microsoft.AzureStackHCI Resource Provider").Id` |
+
+> **Important:** The `tenantId` is **required** — update this before your first deployment. The `hciResourceProviderObjectID` is optional; if left blank, the module resolves it automatically at runtime. Pre-populating it avoids the Azure AD lookup and is useful for CI/CD pipelines where the service principal may not have directory read permissions.
+
 ### Example Configuration
 
 ```json
@@ -623,6 +646,10 @@ These values are used unless overridden by function parameters:
         "dnsServers": ["10.0.0.1", "10.0.0.2"],
         "computeManagementAdapters": ["MGMT_COMP_Slot1_Port1", "MGMT_COMP_Slot1_Port2"],
         "storageAdapters": ["SMB_Slot2_Port1", "SMB_Slot2_Port2"]
+    },
+    "environment": {
+        "tenantId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "hciResourceProviderObjectID": ""
     }
 }
 ```

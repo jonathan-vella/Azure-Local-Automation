@@ -53,6 +53,7 @@
         "arcNodeResourceIds": {
             "value": [
                 "<calculated>",
+                "<calculated>",
                 "<calculated>"
             ]
         },
@@ -128,7 +129,7 @@
             ]
         },
         "networkingType": {
-            "value": "switchedMultiServerDeployment"
+            "value": "switchlessMultiServerDeployment"
         },
         "networkingPattern": {
             "value": "convergedManagementCompute"
@@ -155,92 +156,98 @@
                         "priorityValue8021Action_SMB": "3",
                         "bandwidthPercentage_SMB": "50"
                     },
-                    "overrideAdapterProperty": true,
+                    "overrideAdapterProperty": false,
                     "adapterPropertyOverrides": {
-                        "jumboPacket": "1514",
-                        "networkDirect": "Disabled"
+                        "jumboPacket": "9014",
+                        "networkDirect": "Enabled",
+                        "networkDirectTechnology": "RoCEv2"
                     }
-            },
-            {
-            "name": "Storage",
-            "trafficType": [
-                "Storage"
-            ],
-            "adapter": [
-                "<calculated>"
-            ],
-            "overrideVirtualSwitchConfiguration": false,
-            "virtualSwitchConfigurationOverrides": {
-                "enableIov": "",
-                "loadBalancingAlgorithm": ""
-            },
-            "overrideQosPolicy": false,
-            "qosPolicyOverrides": {
-                "priorityValue8021Action_Cluster": "7",
-                "priorityValue8021Action_SMB": "3",
-                "bandwidthPercentage_SMB": "50"
-            },
-            "overrideAdapterProperty": false,
-            "adapterPropertyOverrides": {
-                "jumboPacket": "9014",
-                "networkDirect": "Enabled",
-                "networkDirectTechnology": "RoCEv2"
-            }
-            }
-        ]
+                },
+                {
+                    "name": "Storage",
+                    "trafficType": [
+                        "Storage"
+                    ],
+                    "adapter": [
+                        "<calculated>"
+                    ],
+                    "overrideVirtualSwitchConfiguration": false,
+                    "virtualSwitchConfigurationOverrides": {
+                        "enableIov": "",
+                        "loadBalancingAlgorithm": ""
+                    },
+                    "overrideQosPolicy": false,
+                    "qosPolicyOverrides": {
+                        "priorityValue8021Action_Cluster": "7",
+                        "priorityValue8021Action_SMB": "3",
+                        "bandwidthPercentage_SMB": "50"
+                    },
+                    "overrideAdapterProperty": false,
+                    "adapterPropertyOverrides": {
+                        "jumboPacket": "9014",
+                        "networkDirect": "Enabled",
+                        "networkDirectTechnology": "RoCEv2"
+                    }
+                }
+            ]
         },
         "storageNetworkList": {
             "value": [
                 {
-                    "name": "Storage1",
+                    "name": "StorageNetwork1",
                     "networkAdapterName": "<calculated>",
                     "vlanId": "711",
                     "storageAdapterIPInfo": []
                 },
                 {
-                    "name": "Storage2",
+                    "name": "StorageNetwork2",
                     "networkAdapterName": "<calculated>",
-                    "vlanId": "712",
+                    "vlanId": "711",
+                    "storageAdapterIPInfo": []
+                },
+                {
+                    "name": "StorageNetwork3",
+                    "networkAdapterName": "<calculated>",
+                    "vlanId": "711",
+                    "storageAdapterIPInfo": []
+                },
+                {
+                    "name": "StorageNetwork4",
+                    "networkAdapterName": "<calculated>",
+                    "vlanId": "711",
                     "storageAdapterIPInfo": []
                 }
             ]
         },
         "storageConnectivitySwitchless": {
-            "value": false
+            "value": true
         },
         "enableStorageAutoIp": {
             "value": true
         },
-        "clusterPattern": {
-            "value": "RackAware"
-        },
-        "localAvailabilityZones": {
+        "customLocation": {
             "value": "<calculated>"
         },
-        "customLocation": {
-            "value": "<caculated>"
+        "sbeVersion": {
+            "value": ""
         },
-        "sbeVersion":{
+        "sbeFamily": {
             "value": ""
-          },
-          "sbeFamily":{
+        },
+        "sbePublisher": {
             "value": ""
-          },
-          "sbePublisher":{
+        },
+        "sbeManifestSource": {
             "value": ""
-          },
-          "sbeManifestSource":{
+        },
+        "sbeManifestCreationDate": {
             "value": ""
-          },
-          "sbeManifestCreationDate":{
-            "value": ""
-          },
-          "partnerProperties": {
-            "value":[
-            ]
-          },
+        },
+        "partnerProperties": {
+            "value": []
+        },
         "partnerCredentiallist": {
             "value": []
-          }
+        }
     }
 }

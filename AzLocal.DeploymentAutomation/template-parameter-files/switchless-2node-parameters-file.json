@@ -52,6 +52,7 @@
         },
         "arcNodeResourceIds": {
             "value": [
+                "<calculated>",
                 "<calculated>"
             ]
         },
@@ -127,7 +128,7 @@
             ]
         },
         "networkingType": {
-            "value": "switchedMultiServerDeployment"
+            "value": "switchlessMultiServerDeployment"
         },
         "networkingPattern": {
             "value": "convergedManagementCompute"
@@ -211,7 +212,7 @@
             "value": true
         },
         "customLocation": {
-            "value": "<caculated>"
+            "value": "<calculated>"
         },
         "sbeVersion":{
             "value": ""

@@ -52,6 +52,7 @@
         },
         "arcNodeResourceIds": {
             "value": [
+                "<calculated>",
                 "<calculated>"
             ]
         },

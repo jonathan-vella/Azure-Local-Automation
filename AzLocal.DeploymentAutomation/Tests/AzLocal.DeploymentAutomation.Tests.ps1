@@ -50,9 +50,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.9.0 in manifest' {
+        It 'Should have version 0.9.1 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '0.9.0'
+            $manifest.ModuleVersion | Should -Be '0.9.1'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -142,8 +142,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 0.9.0' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.0'
+        It 'Should have version 0.9.1' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.1'
         }
     }
 }
@@ -735,18 +735,34 @@ Describe 'Function: Get-AzLocalParameterFilePath' {
     }
 
     Context 'Switchless Parameter File' {
-        It 'Should return a path ending with switchless-parameters-file.json' {
+        It 'Should return a path ending with switchless-2node-parameters-file.json by default' {
             InModuleScope AzLocal.DeploymentAutomation {
                 $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless'
-                $result | Should -Match 'switchless-parameters-file\.json$'
+                $result | Should -Match 'switchless-2node-parameters-file\.json$'
             }
         }
 
-        It 'Should return a valid file path for Switchless' {
+        It 'Should return switchless-3node-parameters-file.json for NodeCount 3' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless'
-                $result | Should -Not -BeNullOrEmpty
-                Test-Path $result | Should -Be $true
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless' -NodeCount 3
+                $result | Should -Match 'switchless-3node-parameters-file\.json$'
+            }
+        }
+
+        It 'Should return switchless-4node-parameters-file.json for NodeCount 4' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless' -NodeCount 4
+                $result | Should -Match 'switchless-4node-parameters-file\.json$'
+            }
+        }
+
+        It 'Should return a valid file path for Switchless (2, 3, and 4 nodes)' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                foreach ($n in 2, 3, 4) {
+                    $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless' -NodeCount $n
+                    $result | Should -Not -BeNullOrEmpty
+                    Test-Path $result | Should -Be $true
+                }
             }
         }
 
@@ -817,8 +833,20 @@ Describe 'Function: Get-AzLocalParameterFilePath' {
             Test-Path (Join-Path $script:TemplateDir 'two-node-switched-parameters-file.json') | Should -Be $false
         }
 
-        It 'switchless-parameters-file.json should exist' {
-            Test-Path (Join-Path $script:TemplateDir 'switchless-parameters-file.json') | Should -Be $true
+        It 'switchless-2node-parameters-file.json should exist' {
+            Test-Path (Join-Path $script:TemplateDir 'switchless-2node-parameters-file.json') | Should -Be $true
+        }
+
+        It 'switchless-3node-parameters-file.json should exist' {
+            Test-Path (Join-Path $script:TemplateDir 'switchless-3node-parameters-file.json') | Should -Be $true
+        }
+
+        It 'switchless-4node-parameters-file.json should exist' {
+            Test-Path (Join-Path $script:TemplateDir 'switchless-4node-parameters-file.json') | Should -Be $true
+        }
+
+        It 'switchless-parameters-file.json should NOT exist (replaced by per-node-count files)' {
+            Test-Path (Join-Path $script:TemplateDir 'switchless-parameters-file.json') | Should -Be $false
         }
 
         It 'multi-node-switched-parameters-file.json should exist' {
@@ -860,10 +888,30 @@ Describe 'Function: Get-AzLocalParameterFileSettings' {
             }
         }
 
-        It 'Should load switchless parameter file as valid JSON' {
+        It 'Should load switchless 2-node parameter file as valid JSON' {
             InModuleScope AzLocal.DeploymentAutomation -ArgumentList $script:TemplateDir {
                 param($templateDir)
-                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'switchless-parameters-file.json')
+                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'switchless-2node-parameters-file.json')
+                $result = Get-AzLocalParameterFileSettings -ParameterFilePath $filePath
+                $result | Should -Not -BeNullOrEmpty
+                $result.parameters | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should load switchless 3-node parameter file as valid JSON' {
+            InModuleScope AzLocal.DeploymentAutomation -ArgumentList $script:TemplateDir {
+                param($templateDir)
+                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'switchless-3node-parameters-file.json')
+                $result = Get-AzLocalParameterFileSettings -ParameterFilePath $filePath
+                $result | Should -Not -BeNullOrEmpty
+                $result.parameters | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should load switchless 4-node parameter file as valid JSON' {
+            InModuleScope AzLocal.DeploymentAutomation -ArgumentList $script:TemplateDir {
+                param($templateDir)
+                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'switchless-4node-parameters-file.json')
                 $result = Get-AzLocalParameterFileSettings -ParameterFilePath $filePath
                 $result | Should -Not -BeNullOrEmpty
                 $result.parameters | Should -Not -BeNullOrEmpty
@@ -1888,6 +1936,11 @@ Describe 'File Integrity' {
 
         It 'Module should not reference two-node-switchless-parameters-file' {
             $script:ModuleContent | Should -Not -Match 'two-node-switchless-parameters-file'
+        }
+
+        It 'Module should not reference switchless-parameters-file.json (replaced by per-node-count files)' {
+            # The old single switchless template has been split into switchless-2node, switchless-3node, switchless-4node
+            $script:ModuleContent | Should -Not -Match "(?<!\d+node-)switchless-parameters-file\.json"
         }
 
         It 'Module should not reference multi-node-parameters-file.json (old name)' {

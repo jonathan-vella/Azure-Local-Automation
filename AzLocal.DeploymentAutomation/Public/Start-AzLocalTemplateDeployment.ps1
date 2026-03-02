@@ -153,8 +153,8 @@
         $NetworkSettings = Get-AzLocalDeploymentNetworkSettings -TypeOfDeployment $TypeOfDeployment -NodeCount $NodeCount
     }
 
-    # Call function to Get Parameter File Path
-    $ParameterFilePath = Get-AzLocalParameterFilePath -TypeOfDeployment $TypeOfDeployment
+    # Call function to Get Parameter File Path (Switchless uses node-count-specific templates)
+    $ParameterFilePath = Get-AzLocalParameterFilePath -TypeOfDeployment $TypeOfDeployment -NodeCount $effectiveNodeCount
 
     # Call function to Get Parameter File Settings
     Write-Verbose "Loading parameter file settings from $ParameterFilePath..."
@@ -348,10 +348,21 @@
     $adouPath = Resolve-AzLocalResourceName -Pattern $NamingConfig.namingStandards.adouPath -UniqueID $UniqueID
 
     # Get the HCI Resource Provider Object ID
-    $hciResourceProviderObjectID = (Get-AzADServicePrincipal -DisplayName "Microsoft.AzureStackHCI Resource Provider").Id
-    if(-not($hciResourceProviderObjectID)) {
+    # Priority: runtime lookup via Get-AzADServicePrincipal > config file value
+    $hciResourceProviderObjectID = $null
+    try {
+        $hciResourceProviderObjectID = (Get-AzADServicePrincipal -DisplayName "Microsoft.AzureStackHCI Resource Provider" -ErrorAction Stop).Id
+    } catch {
+        Write-Verbose "Get-AzADServicePrincipal lookup failed: $($_.Exception.Message)"
+    }
+    if (-not $hciResourceProviderObjectID -and $NamingConfig.PSObject.Properties['environment'] -and
+        -not [string]::IsNullOrWhiteSpace($NamingConfig.environment.hciResourceProviderObjectID)) {
+        $hciResourceProviderObjectID = $NamingConfig.environment.hciResourceProviderObjectID
+        Write-AzLocalLog "HCI Resource Provider Object ID loaded from config: $hciResourceProviderObjectID" -Level Success
+    }
+    if (-not $hciResourceProviderObjectID) {
         Write-AzLocalLog "Unable to find the HCI Resource Provider Object ID." -Level Error
-        throw "HCI Resource Provider 'Microsoft.AzureStackHCI Resource Provider' not found. Ensure it is registered in the tenant."
+        throw "HCI Resource Provider 'Microsoft.AzureStackHCI Resource Provider' not found. Set it in .config/naming-standards-config.json under environment.hciResourceProviderObjectID, or ensure it is registered in the tenant."
     }
     Write-AzLocalLog "HCI Resource Provider Object ID: $hciResourceProviderObjectID" -Level Success
 
@@ -474,7 +485,7 @@
                 }
             }
 
-            $DeploymentParameterFile = New-AzLocalDeploymentParameterFile -Parameters $Parameters -UniqueID $UniqueID -TypeOfDeployment $TypeOfDeployment -ParameterFileSettings $PhaseParameterFileSettings
+            $DeploymentParameterFile = New-AzLocalDeploymentParameterFile -Parameters $Parameters -UniqueID $UniqueID -TypeOfDeployment $TypeOfDeployment -ParameterFileSettings $PhaseParameterFileSettings -NodeCount $effectiveNodeCount
             if(-Not (Test-Path $DeploymentParameterFile)) {
                 throw "Deployment parameter file was not created for '$phase' phase."
             }

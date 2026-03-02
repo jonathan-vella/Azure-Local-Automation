@@ -15,7 +15,11 @@
     param (
         [Parameter(Mandatory = $true,Position=0)]
         [ValidateSet("SingleNode","Switchless","MultiNode","RackAware")]
-        [string]$TypeOfDeployment
+        [string]$TypeOfDeployment,
+
+        [Parameter(Mandatory = $false,Position=1)]
+        [ValidateRange(1,16)]
+        [int]$NodeCount = 2
     )
 
     # Prompt for Parameter File
@@ -23,9 +27,16 @@
     
     $parameterFilesDirectory = Join-Path $script:ModuleRoot "template-parameter-files"
 
+    # Switchless deployments have a per-node-count template (2×(N-1) storage networks)
+    $switchlessFileMap = @{
+        2 = 'switchless-2node-parameters-file.json'
+        3 = 'switchless-3node-parameters-file.json'
+        4 = 'switchless-4node-parameters-file.json'
+    }
+
     $parameterFileMap = @{
         'SingleNode'  = 'single-node-parameters-file.json'
-        'Switchless'  = 'switchless-parameters-file.json'
+        'Switchless'  = $switchlessFileMap[$NodeCount]
         'MultiNode'   = 'multi-node-switched-parameters-file.json'
         'RackAware'   = 'rack-aware-parameters-file.json'
     }

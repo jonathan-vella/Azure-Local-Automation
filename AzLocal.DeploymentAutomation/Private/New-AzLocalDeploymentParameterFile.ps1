@@ -27,15 +27,27 @@
         [PsCustomObject]$ParameterFileSettings,
 
         [Parameter(Mandatory = $true,Position=3)]
-        [PsCustomObject]$Parameters
+        [PsCustomObject]$Parameters,
+
+        [Parameter(Mandatory = $false,Position=4)]
+        [ValidateRange(1,16)]
+        [int]$NodeCount = 2
     )
 
     
     # Parameter file path
     $OutputDirectory = Join-Path $script:ModuleRoot "deployment-parameter-files"
+
+    # Switchless deployments have a per-node-count template (2×(N-1) storage networks)
+    $switchlessFileMap = @{
+        2 = 'switchless-2node-parameters-file.json'
+        3 = 'switchless-3node-parameters-file.json'
+        4 = 'switchless-4node-parameters-file.json'
+    }
+
     $parameterFileMap = @{
         'SingleNode'  = 'single-node-parameters-file.json'
-        'Switchless'  = 'switchless-parameters-file.json'
+        'Switchless'  = $switchlessFileMap[$NodeCount]
         'MultiNode'   = 'multi-node-switched-parameters-file.json'
         'RackAware'   = 'rack-aware-parameters-file.json'
     }
