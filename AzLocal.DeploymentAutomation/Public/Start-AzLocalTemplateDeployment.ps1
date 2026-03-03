@@ -196,11 +196,11 @@
     }
     # ComputeManagementAdapters: use parameter override if provided, otherwise fall back to config default
     if ($ComputeManagementAdapters.Count -eq 0) {
-        $ComputeManagementAdapters = @($NamingConfig.defaults.computeManagementAdapters)
+        $ComputeManagementAdapters = @($NamingConfig.defaults.computeManagementAdapters | ForEach-Object { Resolve-AzLocalResourceName -Pattern $_ -UniqueID $UniqueID })
     }
     # StorageAdapters: use parameter override if provided, otherwise fall back to config default
     if ($StorageAdapters.Count -eq 0) {
-        $StorageAdapters = @($NamingConfig.defaults.storageAdapters)
+        $StorageAdapters = @($NamingConfig.defaults.storageAdapters | ForEach-Object { Resolve-AzLocalResourceName -Pattern $_ -UniqueID $UniqueID })
     }
     $AzureStackLCMAdminUsername = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.azureStackLCMAdminUsername -UniqueID $UniqueID
     $KeyVaultName = Resolve-AzLocalResourceName -Pattern $NamingConfig.namingStandards.keyVaultName -UniqueID $UniqueID
