@@ -14,7 +14,7 @@
     - Storage Accounts: 3-24 chars, lowercase alphanumeric only (no hyphens/underscores)
     - Key Vaults: 3-24 chars, alphanumeric and hyphens, must start with a letter
     - Resource Groups: 1-90 chars, alphanumeric, hyphens, underscores, periods, parentheses
-    - Cluster Name: 1-15 chars, alphanumeric only (NetBIOS computer name)
+    - Cluster Name: 1-15 chars, alphanumeric and hyphens (NetBIOS computer name)
     - Node Names: 1-15 chars, alphanumeric only (NetBIOS computer name)
     - Custom Location: 1-63 chars, alphanumeric and hyphens
     - Resource Bridge: 1-63 chars, alphanumeric and hyphens
@@ -35,7 +35,7 @@
     # Define Azure naming rules per resource type
     # Each rule: MaxLength, Pattern (regex of allowed chars), Description (for error messages)
     $rules = @{
-        'ClusterName'                     = @{ MaxLength = 15;  Pattern = '^[a-zA-Z0-9]+$';                      Description = '1-15 chars, alphanumeric only (NetBIOS name)' }
+        'ClusterName'                     = @{ MaxLength = 15;  Pattern = '^[a-zA-Z0-9][a-zA-Z0-9\-]*$';           Description = '1-15 chars, alphanumeric and hyphens, must start with alphanumeric (NetBIOS name)' }
         'ResourceGroupName'               = @{ MaxLength = 90;  Pattern = '^[a-zA-Z0-9\.\-_\(\)]+$';             Description = '1-90 chars, alphanumeric, hyphens, underscores, periods, parentheses' }
         'KeyVaultName'                    = @{ MaxLength = 24;  Pattern = '^[a-zA-Z][a-zA-Z0-9\-]+$';            Description = '3-24 chars, alphanumeric and hyphens, must start with a letter'; MinLength = 3 }
         'CustomLocation'                  = @{ MaxLength = 63;  Pattern = '^[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$'; Description = '1-63 chars, alphanumeric and hyphens, cannot start/end with hyphen' }

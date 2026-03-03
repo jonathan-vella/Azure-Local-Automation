@@ -131,6 +131,12 @@
         throw "RackAware deployment requires -NodeCount of 2, 4, 6, or 8."
     }
 
+    # Determine effective node count early (needed for parameter file selection and node IP validation)
+    switch ($TypeOfDeployment) {
+        "SingleNode" { $effectiveNodeCount = 1 }
+        default      { $effectiveNodeCount = $NodeCount }
+    }
+
     # Load naming configuration from .config/naming-standards-config.json
     Write-Verbose "Loading naming configuration..."
     $NamingConfig = Get-AzLocalNamingConfig

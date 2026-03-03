@@ -1460,10 +1460,19 @@ Describe 'Function: Test-AzLocalResourceNames' {
             }
         }
 
-        It 'Should reject cluster names with hyphens' {
+        It 'Should allow cluster names with hyphens (NetBIOS permits hyphens)' {
             InModuleScope AzLocal.DeploymentAutomation {
                 $names = @{
                     'ClusterName' = 'AZ-CLUSTER-ABC'
+                }
+                { Test-AzLocalResourceNames -Names $names } | Should -Not -Throw
+            }
+        }
+
+        It 'Should reject cluster names starting with a hyphen' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $names = @{
+                    'ClusterName' = '-AZCLUSTER'
                 }
                 { Test-AzLocalResourceNames -Names $names } | Should -Throw
             }
