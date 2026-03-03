@@ -526,6 +526,28 @@
         }
     } catch {
         Write-AzLocalLog "Error during '$phase' deployment: $($_.Exception.Message)" -Level Error
+
+        # Surface ARM inner error details when available (InvalidTemplateDeployment wraps the real errors)
+        if ($_.ErrorDetails.Message) {
+            try {
+                $errorBody = $_.ErrorDetails.Message | ConvertFrom-Json
+                if ($errorBody.error.details) {
+                    Write-AzLocalLog "ARM validation inner errors:" -Level Error
+                    foreach ($detail in $errorBody.error.details) {
+                        Write-AzLocalLog "  [$($detail.code)] $($detail.message)" -Level Error
+                    }
+                }
+            } catch {
+                # ErrorDetails wasn't JSON — log it raw
+                Write-AzLocalLog "Error details: $($_.ErrorDetails.Message)" -Level Error
+            }
+        }
+
+        # Also surface the -ErrorVariable content if available
+        if ($ClusterDeploymentError) {
+            Write-AzLocalLog "Deployment error variable: $ClusterDeploymentError" -Level Error
+        }
+
         throw
     } finally {
         # Clear sensitive credential variables from memory
