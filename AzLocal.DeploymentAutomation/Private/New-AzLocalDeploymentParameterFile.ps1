@@ -65,9 +65,10 @@
 
             # Check if the property name matches an entry in the parameters variable
             # If it does, update the value in the parameter file settings
-            if($Parameters.$($property.Name)) {
-                Write-Debug "Updating $($property.Name) value to parameter value = $($Parameters.$($property.Name))"
-                $property.Value = $Parameters.$($property.Name)
+            # Use PSObject.Properties to safely check existence (avoids StrictMode errors)
+            if($Parameters.PSObject.Properties[$property.Name]) {
+                Write-Debug "Updating $($property.Name) value to parameter value = $($Parameters.PSObject.Properties[$property.Name].Value)"
+                $property.Value = $Parameters.PSObject.Properties[$property.Name].Value
             } else {
                 # no match, do nothing
                 Write-Debug "No match for $($property.Name) in parameters variable."

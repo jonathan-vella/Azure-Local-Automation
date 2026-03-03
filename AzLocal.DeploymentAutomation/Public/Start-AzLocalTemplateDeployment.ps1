@@ -525,7 +525,7 @@
             }
         }
     } catch {
-        Write-AzLocalLog "Error during '$($deploymentPhases[-1])' deployment: $($_.Exception.Message)" -Level Error
+        Write-AzLocalLog "Error during '$phase' deployment: $($_.Exception.Message)" -Level Error
         throw
     } finally {
         # Clear sensitive credential variables from memory
