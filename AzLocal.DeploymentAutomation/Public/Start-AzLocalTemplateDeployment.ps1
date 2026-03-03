@@ -400,7 +400,7 @@
     # Define the parameters that need to be modified for the ARM template deployment
     # This variable is a PSCustomObject, that contains the parameters (stored as [PSCustomObject] with value property)
     # The parameters are defined in the template parameter files, and are passed to the Resource Group deployment
-    [PSCustomObject]$Parameters = [Ordered]@{
+    $Parameters = [PSCustomObject][Ordered]@{
         "location" = [PSCustomObject][Ordered]@{"value" = $Location}
         "clusterName" = [PSCustomObject][Ordered]@{"value" = $ClusterName}
         "tenantId" = [PSCustomObject][Ordered]@{"value" = $TenantId}
