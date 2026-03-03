@@ -188,8 +188,8 @@
     if ([string]::IsNullOrWhiteSpace($Location)) {
         $Location = $NamingConfig.defaults.location
     }
-    $DomainFqdn = $NamingConfig.defaults.domainFqdn
-    $NamingPrefix = $NamingConfig.defaults.namingPrefix
+    $DomainFqdn = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.domainFqdn -UniqueID $UniqueID
+    $NamingPrefix = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.namingPrefix -UniqueID $UniqueID
     # DnsServers: use parameter override if provided, otherwise fall back to config default
     if ($DnsServers.Count -eq 0) {
         $DnsServers = @($NamingConfig.defaults.dnsServers)
