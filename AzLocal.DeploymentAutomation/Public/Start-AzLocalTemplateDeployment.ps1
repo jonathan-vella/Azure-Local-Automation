@@ -186,21 +186,21 @@
     $ResourceGroupName = Resolve-AzLocalResourceName -Pattern $NamingConfig.namingStandards.resourceGroupName -UniqueID $UniqueID
     # Location: use parameter override if provided, otherwise fall back to config default
     if ([string]::IsNullOrWhiteSpace($Location)) {
-        $Location = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.location -UniqueID $UniqueID
+        $Location = $NamingConfig.defaults.location
     }
     $DomainFqdn = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.domainFqdn -UniqueID $UniqueID
     $NamingPrefix = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.namingPrefix -UniqueID $UniqueID
     # DnsServers: use parameter override if provided, otherwise fall back to config default
     if ($DnsServers.Count -eq 0) {
-        $DnsServers = @($NamingConfig.defaults.dnsServers | ForEach-Object { Resolve-AzLocalResourceName -Pattern $_ -UniqueID $UniqueID })
+        $DnsServers = @($NamingConfig.defaults.dnsServers)
     }
     # ComputeManagementAdapters: use parameter override if provided, otherwise fall back to config default
     if ($ComputeManagementAdapters.Count -eq 0) {
-        $ComputeManagementAdapters = @($NamingConfig.defaults.computeManagementAdapters | ForEach-Object { Resolve-AzLocalResourceName -Pattern $_ -UniqueID $UniqueID })
+        $ComputeManagementAdapters = @($NamingConfig.defaults.computeManagementAdapters)
     }
     # StorageAdapters: use parameter override if provided, otherwise fall back to config default
     if ($StorageAdapters.Count -eq 0) {
-        $StorageAdapters = @($NamingConfig.defaults.storageAdapters | ForEach-Object { Resolve-AzLocalResourceName -Pattern $_ -UniqueID $UniqueID })
+        $StorageAdapters = @($NamingConfig.defaults.storageAdapters)
     }
     $AzureStackLCMAdminUsername = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.azureStackLCMAdminUsername -UniqueID $UniqueID
     $KeyVaultName = Resolve-AzLocalResourceName -Pattern $NamingConfig.namingStandards.keyVaultName -UniqueID $UniqueID
@@ -209,7 +209,7 @@
 
     # Storage Account for diagnostics
     $StorageAccountName = Resolve-AzLocalResourceName -Pattern $NamingConfig.namingStandards.diagnosticStorageAccountName -UniqueID $UniqueID
-    $StorageAccountType = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.storageAccountType -UniqueID $UniqueID
+    $StorageAccountType = $NamingConfig.defaults.storageAccountType
 
     # Validate all resolved resource names against Azure naming rules (early fail-fast)
     Write-Verbose "Validating resolved resource names against Azure naming constraints..."
