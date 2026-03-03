@@ -15,7 +15,7 @@
     - Key Vaults: 3-24 chars, alphanumeric and hyphens, must start with a letter
     - Resource Groups: 1-90 chars, alphanumeric, hyphens, underscores, periods, parentheses
     - Cluster Name: 1-15 chars, alphanumeric and hyphens (NetBIOS computer name)
-    - Node Names: 1-15 chars, alphanumeric only (NetBIOS computer name)
+    - Node Names: 1-15 chars, alphanumeric and hyphens (NetBIOS computer name)
     - Custom Location: 1-63 chars, alphanumeric and hyphens
     - Resource Bridge: 1-63 chars, alphanumeric and hyphens
     - Deployment Name: 1-64 chars, alphanumeric, hyphens, underscores, periods
@@ -42,7 +42,7 @@
         'ResourceBridgeName'              = @{ MaxLength = 63;  Pattern = '^[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$'; Description = '1-63 chars, alphanumeric and hyphens, cannot start/end with hyphen' }
         'DiagnosticStorageAccountName'    = @{ MaxLength = 24;  Pattern = '^[a-z0-9]+$';                         Description = '3-24 chars, lowercase alphanumeric only (no hyphens or uppercase)'; MinLength = 3 }
         'ClusterWitnessStorageAccountName'= @{ MaxLength = 24;  Pattern = '^[a-z0-9]+$';                         Description = '3-24 chars, lowercase alphanumeric only (no hyphens or uppercase)'; MinLength = 3 }
-        'NodeName'                        = @{ MaxLength = 15;  Pattern = '^[a-zA-Z0-9]+$';                      Description = '1-15 chars, alphanumeric only (NetBIOS name)' }
+        'NodeName'                        = @{ MaxLength = 15;  Pattern = '^[a-zA-Z0-9][a-zA-Z0-9\-]*$';           Description = '1-15 chars, alphanumeric and hyphens, must start with alphanumeric (NetBIOS name)' }
         'DeploymentName'                  = @{ MaxLength = 64;  Pattern = '^[a-zA-Z0-9\.\-_]+$';                 Description = '1-64 chars, alphanumeric, hyphens, underscores, periods' }
     }
 

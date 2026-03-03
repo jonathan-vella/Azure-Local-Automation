@@ -1489,10 +1489,19 @@ Describe 'Function: Test-AzLocalResourceNames' {
             }
         }
 
-        It 'Should reject node names with hyphens' {
+        It 'Should allow node names with hyphens (NetBIOS permits hyphens)' {
             InModuleScope AzLocal.DeploymentAutomation {
                 $names = @{
                     'NodeName1' = 'ABC-NODE01'
+                }
+                { Test-AzLocalResourceNames -Names $names } | Should -Not -Throw
+            }
+        }
+
+        It 'Should reject node names starting with a hyphen' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $names = @{
+                    'NodeName1' = '-ABCNODE01'
                 }
                 { Test-AzLocalResourceNames -Names $names } | Should -Throw
             }
