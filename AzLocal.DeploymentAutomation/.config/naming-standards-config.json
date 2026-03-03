@@ -27,7 +27,11 @@
         "adouPath": "OU=AzLocal-{UniqueID},OU=AzureLocal,DC=contoso,DC=com",
         "deploymentName": "azlocal-{UniqueID}-{TypeOfDeployment}-deployment"
     },
-    "_defaultsDescription": "Default values used when no parameter override is provided. domainFqdn, namingPrefix, azureStackLCMAdminUsername, computeManagementAdapters, and storageAdapters support {UniqueID} placeholders. The remaining values (location, storageAccountType, dnsServers) are used as literal values and do NOT support {UniqueID} substitution.",
+    "_defaultsDescription": "Default values used when no parameter override is provided. See _defaultsUniqueIDSupport for which values support {UniqueID} placeholders.",
+    "_defaultsUniqueIDSupport": {
+        "_supports_UniqueID": "domainFqdn, namingPrefix, azureStackLCMAdminUsername, computeManagementAdapters, storageAdapters",
+        "_literal_only_no_UniqueID": "location, storageAccountType, dnsServers"
+    },
     "defaults": {
         "domainFqdn": "contoso.com",
         "namingPrefix": "HCI01",
