@@ -76,6 +76,39 @@
         }
     }
 
+    # Validate that no <calculated> placeholders remain in the parameter file
+    # These indicate parameters that were not matched/replaced — the deployment would fail with invalid values
+    $unresolvedParameters = @()
+    ForEach($DeploymentParameter in $ParameterFileSettings.parameters) {
+        ForEach ($property in ($DeploymentParameter.PSObject.Properties)) {
+            $propValue = $property.Value
+            # Check the 'value' property of each parameter object
+            if ($propValue -is [PSCustomObject] -or $propValue -is [System.Collections.Specialized.OrderedDictionary]) {
+                $innerValue = $null
+                if ($propValue.PSObject.Properties['value']) {
+                    $innerValue = $propValue.value
+                }
+                if ($innerValue -is [string] -and $innerValue -eq '<calculated>') {
+                    $unresolvedParameters += $property.Name
+                } elseif ($innerValue -is [array]) {
+                    foreach ($item in $innerValue) {
+                        if ($item -is [string] -and $item -eq '<calculated>') {
+                            $unresolvedParameters += $property.Name
+                            break
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if ($unresolvedParameters.Count -gt 0) {
+        $paramList = ($unresolvedParameters | Sort-Object -Unique) -join ', '
+        Write-AzLocalLog "Unresolved '<calculated>' placeholders found in parameter file for: $paramList" -Level Error
+        Write-AzLocalLog "This indicates a bug in parameter matching — these values were not replaced with computed values." -Level Error
+        throw "Parameter file contains unresolved '<calculated>' placeholders for: $paramList. Deployment would fail with invalid parameter values."
+    }
+
     # Convert the updated parameter file settings back to JSON
     $UpdateParameterFileJSON = $ParameterFileSettings | ConvertTo-Json -Depth 100 | Format-Json
 

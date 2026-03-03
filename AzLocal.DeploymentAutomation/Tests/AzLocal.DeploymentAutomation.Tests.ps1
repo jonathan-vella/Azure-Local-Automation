@@ -1270,6 +1270,109 @@ Describe 'Function: New-AzLocalDeploymentParameterFile' {
             }
         }
     }
+
+    Context 'Calculated Placeholder Validation' {
+        It 'Should throw when parameter file contains unresolved <calculated> string values' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                # Build a ParameterFileSettings object with a <calculated> placeholder
+                $paramFileSettings = [PSCustomObject]@{
+                    '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+                    contentVersion = '1.0.0.0'
+                    parameters = [PSCustomObject]@{
+                        clusterName = [PSCustomObject]@{ value = '<calculated>' }
+                        location    = [PSCustomObject]@{ value = 'eastus' }
+                    }
+                }
+                # Parameters that resolve location but NOT clusterName
+                $params = [PSCustomObject][Ordered]@{
+                    location = [PSCustomObject]@{ value = 'eastus' }
+                }
+
+                Mock Write-AzLocalLog {}
+
+                {
+                    New-AzLocalDeploymentParameterFile -UniqueID 'TEST01' -TypeOfDeployment 'SingleNode' `
+                        -ParameterFileSettings $paramFileSettings -Parameters $params
+                } | Should -Throw "*<calculated>*clusterName*"
+            }
+        }
+
+        It 'Should throw when parameter file contains unresolved <calculated> array values' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $paramFileSettings = [PSCustomObject]@{
+                    '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+                    contentVersion = '1.0.0.0'
+                    parameters = [PSCustomObject]@{
+                        arcNodeResourceIds = [PSCustomObject]@{ value = @('<calculated>', '<calculated>') }
+                        location           = [PSCustomObject]@{ value = 'eastus' }
+                    }
+                }
+                $params = [PSCustomObject][Ordered]@{
+                    location = [PSCustomObject]@{ value = 'eastus' }
+                }
+
+                Mock Write-AzLocalLog {}
+
+                {
+                    New-AzLocalDeploymentParameterFile -UniqueID 'TEST01' -TypeOfDeployment 'SingleNode' `
+                        -ParameterFileSettings $paramFileSettings -Parameters $params
+                } | Should -Throw "*<calculated>*arcNodeResourceIds*"
+            }
+        }
+
+        It 'Should not throw when all <calculated> placeholders are resolved' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $paramFileSettings = [PSCustomObject]@{
+                    '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+                    contentVersion = '1.0.0.0'
+                    parameters = [PSCustomObject]@{
+                        clusterName = [PSCustomObject]@{ value = '<calculated>' }
+                        location    = [PSCustomObject]@{ value = '<calculated>' }
+                    }
+                }
+                $params = [PSCustomObject][Ordered]@{
+                    clusterName = [PSCustomObject]@{ value = 'TESTCL01' }
+                    location    = [PSCustomObject]@{ value = 'eastus' }
+                }
+
+                Mock Write-AzLocalLog {}
+                Mock Out-File {}
+                Mock Test-Path { return $true }
+
+                {
+                    New-AzLocalDeploymentParameterFile -UniqueID 'TEST01' -TypeOfDeployment 'SingleNode' `
+                        -ParameterFileSettings $paramFileSettings -Parameters $params
+                } | Should -Not -Throw
+            }
+        }
+
+        It 'Should not flag null or empty values as unresolved' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                # localAdminPassword has null and tenantId has empty string — neither is <calculated>
+                $paramFileSettings = [PSCustomObject]@{
+                    '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+                    contentVersion = '1.0.0.0'
+                    parameters = [PSCustomObject]@{
+                        localAdminPassword = [PSCustomObject]@{ value = $null }
+                        tenantId           = [PSCustomObject]@{ value = '' }
+                        location           = [PSCustomObject]@{ value = 'eastus' }
+                    }
+                }
+                $params = [PSCustomObject][Ordered]@{
+                    location = [PSCustomObject]@{ value = 'eastus' }
+                }
+
+                Mock Write-AzLocalLog {}
+                Mock Out-File {}
+                Mock Test-Path { return $true }
+
+                {
+                    New-AzLocalDeploymentParameterFile -UniqueID 'TEST01' -TypeOfDeployment 'SingleNode' `
+                        -ParameterFileSettings $paramFileSettings -Parameters $params
+                } | Should -Not -Throw
+            }
+        }
+    }
 }
 
 # ============================================================================
