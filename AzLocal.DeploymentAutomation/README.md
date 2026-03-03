@@ -185,6 +185,49 @@ Watch-AzLocalDeployment `
     -ResourceGroupName "rg-NYC01-azurelocal-prod"
 ```
 
+### End-to-End Example — Switchless 2-Node Deployment
+
+The following is a complete working example that deploys a 2-node switchless Azure Local cluster. It assumes you have already:
+
+- Updated `.config/naming-standards-config.json` with your environment settings (domain, DNS, adapters, tenant ID)
+- Prepared the Active Directory OU structure
+- Registered both physical nodes as Arc-enabled servers in the target subscription and resource group
+
+```powershell
+# Step 1: Import the module
+Import-Module .\AzLocal.DeploymentAutomation.psd1 -Force
+
+# Step 2: Define your Azure tenant and subscription
+$Tenant = "80dd9f50-xxxx-496f-xxxx-da9bd7dadf55"
+$Subscription = "f40bfb33-xxxx-4b20-xxxx-0fccb4255956"
+
+# Step 3: Authenticate to Azure
+Connect-AzAccount -SubscriptionId $Subscription -TenantId $Tenant
+
+# Step 4: Define the network settings for the deployment
+$networkSettingsJson = @'
+{
+    "subnetMask": "255.255.255.0",
+    "defaultGateway": "10.10.32.1",
+    "startingIPAddress": "10.10.32.161",
+    "endingIPAddress": "10.10.32.190",
+    "nodeIPAddresses": ["10.10.32.25", "10.10.32.26"]
+}
+'@
+
+# Step 5: Start the deployment — will prompt for credentials interactively
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId $Subscription `
+    -TypeOfDeployment "Switchless" `
+    -TenantId $Tenant `
+    -DeploymentMode "ValidateAndDeploy" `
+    -NodeCount 2 `
+    -NetworkSettingsJson $networkSettingsJson `
+    -UniqueID "15"
+```
+
+> **What happens:** The module resolves all resource names using UniqueID `15` (e.g., cluster name `AZCLUSTER15`, resource group `rg-15-azurelocal-prod`), checks Azure prerequisites (resource providers + RBAC), selects the switchless 2-node parameter template, prompts for local admin and LCM admin passwords, then submits ARM Validate followed by ARM Deploy.
+
 ---
 
 ## Getting Started — CI/CD (Batch Deployment at Scale)
