@@ -14,7 +14,7 @@
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true,Position=0)]
-        [ValidateSet("SingleNode","Switchless","MultiNode","RackAware")]
+        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware")]
         [string]$TypeOfDeployment,
 
         [Parameter(Mandatory = $false,Position=1)]
@@ -27,18 +27,18 @@
     
     $parameterFilesDirectory = Join-Path $script:ModuleRoot "template-parameter-files"
 
-    # Switchless deployments have a per-node-count template (2×(N-1) storage networks)
+    # StorageSwitchless deployments have a per-node-count template (2×(N-1) storage networks)
     $switchlessFileMap = @{
-        2 = 'switchless-2node-parameters-file.json'
-        3 = 'switchless-3node-parameters-file.json'
-        4 = 'switchless-4node-parameters-file.json'
+        2 = 'storage-switchless-2node-parameters-file.json'
+        3 = 'storage-switchless-3node-parameters-file.json'
+        4 = 'storage-switchless-4node-parameters-file.json'
     }
 
     $parameterFileMap = @{
-        'SingleNode'  = 'single-node-parameters-file.json'
-        'Switchless'  = $switchlessFileMap[$NodeCount]
-        'MultiNode'   = 'multi-node-switched-parameters-file.json'
-        'RackAware'   = 'rack-aware-parameters-file.json'
+        'SingleNode'          = 'single-node-parameters-file.json'
+        'StorageSwitchless'   = $switchlessFileMap[$NodeCount]
+        'StorageSwitched'     = 'storage-switched-parameters-file.json'
+        'RackAware'           = 'rack-aware-parameters-file.json'
     }
     $ParameterFile = Join-Path $parameterFilesDirectory $parameterFileMap[$TypeOfDeployment]
 

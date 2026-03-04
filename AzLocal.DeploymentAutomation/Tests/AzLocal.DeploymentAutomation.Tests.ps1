@@ -50,9 +50,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.9.2 in manifest' {
+        It 'Should have version 0.9.3 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '0.9.2'
+            $manifest.ModuleVersion | Should -Be '0.9.3'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -142,8 +142,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 0.9.2' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.2'
+        It 'Should have version 0.9.3' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.3'
         }
     }
 }
@@ -304,18 +304,18 @@ Describe 'Function: Start-AzLocalTemplateDeployment' {
             $script:ValidateSet.ValidValues | Should -Contain 'SingleNode'
         }
 
-        It 'Should allow Switchless' {
-            $script:ValidateSet.ValidValues | Should -Contain 'Switchless'
+        It 'Should allow StorageSwitchless' {
+            $script:ValidateSet.ValidValues | Should -Contain 'StorageSwitchless'
         }
 
-        It 'Should allow MultiNode' {
-            $script:ValidateSet.ValidValues | Should -Contain 'MultiNode'
+        It 'Should allow StorageSwitched' {
+            $script:ValidateSet.ValidValues | Should -Contain 'StorageSwitched'
         }
 
         It 'Should allow RackAware' {
             $script:ValidateSet.ValidValues | Should -Contain 'RackAware'
         }
-        It 'Should NOT allow TwoNode (consolidated into MultiNode)' {
+        It 'Should NOT allow TwoNode (consolidated into StorageSwitched)' {
             $script:ValidateSet.ValidValues | Should -Not -Contain 'TwoNode'
         }
 
@@ -521,8 +521,8 @@ Describe 'Function: Resolve-AzLocalResourceName' {
     Context 'Combined Placeholder Replacement' {
         It 'Should replace all placeholders in a complex pattern' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $result = Resolve-AzLocalResourceName -Pattern 'azlocal-{UniqueID}-{TypeOfDeployment}-deployment' -UniqueID 'SITE42' -TypeOfDeployment 'MultiNode'
-                $result | Should -Be 'azlocal-SITE42-MultiNode-deployment'
+                $result = Resolve-AzLocalResourceName -Pattern 'azlocal-{UniqueID}-{TypeOfDeployment}-deployment' -UniqueID 'SITE42' -TypeOfDeployment 'StorageSwitched'
+                $result | Should -Be 'azlocal-SITE42-StorageSwitched-deployment'
             }
         }
     }
@@ -734,32 +734,32 @@ Describe 'Function: Get-AzLocalParameterFilePath' {
         }
     }
 
-    Context 'Switchless Parameter File' {
-        It 'Should return a path ending with switchless-2node-parameters-file.json by default' {
+    Context 'StorageSwitchless Parameter File' {
+        It 'Should return a path ending with storage-switchless-2node-parameters-file.json by default' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless'
-                $result | Should -Match 'switchless-2node-parameters-file\.json$'
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'StorageSwitchless'
+                $result | Should -Match 'storage-switchless-2node-parameters-file\.json$'
             }
         }
 
-        It 'Should return switchless-3node-parameters-file.json for NodeCount 3' {
+        It 'Should return storage-switchless-3node-parameters-file.json for NodeCount 3' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless' -NodeCount 3
-                $result | Should -Match 'switchless-3node-parameters-file\.json$'
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'StorageSwitchless' -NodeCount 3
+                $result | Should -Match 'storage-switchless-3node-parameters-file\.json$'
             }
         }
 
-        It 'Should return switchless-4node-parameters-file.json for NodeCount 4' {
+        It 'Should return storage-switchless-4node-parameters-file.json for NodeCount 4' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless' -NodeCount 4
-                $result | Should -Match 'switchless-4node-parameters-file\.json$'
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'StorageSwitchless' -NodeCount 4
+                $result | Should -Match 'storage-switchless-4node-parameters-file\.json$'
             }
         }
 
-        It 'Should return a valid file path for Switchless (2, 3, and 4 nodes)' {
+        It 'Should return a valid file path for StorageSwitchless (2, 3, and 4 nodes)' {
             InModuleScope AzLocal.DeploymentAutomation {
                 foreach ($n in 2, 3, 4) {
-                    $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless' -NodeCount $n
+                    $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'StorageSwitchless' -NodeCount $n
                     $result | Should -Not -BeNullOrEmpty
                     Test-Path $result | Should -Be $true
                 }
@@ -768,23 +768,23 @@ Describe 'Function: Get-AzLocalParameterFilePath' {
 
         It 'Should NOT reference two-node-switchless (deprecated filename)' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Switchless'
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'StorageSwitchless'
                 $result | Should -Not -Match 'two-node-switchless'
             }
         }
     }
 
-    Context 'MultiNode Parameter File' {
-        It 'Should return a path ending with multi-node-switched-parameters-file.json' {
+    Context 'StorageSwitched Parameter File' {
+        It 'Should return a path ending with storage-switched-parameters-file.json' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'MultiNode'
-                $result | Should -Match 'multi-node-switched-parameters-file\.json$'
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'StorageSwitched'
+                $result | Should -Match 'storage-switched-parameters-file\.json$'
             }
         }
 
-        It 'Should return a valid file path for MultiNode' {
+        It 'Should return a valid file path for StorageSwitched' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'MultiNode'
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'StorageSwitched'
                 $result | Should -Not -BeNullOrEmpty
                 Test-Path $result | Should -Be $true
             }
@@ -792,7 +792,7 @@ Describe 'Function: Get-AzLocalParameterFilePath' {
 
         It 'Should NOT reference old multi-node-parameters-file name (deprecated)' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'MultiNode'
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'StorageSwitched'
                 $result | Should -Not -Match 'multi-node-parameters-file\.json$'
             }
         }
@@ -833,24 +833,24 @@ Describe 'Function: Get-AzLocalParameterFilePath' {
             Test-Path (Join-Path $script:TemplateDir 'two-node-switched-parameters-file.json') | Should -Be $false
         }
 
-        It 'switchless-2node-parameters-file.json should exist' {
-            Test-Path (Join-Path $script:TemplateDir 'switchless-2node-parameters-file.json') | Should -Be $true
+        It 'storage-switchless-2node-parameters-file.json should exist' {
+            Test-Path (Join-Path $script:TemplateDir 'storage-switchless-2node-parameters-file.json') | Should -Be $true
         }
 
-        It 'switchless-3node-parameters-file.json should exist' {
-            Test-Path (Join-Path $script:TemplateDir 'switchless-3node-parameters-file.json') | Should -Be $true
+        It 'storage-switchless-3node-parameters-file.json should exist' {
+            Test-Path (Join-Path $script:TemplateDir 'storage-switchless-3node-parameters-file.json') | Should -Be $true
         }
 
-        It 'switchless-4node-parameters-file.json should exist' {
-            Test-Path (Join-Path $script:TemplateDir 'switchless-4node-parameters-file.json') | Should -Be $true
+        It 'storage-switchless-4node-parameters-file.json should exist' {
+            Test-Path (Join-Path $script:TemplateDir 'storage-switchless-4node-parameters-file.json') | Should -Be $true
         }
 
-        It 'switchless-parameters-file.json should NOT exist (replaced by per-node-count files)' {
-            Test-Path (Join-Path $script:TemplateDir 'switchless-parameters-file.json') | Should -Be $false
+        It 'storage-switchless-parameters-file.json should NOT exist (replaced by per-node-count files)' {
+            Test-Path (Join-Path $script:TemplateDir 'storage-switchless-parameters-file.json') | Should -Be $false
         }
 
-        It 'multi-node-switched-parameters-file.json should exist' {
-            Test-Path (Join-Path $script:TemplateDir 'multi-node-switched-parameters-file.json') | Should -Be $true
+        It 'storage-switched-parameters-file.json should exist' {
+            Test-Path (Join-Path $script:TemplateDir 'storage-switched-parameters-file.json') | Should -Be $true
         }
 
         It 'two-node-switchless-parameters-file.json should NOT exist (deprecated)' {
@@ -863,6 +863,14 @@ Describe 'Function: Get-AzLocalParameterFilePath' {
 
         It 'multi-node-parameters-file.json should NOT exist (deprecated)' {
             Test-Path (Join-Path $script:TemplateDir 'multi-node-parameters-file.json') | Should -Be $false
+        }
+
+        It 'multi-node-switched-parameters-file.json should NOT exist (renamed to storage-switched)' {
+            Test-Path (Join-Path $script:TemplateDir 'multi-node-switched-parameters-file.json') | Should -Be $false
+        }
+
+        It 'switchless-2node-parameters-file.json should NOT exist (renamed to storage-switchless)' {
+            Test-Path (Join-Path $script:TemplateDir 'switchless-2node-parameters-file.json') | Should -Be $false
         }
     }
 }
@@ -888,40 +896,40 @@ Describe 'Function: Get-AzLocalParameterFileSettings' {
             }
         }
 
-        It 'Should load switchless 2-node parameter file as valid JSON' {
+        It 'Should load StorageSwitchless 2-node parameter file as valid JSON' {
             InModuleScope AzLocal.DeploymentAutomation -ArgumentList $script:TemplateDir {
                 param($templateDir)
-                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'switchless-2node-parameters-file.json')
+                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'storage-switchless-2node-parameters-file.json')
                 $result = Get-AzLocalParameterFileSettings -ParameterFilePath $filePath
                 $result | Should -Not -BeNullOrEmpty
                 $result.parameters | Should -Not -BeNullOrEmpty
             }
         }
 
-        It 'Should load switchless 3-node parameter file as valid JSON' {
+        It 'Should load StorageSwitchless 3-node parameter file as valid JSON' {
             InModuleScope AzLocal.DeploymentAutomation -ArgumentList $script:TemplateDir {
                 param($templateDir)
-                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'switchless-3node-parameters-file.json')
+                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'storage-switchless-3node-parameters-file.json')
                 $result = Get-AzLocalParameterFileSettings -ParameterFilePath $filePath
                 $result | Should -Not -BeNullOrEmpty
                 $result.parameters | Should -Not -BeNullOrEmpty
             }
         }
 
-        It 'Should load switchless 4-node parameter file as valid JSON' {
+        It 'Should load StorageSwitchless 4-node parameter file as valid JSON' {
             InModuleScope AzLocal.DeploymentAutomation -ArgumentList $script:TemplateDir {
                 param($templateDir)
-                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'switchless-4node-parameters-file.json')
+                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'storage-switchless-4node-parameters-file.json')
                 $result = Get-AzLocalParameterFileSettings -ParameterFilePath $filePath
                 $result | Should -Not -BeNullOrEmpty
                 $result.parameters | Should -Not -BeNullOrEmpty
             }
         }
 
-        It 'Should load multi-node-switched parameter file as valid JSON' {
+        It 'Should load storage-switched parameter file as valid JSON' {
             InModuleScope AzLocal.DeploymentAutomation -ArgumentList $script:TemplateDir {
                 param($templateDir)
-                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'multi-node-switched-parameters-file.json')
+                $filePath = [System.IO.FileInfo](Join-Path $templateDir 'storage-switched-parameters-file.json')
                 $result = Get-AzLocalParameterFileSettings -ParameterFilePath $filePath
                 $result | Should -Not -BeNullOrEmpty
                 $result.parameters | Should -Not -BeNullOrEmpty
@@ -1069,8 +1077,8 @@ Describe 'Function: Get-AzLocalDeploymentNetworkSettings' {
                 $validateSet = $command.Parameters['TypeOfDeployment'].Attributes |
                     Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
                 $validateSet.ValidValues | Should -Contain 'SingleNode'
-                $validateSet.ValidValues | Should -Contain 'Switchless'
-                $validateSet.ValidValues | Should -Contain 'MultiNode'
+                $validateSet.ValidValues | Should -Contain 'StorageSwitchless'
+                $validateSet.ValidValues | Should -Contain 'StorageSwitched'
                 $validateSet.ValidValues | Should -Contain 'RackAware'
                 $validateSet.ValidValues | Should -Not -Contain 'TwoNode'
                 $validateSet.ValidValues | Should -Not -Contain 'TwoNode-Switchless'
@@ -1106,7 +1114,7 @@ Describe 'Function: Get-AzLocalDeploymentNetworkSettings' {
             }
         }
 
-        It 'Should prompt for 2 node IP addresses for MultiNode with NodeCount 2' {
+        It 'Should prompt for 2 node IP addresses for StorageSwitched with NodeCount 2' {
             InModuleScope AzLocal.DeploymentAutomation {
                 $script:readHostCallCount = 0
                 Mock Read-Host {
@@ -1121,12 +1129,12 @@ Describe 'Function: Get-AzLocalDeploymentNetworkSettings' {
                         default { return '10.0.0.200' }
                     }
                 }
-                $result = Get-AzLocalDeploymentNetworkSettings -TypeOfDeployment 'MultiNode' -NodeCount 2
+                $result = Get-AzLocalDeploymentNetworkSettings -TypeOfDeployment 'StorageSwitched' -NodeCount 2
                 $result.nodeIPAddresses.Count | Should -Be 2
             }
         }
 
-        It 'Should prompt for 3 node IP addresses for Switchless with NodeCount 3' {
+        It 'Should prompt for 3 node IP addresses for StorageSwitchless with NodeCount 3' {
             InModuleScope AzLocal.DeploymentAutomation {
                 $script:readHostCallCount = 0
                 Mock Read-Host {
@@ -1142,12 +1150,12 @@ Describe 'Function: Get-AzLocalDeploymentNetworkSettings' {
                         default { return '10.0.0.200' }
                     }
                 }
-                $result = Get-AzLocalDeploymentNetworkSettings -TypeOfDeployment 'Switchless' -NodeCount 3
+                $result = Get-AzLocalDeploymentNetworkSettings -TypeOfDeployment 'StorageSwitchless' -NodeCount 3
                 $result.nodeIPAddresses.Count | Should -Be 3
             }
         }
 
-        It 'Should prompt for 4 node IP addresses for Switchless with NodeCount 4' {
+        It 'Should prompt for 4 node IP addresses for StorageSwitchless with NodeCount 4' {
             InModuleScope AzLocal.DeploymentAutomation {
                 $script:readHostCallCount = 0
                 Mock Read-Host {
@@ -1164,7 +1172,7 @@ Describe 'Function: Get-AzLocalDeploymentNetworkSettings' {
                         default { return '10.0.0.200' }
                     }
                 }
-                $result = Get-AzLocalDeploymentNetworkSettings -TypeOfDeployment 'Switchless' -NodeCount 4
+                $result = Get-AzLocalDeploymentNetworkSettings -TypeOfDeployment 'StorageSwitchless' -NodeCount 4
                 $result.nodeIPAddresses.Count | Should -Be 4
             }
         }
@@ -1235,8 +1243,8 @@ Describe 'Function: New-AzLocalDeploymentParameterFile' {
                 $validateSet = $command.Parameters['TypeOfDeployment'].Attributes |
                     Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
                 $validateSet.ValidValues | Should -Contain 'SingleNode'
-                $validateSet.ValidValues | Should -Contain 'Switchless'
-                $validateSet.ValidValues | Should -Contain 'MultiNode'
+                $validateSet.ValidValues | Should -Contain 'StorageSwitchless'
+                $validateSet.ValidValues | Should -Contain 'StorageSwitched'
                 $validateSet.ValidValues | Should -Contain 'RackAware'
                 $validateSet.ValidValues | Should -Not -Contain 'TwoNode'
                 $validateSet.ValidValues | Should -Not -Contain 'TwoNode-Switchless'
@@ -1694,7 +1702,7 @@ Describe 'Function: Test-AzLocalResourceNames' {
                     'ResourceBridgeName'               = Resolve-AzLocalResourceName -Pattern $config.namingStandards.resourceBridgeName -UniqueID $uid
                     'DiagnosticStorageAccountName'     = (Resolve-AzLocalResourceName -Pattern $config.namingStandards.diagnosticStorageAccountName -UniqueID $uid).ToLower()
                     'ClusterWitnessStorageAccountName' = (Resolve-AzLocalResourceName -Pattern $config.namingStandards.clusterWitnessStorageAccountName -UniqueID $uid).ToLower()
-                    'DeploymentName'                   = Resolve-AzLocalResourceName -Pattern $config.namingStandards.deploymentName -UniqueID $uid -TypeOfDeployment 'MultiNode'
+                    'DeploymentName'                   = Resolve-AzLocalResourceName -Pattern $config.namingStandards.deploymentName -UniqueID $uid -TypeOfDeployment 'StorageSwitched'
                     'NodeName1'                        = Resolve-AzLocalResourceName -Pattern $config.namingStandards.nodeNamePattern -UniqueID $uid -NodeNumber 1
                 }
                 { Test-AzLocalResourceNames -Names $names } | Should -Throw
@@ -1715,8 +1723,8 @@ Describe 'Deployment Type Logic' {
                 $TypeOfDeployment = 'SingleNode'
                 switch ($TypeOfDeployment) {
                     "SingleNode"  { $effectiveNodeCount = 1 }
-                    "Switchless"  { $effectiveNodeCount = 3 }
-                    "MultiNode"   { $effectiveNodeCount = 5 }
+                    "StorageSwitchless"  { $effectiveNodeCount = 3 }
+                    "StorageSwitched"   { $effectiveNodeCount = 5 }
                     "RackAware"   { $effectiveNodeCount = 4 }
                 }
                 $effectiveNodeCount | Should -Be 1
@@ -1769,43 +1777,43 @@ Describe 'Deployment Type Logic' {
         }
     }
 
-    Context 'Switchless Configuration' {
-        It 'Switchless should use NodeCount for effectiveNodeCount (2 nodes)' {
+    Context 'StorageSwitchless Configuration' {
+        It 'StorageSwitchless should use NodeCount for effectiveNodeCount (2 nodes)' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $TypeOfDeployment = 'Switchless'
+                $TypeOfDeployment = 'StorageSwitchless'
                 $NodeCount = 2
                 switch ($TypeOfDeployment) {
                     "SingleNode"  { $effectiveNodeCount = 1 }
-                    "Switchless"  { $effectiveNodeCount = $NodeCount }
-                    "MultiNode"   { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitchless"  { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitched"   { $effectiveNodeCount = $NodeCount }
                     "RackAware"   { $effectiveNodeCount = $NodeCount }
                 }
                 $effectiveNodeCount | Should -Be 2
             }
         }
 
-        It 'Switchless should use NodeCount for effectiveNodeCount (3 nodes)' {
+        It 'StorageSwitchless should use NodeCount for effectiveNodeCount (3 nodes)' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $TypeOfDeployment = 'Switchless'
+                $TypeOfDeployment = 'StorageSwitchless'
                 $NodeCount = 3
                 switch ($TypeOfDeployment) {
                     "SingleNode"  { $effectiveNodeCount = 1 }
-                    "Switchless"  { $effectiveNodeCount = $NodeCount }
-                    "MultiNode"   { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitchless"  { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitched"   { $effectiveNodeCount = $NodeCount }
                     "RackAware"   { $effectiveNodeCount = $NodeCount }
                 }
                 $effectiveNodeCount | Should -Be 3
             }
         }
 
-        It 'Switchless should use NodeCount for effectiveNodeCount (4 nodes)' {
+        It 'StorageSwitchless should use NodeCount for effectiveNodeCount (4 nodes)' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $TypeOfDeployment = 'Switchless'
+                $TypeOfDeployment = 'StorageSwitchless'
                 $NodeCount = 4
                 switch ($TypeOfDeployment) {
                     "SingleNode"  { $effectiveNodeCount = 1 }
-                    "Switchless"  { $effectiveNodeCount = $NodeCount }
-                    "MultiNode"   { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitchless"  { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitched"   { $effectiveNodeCount = $NodeCount }
                     "RackAware"   { $effectiveNodeCount = $NodeCount }
                 }
                 $effectiveNodeCount | Should -Be 4
@@ -1813,15 +1821,15 @@ Describe 'Deployment Type Logic' {
         }
     }
 
-    Context 'MultiNode Configuration' {
-        It 'MultiNode should use NodeCount for effectiveNodeCount' {
+    Context 'StorageSwitched Configuration' {
+        It 'StorageSwitched should use NodeCount for effectiveNodeCount' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $TypeOfDeployment = 'MultiNode'
+                $TypeOfDeployment = 'StorageSwitched'
                 $NodeCount = 8
                 switch ($TypeOfDeployment) {
                     "SingleNode"  { $effectiveNodeCount = 1 }
-                    "Switchless"  { $effectiveNodeCount = $NodeCount }
-                    "MultiNode"   { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitchless"  { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitched"   { $effectiveNodeCount = $NodeCount }
                     "RackAware"   { $effectiveNodeCount = $NodeCount }
                 }
                 $effectiveNodeCount | Should -Be 8
@@ -1836,8 +1844,8 @@ Describe 'Deployment Type Logic' {
                 $NodeCount = 2
                 switch ($TypeOfDeployment) {
                     "SingleNode"  { $effectiveNodeCount = 1 }
-                    "Switchless"  { $effectiveNodeCount = $NodeCount }
-                    "MultiNode"   { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitchless"  { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitched"   { $effectiveNodeCount = $NodeCount }
                     "RackAware"   { $effectiveNodeCount = $NodeCount }
                 }
                 $effectiveNodeCount | Should -Be 2
@@ -1850,8 +1858,8 @@ Describe 'Deployment Type Logic' {
                 $NodeCount = 8
                 switch ($TypeOfDeployment) {
                     "SingleNode"  { $effectiveNodeCount = 1 }
-                    "Switchless"  { $effectiveNodeCount = $NodeCount }
-                    "MultiNode"   { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitchless"  { $effectiveNodeCount = $NodeCount }
+                    "StorageSwitched"   { $effectiveNodeCount = $NodeCount }
                     "RackAware"   { $effectiveNodeCount = $NodeCount }
                 }
                 $effectiveNodeCount | Should -Be 8
@@ -1933,7 +1941,7 @@ Describe 'Deployment Type Logic' {
         }
 
         It 'Non-RackAware should default clusterPattern to Standard' {
-            $TypeOfDeployment = 'MultiNode'
+            $TypeOfDeployment = 'StorageSwitched'
             $clusterPattern = 'Standard'
             if ($TypeOfDeployment -eq 'RackAware') {
                 $clusterPattern = 'RackAware'
@@ -1942,7 +1950,7 @@ Describe 'Deployment Type Logic' {
         }
 
         It 'Non-RackAware should default localAvailabilityZones to empty array' {
-            $TypeOfDeployment = 'MultiNode'
+            $TypeOfDeployment = 'StorageSwitched'
             $localAvailabilityZones = @()
             if ($TypeOfDeployment -eq 'RackAware') {
                 $localAvailabilityZones = @('ZoneA', 'ZoneB')
@@ -2046,12 +2054,12 @@ Describe 'File Integrity' {
         }
 
         It 'Module should not reference TwoNode as a standalone deployment type' {
-            # TwoNode has been consolidated into MultiNode
+            # TwoNode has been consolidated into StorageSwitched
             $script:ModuleContent | Should -Not -Match '"TwoNode"'
         }
 
-        It 'Module should not reference Multi-Node (hyphenated, renamed to MultiNode)' {
-            # Multi-Node was renamed to MultiNode for PascalCase consistency
+        It 'Module should not reference Multi-Node (hyphenated, deprecated)' {
+            # Multi-Node is a deprecated name
             $script:ModuleContent | Should -Not -Match '"Multi-Node"'
         }
 
@@ -2060,12 +2068,12 @@ Describe 'File Integrity' {
         }
 
         It 'Module should not reference switchless-parameters-file.json (replaced by per-node-count files)' {
-            # The old single switchless template has been split into switchless-2node, switchless-3node, switchless-4node
+            # The old single switchless template has been split into storage-switchless-2node, storage-switchless-3node, storage-switchless-4node
             $script:ModuleContent | Should -Not -Match "(?<!\d+node-)switchless-parameters-file\.json"
         }
 
         It 'Module should not reference multi-node-parameters-file.json (old name)' {
-            # Ensure the old exact filename is not referenced (multi-node-switched is OK)
+            # Ensure the old exact filename is not referenced (storage-switched is OK)
             $script:ModuleContent | Should -Not -Match 'multi-node-parameters-file\.json'
         }
 
@@ -2455,10 +2463,10 @@ Describe 'Function: Get-AzLocalNetworkSettingsFromJson' {
             }
         }
 
-        It 'Should parse valid inline JSON for MultiNode with 2 nodes' {
+        It 'Should parse valid inline JSON for StorageSwitched with 2 nodes' {
             InModuleScope AzLocal.DeploymentAutomation {
                 $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["10.0.0.100","10.0.0.101"]}'
-                $result = Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'MultiNode' -NodeCount 2
+                $result = Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'StorageSwitched' -NodeCount 2
                 $result.nodeIPAddresses.Count | Should -Be 2
             }
         }
@@ -2505,7 +2513,7 @@ Describe 'Function: Get-AzLocalNetworkSettingsFromJson' {
         It 'Should throw for wrong node IP count' {
             InModuleScope AzLocal.DeploymentAutomation {
                 $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["10.0.0.100"]}'
-                { Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'MultiNode' -NodeCount 2 } | Should -Throw
+                { Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'StorageSwitched' -NodeCount 2 } | Should -Throw
             }
         }
 
@@ -2801,7 +2809,7 @@ Describe 'Function: Import-AzLocalDeploymentCsv' {
             $csvContent = @"
 UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,Location,CredentialKeyVaultName,LocalAdminSecretName,LCMAdminSecretName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,DnsServers,NodeIPAddresses
 Store001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,SingleNode,1,eastus,kv-deploy,LocalAdmin,LCMAdmin,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,10.0.1.10,10.0.1.50
-Store002,FALSE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,MultiNode,2,eastus,kv-deploy,LocalAdmin,LCMAdmin,255.255.255.0,10.0.2.1,10.0.2.100,10.0.2.110,10.0.2.10;10.0.2.11,10.0.2.50;10.0.2.51
+Store002,FALSE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,StorageSwitched,2,eastus,kv-deploy,LocalAdmin,LCMAdmin,255.255.255.0,10.0.2.1,10.0.2.100,10.0.2.110,10.0.2.10;10.0.2.11,10.0.2.50;10.0.2.51
 "@
             $csvContent | Out-File -FilePath $script:ValidCsvPath -Encoding utf8
         }
@@ -2942,7 +2950,7 @@ Store001,MAYBE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-1234
         }
 
         It 'Should accept all valid TypeOfDeployment values' {
-            foreach ($deployType in @('SingleNode', 'MultiNode', 'Switchless', 'RackAware')) {
+            foreach ($deployType in @('SingleNode', 'StorageSwitched', 'StorageSwitchless', 'RackAware')) {
                 $csv = Join-Path $TestDrive "valid-$deployType.csv"
                 @"
 UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,CredentialKeyVaultName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,NodeIPAddresses
@@ -3452,7 +3460,7 @@ Describe 'Function: Start-AzLocalCsvDeployment' {
             $csvContent = @"
 UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,Location,CredentialKeyVaultName,LocalAdminSecretName,LCMAdminSecretName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,DnsServers,NodeIPAddresses
 TST001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,SingleNode,1,eastus,kv-deploy,LocalAdmin,LCMAdmin,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,10.0.1.10,10.0.1.50
-TST002,FALSE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,MultiNode,2,eastus,kv-deploy,LocalAdmin,LCMAdmin,255.255.255.0,10.0.2.1,10.0.2.100,10.0.2.110,10.0.2.10,10.0.2.50;10.0.2.51
+TST002,FALSE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,StorageSwitched,2,eastus,kv-deploy,LocalAdmin,LCMAdmin,255.255.255.0,10.0.2.1,10.0.2.100,10.0.2.110,10.0.2.10,10.0.2.50;10.0.2.51
 "@
             $csvContent | Out-File -FilePath $script:CsvPath -Encoding utf8
         }
@@ -3760,7 +3768,7 @@ Describe 'Automation Pipelines: File Structure' {
         }
 
         It 'CSV should have valid TypeOfDeployment values' {
-            $validTypes = @('SingleNode', 'MultiNode', 'Switchless', 'RackAware')
+            $validTypes = @('SingleNode', 'StorageSwitched', 'StorageSwitchless', 'RackAware')
             foreach ($row in $script:CsvData) {
                 $row.TypeOfDeployment | Should -BeIn $validTypes
             }

@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.2'
+    ModuleVersion = '0.9.3'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -19,7 +19,7 @@
     Copyright = '(c) Neil Bird. All rights reserved. See LICENSE for details.'
 
     # Description of the functionality provided by this module
-    Description = 'AzLocal.DeploymentAutomation module for deploying Azure Local using ARM templates and parameter files using PowerShell. Supports SingleNode, MultiNode switched (2-16 nodes), Switchless (2-4 nodes), and RackAware (2, 4, 6, 8 nodes) deployments. Resource naming standards are configurable via .config/naming-standards-config.json.'
+    Description = 'AzLocal.DeploymentAutomation module for deploying Azure Local using ARM templates and parameter files using PowerShell. Supports SingleNode, StorageSwitched (2-16 nodes with storage network switch), StorageSwitchless (2-4 nodes), and RackAware (2, 4, 6, 8 nodes) deployments. Resource naming standards are configurable via .config/naming-standards-config.json.'
 
     # Minimum version of the PowerShell engine required by this module
     PowerShellVersion = '5.1'
@@ -62,6 +62,14 @@
 
             # Release notes for this version
             ReleaseNotes = @'
+## v0.9.3 - March 2026
+- Renamed -TypeOfDeployment values for clarity: MultiNode → StorageSwitched, Switchless → StorageSwitchless
+- "Multi-Node" was ambiguous since switchless deployments are also multi-node; new names clarify the storage networking topology
+- Renamed template parameter files: multi-node-switched → storage-switched, switchless-Xnode → storage-switchless-Xnode
+- Added Deployment Times section to README with real-world timing data from a 2-node StorageSwitchless deployment (~6 hours total)
+- Updated all code, tests, pipelines, CSV, and documentation for the new deployment type names
+- ARM template parameter names (storageConnectivitySwitchless, switchlessMultiServerDeployment) are unchanged — these are Microsoft-defined API values
+
 ## v0.9.2 - March 2026
 - Added Azure prerequisite checks: automatic resource provider registration and RBAC role assignment validation
 - New internal function: Test-AzLocalAzurePrerequisites — checks 12 required resource providers (auto-registers missing ones) and 6 required RBAC roles (advisory)
@@ -91,7 +99,7 @@
 - JUnit XML output for CI/CD test result visibility (GitHub Actions dorny/test-reporter, Azure DevOps PublishTestResults)
 - Example GitHub Actions workflows: validate-deployments.yml, deploy-clusters.yml, deployment-monitor.yml
 - Example Azure DevOps pipelines: validate-deployments.yml, deploy-clusters.yml, deployment-monitor.yml
-- Example cluster-deployments.csv with SingleNode, MultiNode, Switchless, and RackAware deployment types
+- Example cluster-deployments.csv with SingleNode, StorageSwitched, StorageSwitchless, and RackAware deployment types
 - Authentication: OIDC (recommended), Managed Identity, Service Principal + Secret (legacy)
 - automation-pipelines/README.md with full setup guide
 
@@ -151,7 +159,7 @@
 - DNS servers, adapter names now managed via .config/naming-standards-config.json defaults
 
 ## v0.2.0 - February 2026
-- Added MultiNode switched deployment support
+- Added StorageSwitched (formerly MultiNode) switched deployment support
 - Refactored StoreNumber to UniqueID for broader applicability
 - Added .config/naming-standards-config.json for configurable resource naming standards
 - Node names now use {UniqueID}NODE{NodeNumber} pattern with dynamic node numbering
@@ -162,7 +170,7 @@
 
 ## v0.1.1 - May 2025
 - Initial release with SingleNode, TwoNode, and Switchless support
-- TwoNode was later consolidated into MultiNode (2-16 nodes) in v0.8.0
+- TwoNode was later consolidated into StorageSwitched (formerly MultiNode, 2-16 nodes) in v0.8.0
 '@
         }
     }

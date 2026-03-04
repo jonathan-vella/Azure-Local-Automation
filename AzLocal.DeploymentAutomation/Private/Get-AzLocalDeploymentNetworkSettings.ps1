@@ -8,7 +8,7 @@
 
     This function retrieves the network settings for the Azure Local deployment. It requires the following parameters:
     - TypeOfDeployment: The type of deployment.
-    - NodeCount: The number of nodes (required for MultiNode).
+    - NodeCount: The number of nodes (required for StorageSwitched).
 
     #>
 
@@ -16,7 +16,7 @@
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true,Position=0)]
-        [ValidateSet("SingleNode","Switchless","MultiNode","RackAware")]
+        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware")]
         [string]$TypeOfDeployment,
 
         [Parameter(Mandatory = $false,Position=1)]
@@ -25,10 +25,10 @@
 
     # Determine the effective node count based on deployment type
     switch ($TypeOfDeployment) {
-        "SingleNode"        { $effectiveNodeCount = 1 }
-        "Switchless"        { $effectiveNodeCount = $NodeCount }
-        "MultiNode"         { $effectiveNodeCount = $NodeCount }
-        "RackAware"         { $effectiveNodeCount = $NodeCount }
+        "SingleNode"            { $effectiveNodeCount = 1 }
+        "StorageSwitchless"     { $effectiveNodeCount = $NodeCount }
+        "StorageSwitched"       { $effectiveNodeCount = $NodeCount }
+        "RackAware"             { $effectiveNodeCount = $NodeCount }
     }
 
     # Prompt for Network Settings

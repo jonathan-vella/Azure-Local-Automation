@@ -1,6 +1,6 @@
 # AzLocal.DeploymentAutomation
 
-PowerShell module for deploying Azure Local (formerly Azure Stack HCI) clusters using ARM templates and parameter files. Supports SingleNode, MultiNode (2–16 nodes switched), Switchless (2–4 nodes), and Rack-Aware Cluster (2, 4, 6 and 8) deployment topologies with configurable resource naming standards and automated two-phase deployment process. This requires the physical nodes to have a running OS installed, with hardware component drivers installed, and Azure Arc Agent registered and resources present in an Azure subscription.
+PowerShell module for deploying Azure Local (formerly Azure Stack HCI) clusters using ARM templates and parameter files. Supports SingleNode, StorageSwitched (2–16 nodes with storage network switch), StorageSwitchless (2–4 nodes), and Rack-Aware Cluster (2, 4, 6 and 8) deployment topologies with configurable resource naming standards and automated two-phase deployment process. This requires the physical nodes to have a running OS installed, with hardware component drivers installed, and Azure Arc Agent registered and resources present in an Azure subscription.
 
 > **Disclaimer:** This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](../LICENSE) for further information.
 
@@ -110,10 +110,10 @@ AzLocal.DeploymentAutomation/
 │   └── azure-local-deployment-template.json      # ARM deployment template
 ├── template-parameter-files/                  # Base parameter templates (do not edit directly)
 │   ├── single-node-parameters-file.json
-│   ├── switchless-2node-parameters-file.json
-│   ├── switchless-3node-parameters-file.json
-│   ├── switchless-4node-parameters-file.json
-│   ├── multi-node-switched-parameters-file.json
+│   ├── storage-switchless-2node-parameters-file.json
+│   ├── storage-switchless-3node-parameters-file.json
+│   ├── storage-switchless-4node-parameters-file.json
+│   ├── storage-switched-parameters-file.json
 │   └── rack-aware-parameters-file.json
 ├── cluster-specific-parameter-files/          # Example cluster-specific files
 ├── deployment-parameter-files/                # Generated per-deployment parameter files (auto-created)
@@ -185,9 +185,9 @@ Watch-AzLocalDeployment `
     -ResourceGroupName "rg-NYC01-azurelocal-prod"
 ```
 
-### End-to-End Example — Switchless 2-Node Deployment
+### End-to-End Example — StorageSwitchless 2-Node Deployment
 
-The following is a complete working example that deploys a 2-node switchless Azure Local cluster. It assumes you have already:
+The following is a complete working example that deploys a 2-node storage-switchless Azure Local cluster. It assumes you have already:
 
 - Updated `.config/naming-standards-config.json` with your environment settings (domain, DNS, adapters, tenant ID)
 - Prepared the Active Directory OU structure
@@ -218,7 +218,7 @@ $networkSettingsJson = @'
 # Step 5: Start the deployment — will prompt for credentials interactively
 Start-AzLocalTemplateDeployment `
     -SubscriptionId $Subscription `
-    -TypeOfDeployment "Switchless" `
+    -TypeOfDeployment "StorageSwitchless" `
     -TenantId $Tenant `
     -DeploymentMode "ValidateAndDeploy" `
     -NodeCount 2 `
@@ -226,7 +226,7 @@ Start-AzLocalTemplateDeployment `
     -UniqueID "15"
 ```
 
-> **What happens:** The module resolves all resource names using UniqueID `15` (e.g., cluster name `AZCLUSTER15`, resource group `rg-15-azurelocal-prod`), checks Azure prerequisites (resource providers + RBAC), selects the switchless 2-node parameter template, prompts for local admin and LCM admin passwords, then submits ARM Validate followed by ARM Deploy.
+> **What happens:** The module resolves all resource names using UniqueID `15` (e.g., cluster name `AZCLUSTER15`, resource group `rg-15-azurelocal-prod`), checks Azure prerequisites (resource providers + RBAC), selects the storage-switchless 2-node parameter template, prompts for local admin and LCM admin passwords, then submits ARM Validate followed by ARM Deploy.
 
 ---
 
@@ -245,7 +245,7 @@ Create a CSV file with one row per cluster. See [automation-pipelines/cluster-de
 | `UniqueID` | 2–8 character alphanumeric identifier |
 | `ReadyToDeploy` | `TRUE` or `FALSE` — only TRUE rows are processed |
 | `SubscriptionId` / `TenantId` | Azure identifiers for the target environment |
-| `TypeOfDeployment` | `SingleNode`, `MultiNode`, `Switchless`, or `RackAware` |
+| `TypeOfDeployment` | `SingleNode`, `StorageSwitched`, `StorageSwitchless`, or `RackAware` |
 | `NodeCount` | Number of physical nodes |
 | `CredentialKeyVaultName` | Key Vault containing deployment credentials |
 | Network columns | `SubnetMask`, `DefaultGateway`, `StartingIPAddress`, `EndingIPAddress`, `DnsServers`, `NodeIPAddresses` |
@@ -303,7 +303,7 @@ Main entry point for deploying a single Azure Local cluster.
 | `-TypeOfDeployment` | `[string]` | Yes | Deployment topology (see below) |
 | `-TenantId` | `[guid]` | Yes | Azure tenant ID |
 | `-DeploymentMode` | `[string]` | Yes | `Validate`, `Deploy`, or `ValidateAndDeploy` |
-| `-NodeCount` | `[int]` | No | Number of nodes for Switchless (2–4), MultiNode (2–16), or RackAware (2, 4, 6, 8) |
+| `-NodeCount` | `[int]` | No | Number of nodes for StorageSwitchless (2–4), StorageSwitched (2–16), or RackAware (2, 4, 6, 8) |
 | `-Location` | `[string]` | No | Azure region override (default: config value) |
 | `-DnsServers` | `[string[]]` | No | DNS server IPs override (default: config value) |
 | `-ComputeManagementAdapters` | `[string[]]` | No | Compute/Management NIC names override (default: config value) |
@@ -324,8 +324,8 @@ Main entry point for deploying a single Azure Local cluster.
 | Value | Description | Nodes |
 |-------|-------------|-------|
 | `SingleNode` | Single server deployment | 1 |
-| `Switchless` | Switchless deployment (requires `-NodeCount`). Uses a node-count-specific template with the correct number of storage networks: 2 for 2-node, 4 for 3-node, 6 for 4-node (formula: 2×(N-1) for dual-link mesh). | 2–4 |
-| `MultiNode` | Multi-node switched deployment (requires `-NodeCount`) | 2–16 |
+| `StorageSwitchless` | Switchless deployment (requires `-NodeCount`). Uses a node-count-specific template with the correct number of storage networks: 2 for 2-node, 4 for 3-node, 6 for 4-node (formula: 2×(N-1) for dual-link mesh). | 2–4 |
+| `StorageSwitched` | Multi-node switched deployment (requires `-NodeCount`) | 2–16 |
 | `RackAware` | Rack-aware deployment with availability zones (requires `-NodeCount`) | 2, 4, 6, 8 |
 
 #### Deployment Modes
@@ -375,7 +375,7 @@ For non-interactive deployments, supply network settings via `-NetworkSettingsJs
 | `endingIPAddress` | `string` | End of management IP range |
 | `nodeIPAddresses` | `string[]` | IP addresses for each node (count must match deployment type/node count) |
 
-All IP address fields are validated at parse time. The number of entries in `nodeIPAddresses` must match the expected node count for the deployment type (e.g., 1 for SingleNode, 2 for MultiNode with `-NodeCount 2`).
+All IP address fields are validated at parse time. The number of entries in `nodeIPAddresses` must match the expected node count for the deployment type (e.g., 1 for SingleNode, 2 for StorageSwitched with `-NodeCount 2`).
 
 #### ShouldProcess Support (-WhatIf / -Confirm)
 
@@ -539,29 +539,29 @@ Start-AzLocalTemplateDeployment `
 ```powershell
 Start-AzLocalTemplateDeployment `
     -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
-    -TypeOfDeployment "MultiNode" `
+    -TypeOfDeployment "StorageSwitched" `
     -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
     -DeploymentMode "Validate" `
     -NodeCount 2
 ```
 
-### Switchless (3 nodes) — Deploy Only (after prior validation)
+### StorageSwitchless (3 nodes) — Deploy Only (after prior validation)
 
 ```powershell
 Start-AzLocalTemplateDeployment `
     -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
-    -TypeOfDeployment "Switchless" `
+    -TypeOfDeployment "StorageSwitchless" `
     -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
     -DeploymentMode "Deploy" `
     -NodeCount 3
 ```
 
-### MultiNode (4 nodes) with Overrides
+### StorageSwitched (4 nodes) with Overrides
 
 ```powershell
 Start-AzLocalTemplateDeployment `
     -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
-    -TypeOfDeployment "MultiNode" `
+    -TypeOfDeployment "StorageSwitched" `
     -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
     -DeploymentMode "ValidateAndDeploy" `
     -NodeCount 4 `
@@ -610,7 +610,7 @@ $lcmAdmin = Get-Credential -UserName "LCMAdminUserName" -Message "LCM Admin"
 
 Start-AzLocalTemplateDeployment `
     -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
-    -TypeOfDeployment "MultiNode" `
+    -TypeOfDeployment "StorageSwitched" `
     -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
     -DeploymentMode "ValidateAndDeploy" `
     -NodeCount 2 `
@@ -625,7 +625,7 @@ Start-AzLocalTemplateDeployment `
 ```powershell
 Start-AzLocalTemplateDeployment `
     -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
-    -TypeOfDeployment "MultiNode" `
+    -TypeOfDeployment "StorageSwitched" `
     -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
     -DeploymentMode "ValidateAndDeploy" `
     -NodeCount 4 `
@@ -650,7 +650,7 @@ Naming patterns use placeholders that are replaced at runtime:
 |------------|-------------|---------|
 | `{UniqueID}` | The Unique ID entered during deployment (2–8 alphanumeric characters) | `STORE01`, `NYC01`, `AB` |
 | `{NodeNumber}` | Zero-padded node number (auto-generated, 2 digits) | `01`, `02` |
-| `{TypeOfDeployment}` | The deployment type | `SingleNode`, `Switchless`, `MultiNode`, `RackAware` |
+| `{TypeOfDeployment}` | The deployment type | `SingleNode`, `StorageSwitchless`, `StorageSwitched`, `RackAware` |
 
 #### Default Naming Patterns
 
@@ -772,6 +772,30 @@ The following describes what happens when you run `Start-AzLocalTemplateDeployme
 │  ✓ Deployment Succeeded                     │
 └─────────────────────────────────────────────┘
 ```
+
+---
+
+## Deployment Times
+
+Azure Local deployments are long-running operations. Actual deployment times vary depending on several factors:
+
+- **Number of physical nodes** — more nodes increases provisioning and configuration time
+- **Network speed to Azure** — bandwidth and latency between the on-premises environment and Azure datacentres
+- **Proxy servers and firewalls** — additional network hops and inspection can add significant overhead
+- **Hardware performance** — disk speed, memory, and CPU on the physical nodes
+- **Azure region distance** — resource provider round trip response times (based on geographic distant and the speed of light for network connections)
+
+### Example Deployment Times
+
+The following times were observed during a real 2-node StorageSwitchless deployment using the Azure Local 2601 release:
+
+| Phase | Start | End | Duration |
+|-------|-------|-----|----------|
+| **Validate** | 12:14 | 13:52 | ~1 hour 38 minutes |
+| **Deploy** | 14:11 | 18:08 | ~3 hours 57 minutes |
+| **Total** | 12:14 | 18:08 | ~5 hours 54 minutes |
+
+> **Note:** These times are indicative only and will vary between environments. Single-node deployments are typically faster, while larger multi-node or rack-aware deployments may take longer. Use `Watch-AzLocalDeployment` to monitor progress in real time.
 
 ---
 

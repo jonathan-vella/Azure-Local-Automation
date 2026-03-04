@@ -85,8 +85,8 @@ The CSV file drives all deployments. Each row represents one cluster/site.
 | Value | Description | Nodes |
 |-------|-------------|-------|
 | `SingleNode` | Single-node cluster | 1 |
-| `MultiNode` | Multi-node cluster with network switch | 2–16 |
-| `Switchless` | Switchless cluster. The module automatically selects the correct per-node-count parameter template with the appropriate number of storage networks: 2 for 2-node, 4 for 3-node, 6 for 4-node (formula: 2×(N-1) for dual-link mesh). | 2–4 |
+| `StorageSwitched` | Multi-node cluster with storage network switch | 2–16 |
+| `StorageSwitchless` | Switchless cluster. The module automatically selects the correct per-node-count parameter template with the appropriate number of storage networks: 2 for 2-node, 4 for 3-node, 6 for 4-node (formula: 2×(N-1) for dual-link mesh). | 2–4 |
 | `RackAware` | Rack-aware deployment with availability zones | 2, 4, 6, 8 |
 
 ### Multi-Value Fields

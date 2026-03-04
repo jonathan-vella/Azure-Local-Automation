@@ -8,7 +8,7 @@
 
     This function updates the parameters for the Azure Local deployment. It requires the following parameters:
     - UniqueID: The unique identifier for the deployment.
-    - TypeOfDeployment: The type of deployment to perform (e.g., SingleNode, MultiNode, Switchless, RackAware).
+    - TypeOfDeployment: The type of deployment to perform (e.g., SingleNode, StorageSwitched, StorageSwitchless, RackAware).
     - ParameterFileSettings: The settings for the parameter file.
     - Parameters: The parameters for the deployment.
 
@@ -20,7 +20,7 @@
         [string]$UniqueID,
 
         [Parameter(Mandatory = $true,Position=1)]
-        [ValidateSet("SingleNode","Switchless","MultiNode","RackAware")]
+        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware")]
         [string]$TypeOfDeployment,
 
         [Parameter(Mandatory = $true,Position=2)]
@@ -38,18 +38,18 @@
     # Parameter file path
     $OutputDirectory = Join-Path $script:ModuleRoot "deployment-parameter-files"
 
-    # Switchless deployments have a per-node-count template (2×(N-1) storage networks)
+    # StorageSwitchless deployments have a per-node-count template (2×(N-1) storage networks)
     $switchlessFileMap = @{
-        2 = 'switchless-2node-parameters-file.json'
-        3 = 'switchless-3node-parameters-file.json'
-        4 = 'switchless-4node-parameters-file.json'
+        2 = 'storage-switchless-2node-parameters-file.json'
+        3 = 'storage-switchless-3node-parameters-file.json'
+        4 = 'storage-switchless-4node-parameters-file.json'
     }
 
     $parameterFileMap = @{
-        'SingleNode'  = 'single-node-parameters-file.json'
-        'Switchless'  = $switchlessFileMap[$NodeCount]
-        'MultiNode'   = 'multi-node-switched-parameters-file.json'
-        'RackAware'   = 'rack-aware-parameters-file.json'
+        'SingleNode'          = 'single-node-parameters-file.json'
+        'StorageSwitchless'   = $switchlessFileMap[$NodeCount]
+        'StorageSwitched'     = 'storage-switched-parameters-file.json'
+        'RackAware'           = 'rack-aware-parameters-file.json'
     }
     $DeploymentParameterFilePath = Join-Path $OutputDirectory "$($UniqueID)-$($parameterFileMap[$TypeOfDeployment])"
     # Check if the directory exists, if not create it

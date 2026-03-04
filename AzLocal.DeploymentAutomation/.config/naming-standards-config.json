@@ -13,7 +13,7 @@
     "_placeholders": {
         "{UniqueID}": "Replaced at runtime with the Unique ID entered during deployment (e.g., a store number, site code, or location identifier).",
         "{NodeNumber}": "Replaced at runtime with the zero-padded node number (e.g., 01, 02). Generated automatically based on deployment type and node count.",
-        "{TypeOfDeployment}": "Replaced at runtime with the deployment type (e.g., SingleNode, MultiNode, Switchless, RackAware)."
+        "{TypeOfDeployment}": "Replaced at runtime with the deployment type (e.g., SingleNode, StorageSwitched, StorageSwitchless, RackAware)."
     },
     "namingStandards": {
         "clusterName": "AZCLUSTER{UniqueID}",

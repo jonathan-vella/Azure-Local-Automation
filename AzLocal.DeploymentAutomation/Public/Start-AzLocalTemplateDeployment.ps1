@@ -9,9 +9,9 @@
     This script is used to deploy Azure Local using an ARM template deployment. It requires the following parameters:
     - SubscriptionId: The ID of the Azure subscription to use for the deployment.
     - TenantId: The ID of the Azure tenant to use for the deployment.
-    - TypeOfDeployment: The type of deployment to perform (e.g., SingleNode, MultiNode, Switchless, RackAware).
+    - TypeOfDeployment: The type of deployment to perform (e.g., SingleNode, StorageSwitched, StorageSwitchless, RackAware).
     - DeploymentMode: Validate (validate only), Deploy (deploy only), or ValidateAndDeploy (validate first, then deploy on success).
-    - NodeCount: The number of nodes for MultiNode (2-16), Switchless (2-4), or RackAware (2, 4, 6, 8) deployments.
+    - NodeCount: The number of nodes for StorageSwitched (2-16), StorageSwitchless (2-4), or RackAware (2, 4, 6, 8) deployments.
 
     Credentials can be supplied in three ways (highest to lowest priority):
     1. Azure Key Vault: -CredentialKeyVaultName (with optional -LocalAdminSecretName / -LCMAdminSecretName)
@@ -39,7 +39,7 @@
         [guid]$SubscriptionId,
 
         [Parameter(Mandatory = $true,Position=1)]
-        [ValidateSet("SingleNode","Switchless","MultiNode","RackAware")]
+        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware")]
         [string]$TypeOfDeployment,
         
         [Parameter(Mandatory = $true,Position=2)]
@@ -118,13 +118,13 @@
         Write-AzLocalLog "SingleNode deployment does not support -NodeCount greater than 1. SingleNode is always a single node." -Level Error
         throw "SingleNode deployment does not support -NodeCount greater than 1. Use -NodeCount 1 or omit it for SingleNode deployments."
     }
-    if ($TypeOfDeployment -eq "MultiNode" -and $NodeCount -lt 2) {
-        Write-AzLocalLog "MultiNode deployment requires the -NodeCount parameter (minimum 2)." -Level Error
-        throw "MultiNode deployment requires -NodeCount >= 2."
+    if ($TypeOfDeployment -eq "StorageSwitched" -and $NodeCount -lt 2) {
+        Write-AzLocalLog "StorageSwitched deployment requires the -NodeCount parameter (minimum 2)." -Level Error
+        throw "StorageSwitched deployment requires -NodeCount >= 2."
     }
-    if ($TypeOfDeployment -eq "Switchless" -and ($NodeCount -lt 2 -or $NodeCount -gt 4)) {
-        Write-AzLocalLog "Switchless deployment requires the -NodeCount parameter (2 to 4 nodes)." -Level Error
-        throw "Switchless deployment requires -NodeCount between 2 and 4."
+    if ($TypeOfDeployment -eq "StorageSwitchless" -and ($NodeCount -lt 2 -or $NodeCount -gt 4)) {
+        Write-AzLocalLog "StorageSwitchless deployment requires the -NodeCount parameter (2 to 4 nodes)." -Level Error
+        throw "StorageSwitchless deployment requires -NodeCount between 2 and 4."
     }
     if ($TypeOfDeployment -eq "RackAware" -and ($NodeCount -notin @(2, 4, 6, 8))) {
         Write-AzLocalLog "RackAware deployment requires the -NodeCount parameter with an even number of nodes (2, 4, 6, or 8)." -Level Error
@@ -159,7 +159,7 @@
         $NetworkSettings = Get-AzLocalDeploymentNetworkSettings -TypeOfDeployment $TypeOfDeployment -NodeCount $NodeCount
     }
 
-    # Call function to Get Parameter File Path (Switchless uses node-count-specific templates)
+    # Call function to Get Parameter File Path (StorageSwitchless uses node-count-specific templates)
     $ParameterFilePath = Get-AzLocalParameterFilePath -TypeOfDeployment $TypeOfDeployment -NodeCount $effectiveNodeCount
 
     # Call function to Get Parameter File Settings
@@ -291,12 +291,12 @@
         $storageConnectivitySwitchless = $true
         $witnessType = "No Witness"
 
-    } elseif ($TypeOfDeployment -eq "Switchless") {
+    } elseif ($TypeOfDeployment -eq "StorageSwitchless") {
         $effectiveNodeCount = $NodeCount
         $storageConnectivitySwitchless = $true
         $witnessType = "Cloud"
 
-    } elseif ($TypeOfDeployment -eq "MultiNode") {
+    } elseif ($TypeOfDeployment -eq "StorageSwitched") {
         $effectiveNodeCount = $NodeCount
         $storageConnectivitySwitchless = $false
         $witnessType = "Cloud"
@@ -379,7 +379,7 @@
             })
         }
     } else {
-        # MultiNode, Switchless, and RackAware: build physical node settings dynamically
+        # StorageSwitched, StorageSwitchless, and RackAware: build physical node settings dynamically
         $nodeSettingsArray = @()
         for ($i = 0; $i -lt $effectiveNodeCount; $i++) {
             $nodeSettingsArray += [PSCustomObject][Ordered]@{

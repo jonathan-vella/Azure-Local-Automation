@@ -70,7 +70,7 @@
 
     # Validate each row
     $errors = @()
-    $validTypes = @('SingleNode', 'Switchless', 'MultiNode', 'RackAware')
+    $validTypes = @('SingleNode', 'StorageSwitchless', 'StorageSwitched', 'RackAware')
     $rowNum = 1
     foreach ($row in $csvData) {
         $rowNum++
