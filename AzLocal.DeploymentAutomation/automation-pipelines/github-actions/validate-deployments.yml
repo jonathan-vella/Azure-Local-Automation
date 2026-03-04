@@ -105,20 +105,19 @@ jobs:
         Write-Host "Total clusters in CSV: $totalCount"
         Write-Host "Clusters with ReadyToDeploy=TRUE: $readyCount"
 
-        # Run pre-flight via the module (validate-only pass)
-        $dryRun = "${{ github.event.inputs.dry_run }}" -eq "true"
+        # Run pre-flight via the module (WhatIf = always true for pre-flight stage)
+        # Stage 2 performs the actual ARM validate; this stage only runs pre-flight checks
 
         $params = @{
             CsvFilePath     = $csvPath
             DeploymentMode  = 'Validate'
             JUnitOutputPath = $junitPath
             LogFilePath     = $logPath
-            WhatIf          = $dryRun
+            WhatIf          = $true
             Confirm         = $false
         }
 
-        # For pre-flight only, we just want the pre-flight results without actually deploying
-        # We use -WhatIf to prevent actual ARM deployment while still running pre-flight checks
+        # Run pre-flight checks only (WhatIf prevents ARM submission)
         $results = Start-AzLocalCsvDeployment @params
 
         $eligible = @($results | Where-Object { $_.Status -eq 'Passed' -or $_.Status -eq 'Skipped' }).Count

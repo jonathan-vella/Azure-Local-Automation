@@ -153,6 +153,7 @@
             UniqueID             = $uniqueID
             NetworkSettingsJson  = $networkJson
             CredentialKeyVaultName = $cluster.CredentialKeyVaultName
+            SkipPreFlightChecks  = $true
             Confirm              = $false
         }
 

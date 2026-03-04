@@ -121,13 +121,20 @@
         # NodeIPAddresses validation (semicolon-separated)
         if (-not [string]::IsNullOrWhiteSpace($row.NodeIPAddresses)) {
             $nodeIPs = $row.NodeIPAddresses -split ';'
+            $validNodeIPs = @()
             foreach ($nip in $nodeIPs) {
                 $nip = $nip.Trim()
                 if ($nip -ne '') {
-                    try { [System.Net.IPAddress]::Parse($nip) | Out-Null } catch {
+                    try { [System.Net.IPAddress]::Parse($nip) | Out-Null; $validNodeIPs += $nip } catch {
                         $errors += "Row $rowNum (UniqueID=$uid): NodeIPAddress '$nip' is not a valid IP address."
                     }
                 }
+            }
+
+            # Validate NodeIPAddresses count matches NodeCount
+            $expectedCount = if ($row.TypeOfDeployment -eq 'SingleNode') { 1 } else { $nodeCount }
+            if ($nodeCount -gt 0 -and $validNodeIPs.Count -ne $expectedCount) {
+                $errors += "Row $rowNum (UniqueID=$uid): NodeIPAddresses count ($($validNodeIPs.Count)) does not match expected node count ($expectedCount)."
             }
         }
     }

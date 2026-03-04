@@ -63,7 +63,7 @@ The CSV file drives all deployments. Each row represents one cluster/site.
 
 | Column | Type | Description | Example |
 |--------|------|-------------|---------|
-| `UniqueID` | String | 2–8 character alphanumeric identifier (first char alpha) | `Store001` |
+| `UniqueID` | String | 2–8 character alphanumeric identifier | `Store001` |
 | `ReadyToDeploy` | Boolean | `TRUE` or `FALSE` — only TRUE rows are processed | `TRUE` |
 | `SubscriptionId` | GUID | Azure subscription ID for this cluster | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
 | `TenantId` | GUID | Entra ID tenant ID | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |

@@ -82,14 +82,15 @@ stages:
                 Write-Host "Total clusters in CSV: $totalCount"
                 Write-Host "Clusters with ReadyToDeploy=TRUE: $readyCount"
 
-                $dryRun = [System.Convert]::ToBoolean("${{ parameters.dryRun }}")
+                # Run pre-flight via the module (WhatIf = always true for pre-flight stage)
+                # Stage 2 performs the actual ARM validate; this stage only runs pre-flight checks
 
                 $params = @{
                     CsvFilePath     = $csvPath
                     DeploymentMode  = 'Validate'
                     JUnitOutputPath = $junitPath
                     LogFilePath     = $logPath
-                    WhatIf          = $dryRun
+                    WhatIf          = $true
                     Confirm         = $false
                 }
 
