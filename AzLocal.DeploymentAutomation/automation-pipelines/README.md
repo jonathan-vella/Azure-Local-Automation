@@ -110,6 +110,7 @@ Before submitting any deployment, the pipeline runs these automated checks for e
 
 | Check | Description |
 |-------|-------------|
+| **CSV Validation** | Validates CSV structure, required columns, UniqueID format, GUID fields, TypeOfDeployment values, IP addresses, and NodeIPAddresses count matches NodeCount |
 | **Resource Naming** | Validates all resource names against Azure naming rules via `Test-AzLocalResourceNames` |
 | **Resource Group** | Confirms the target resource group exists |
 | **Azure Prerequisites** | Validates 12 required resource providers are registered (auto-registers any missing) and checks 6 RBAC role assignments (advisory). See [Required Permissions](https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions). |
@@ -444,11 +445,11 @@ automation-pipelines/
 ├── README.md                              # This file
 ├── cluster-deployments.csv                # Example CSV file
 ├── github-actions/
-│   ├── validate-deployments.yml           # Stage 1: Pre-flight + ARM Validate
+│   ├── validate-deployments.yml           # Stage 1: Pre-flight checks, Stage 2: ARM Validate
 │   ├── deploy-clusters.yml                # Stage 2: ARM Deploy
 │   └── deployment-monitor.yml             # Scheduled status monitor
 └── azure-devops/
-    ├── validate-deployments.yml            # Stage 1: Pre-flight + ARM Validate
+    ├── validate-deployments.yml            # Stage 1: Pre-flight checks, Stage 2: ARM Validate
     ├── deploy-clusters.yml                 # Stage 2: ARM Deploy
     └── deployment-monitor.yml             # Scheduled status monitor
 ```
