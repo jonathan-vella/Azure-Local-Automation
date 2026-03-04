@@ -113,9 +113,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $requiredNames | Should -Contain 'Az.Resources'
         }
 
-        It 'Should require Az.KeyVault module' {
+        It 'Should NOT require Az.KeyVault module (optional, checked at runtime)' {
             $requiredNames = $script:ManifestRaw.RequiredModules | ForEach-Object { $_.ModuleName }
-            $requiredNames | Should -Contain 'Az.KeyVault'
+            $requiredNames | Should -Not -Contain 'Az.KeyVault'
         }
 
         It 'Should have a non-empty description' {

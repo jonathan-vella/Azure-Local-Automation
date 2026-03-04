@@ -25,7 +25,7 @@ Azure Local cluster deployments via ARM templates require a **two-phase process*
 - **Az PowerShell modules:**
   - `Az.Accounts` (v2.0.0+)
   - `Az.Resources` (v6.0.0+)
-  - `Az.KeyVault` (v4.0.0+) — required when retrieving credentials from Azure Key Vault
+  - `Az.KeyVault` (v4.0.0+) — *optional*, only required when using `-CredentialKeyVaultName` to retrieve credentials from Azure Key Vault
 - Azure subscription with [required permissions and resource providers registered](https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions). The module **automatically checks and registers** the 12 required resource providers at deployment time, and provides advisory warnings for any missing RBAC role assignments. See [Azure Prerequisites](#azure-prerequisites) below.
 - Arc-enabled servers (Azure Local physical node(s)) already registered in the target subscription and resource group
 - Active Directory OU structure prepared for the deployment, more information and 'AD preparation module' is documented here: https://learn.microsoft.com/azure/azure-local/deploy/deployment-prep-active-directory
@@ -867,7 +867,7 @@ The test suite validates:
 
 | Area | What Is Tested |
 |------|----------------|
-| Module Load | Manifest validity, exported functions, required modules (`Az.Accounts`, `Az.Resources`, `Az.KeyVault`) |
+| Module Load | Manifest validity, exported functions, required modules (`Az.Accounts`, `Az.Resources`), optional module (`Az.KeyVault`) |
 | Parameter Validation | Types, ValidateSet values, ValidateRange, mandatory flags |
 | Credential Parameters | PSCredential types, Key Vault secret name defaults, non-mandatory validation |
 | ShouldProcess | SupportsShouldProcess enabled, ConfirmImpact = High |

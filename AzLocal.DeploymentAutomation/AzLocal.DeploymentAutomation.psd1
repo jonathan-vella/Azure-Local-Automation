@@ -27,8 +27,9 @@
     # Modules that must be imported into the global environment prior to importing this module
     RequiredModules = @(
         @{ ModuleName = 'Az.Accounts'; ModuleVersion = '2.0.0' },
-        @{ ModuleName = 'Az.Resources'; ModuleVersion = '6.0.0' },
-        @{ ModuleName = 'Az.KeyVault'; ModuleVersion = '4.0.0' }
+        @{ ModuleName = 'Az.Resources'; ModuleVersion = '6.0.0' }
+        # Az.KeyVault (v4.0.0+) is optional — only required when using -CredentialKeyVaultName.
+        # The module checks for Az.KeyVault at runtime and provides a clear error if it is needed but not installed.
     )
 
     # Functions to export from this module
