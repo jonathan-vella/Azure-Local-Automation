@@ -91,10 +91,10 @@ jobs:
             -JUnitOutputPath $junitPath
 
         # Build status counts
-        $notStarted = @($results | Where-Object { $_.Status -eq 'Passed' -and $_.Message -like '*NotStarted*' }).Count
-        $inProgress = @($results | Where-Object { $_.Status -eq 'Passed' -and $_.Message -like '*InProgress*' }).Count
-        $succeeded = @($results | Where-Object { $_.Status -eq 'Passed' -and ($_.Message -like '*Succeeded*' -or $_.Message -like '*ClusterExists*') }).Count
-        $failed = @($results | Where-Object { $_.Status -eq 'Failed' }).Count
+        $notStarted = @($results | Where-Object { $_.DeploymentStatus -eq 'NotStarted' }).Count
+        $inProgress = @($results | Where-Object { $_.DeploymentStatus -like '*InProgress*' }).Count
+        $succeeded = @($results | Where-Object { $_.DeploymentStatus -in @('DeploySucceeded','ValidateSucceeded','ClusterExists') }).Count
+        $failed = @($results | Where-Object { $_.DeploymentStatus -like '*Failed*' }).Count
         $total = $results.Count
 
         echo "NOT_STARTED=$notStarted" >> $env:GITHUB_OUTPUT

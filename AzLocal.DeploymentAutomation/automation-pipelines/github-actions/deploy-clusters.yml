@@ -96,12 +96,12 @@ jobs:
             -JUnitOutputPath (Join-Path $outputDir "pre-deploy-status.xml")
 
         # Check if any clusters have failed validation
-        $failedValidation = @($statusResults | Where-Object { $_.Status -eq 'Failed' -and $_.TestName -like '*Validate*' })
+        $failedValidation = @($statusResults | Where-Object { $_.DeploymentStatus -like '*Failed*' })
 
         if ($failedValidation.Count -gt 0) {
             Write-Host "##[error]$($failedValidation.Count) cluster(s) have failed validation. Run the Validate workflow first."
             foreach ($fail in $failedValidation) {
-                Write-Host "  - $($fail.TestName): $($fail.Message)" -ForegroundColor Red
+                Write-Host "  - $($fail.UniqueID): $($fail.Message)" -ForegroundColor Red
             }
             exit 1
         }
