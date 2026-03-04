@@ -787,7 +787,7 @@ Azure Local deployments are long-running operations. Actual deployment times var
 
 ### Example Deployment Times
 
-The following times were observed during a real 2-node StorageSwitchless deployment using the Azure Local 2601 release:
+The following times were observed during a real 2-node StorageSwitchless deployment using the Azure Local 2602 release:
 
 | Phase | Start | End | Duration |
 |-------|-------|-----|----------|
