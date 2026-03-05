@@ -129,6 +129,33 @@ AzLocal.DeploymentAutomation/
 
 ---
 
+## Installation
+
+### Install from PowerShell Gallery (Recommended)
+
+The module is published on the [PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.DeploymentAutomation/):
+
+```powershell
+Install-Module -Name AzLocal.DeploymentAutomation -Scope CurrentUser
+```
+
+To update to the latest version:
+
+```powershell
+Update-Module -Name AzLocal.DeploymentAutomation
+```
+
+### Install from Source (Alternative)
+
+Clone the repository and import the module directly:
+
+```powershell
+git clone https://github.com/NeilBird/Azure-Local.git
+Import-Module .\Azure-Local\AzLocal.DeploymentAutomation\AzLocal.DeploymentAutomation.psd1
+```
+
+---
+
 ## Getting Started — Standalone (Single Cluster)
 
 Use `Start-AzLocalTemplateDeployment` to deploy a single Azure Local cluster interactively or via parameters.
@@ -136,6 +163,10 @@ Use `Start-AzLocalTemplateDeployment` to deploy a single Azure Local cluster int
 ### Step 1: Import the Module
 
 ```powershell
+# If installed from PowerShell Gallery:
+Import-Module AzLocal.DeploymentAutomation
+
+# If using from source:
 Import-Module .\AzLocal.DeploymentAutomation.psd1
 ```
 
