@@ -136,7 +136,15 @@ AzLocal.DeploymentAutomation/
 The module is published on the [PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.DeploymentAutomation/):
 
 ```powershell
+# Install the module
 Install-Module -Name AzLocal.DeploymentAutomation -Scope CurrentUser
+
+# Install required Az modules (if not already present)
+Install-Module -Name Az.Accounts -MinimumVersion 2.0.0 -Scope CurrentUser
+Install-Module -Name Az.Resources -MinimumVersion 6.0.0 -Scope CurrentUser
+
+# Optional: only needed if using -CredentialKeyVaultName for Key Vault credential retrieval
+Install-Module -Name Az.KeyVault -MinimumVersion 4.0.0 -Scope CurrentUser
 ```
 
 To update to the latest version:
@@ -160,25 +168,22 @@ Import-Module .\Azure-Local\AzLocal.DeploymentAutomation\AzLocal.DeploymentAutom
 
 Use `Start-AzLocalTemplateDeployment` to deploy a single Azure Local cluster interactively or via parameters.
 
-### Step 1: Import the Module
+### Step 1: Customise the Configuration
+
+Before running a deployment, edit `.config/naming-standards-config.json` to match your environment.
+
+**Locating the config file:**
 
 ```powershell
 # If installed from PowerShell Gallery:
-Import-Module AzLocal.DeploymentAutomation
+$configPath = Join-Path (Get-Module AzLocal.DeploymentAutomation -ListAvailable | Select-Object -First 1).ModuleBase '.config\naming-standards-config.json'
+notepad $configPath
 
-# If using from source:
-Import-Module .\AzLocal.DeploymentAutomation.psd1
+# If using from source (cloned repo):
+notepad .config\naming-standards-config.json
 ```
 
-### Step 2: Authenticate to Azure
-
-```powershell
-Connect-AzAccount -SubscriptionId "<your-subscription-id>" -TenantId "<your-tenant-id>"
-```
-
-### Step 3: Customise the Configuration
-
-Edit `.config/naming-standards-config.json` to match your environment before running a deployment:
+Update these sections:
 
 1. **`environment.tenantId`** — Set to your Entra ID (Azure AD) tenant ID. Find it with `(Get-AzContext).Tenant.Id`
 2. **`environment.hciResourceProviderObjectID`** — *(Optional)* Set to the Object ID of the HCI Resource Provider in your tenant. If left empty, the module will look it up at runtime via `Get-AzADServicePrincipal`. Find it with:
@@ -190,7 +195,13 @@ Edit `.config/naming-standards-config.json` to match your environment before run
 
 See [Configuration](#configuration) for full details on placeholders, naming patterns, and Azure naming limits.
 
-### Step 4: Run a Deployment
+### Step 2: Authenticate to Azure
+
+```powershell
+Connect-AzAccount -SubscriptionId "<your-subscription-id>" -TenantId "<your-tenant-id>"
+```
+
+### Step 3: Run a Deployment
 
 ```powershell
 # Interactive — prompts for Unique ID, network settings, and credentials
@@ -207,7 +218,7 @@ The function will interactively prompt for (unless supplied via parameters):
 - **Network settings** — Subnet mask, default gateway, management IP range, and node IP addresses. Override with `-NetworkSettingsJson`
 - **Passwords** — Local admin password and LCM domain user account password. Override with `-LocalAdminCredential`/`-LCMAdminCredential` or `-CredentialKeyVaultName`
 
-### Step 5 (Optional): Monitor the Deployment
+### Step 4 (Optional): Monitor the Deployment
 
 ```powershell
 # Monitor from the same or a separate PowerShell session
