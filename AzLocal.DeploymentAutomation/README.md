@@ -80,8 +80,8 @@ Before deploying, your Azure subscription must have the required resource provid
 
 ```
 AzLocal.DeploymentAutomation/
-├── AzLocal.DeploymentAutomation.psm1          # Module loader (dot-sources Public/ and Private/)
-├── AzLocal.DeploymentAutomation.psd1          # Module manifest
+├── AzLocal.DeploymentAutomation.psm1          # Root module (shared state and strict mode)
+├── AzLocal.DeploymentAutomation.psd1          # Module manifest (NestedModules allowlist)
 ├── Public/                                    # Exported functions
 │   ├── Start-AzLocalTemplateDeployment.ps1    # Deploy a single Azure Local cluster
 │   ├── Start-AzLocalCsvDeployment.ps1         # CSV-driven batch deployment
