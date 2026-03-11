@@ -93,14 +93,6 @@ $script:AzLocalLogFilePath = $null
 # Used during Pester testing to prevent VS Code terminal from becoming unresponsive.
 $script:SuppressConsoleOutput = $false
 
-# Dot-source private (internal) functions
-$privateFunctions = @(Get-ChildItem -Path (Join-Path $PSScriptRoot 'Private') -Filter '*.ps1' -ErrorAction SilentlyContinue)
-foreach ($func in $privateFunctions) {
-    . $func.FullName
-}
-
-# Dot-source public (exported) functions
-$publicFunctions = @(Get-ChildItem -Path (Join-Path $PSScriptRoot 'Public') -Filter '*.ps1' -ErrorAction SilentlyContinue)
-foreach ($func in $publicFunctions) {
-    . $func.FullName
-}
+# Private and public functions are loaded via NestedModules in the module manifest (.psd1).
+# Only files explicitly listed there are loaded — this prevents unauthorised .ps1 files
+# placed in the Private/ or Public/ directories from being executed.

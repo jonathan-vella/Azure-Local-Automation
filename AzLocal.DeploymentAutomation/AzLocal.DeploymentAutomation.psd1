@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.3'
+    ModuleVersion = '0.9.4'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -30,6 +30,36 @@
         @{ ModuleName = 'Az.Resources'; ModuleVersion = '6.0.0' }
         # Az.KeyVault (v4.0.0+) is optional — only required when using -CredentialKeyVaultName.
         # The module checks for Az.KeyVault at runtime and provides a clear error if it is needed but not installed.
+    )
+    
+    # Modules to import as nested modules of the module specified in RootModule/ModuleToProcess.
+    # .ps1 files listed here are dot-sourced into the root module's session state, so they share
+    # $script: scope with the root module. Only files explicitly listed here are loaded — any
+    # unauthorised .ps1 file placed in these directories will be ignored.
+    NestedModules = @(
+        # Private (internal) functions
+        'Private\Format-Json.ps1'
+        'Private\Get-AzLocalDeploymentNetworkSettings.ps1'
+        'Private\Get-AzLocalNamingConfig.ps1'
+        'Private\Get-AzLocalNetworkSettingsFromJson.ps1'
+        'Private\Get-AzLocalParameterFilePath.ps1'
+        'Private\Get-AzLocalParameterFileSettings.ps1'
+        'Private\Get-ValidUniqueID.ps1'
+        'Private\Import-AzLocalDeploymentCsv.ps1'
+        'Private\Initialize-AzLocalLogFile.ps1'
+        'Private\New-AzLocalDeploymentParameterFile.ps1'
+        'Private\New-AzLocalJUnitXml.ps1'
+        'Private\Resolve-AzLocalResourceName.ps1'
+        'Private\Test-AzLocalAzurePrerequisites.ps1'
+        'Private\Test-AzLocalClusterPreFlight.ps1'
+        'Private\Test-AzLocalResourceNames.ps1'
+        'Private\Write-AzLocalLog.ps1'
+
+        # Public (exported) functions
+        'Public\Get-AzLocalDeploymentStatus.ps1'
+        'Public\Start-AzLocalCsvDeployment.ps1'
+        'Public\Start-AzLocalTemplateDeployment.ps1'
+        'Public\Watch-AzLocalDeployment.ps1'
     )
 
     # Functions to export from this module
