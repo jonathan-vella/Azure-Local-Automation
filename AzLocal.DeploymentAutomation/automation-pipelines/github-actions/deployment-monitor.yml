@@ -62,11 +62,13 @@ jobs:
     - name: Check Deployment Status
       shell: pwsh
       id: status
+      env:
+        INPUT_CSV_FILE_PATH: ${{ github.event.inputs.csv_file_path }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
 
         # Use input path if manually triggered, otherwise use default
-        $csvPath = "${{ github.event.inputs.csv_file_path }}"
+        $csvPath = $env:INPUT_CSV_FILE_PATH
         if ([string]::IsNullOrEmpty($csvPath)) {
             $csvPath = "${{ env.DEFAULT_CSV_PATH }}"
         }

@@ -96,6 +96,9 @@
             # Release notes for this version
             ReleaseNotes = @'
 ## v0.9.5 - March 2026
+- SECURITY: Fixed GitHub Actions script injection vulnerability in all workflow examples (deploy-clusters, validate-deployments, deployment-monitor, deployment-status-report)
+- Replaced direct ${{ github.event.inputs.* }} interpolation in run: blocks with env: variable indirection to prevent arbitrary code execution via crafted workflow_dispatch inputs
+- Azure DevOps pipeline examples were not affected (compile-time parameter expansion)
 - Added automatic troubleshooting hints for common deployment and validation failures
 - New internal function: Get-AzLocalValidationTroubleshootingHints — analyses ARM error codes/messages against known failure patterns and provides targeted remediation guidance
 - Known patterns include: NIC adapter mismatches, management intent naming (vManagement double-wrap), GPO inheritance block requirements, duplicate RBAC role assignments, physical disk / S2D validation, deployment settings timeout

@@ -75,10 +75,12 @@ jobs:
     - name: Run Pre-Flight Checks
       shell: pwsh
       id: preflight
+      env:
+        INPUT_CSV_FILE_PATH: ${{ github.event.inputs.csv_file_path }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
 
-        $csvPath = "${{ github.event.inputs.csv_file_path }}"
+        $csvPath = $env:INPUT_CSV_FILE_PATH
 
         if (-not (Test-Path $csvPath)) {
             Write-Error "CSV file not found: $csvPath"
@@ -173,10 +175,12 @@ jobs:
     - name: Run ARM Validate
       shell: pwsh
       id: validate
+      env:
+        INPUT_CSV_FILE_PATH: ${{ github.event.inputs.csv_file_path }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
 
-        $csvPath = "${{ github.event.inputs.csv_file_path }}"
+        $csvPath = $env:INPUT_CSV_FILE_PATH
         $outputDir = "./reports"
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
