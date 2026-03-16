@@ -73,10 +73,12 @@
             # ReleaseNotes of this module
             ReleaseNotes = @'
 ## Version 0.5.8 - Security Hardening
-- SECURITY: Fixed GitHub Actions script injection vulnerability in all workflow examples (apply-updates, fleet-update-status, inventory-clusters, manage-updatering-tags)
+- Fixed GitHub Actions script injection vulnerability in all workflow examples (apply-updates, fleet-update-status, inventory-clusters, manage-updatering-tags)
 - Replaced direct ${{ github.event.inputs.* }} interpolation in run: blocks with env: variable indirection to prevent arbitrary code execution via crafted workflow_dispatch inputs
 - Azure DevOps pipeline examples were not affected (compile-time parameter expansion)
-
+## Version 0.5.7
+- DOCS: Fixed LICENSE links in module and pipeline READMEs to point to correct URL
+- DOCS: Added disclaimer notices to Automation-Pipeline-Examples README
 ## Version 0.5.6 - Fleet-Scale Operations
 - NEW: Invoke-AzureLocalFleetOperation - Orchestrates fleet-wide updates with batching (50 clusters/batch), throttling (10 parallel), and retry logic (3 retries with exponential backoff)
 - NEW: Get-AzureLocalFleetProgress - Real-time progress tracking with success/failure percentages and per-cluster status
