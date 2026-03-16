@@ -79,6 +79,10 @@ jobs:
     - name: Collect Fleet Update Status
       shell: pwsh
       id: fleet-status
+      env:
+        INPUT_SCOPE: ${{ github.event.inputs.scope || 'all' }}
+        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        INPUT_INCLUDE_UPDATE_RUNS: ${{ github.event.inputs.include_update_runs || 'true' }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzStackHci.ManageUpdates.psd1" -Force
         
@@ -86,9 +90,9 @@ jobs:
         $outputDir = "./reports"
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
         
-        $scope = "${{ github.event.inputs.scope || 'all' }}"
-        $updateRing = "${{ github.event.inputs.update_ring }}"
-        $includeRuns = "${{ github.event.inputs.include_update_runs || 'true' }}" -eq 'true'
+        $scope = $env:INPUT_SCOPE
+        $updateRing = $env:INPUT_UPDATE_RING
+        $includeRuns = $env:INPUT_INCLUDE_UPDATE_RUNS -eq 'true'
         
         Write-Host "========================================" -ForegroundColor Cyan
         Write-Host "Fleet Update Status Collection" -ForegroundColor Cyan

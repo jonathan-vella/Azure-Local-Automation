@@ -65,6 +65,8 @@ jobs:
     
     - name: Run Cluster Inventory
       shell: pwsh
+      env:
+        INPUT_SUBSCRIPTION_FILTER: ${{ github.event.inputs.subscription_filter }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzStackHci.ManageUpdates.psd1" -Force
         
@@ -77,7 +79,7 @@ jobs:
         $jsonPath = Join-Path $outputDir "ClusterInventory_$timestamp.json"
         
         # Add subscription filter if provided
-        $subFilter = "${{ github.event.inputs.subscription_filter }}"
+        $subFilter = $env:INPUT_SUBSCRIPTION_FILTER
         $subscriptionParam = @{}
         if ($subFilter -and $subFilter -ne '') {
             $subscriptionParam['SubscriptionId'] = $subFilter

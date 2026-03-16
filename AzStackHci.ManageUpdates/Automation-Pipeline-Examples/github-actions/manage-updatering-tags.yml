@@ -77,8 +77,10 @@ jobs:
     
     - name: Validate CSV File Exists
       shell: pwsh
+      env:
+        INPUT_CSV_FILE_PATH: ${{ github.event.inputs.csv_file_path }}
       run: |
-        $csvPath = "${{ github.event.inputs.csv_file_path }}"
+        $csvPath = $env:INPUT_CSV_FILE_PATH
         
         if (-not (Test-Path $csvPath)) {
             Write-Host "ERROR: CSV file not found: $csvPath" -ForegroundColor Red
@@ -129,12 +131,15 @@ jobs:
     
     - name: Apply UpdateRing Tags
       shell: pwsh
+      env:
+        INPUT_FORCE_OVERWRITE: ${{ github.event.inputs.force_overwrite }}
+        INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzStackHci.ManageUpdates.psd1" -Force
         
         $csvPath = "${{ steps.csv-path.outputs.CSV_PATH }}"
-        $forceOverwrite = "${{ github.event.inputs.force_overwrite }}" -eq "true"
-        $dryRun = "${{ github.event.inputs.dry_run }}" -eq "true"
+        $forceOverwrite = $env:INPUT_FORCE_OVERWRITE -eq "true"
+        $dryRun = $env:INPUT_DRY_RUN -eq "true"
         
         # Create output directory for logs
         $outputDir = "./artifacts"
@@ -177,12 +182,15 @@ jobs:
     
     - name: Summary
       shell: pwsh
+      env:
+        INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        INPUT_FORCE_OVERWRITE: ${{ github.event.inputs.force_overwrite }}
       run: |
         Write-Host "## UpdateRing Tag Management Summary" >> $env:GITHUB_STEP_SUMMARY
         Write-Host "" >> $env:GITHUB_STEP_SUMMARY
         
-        $dryRun = "${{ github.event.inputs.dry_run }}" -eq "true"
-        $forceOverwrite = "${{ github.event.inputs.force_overwrite }}" -eq "true"
+        $dryRun = $env:INPUT_DRY_RUN -eq "true"
+        $forceOverwrite = $env:INPUT_FORCE_OVERWRITE -eq "true"
         
         Write-Host "| Setting | Value |" >> $env:GITHUB_STEP_SUMMARY
         Write-Host "|---------|-------|" >> $env:GITHUB_STEP_SUMMARY

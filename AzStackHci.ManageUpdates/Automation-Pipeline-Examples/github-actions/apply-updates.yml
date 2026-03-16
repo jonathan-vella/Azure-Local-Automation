@@ -73,10 +73,12 @@ jobs:
     - name: Check Cluster Readiness
       shell: pwsh
       id: readiness
+      env:
+        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzStackHci.ManageUpdates.psd1" -Force
         
-        $updateRing = "${{ github.event.inputs.update_ring }}"
+        $updateRing = $env:INPUT_UPDATE_RING
         
         Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing'"
         
@@ -151,12 +153,16 @@ jobs:
     - name: Apply Updates
       shell: pwsh
       id: apply-updates
+      env:
+        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        INPUT_UPDATE_NAME: ${{ github.event.inputs.update_name }}
+        INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzStackHci.ManageUpdates.psd1" -Force
         
-        $updateRing = "${{ github.event.inputs.update_ring }}"
-        $updateName = "${{ github.event.inputs.update_name }}"
-        $dryRun = "${{ github.event.inputs.dry_run }}" -eq "true"
+        $updateRing = $env:INPUT_UPDATE_RING
+        $updateName = $env:INPUT_UPDATE_NAME
+        $dryRun = $env:INPUT_DRY_RUN -eq "true"
         
         # Create output directory
         $outputDir = "./artifacts"
@@ -222,9 +228,12 @@ jobs:
     
     - name: Summary
       shell: pwsh
+      env:
+        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
       run: |
-        $updateRing = "${{ github.event.inputs.update_ring }}"
-        $dryRun = "${{ github.event.inputs.dry_run }}" -eq "true"
+        $updateRing = $env:INPUT_UPDATE_RING
+        $dryRun = $env:INPUT_DRY_RUN -eq "true"
         $succeeded = "${{ steps.apply-updates.outputs.SUCCEEDED }}"
         $skipped = "${{ steps.apply-updates.outputs.SKIPPED }}"
         $failed = "${{ steps.apply-updates.outputs.FAILED }}"
@@ -267,8 +276,10 @@ jobs:
     steps:
     - name: Report No Ready Clusters
       shell: pwsh
+      env:
+        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
       run: |
-        $updateRing = "${{ github.event.inputs.update_ring }}"
+        $updateRing = $env:INPUT_UPDATE_RING
         $totalCount = "${{ needs.check-readiness.outputs.total_count }}"
         
         Write-Host "## No Clusters Ready for Update" >> $env:GITHUB_STEP_SUMMARY
