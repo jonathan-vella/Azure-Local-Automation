@@ -63,7 +63,7 @@ Function New-AzLocalDeploymentReport {
     # Generate HTML report
     $htmlContent = ""
     if (-not [string]::IsNullOrWhiteSpace($HtmlOutputPath)) {
-        $htmlContent = Build-AzLocalDeploymentHtml -StatusResults $StatusResults `
+        $htmlContent = ConvertTo-AzLocalDeploymentHtml -StatusResults $StatusResults `
             -ReportTitle $ReportTitle -Timestamp $timestamp `
             -Total $total -Succeeded $succeeded -Failed $failed `
             -InProgress $inProgress -NotStarted $notStarted
@@ -79,7 +79,7 @@ Function New-AzLocalDeploymentReport {
     # Generate Markdown report
     $markdownContent = ""
     if (-not [string]::IsNullOrWhiteSpace($MarkdownOutputPath)) {
-        $markdownContent = Build-AzLocalDeploymentMarkdown -StatusResults $StatusResults `
+        $markdownContent = ConvertTo-AzLocalDeploymentMarkdown -StatusResults $StatusResults `
             -ReportTitle $ReportTitle -Timestamp $timestamp `
             -Total $total -Succeeded $succeeded -Failed $failed `
             -InProgress $inProgress -NotStarted $notStarted
@@ -102,7 +102,7 @@ Function New-AzLocalDeploymentReport {
 ########################################
 # Private helper: Build HTML report
 ########################################
-Function Build-AzLocalDeploymentHtml {
+Function ConvertTo-AzLocalDeploymentHtml {
     [OutputType([string])]
     [CmdletBinding()]
     param (
@@ -377,7 +377,7 @@ Function Build-AzLocalDeploymentHtml {
 ########################################
 # Private helper: Build Markdown report
 ########################################
-Function Build-AzLocalDeploymentMarkdown {
+Function ConvertTo-AzLocalDeploymentMarkdown {
     [OutputType([string])]
     [CmdletBinding()]
     param (
