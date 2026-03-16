@@ -24,7 +24,11 @@
     $script:AzLocalLogFilePath = $LogFilePath
     $logDir = Split-Path $LogFilePath -Parent
     if ($logDir -and -not (Test-Path $logDir)) {
-        New-Item -Path $logDir -ItemType Directory -Force | Out-Null
+        try {
+            New-Item -Path $logDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Host "WARNING: Failed to create log directory '$logDir': $($_.Exception.Message)" -ForegroundColor Yellow
+        }
     }
     Write-AzLocalLog "Log file initialised: $LogFilePath" -Level Info
 }

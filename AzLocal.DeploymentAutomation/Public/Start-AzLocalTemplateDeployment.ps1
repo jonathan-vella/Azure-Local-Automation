@@ -99,7 +99,12 @@
         # --- Internal switch: skip pre-flight checks when called from Start-AzLocalCsvDeployment ---
         # (Pre-flight checks were already performed by Test-AzLocalClusterPreFlight)
         [Parameter(Mandatory = $false, DontShow = $true)]
-        [switch]$SkipPreFlightChecks
+        [switch]$SkipPreFlightChecks,
+
+        # --- Optional: skip searching the Azure Local Supportability TSG repository for matching troubleshooting guides on failure ---
+        # (Online TSG search is enabled by default; use this switch to disable it)
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipOnlineTSGSearch
 
     )
 
@@ -251,8 +256,17 @@
             $localAdminPassword = $kvLocalSecret.SecretValue
             Write-AzLocalLog "Local admin password retrieved from Key Vault secret '$kvLocalSecretName'." -Level Success
         } catch {
-            Write-AzLocalLog "Failed to retrieve local admin secret '$kvLocalSecretName' from Key Vault '$CredentialKeyVaultName'." -Level Error
-            throw "Failed to retrieve Key Vault secret '$kvLocalSecretName'. $($_.Exception.Message)"
+            $kvError = $_.Exception.Message
+            if ($kvError -match 'SecretNotFound|does not exist|was not found') {
+                Write-AzLocalLog "Key Vault secret '$kvLocalSecretName' not found in vault '$CredentialKeyVaultName'. Verify the secret name." -Level Error
+                throw "Key Vault secret '$kvLocalSecretName' not found in vault '$CredentialKeyVaultName'."
+            } elseif ($kvError -match 'Forbidden|Access denied|does not have.*permission|Unauthorized') {
+                Write-AzLocalLog "Permission denied accessing Key Vault '$CredentialKeyVaultName'. Verify the identity has 'Get' secret permission." -Level Error
+                throw "Permission denied accessing Key Vault secret '$kvLocalSecretName' in vault '$CredentialKeyVaultName'."
+            } else {
+                Write-AzLocalLog "Failed to retrieve local admin secret '$kvLocalSecretName' from Key Vault '$CredentialKeyVaultName'." -Level Error
+                throw "Failed to retrieve Key Vault secret '$kvLocalSecretName'. $kvError"
+            }
         }
 
         # LCM Admin password from Key Vault
@@ -262,8 +276,17 @@
             $AzureStackLCMAdminPassword = $kvLCMSecret.SecretValue
             Write-AzLocalLog "LCM admin password retrieved from Key Vault secret '$kvLCMSecretName'." -Level Success
         } catch {
-            Write-AzLocalLog "Failed to retrieve LCM admin secret '$kvLCMSecretName' from Key Vault '$CredentialKeyVaultName'." -Level Error
-            throw "Failed to retrieve Key Vault secret '$kvLCMSecretName'. $($_.Exception.Message)"
+            $kvError = $_.Exception.Message
+            if ($kvError -match 'SecretNotFound|does not exist|was not found') {
+                Write-AzLocalLog "Key Vault secret '$kvLCMSecretName' not found in vault '$CredentialKeyVaultName'. Verify the secret name." -Level Error
+                throw "Key Vault secret '$kvLCMSecretName' not found in vault '$CredentialKeyVaultName'."
+            } elseif ($kvError -match 'Forbidden|Access denied|does not have.*permission|Unauthorized') {
+                Write-AzLocalLog "Permission denied accessing Key Vault '$CredentialKeyVaultName'. Verify the identity has 'Get' secret permission." -Level Error
+                throw "Permission denied accessing Key Vault secret '$kvLCMSecretName' in vault '$CredentialKeyVaultName'."
+            } else {
+                Write-AzLocalLog "Failed to retrieve LCM admin secret '$kvLCMSecretName' from Key Vault '$CredentialKeyVaultName'." -Level Error
+                throw "Failed to retrieve Key Vault secret '$kvLCMSecretName'. $kvError"
+            }
         }
 
     } elseif ($LocalAdminCredential -and $LCMAdminCredential) {
@@ -277,15 +300,15 @@
         # --- Interactive prompt fallback ---
         Write-Verbose "No credential parameters or Key Vault specified. Prompting interactively..."
         $localAdminPassword = Read-Host "`nPlease enter the Nodes Local Admin Password" -AsSecureString -ErrorAction Stop
-        if(-not($localAdminPassword)) {
-            Write-AzLocalLog "Null local admin password. This is a mandatory requirement." -Level Error
+        if (-not $localAdminPassword -or $localAdminPassword.Length -eq 0) {
+            Write-AzLocalLog "Local admin password is required and cannot be empty." -Level Error
             throw "Local admin password is required."
         }
         Write-Verbose "Local admin password captured."
 
         $AzureStackLCMAdminPassword = Read-Host "`nPlease enter the LCM domain user account admin Password" -AsSecureString -ErrorAction Stop
-        if(-not($AzureStackLCMAdminPassword)) {
-            Write-AzLocalLog "Null LCM domain user account password. This is a mandatory requirement." -Level Error
+        if (-not $AzureStackLCMAdminPassword -or $AzureStackLCMAdminPassword.Length -eq 0) {
+            Write-AzLocalLog "LCM domain user account password is required and cannot be empty." -Level Error
             throw "LCM domain user account password is required."
         }
         Write-Verbose "LCM admin password captured."
@@ -438,7 +461,7 @@
     # ($deploymentName was resolved and validated earlier alongside other resource names)
     
     # Verify the resource group and Arc nodes exist before starting deployment
-    # (Skip when called from Start-AzLocalCsvDeployment — pre-flight already performed by Test-AzLocalClusterPreFlight)
+    # (Skip when called from Start-AzLocalCsvDeployment - pre-flight already performed by Test-AzLocalClusterPreFlight)
     if ($SkipPreFlightChecks) {
         Write-Verbose "Skipping pre-flight checks (already performed by caller)."
     } else {
@@ -450,7 +473,7 @@
 
         } else {
 
-            # Resource group exists — run Azure prerequisite checks before proceeding
+            # Resource group exists - run Azure prerequisite checks before proceeding
             Write-AzLocalLog "Found target resource group '$ResourceGroupName' for deployment." -Level Success
 
             # Check Azure prerequisites (resource providers registered + RBAC advisory)
@@ -548,7 +571,7 @@
                     }
                 }
             } catch {
-                # ErrorDetails wasn't JSON — log it raw
+                # ErrorDetails wasn't JSON - log it raw
                 Write-AzLocalLog "Error details: $($_.ErrorDetails.Message)" -Level Error
             }
         }
@@ -558,9 +581,18 @@
             Write-AzLocalLog "Deployment error variable: $ClusterDeploymentError" -Level Error
         }
 
+        # Provide troubleshooting hints for common validation/deployment failures
+        $troubleshootErrorText = "$($_.Exception.Message)"
+        if ($_.ErrorDetails.Message) { $troubleshootErrorText += " $($_.ErrorDetails.Message)" }
+        $troubleshootParams = @{ ErrorText = $troubleshootErrorText }
+        if (-not $SkipOnlineTSGSearch) { $troubleshootParams['SearchOnline'] = $true }
+        Get-AzLocalValidationTroubleshootingHints @troubleshootParams
+
         throw
     } finally {
-        # Clear sensitive credential variables from memory
+        # Securely dispose sensitive credential variables from memory
+        if ($localAdminPassword -is [System.Security.SecureString]) { $localAdminPassword.Dispose() }
+        if ($AzureStackLCMAdminPassword -is [System.Security.SecureString]) { $AzureStackLCMAdminPassword.Dispose() }
         $localAdminPassword = $null
         $AzureStackLCMAdminPassword = $null
         $kvLocalSecret = $null

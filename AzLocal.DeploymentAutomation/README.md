@@ -1,19 +1,29 @@
 # AzLocal.DeploymentAutomation
 
+### Latest Version: **0.9.5**
+
+```powershell
+# Install the module (initial setup)
+Install-Module -Name AzLocal.DeploymentAutomation -Scope CurrentUser
+
+# Update the module (already installed)
+Update-Module -Name AzLocal.DeploymentAutomation
+```
+
 PowerShell module for deploying Azure Local (formerly Azure Stack HCI) clusters using ARM templates and parameter files. Supports SingleNode, StorageSwitched (2–16 nodes with storage network switch), StorageSwitchless (2–4 nodes), and Rack-Aware Cluster (2, 4, 6 and 8) deployment topologies with configurable resource naming standards and automated two-phase deployment process. This requires the physical nodes to have a running OS installed, with hardware component drivers installed, and Azure Arc Agent registered and resources present in an Azure subscription.
 
 > **Disclaimer:** This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](../LICENSE) for further information.
 
 ## Overview
 
-Azure Local cluster deployments via ARM templates require a **two-phase process**: first a **Validate** deployment to verify configuration, then a **Deploy** deployment to provision the cluster. This module provides four exported functions:
+Azure Local cluster deployments via ARM templates require a **two-phase process**: first a **Validate** deployment to verify configuration, then a **Deploy** deployment to provision the cluster, this module provides a **ValidateAndDeploy** option that automates both steps. This is implemented by the module monitoring the Validate deployment (step 1), and immediately stating the Deploy (step 2) once the Validate deployment completes successfully. This module provides four exported functions:
 
 | Function | Purpose |
 |----------|---------|
 | **`Start-AzLocalTemplateDeployment`** | Orchestrates the end-to-end deployment workflow for a **single cluster** (parameter collection, naming resolution, ARM template submission). Supports interactive and non-interactive usage. |
 | **`Watch-AzLocalDeployment`** | Monitors a running ARM deployment by polling for status changes. Useful for tracking long-running validate/deploy operations from the same or a separate PowerShell session. |
 | **`Start-AzLocalCsvDeployment`** | **Batch/CI/CD function.** Reads a CSV file of cluster definitions, runs pre-flight checks, and submits ARM deployments for all eligible clusters. Generates JUnit XML reports. |
-| **`Get-AzLocalDeploymentStatus`** | **Batch/CI/CD function.** Checks the current ARM deployment status for all clusters in a CSV file. Generates JUnit XML reports for dashboards. |
+| **`Get-AzLocalDeploymentStatus`** | **Batch/CI/CD function.** Checks the current ARM deployment status for all clusters in a CSV file. Generates JUnit XML, HTML, and Markdown reports for dashboards and stakeholder visibility. |
 
 > **Reference:** [Deploy Azure Local using ARM templates](https://learn.microsoft.com/azure/azure-local/deploy/deployment-azure-resource-manager-template)
 
@@ -103,7 +113,8 @@ AzLocal.DeploymentAutomation/
 │   ├── New-AzLocalJUnitXml.ps1                # JUnit XML report generation
 │   ├── Import-AzLocalDeploymentCsv.ps1        # CSV import and validation
 │   ├── Test-AzLocalClusterPreFlight.ps1       # Pre-flight validation checks
-│   └── Test-AzLocalAzurePrerequisites.ps1     # Azure RP registration + RBAC checks
+│   ├── Test-AzLocalAzurePrerequisites.ps1     # Azure RP registration + RBAC checks
+│   └── Get-AzLocalValidationTroubleshootingHints.ps1  # Deployment failure analysis + remediation hints
 ├── .config/
 │   └── naming-standards-config.json           # Naming standards and default values
 ├── templates/
@@ -136,7 +147,7 @@ AzLocal.DeploymentAutomation/
 The module is published on the [PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.DeploymentAutomation/):
 
 ```powershell
-# Install the module
+# Install the module with -Scope CurrentUser, could use -Scope 'AllUsers' if running with admin rights
 Install-Module -Name AzLocal.DeploymentAutomation -Scope CurrentUser
 
 # Install required Az modules (if not already present)
@@ -358,6 +369,7 @@ Main entry point for deploying a single Azure Local cluster.
 | `-CredentialKeyVaultName` | `[string]` | No | Azure Key Vault name to retrieve credentials from |
 | `-LocalAdminSecretName` | `[string]` | No | Key Vault secret name for local admin password (default: `LocalAdminCredential`) |
 | `-LCMAdminSecretName` | `[string]` | No | Key Vault secret name for LCM admin password (default: `AzureStackLCMUserCredential`) |
+| `-SkipOnlineTSGSearch` | `[switch]` | No | Disables the automatic online search of the [Azure Local Supportability TSG repository](https://github.com/Azure/AzureLocal-Supportability/blob/main/TSG/Deployment/README.md) on failure (online search is enabled by default) |
 | `-WhatIf` | `[switch]` | No | Shows what deployment actions would be taken without executing them |
 | `-Confirm` | `[switch]` | No | Prompts for confirmation before each deployment phase |
 
@@ -457,6 +469,7 @@ Monitors a running ARM deployment by polling for status changes. Displays timest
 | `-PollingIntervalSeconds` | `[int]` | No | `30` | How often (in seconds) to poll for status changes (10–600) |
 | `-TimeoutMinutes` | `[int]` | No | `0` | Maximum monitoring time in minutes. `0` = no timeout (0–1440) |
 | `-PassThru` | `[switch]` | No | — | Returns the final deployment object when monitoring completes |
+| `-SkipOnlineTSGSearch` | `[switch]` | No | — | Disables the automatic online search of the [Azure Local Supportability TSG repository](https://github.com/Azure/AzureLocal-Supportability/blob/main/TSG/Deployment/README.md) on failure (online search is enabled by default) |
 | `-LogFilePath` | `[string]` | No | — | Path to a log file for debug/diagnostic output |
 
 #### Usage
@@ -538,6 +551,9 @@ Checks the current ARM deployment status for all clusters with `ReadyToDeploy = 
 |-----------|------|----------|-------------|
 | `-CsvFilePath` | `[string]` | Yes | Path to the cluster deployments CSV file |
 | `-JUnitOutputPath` | `[string]` | No | Path to write JUnit XML test results |
+| `-HtmlOutputPath` | `[string]` | No | Path to write a self-contained HTML deployment status report |
+| `-MarkdownOutputPath` | `[string]` | No | Path to write a Markdown status report (for GitHub Step Summary / Azure DevOps) |
+| `-ReportTitle` | `[string]` | No | Custom title for the HTML/Markdown report header (default: 'Azure Local Deployment Status Report') |
 | `-LogFilePath` | `[string]` | No | Path to write a log file for diagnostic output |
 
 #### Status Values
@@ -560,6 +576,14 @@ Checks the current ARM deployment status for all clusters with `ReadyToDeploy = 
 Get-AzLocalDeploymentStatus `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
     -JUnitOutputPath './reports/status-results.xml'
+
+# Generate HTML and Markdown reports for stakeholder visibility
+Get-AzLocalDeploymentStatus `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -JUnitOutputPath './reports/status-results.xml' `
+    -HtmlOutputPath './reports/deployment-status.html' `
+    -MarkdownOutputPath './reports/deployment-status.md' `
+    -ReportTitle 'Production Fleet - Weekly Status'
 ```
 
 ---
@@ -866,6 +890,48 @@ For example: `NYC01-single-node-parameters-file.json`
 
 ## Troubleshooting
 
+When a deployment or validation step fails, the module automatically analyses the ARM error codes and messages to provide **targeted troubleshooting hints** in the console output. These hints cover the most common failure patterns and include specific remediation steps.
+
+### Automatic Troubleshooting Hints
+
+The following failure patterns are detected automatically — no additional parameters required:
+
+| Error Pattern | Hint Title | What It Detects |
+|---------------|------------|------------------|
+| `NetworkIntentValidationFailed` | Network Adapter Mismatch | NIC names in deployment parameters don't match the physical adapters on the node(s) |
+| `vManagement(vManagement(...))` | Management Intent Name Double-Wrapped | Intent name includes the `vManagement()` prefix that the system adds automatically |
+| `OuGpoInheritance` / `GpoInheritanceBlocked` | GPO Inheritance Block Required | GPO inheritance is not blocked on the AD OU — may also need WMI filters for enforced parent GPOs |
+| `RoleAssignmentExists` | Duplicate RBAC Role Assignment | A previous deployment attempt already created the role assignment — includes `az role assignment delete` command guidance |
+| `PhysicalDisk` / `CanPool` / `HCISupportedData` | Physical Disk / Storage Validation Failure | Data disks not visible or behind a RAID controller — includes S2D requirements and disk reset steps |
+| `OperationTimeout` | Deployment Settings Validation Timeout | Environment checker timed out during validation |
+| `UpdateDeploymentSettingsDataFailed` | Deployment Settings Validation Failed | General wrapper — identifies which validation step failed and provides per-step guidance |
+
+### Online TSG Search (Enabled by Default)
+
+On any deployment or validation failure, the module automatically searches the [Azure Local Supportability TSG repository](https://github.com/Azure/AzureLocal-Supportability/blob/main/TSG/Deployment/README.md) for matching troubleshooting guides. This behaviour is **enabled by default** — use `-SkipOnlineTSGSearch` to disable it.
+
+```powershell
+# Online TSG search happens automatically on failure — no extra parameter needed
+Start-AzLocalTemplateDeployment -SubscriptionId $subId -TypeOfDeployment SingleNode `
+    -TenantId $tenantId -DeploymentMode Validate -UniqueID "NYC01"
+
+# Disable online TSG search (e.g., air-gapped environments)
+Start-AzLocalTemplateDeployment -SubscriptionId $subId -TypeOfDeployment SingleNode `
+    -TenantId $tenantId -DeploymentMode Validate -UniqueID "NYC01" -SkipOnlineTSGSearch
+
+# Works the same way on Watch-AzLocalDeployment
+Watch-AzLocalDeployment -DeploymentName "azlocal-NYC01-SingleNode-deployment" `
+    -ResourceGroupName "rg-NYC01-azurelocal-prod" -SkipOnlineTSGSearch
+```
+
+The online search:
+- Queries the GitHub API for TSG files in `Azure/AzureLocal-Supportability/TSG/Deployment`
+- Extracts keywords from the error text and matches them against TSG filenames
+- Returns direct links to matching troubleshooting guides
+- Fails gracefully when offline (known pattern hints are still displayed)
+
+### General Troubleshooting Reference
+
 | Issue | Resolution |
 |-------|------------|
 | Resource group not found | Ensure the resource group exists and Arc nodes are registered before running the deployment |
@@ -931,6 +997,7 @@ The test suite validates:
 | LogFilePath Parameter | Presence, type, and non-mandatory flag on exported functions |
 | Pre-Flight Checks | Resource group, Azure prerequisites (RP registration + RBAC), Arc node, cluster existence, deployment state checks (mocked) |
 | Azure Prerequisites | Resource provider registration (12 providers), auto-registration, RBAC role validation, identity type handling (mocked) |
+| Validation Troubleshooting Hints | Known pattern matching (7 patterns), hint output structure, online TSG search keyword extraction, empty/null input handling, `-SkipOnlineTSGSearch` parameter on exported functions |
 | CSV Deployment | Batch deployment with pre-flight, JUnit output, skip logic (mocked) |
 | Deployment Status | Status monitoring with all status categories (mocked) |
 | CI/CD Pipelines | Automation pipeline file structure, CSV format, workflow file existence |

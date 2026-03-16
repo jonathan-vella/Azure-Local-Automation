@@ -1,0 +1,137 @@
+# Deployment Status Report
+# This pipeline generates an HTML deployment status report for Azure Local clusters.
+# It can run on a schedule (daily/weekly) or be triggered manually.
+# The report is published as a build artifact.
+#
+# AUTHENTICATION:
+# Uses an Azure DevOps Service Connection (OIDC or Service Principal).
+# See: https://learn.microsoft.com/en-us/azure/devops/pipelines/library/connect-to-azure
+#
+# This pipeline is read-only - it checks deployment statuses but does not
+# modify any Azure resources.
+
+trigger: none
+
+schedules:
+  # Run daily at 06:00 UTC (adjust as needed)
+  - cron: '0 6 * * *'
+    displayName: 'Daily at 06:00 UTC'
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: csvFilePath
+    displayName: 'Path to cluster deployments CSV file'
+    type: string
+    default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+  - name: reportTitle
+    displayName: 'Title for the HTML report'
+    type: string
+    default: 'Azure Local Deployment Status Report'
+
+variables:
+  - name: modulePath
+    value: '$(System.DefaultWorkingDirectory)/AzLocal.DeploymentAutomation'
+
+pool:
+  vmImage: 'windows-latest'
+
+jobs:
+  - job: GenerateReport
+    displayName: 'Generate Deployment Status Report'
+
+    steps:
+      - checkout: self
+        displayName: 'Checkout Repository'
+
+      - task: AzureCLI@2
+        displayName: 'Generate Deployment Status Report'
+        name: report
+        inputs:
+          azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
+          scriptType: 'pscore'
+          scriptLocation: 'inlineScript'
+          addSpnToEnvironment: true
+          inlineScript: |
+            Import-Module "$(modulePath)/AzLocal.DeploymentAutomation.psd1" -Force
+
+            $csvPath = "${{ parameters.csvFilePath }}"
+            $reportTitle = "${{ parameters.reportTitle }}"
+
+            if (-not (Test-Path $csvPath)) {
+                Write-Error "CSV file not found: $csvPath"
+                exit 1
+            }
+
+            $outputDir = "$(Build.ArtifactStagingDirectory)"
+            $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            $junitPath    = Join-Path $outputDir "status-results.xml"
+            $htmlPath     = Join-Path $outputDir "deployment-status-$timestamp.html"
+            $markdownPath = Join-Path $outputDir "deployment-status.md"
+
+            Write-Host "========================================" -ForegroundColor Cyan
+            Write-Host "Generating Deployment Status Report" -ForegroundColor Cyan
+            Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC' -AsUTC)" -ForegroundColor Cyan
+            Write-Host "========================================" -ForegroundColor Cyan
+
+            $results = Get-AzLocalDeploymentStatus `
+                -CsvFilePath $csvPath `
+                -JUnitOutputPath $junitPath `
+                -HtmlOutputPath $htmlPath `
+                -MarkdownOutputPath $markdownPath `
+                -ReportTitle $reportTitle
+
+            # Build status counts
+            $notStarted = @($results | Where-Object { $_.DeploymentStatus -eq 'NotStarted' }).Count
+            $inProgress = @($results | Where-Object { $_.DeploymentStatus -like '*InProgress*' }).Count
+            $succeeded = @($results | Where-Object { $_.DeploymentStatus -in @('DeploySucceeded','ValidateSucceeded','ClusterExists') }).Count
+            $failed = @($results | Where-Object { $_.DeploymentStatus -like '*Failed*' }).Count
+            $total = $results.Count
+
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Cyan
+            Write-Host "Report Summary" -ForegroundColor Cyan
+            Write-Host "========================================" -ForegroundColor Cyan
+            Write-Host "Not Started: $notStarted"
+            Write-Host "In Progress: $inProgress"
+            Write-Host "Succeeded:   $succeeded"
+            Write-Host "Failed:      $failed"
+            Write-Host "Total:       $total"
+            Write-Host ""
+            Write-Host "HTML report: $htmlPath"
+
+            Write-Host "##vso[task.setvariable variable=NotStarted;isOutput=true]$notStarted"
+            Write-Host "##vso[task.setvariable variable=InProgress;isOutput=true]$inProgress"
+            Write-Host "##vso[task.setvariable variable=Succeeded;isOutput=true]$succeeded"
+            Write-Host "##vso[task.setvariable variable=Failed;isOutput=true]$failed"
+            Write-Host "##vso[task.setvariable variable=Total;isOutput=true]$total"
+
+            if ($failed -gt 0) {
+                Write-Host "##vso[task.logissue type=error]$failed cluster(s) have failed deployments."
+            }
+            elseif ($inProgress -gt 0) {
+                Write-Host "##vso[task.logissue type=warning]$inProgress cluster(s) still in progress."
+            }
+            elseif ($succeeded -eq $total -and $total -gt 0) {
+                Write-Host "All $total cluster(s) deployed successfully!" -ForegroundColor Green
+            }
+
+      - task: PublishTestResults@2
+        displayName: 'Publish Status Results'
+        condition: always()
+        inputs:
+          testResultsFormat: 'JUnit'
+          testResultsFiles: '**/status-results.xml'
+          searchFolder: '$(Build.ArtifactStagingDirectory)'
+          testRunTitle: 'Deployment Status Report'
+          failTaskOnFailedTests: false
+
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish Status Reports'
+        condition: always()
+        inputs:
+          PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+          ArtifactName: 'deployment-status-report'
+          publishLocation: 'Container'

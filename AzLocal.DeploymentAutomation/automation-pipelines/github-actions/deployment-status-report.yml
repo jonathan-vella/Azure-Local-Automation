@@ -1,0 +1,182 @@
+# Deployment Status Report
+# This workflow generates an HTML deployment status report for Azure Local clusters.
+# It can run on a schedule (daily/weekly) or be triggered manually.
+# The report is uploaded as a workflow artifact and a summary is rendered in the
+# GitHub Actions Step Summary.
+#
+# AUTHENTICATION:
+# Uses OpenID Connect (OIDC) - recommended for secretless authentication.
+# See: https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect
+#
+# This workflow is read-only - it checks deployment statuses but does not
+# modify any Azure resources.
+
+name: Deployment Status Report
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC (adjust as needed)
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      csv_file_path:
+        description: 'Path to cluster deployments CSV file'
+        required: true
+        default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+      report_title:
+        description: 'Title for the HTML report'
+        required: false
+        default: 'Azure Local Deployment Status Report'
+
+env:
+  MODULE_PATH: './AzLocal.DeploymentAutomation'
+  DEFAULT_CSV_PATH: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+
+jobs:
+  generate-report:
+    name: Generate Deployment Report
+    runs-on: windows-latest
+    permissions:
+      id-token: write
+      contents: read
+      checks: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # OPTION 1: OpenID Connect (OIDC) - RECOMMENDED
+    - name: Azure Login (OIDC)
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    # OPTION 2: Client Secret - LEGACY (uncomment if OIDC not available)
+    # - name: Azure Login (Client Secret)
+    #   uses: azure/login@v2
+    #   with:
+    #     creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+
+    - name: Install Az PowerShell Modules
+      shell: pwsh
+      run: |
+        Install-Module Az.Accounts -Force -AllowClobber -Scope CurrentUser
+        Install-Module Az.Resources -Force -AllowClobber -Scope CurrentUser
+
+    - name: Generate Deployment Status Report
+      shell: pwsh
+      id: report
+      env:
+        INPUT_CSV_PATH: ${{ github.event.inputs.csv_file_path }}
+        INPUT_REPORT_TITLE: ${{ github.event.inputs.report_title }}
+      run: |
+        Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
+
+        # Use input path if manually triggered, otherwise use default
+        $csvPath = $env:INPUT_CSV_PATH
+        if ([string]::IsNullOrEmpty($csvPath)) {
+            $csvPath = "${{ env.DEFAULT_CSV_PATH }}"
+        }
+
+        $reportTitle = $env:INPUT_REPORT_TITLE
+        if ([string]::IsNullOrEmpty($reportTitle)) {
+            $reportTitle = "Azure Local Deployment Status Report"
+        }
+
+        if (-not (Test-Path $csvPath)) {
+            Write-Error "CSV file not found: $csvPath"
+            exit 1
+        }
+
+        $outputDir = "./reports"
+        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $junitPath    = Join-Path $outputDir "status-results.xml"
+        $htmlPath     = Join-Path $outputDir "deployment-status-$timestamp.html"
+        $markdownPath = Join-Path $outputDir "deployment-status.md"
+
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host "Generating Deployment Status Report" -ForegroundColor Cyan
+        Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC' -AsUTC)" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+
+        $results = Get-AzLocalDeploymentStatus `
+            -CsvFilePath $csvPath `
+            -JUnitOutputPath $junitPath `
+            -HtmlOutputPath $htmlPath `
+            -MarkdownOutputPath $markdownPath `
+            -ReportTitle $reportTitle
+
+        # Build status counts for outputs
+        $notStarted = @($results | Where-Object { $_.DeploymentStatus -eq 'NotStarted' }).Count
+        $inProgress = @($results | Where-Object { $_.DeploymentStatus -like '*InProgress*' }).Count
+        $succeeded = @($results | Where-Object { $_.DeploymentStatus -in @('DeploySucceeded','ValidateSucceeded','ClusterExists') }).Count
+        $failed = @($results | Where-Object { $_.DeploymentStatus -like '*Failed*' }).Count
+        $total = $results.Count
+
+        echo "NOT_STARTED=$notStarted" >> $env:GITHUB_OUTPUT
+        echo "IN_PROGRESS=$inProgress" >> $env:GITHUB_OUTPUT
+        echo "SUCCEEDED=$succeeded" >> $env:GITHUB_OUTPUT
+        echo "FAILED=$failed" >> $env:GITHUB_OUTPUT
+        echo "TOTAL=$total" >> $env:GITHUB_OUTPUT
+        echo "HTML_PATH=$htmlPath" >> $env:GITHUB_OUTPUT
+
+        if ($failed -gt 0) {
+            Write-Host "##[error]$failed cluster(s) have failed deployments."
+        }
+        elseif ($inProgress -gt 0) {
+            Write-Host "##[warning]$inProgress cluster(s) still in progress."
+        }
+        elseif ($succeeded -eq $total -and $total -gt 0) {
+            Write-Host "All $total cluster(s) deployed successfully!" -ForegroundColor Green
+        }
+
+    - name: Upload Status Reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: deployment-status-report-${{ github.run_number }}
+        path: ./reports/
+        retention-days: 30
+
+    - name: Publish Test Results
+      uses: dorny/test-reporter@v1
+      if: always()
+      with:
+        name: Deployment Status (${{ github.run_number }})
+        path: ./reports/status-results.xml
+        reporter: java-junit
+        fail-on-error: false
+
+    - name: Render Markdown Summary
+      if: always()
+      shell: pwsh
+      run: |
+        $mdPath = "./reports/deployment-status.md"
+        if (Test-Path $mdPath) {
+            Get-Content $mdPath -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+        } else {
+            # Fallback summary from step outputs
+            $notStarted = "${{ steps.report.outputs.NOT_STARTED }}"
+            $inProgress = "${{ steps.report.outputs.IN_PROGRESS }}"
+            $succeeded = "${{ steps.report.outputs.SUCCEEDED }}"
+            $failed = "${{ steps.report.outputs.FAILED }}"
+            $total = "${{ steps.report.outputs.TOTAL }}"
+
+            @"
+            ## Deployment Status Report - $(Get-Date -Format 'yyyy-MM-dd HH:mm UTC' -AsUTC)
+
+            | Status | Count |
+            |--------|-------|
+            | Not Started | $notStarted |
+            | In Progress | $inProgress |
+            | Succeeded | $succeeded |
+            | Failed | $failed |
+            | **Total** | **$total** |
+
+            Download the report artifact for the full HTML report.
+            "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+        }

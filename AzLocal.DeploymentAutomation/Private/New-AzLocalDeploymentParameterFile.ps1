@@ -38,7 +38,7 @@
     # Parameter file path
     $OutputDirectory = Join-Path $script:ModuleRoot "deployment-parameter-files"
 
-    # StorageSwitchless deployments have a per-node-count template (2×(N-1) storage networks)
+    # StorageSwitchless deployments have a per-node-count template (2x(N-1) storage networks)
     $switchlessFileMap = @{
         2 = 'storage-switchless-2node-parameters-file.json'
         3 = 'storage-switchless-3node-parameters-file.json'
@@ -77,7 +77,7 @@
     }
 
     # Validate that no <calculated> placeholders remain in the parameter file
-    # These indicate parameters that were not matched/replaced — the deployment would fail with invalid values
+    # These indicate parameters that were not matched/replaced - the deployment would fail with invalid values
     $unresolvedParameters = @()
     ForEach($DeploymentParameter in $ParameterFileSettings.parameters) {
         ForEach ($property in ($DeploymentParameter.PSObject.Properties)) {
@@ -105,7 +105,7 @@
     if ($unresolvedParameters.Count -gt 0) {
         $paramList = ($unresolvedParameters | Sort-Object -Unique) -join ', '
         Write-AzLocalLog "Unresolved '<calculated>' placeholders found in parameter file for: $paramList" -Level Error
-        Write-AzLocalLog "This indicates a bug in parameter matching — these values were not replaced with computed values." -Level Error
+        Write-AzLocalLog "This indicates a bug in parameter matching - these values were not replaced with computed values." -Level Error
         throw "Parameter file contains unresolved '<calculated>' placeholders for: $paramList. Deployment would fail with invalid parameter values."
     }
 

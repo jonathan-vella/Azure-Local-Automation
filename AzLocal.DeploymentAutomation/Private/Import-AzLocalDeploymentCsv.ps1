@@ -108,6 +108,16 @@
             $errors += "Row $rowNum (UniqueID=$uid): NodeCount must be an integer."
         }
 
+        # Cross-validate NodeCount against TypeOfDeployment constraints
+        if ($nodeCount -gt 0 -and $row.TypeOfDeployment -in $validTypes) {
+            switch ($row.TypeOfDeployment) {
+                'SingleNode'        { if ($nodeCount -ne 1) { $errors += "Row $rowNum (UniqueID=$uid): SingleNode requires NodeCount = 1, got $nodeCount." } }
+                'StorageSwitchless' { if ($nodeCount -lt 2 -or $nodeCount -gt 4) { $errors += "Row $rowNum (UniqueID=$uid): StorageSwitchless requires NodeCount 2-4, got $nodeCount." } }
+                'StorageSwitched'   { if ($nodeCount -lt 2 -or $nodeCount -gt 16) { $errors += "Row $rowNum (UniqueID=$uid): StorageSwitched requires NodeCount 2-16, got $nodeCount." } }
+                'RackAware'         { if ($nodeCount -notin @(2, 4, 6, 8)) { $errors += "Row $rowNum (UniqueID=$uid): RackAware requires NodeCount 2, 4, 6, or 8, got $nodeCount." } }
+            }
+        }
+
         # IP address fields validation
         foreach ($ipField in @('SubnetMask', 'DefaultGateway', 'StartingIPAddress', 'EndingIPAddress')) {
             $ipVal = $row.$ipField

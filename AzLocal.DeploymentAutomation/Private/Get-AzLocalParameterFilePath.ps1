@@ -27,7 +27,7 @@
     
     $parameterFilesDirectory = Join-Path $script:ModuleRoot "template-parameter-files"
 
-    # StorageSwitchless deployments have a per-node-count template (2×(N-1) storage networks)
+    # StorageSwitchless deployments have a per-node-count template (2x(N-1) storage networks)
     $switchlessFileMap = @{
         2 = 'storage-switchless-2node-parameters-file.json'
         3 = 'storage-switchless-3node-parameters-file.json'

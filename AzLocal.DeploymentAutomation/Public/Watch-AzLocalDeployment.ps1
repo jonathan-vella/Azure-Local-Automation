@@ -60,10 +60,15 @@
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(0, 1440)]
-        [int]$TimeoutMinutes = 0,
+        [int]$TimeoutMinutes = 180,
 
         [Parameter(Mandatory = $false)]
         [switch]$PassThru,
+
+        # Skip searching the Azure Local Supportability TSG repository on failure
+        # (Online TSG search is enabled by default; use this switch to disable it)
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipOnlineTSGSearch,
 
         [Parameter(Mandatory = $false)]
         [string]$LogFilePath = ""
@@ -188,9 +193,22 @@
             } elseif ($currentStatus -eq "Failed") {
                 Write-AzLocalLog "Deployment failed. Check the Azure Portal for detailed error information." -Level Error
                 # Attempt to display error details if available
+                $troubleshootErrorText = ""
                 if ($deployment.Error) {
                     Write-AzLocalLog "  Error Code: $($deployment.Error.Code)" -Level Error -NoTimestamp
                     Write-AzLocalLog "  Error Message: $($deployment.Error.Message)" -Level Error -NoTimestamp
+                    $troubleshootErrorText = "$($deployment.Error.Code) $($deployment.Error.Message)"
+                    if ($deployment.Error.Details) {
+                        foreach ($errDetail in $deployment.Error.Details) {
+                            $troubleshootErrorText += " $($errDetail.Code) $($errDetail.Message)"
+                        }
+                    }
+                }
+                # Provide troubleshooting hints for common validation/deployment failures
+                if (-not [string]::IsNullOrWhiteSpace($troubleshootErrorText)) {
+                    $troubleshootParams = @{ ErrorText = $troubleshootErrorText }
+                    if (-not $SkipOnlineTSGSearch) { $troubleshootParams['SearchOnline'] = $true }
+                    Get-AzLocalValidationTroubleshootingHints @troubleshootParams
                 }
             }
 

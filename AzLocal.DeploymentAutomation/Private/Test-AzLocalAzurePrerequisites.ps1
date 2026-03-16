@@ -77,8 +77,8 @@ Function Test-AzLocalAzurePrerequisites {
                 Write-AzLocalLog "Resource provider '$provider' is '$regState'. Attempting auto-registration..." -Level Warning
                 try {
                     Register-AzResourceProvider -ProviderNamespace $provider -ErrorAction Stop | Out-Null
-                    $messages += "Resource provider '$provider': AUTO-REGISTERED (was $regState)"
-                    Write-AzLocalLog "Resource provider '$provider': Auto-registered (registration may take a few minutes to propagate)." -Level Warning
+                    $messages += "Resource provider '$provider': AUTO-REGISTERED (was $regState) - registration may take 5-15 minutes to propagate"
+                    Write-AzLocalLog "Resource provider '$provider': Auto-registered. WARNING: Registration may take 5-15 minutes to propagate. If subsequent checks fail, wait and retry." -Level Warning
                 } catch {
                     $messages += "Resource provider '$provider': FAILED TO REGISTER - $($_.Exception.Message)"
                     Write-AzLocalLog "Resource provider '$provider': Failed to register - $($_.Exception.Message)" -Level Error
@@ -133,7 +133,7 @@ Function Test-AzLocalAzurePrerequisites {
             $subAssignments = @(Get-AzRoleAssignment -SignInName $accountId -Scope $subscriptionScope -ErrorAction Stop)
             $rgAssignments = @(Get-AzRoleAssignment -SignInName $accountId -Scope $rgScope -ErrorAction Stop)
         } else {
-            # Service Principal or Managed Identity — resolve Object ID from Application ID
+            # Service Principal or Managed Identity - resolve Object ID from Application ID
             $sp = Get-AzADServicePrincipal -ApplicationId $accountId -ErrorAction Stop
             if ($sp) {
                 $subAssignments = @(Get-AzRoleAssignment -ObjectId $sp.Id -Scope $subscriptionScope -ErrorAction Stop)

@@ -32,11 +32,24 @@
     .PARAMETER LogFilePath
     Optional. Path to a log file for diagnostic output.
 
+    .PARAMETER HtmlOutputPath
+    Optional. Path to write an HTML deployment status report.
+
+    .PARAMETER MarkdownOutputPath
+    Optional. Path to write a Markdown deployment status report (for GitHub Step Summary or Azure DevOps).
+
+    .PARAMETER ReportTitle
+    Optional. Title displayed in the HTML/Markdown report header.
+    Default: 'Azure Local Deployment Status Report'.
+
     .EXAMPLE
     Get-AzLocalDeploymentStatus -CsvFilePath './automation-pipelines/cluster-deployments.csv'
 
     .EXAMPLE
     Get-AzLocalDeploymentStatus -CsvFilePath './automation-pipelines/cluster-deployments.csv' -JUnitOutputPath './reports/status.xml'
+
+    .EXAMPLE
+    Get-AzLocalDeploymentStatus -CsvFilePath './automation-pipelines/cluster-deployments.csv' -HtmlOutputPath './reports/status.html' -MarkdownOutputPath './reports/status.md'
 
     #>
 
@@ -50,7 +63,16 @@
         [string]$JUnitOutputPath = "",
 
         [Parameter(Mandatory = $false)]
-        [string]$LogFilePath = ""
+        [string]$LogFilePath = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$HtmlOutputPath = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$MarkdownOutputPath = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$ReportTitle = "Azure Local Deployment Status Report"
     )
 
     # Reset module-scoped log path (prevents bleed-over from previous function calls)
@@ -229,6 +251,14 @@
             }
         }
         New-AzLocalJUnitXml -TestResults $junitResults -SuiteName 'AzLocalDeployment-Monitor' -OutputPath $JUnitOutputPath
+    }
+
+    # Generate HTML / Markdown reports
+    if (-not [string]::IsNullOrWhiteSpace($HtmlOutputPath) -or -not [string]::IsNullOrWhiteSpace($MarkdownOutputPath)) {
+        New-AzLocalDeploymentReport -StatusResults $allResults `
+            -HtmlOutputPath $HtmlOutputPath `
+            -MarkdownOutputPath $MarkdownOutputPath `
+            -ReportTitle $ReportTitle | Out-Null
     }
 
     # Summary

@@ -31,6 +31,7 @@
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true, Position = 0)]
+        [AllowEmptyString()]
         [string]$Message,
 
         [Parameter(Mandatory = $false, Position = 1)]
@@ -70,9 +71,11 @@
     # Log file output (all levels, always written if path is set)
     if ($script:AzLocalLogFilePath) {
         try {
-            $logLine | Out-File -FilePath $script:AzLocalLogFilePath -Append -Encoding utf8 -ErrorAction SilentlyContinue
+            $logLine | Out-File -FilePath $script:AzLocalLogFilePath -Append -Encoding utf8 -ErrorAction Stop
         } catch {
-            # Silently skip log write failures to avoid disrupting main workflow
+            # Warn once about log write failure, then disable file logging to avoid repeated warnings
+            Write-Host "WARNING: Failed to write to log file '$($script:AzLocalLogFilePath)': $($_.Exception.Message)" -ForegroundColor Yellow
+            $script:AzLocalLogFilePath = $null
         }
     }
 }

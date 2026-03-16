@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.4'
+    ModuleVersion = '0.9.5'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -44,10 +44,12 @@
         'Private\Get-AzLocalNetworkSettingsFromJson.ps1'
         'Private\Get-AzLocalParameterFilePath.ps1'
         'Private\Get-AzLocalParameterFileSettings.ps1'
+        'Private\Get-AzLocalValidationTroubleshootingHints.ps1'
         'Private\Get-ValidUniqueID.ps1'
         'Private\Import-AzLocalDeploymentCsv.ps1'
         'Private\Initialize-AzLocalLogFile.ps1'
         'Private\New-AzLocalDeploymentParameterFile.ps1'
+        'Private\New-AzLocalDeploymentReport.ps1'
         'Private\New-AzLocalJUnitXml.ps1'
         'Private\Resolve-AzLocalResourceName.ps1'
         'Private\Test-AzLocalAzurePrerequisites.ps1'
@@ -89,10 +91,27 @@
             LicenseUri = 'https://github.com/NeilBird/Azure-Local/blob/main/LICENSE'
 
             # A URL to the main website for this project.
-            ProjectUri = 'https://github.com/NeilBird/Azure-Local'
+            ProjectUri = 'https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.DeploymentAutomation/README.md'
 
             # Release notes for this version
             ReleaseNotes = @'
+## v0.9.5 - March 2026
+- Added automatic troubleshooting hints for common deployment and validation failures
+- New internal function: Get-AzLocalValidationTroubleshootingHints — analyses ARM error codes/messages against known failure patterns and provides targeted remediation guidance
+- Known patterns include: NIC adapter mismatches, management intent naming (vManagement double-wrap), GPO inheritance block requirements, duplicate RBAC role assignments, physical disk / S2D validation, deployment settings timeout
+- Added -SkipOnlineTSGSearch switch to Start-AzLocalTemplateDeployment and Watch-AzLocalDeployment — online TSG search is enabled by default; use this switch to disable it in air-gapped environments
+- Online search extracts keywords from error text and matches against TSG filenames; fails gracefully when offline
+- Troubleshooting hints are displayed automatically on deployment/validation failure in both standalone and monitoring workflows
+- Reference: https://github.com/Azure/AzureLocal-Supportability/blob/main/TSG/Deployment/README.md
+
+## v0.9.4 - March 2026
+- Added enhanced error handling and logging for improved troubleshooting and CI/CD visibility
+- Deployment errors now include detailed context such as parameter values, deployment phase, and direct links to relevant documentation and troubleshooting guides
+- Added Write-AzLocalLog internal helper function for standardized, timestamped, color-coded console output with severity levels (Info, Warning, Error, Success, Debug, Verbose)
+- All console output now uses Write-AzLocalLog for consistent formatting and enhanced visibility; log messages include contextual information to aid troubleshooting
+- Deployment functions now throw rich exceptions with detailed error information instead of returning "Error" strings, enabling proper PowerShell error handling and CI/CD test result integration
+- Updated README with new error handling and logging features, including examples of enhanced error messages and guidance
+
 ## v0.9.3 - March 2026
 - Renamed -TypeOfDeployment values for clarity: MultiNode → StorageSwitched, Switchless → StorageSwitchless
 - "Multi-Node" was ambiguous since switchless deployments are also multi-node; new names clarify the storage networking topology

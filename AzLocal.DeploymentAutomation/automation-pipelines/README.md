@@ -6,13 +6,14 @@ This folder contains example CI/CD pipelines for automating Azure Local cluster 
 
 ## Overview
 
-Three pipelines are provided for each platform:
+Four pipelines are provided for each platform:
 
 | Pipeline | Description |
 |----------|-------------|
 | **Validate Deployments** | Runs pre-flight checks (Arc nodes, resource groups, naming) and submits ARM Validate for eligible clusters |
 | **Deploy Clusters** | Submits ARM Deploy requests for clusters that passed validation |
-| **Deployment Monitor** | 📊 Monitors deployment progress with JUnit XML reports for dashboards |
+| **Deployment Monitor** | Monitors deployment progress with JUnit XML reports for dashboards (every 15 min) |
+| **Deployment Status Report** | Generates HTML and Markdown status reports for stakeholder visibility (daily/weekly) |
 
 ### Multi-Stage Pipeline Flow
 
@@ -38,6 +39,12 @@ Three pipelines are provided for each platform:
  ┌─────────────────────┐
  │ 3. Deployment        │  Status monitoring every 15 min
  │    Monitor           │  (scheduled + manual trigger)
+ └─────────┬───────────┘
+           │ On schedule
+           ▼
+ ┌─────────────────────┐
+ │ 4. Deployment        │  HTML/Markdown report (daily/weekly)
+ │    Status Report     │  (scheduled + manual trigger)
  └─────────────────────┘
 ```
 
@@ -395,13 +402,21 @@ Start-AzLocalCsvDeployment `
 
 ### `Get-AzLocalDeploymentStatus`
 
-Monitors the status of deployments defined in a CSV file.
+Monitors the status of deployments defined in a CSV file. Optionally generates HTML and Markdown reports.
 
 ```powershell
 # Check status of all deployments
 Get-AzLocalDeploymentStatus `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
     -JUnitOutputPath './reports/status-results.xml'
+
+# Generate HTML + Markdown reports
+Get-AzLocalDeploymentStatus `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -JUnitOutputPath './reports/status-results.xml' `
+    -HtmlOutputPath './reports/deployment-status.html' `
+    -MarkdownOutputPath './reports/deployment-status.md' `
+    -ReportTitle 'Production Fleet Status'
 ```
 
 **Parameters:**
@@ -410,6 +425,9 @@ Get-AzLocalDeploymentStatus `
 |-----------|------|----------|-------------|
 | `CsvFilePath` | String | ✅ | Path to the cluster deployments CSV file |
 | `JUnitOutputPath` | String | | Path to write JUnit XML results |
+| `HtmlOutputPath` | String | | Path to write a self-contained HTML status report |
+| `MarkdownOutputPath` | String | | Path to write a Markdown status report (for GitHub Step Summary / Azure DevOps) |
+| `ReportTitle` | String | | Custom title for the HTML/Markdown report header |
 | `LogFilePath` | String | | Path to write log file |
 
 **Status Values:**
@@ -447,11 +465,13 @@ automation-pipelines/
 ├── github-actions/
 │   ├── validate-deployments.yml           # Stage 1: Pre-flight checks, Stage 2: ARM Validate
 │   ├── deploy-clusters.yml                # Stage 2: ARM Deploy
-│   └── deployment-monitor.yml             # Scheduled status monitor
+│   ├── deployment-monitor.yml             # Scheduled status monitor (every 15 min)
+│   └── deployment-status-report.yml       # HTML/Markdown status report (daily/weekly)
 └── azure-devops/
     ├── validate-deployments.yml            # Stage 1: Pre-flight checks, Stage 2: ARM Validate
     ├── deploy-clusters.yml                 # Stage 2: ARM Deploy
-    └── deployment-monitor.yml             # Scheduled status monitor
+    ├── deployment-monitor.yml             # Scheduled status monitor (every 15 min)
+    └── deployment-status-report.yml       # HTML/Markdown status report (daily/weekly)
 ```
 
 ---
@@ -474,3 +494,80 @@ automation-pipelines/
 
 - **GitHub Actions**: Download the report artifacts from the workflow run
 - **Azure DevOps**: Check the **Tests** tab and download build artifacts
+
+---
+
+## Deployment Status Report
+
+The **Deployment Status Report** pipeline generates a self-contained HTML report and a Markdown summary of all cluster deployment statuses. This is designed for stakeholder visibility and fleet management dashboards.
+
+### What the Report Contains
+
+- **Summary cards** showing total, succeeded, failed, in-progress, and not-started counts
+- **Progress bar** with color-coded segments showing overall fleet health
+- **Cluster details table** with per-cluster status, resource group, provisioning state, and messages
+- **Color-coded status badges** for quick visual scanning
+- **Failed deployment details** section highlighting clusters that need attention
+
+### Report Formats
+
+| Format | Purpose | Where It Appears |
+|--------|---------|------------------|
+| **HTML** | Self-contained report for sharing, archiving, or embedding in dashboards | Workflow artifact (downloadable) |
+| **Markdown** | Summary with status icons and tables | GitHub Step Summary / Azure DevOps build log |
+| **JUnit XML** | Machine-readable test results | dorny/test-reporter (GitHub) / Tests tab (Azure DevOps) |
+
+### Schedule
+
+By default, the report runs **daily at 06:00 UTC**. You can adjust the cron schedule in the workflow YAML, or run it manually at any time.
+
+```yaml
+# Daily at 06:00 UTC (default)
+- cron: '0 6 * * *'
+
+# Every Monday and Thursday at 08:00 UTC
+- cron: '0 8 * * 1,4'
+
+# Weekly on Monday at 06:00 UTC
+- cron: '0 6 * * 1'
+```
+
+### GitHub Actions Usage
+
+1. Copy `deployment-status-report.yml` to `.github/workflows/`
+2. Configure repository secrets (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`)
+3. Run manually from **Actions** tab or wait for the daily schedule
+4. View the Markdown summary in the **Step Summary** tab
+5. Download the HTML report from the **Artifacts** section
+
+### Azure DevOps Usage
+
+1. Create a pipeline from `azure-devops/deployment-status-report.yml`
+2. Ensure the service connection name matches (default: `AzureLocal-ServiceConnection`)
+3. Run manually or wait for the daily schedule
+4. View JUnit results in the **Tests** tab
+5. Download the HTML report from **Build Artifacts**
+
+### Custom Report Title
+
+When triggering manually, you can specify a custom report title:
+
+```powershell
+# GitHub Actions: Use the report_title input when running the workflow
+# Azure DevOps: Use the reportTitle parameter when running the pipeline
+
+# PowerShell (local):
+Get-AzLocalDeploymentStatus `
+    -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -HtmlOutputPath './reports/production-status.html' `
+    -ReportTitle 'Production Fleet - Weekly Status'
+```
+
+### Monitor vs. Status Report
+
+| Feature | Deployment Monitor | Deployment Status Report |
+|---------|-------------------|-------------------------|
+| **Frequency** | Every 15 minutes | Daily/weekly |
+| **Purpose** | Track active deployments in real-time | Fleet status summary for stakeholders |
+| **Outputs** | JUnit XML + Step Summary | HTML report + Markdown + JUnit XML |
+| **Best for** | CI/CD dashboards during deployments | Management reporting, fleet health checks |

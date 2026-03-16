@@ -17,6 +17,8 @@ BeforeAll {
     # Import the module from parent directory
     # Use the .psm1 directly to avoid RequiredModules dependency on Az.Accounts/Az.Resources
     # which may not be installed in the test environment. The manifest is tested separately.
+    # The .psm1 reads its own manifest to dot-source all function files from NestedModules,
+    # so all functions are available even without loading via the .psd1.
     $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.DeploymentAutomation.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
@@ -50,9 +52,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.9.3 in manifest' {
+        It 'Should have version 0.9.5 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '0.9.3'
+            $manifest.ModuleVersion | Should -Be '0.9.5'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -89,7 +91,7 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             try {
                 $script:ManifestData = Test-ModuleManifest -Path $script:ManifestPath -ErrorAction Stop -WarningAction SilentlyContinue
             } catch {
-                # Az modules may not be installed — parse the manifest directly for validation
+                # Az modules may not be installed - parse the manifest directly for validation
             }
             # Always parse the raw PSD1 content as a fallback
             $script:ManifestRaw = Import-PowerShellDataFile -Path $script:ManifestPath -ErrorAction Stop
@@ -142,8 +144,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 0.9.3' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.3'
+        It 'Should have version 0.9.5' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.5'
         }
     }
 }
@@ -220,6 +222,14 @@ Describe 'Function: Start-AzLocalTemplateDeployment' {
 
         It 'Should have NetworkSettingsJson parameter' {
             $script:Command.Parameters.Keys | Should -Contain 'NetworkSettingsJson'
+        }
+
+        It 'Should have SkipOnlineTSGSearch parameter' {
+            $script:Command.Parameters.Keys | Should -Contain 'SkipOnlineTSGSearch'
+        }
+
+        It 'SkipOnlineTSGSearch should be a SwitchParameter' {
+            $script:Command.Parameters['SkipOnlineTSGSearch'].ParameterType.Name | Should -Be 'SwitchParameter'
         }
 
         It 'Should support -WhatIf' {
@@ -1356,7 +1366,7 @@ Describe 'Function: New-AzLocalDeploymentParameterFile' {
 
         It 'Should not flag null or empty values as unresolved' {
             InModuleScope AzLocal.DeploymentAutomation {
-                # localAdminPassword has null and tenantId has empty string — neither is <calculated>
+                # localAdminPassword has null and tenantId has empty string - neither is <calculated>
                 $paramFileSettings = [PSCustomObject]@{
                     '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
                     contentVersion = '1.0.0.0'
@@ -2183,6 +2193,17 @@ Describe 'Function: Write-AzLocalLog' {
                 { Write-AzLocalLog "No file output" -Level Info } | Should -Not -Throw
             }
         }
+
+        It 'Should disable file logging and warn when log write fails' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                # Use an invalid path that cannot be written to
+                $script:AzLocalLogFilePath = 'Z:\nonexistent\impossible\path\test.log'
+                # Should not throw (graceful degradation)
+                { Write-AzLocalLog "Test message" -Level Info } | Should -Not -Throw
+                # Should have cleared the log file path to prevent repeated warnings
+                $script:AzLocalLogFilePath | Should -BeNullOrEmpty
+            }
+        }
     }
 }
 
@@ -2260,6 +2281,20 @@ Describe 'Function: Watch-AzLocalDeployment' {
 
         It 'Should have PassThru parameter' {
             $script:Command.Parameters.Keys | Should -Contain 'PassThru'
+        }
+
+        It 'Should have SkipOnlineTSGSearch parameter' {
+            $script:Command.Parameters.Keys | Should -Contain 'SkipOnlineTSGSearch'
+        }
+
+        It 'SkipOnlineTSGSearch should be a SwitchParameter' {
+            $script:Command.Parameters['SkipOnlineTSGSearch'].ParameterType.Name | Should -Be 'SwitchParameter'
+        }
+
+        It 'SkipOnlineTSGSearch should NOT be mandatory' {
+            $param = $script:Command.Parameters['SkipOnlineTSGSearch']
+            $attr = $param.Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' }
+            $attr.Mandatory | Should -Be $false
         }
     }
 
@@ -2366,6 +2401,16 @@ Describe 'Function: Watch-AzLocalDeployment' {
     }
 
     Context 'Terminal State Detection Logic' {
+        It 'TimeoutMinutes should default to 180' {
+            $cmd = Get-Command Watch-AzLocalDeployment
+            $defaultValue = $cmd.Parameters['TimeoutMinutes'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.PSDefaultValueAttribute] }
+            # If no PSDefaultValueAttribute, check the script default via AST
+            $paramBlock = $cmd.ScriptBlock.Ast.Body.ParamBlock
+            $timeoutParam = $paramBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'TimeoutMinutes' }
+            $timeoutParam.DefaultValue.Value | Should -Be 180
+        }
+
         It 'Should recognise Succeeded as a terminal state' {
             $terminalStates = @("Succeeded", "Failed", "Canceled")
             'Succeeded' -in $terminalStates | Should -Be $true
@@ -2950,11 +2995,19 @@ Store001,MAYBE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-1234
         }
 
         It 'Should accept all valid TypeOfDeployment values' {
-            foreach ($deployType in @('SingleNode', 'StorageSwitched', 'StorageSwitchless', 'RackAware')) {
+            $deployTests = @{
+                'SingleNode'        = @{ NodeCount = 1; IPs = '10.0.1.50' }
+                'StorageSwitched'   = @{ NodeCount = 2; IPs = '10.0.1.50;10.0.1.51' }
+                'StorageSwitchless' = @{ NodeCount = 2; IPs = '10.0.1.50;10.0.1.51' }
+                'RackAware'         = @{ NodeCount = 2; IPs = '10.0.1.50;10.0.1.51' }
+            }
+            foreach ($deployType in $deployTests.Keys) {
+                $nc = $deployTests[$deployType].NodeCount
+                $ips = $deployTests[$deployType].IPs
                 $csv = Join-Path $TestDrive "valid-$deployType.csv"
                 @"
 UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,CredentialKeyVaultName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,NodeIPAddresses
-Store001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,$deployType,1,kv-deploy,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,10.0.1.50
+Store001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,$deployType,$nc,kv-deploy,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,$ips
 "@ | Out-File -FilePath $csv -Encoding utf8
                 { Import-AzLocalDeploymentCsv -CsvFilePath $csv } | Should -Not -Throw
             }
@@ -2969,6 +3022,62 @@ Store001,$rdVal,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123
 "@ | Out-File -FilePath $csv -Encoding utf8
                 { Import-AzLocalDeploymentCsv -CsvFilePath $csv } | Should -Not -Throw
             }
+        }
+    }
+
+    Context 'NodeCount vs TypeOfDeployment Cross-Validation' {
+        It 'Should throw when SingleNode has NodeCount != 1' {
+            $badCsv = Join-Path $TestDrive 'singlenode-bad-count.csv'
+            @"
+UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,CredentialKeyVaultName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,NodeIPAddresses
+Store001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,SingleNode,2,kv-deploy,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,10.0.1.50;10.0.1.51
+"@ | Out-File -FilePath $badCsv -Encoding utf8
+            { Import-AzLocalDeploymentCsv -CsvFilePath $badCsv } | Should -Throw '*SingleNode*NodeCount*'
+        }
+
+        It 'Should throw when StorageSwitchless has NodeCount > 4' {
+            $badCsv = Join-Path $TestDrive 'switchless-bad-count.csv'
+            @"
+UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,CredentialKeyVaultName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,NodeIPAddresses
+Store001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,StorageSwitchless,8,kv-deploy,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,10.0.1.50;10.0.1.51;10.0.1.52;10.0.1.53;10.0.1.54;10.0.1.55;10.0.1.56;10.0.1.57
+"@ | Out-File -FilePath $badCsv -Encoding utf8
+            { Import-AzLocalDeploymentCsv -CsvFilePath $badCsv } | Should -Throw '*StorageSwitchless*NodeCount*'
+        }
+
+        It 'Should throw when StorageSwitchless has NodeCount = 1' {
+            $badCsv = Join-Path $TestDrive 'switchless-1node.csv'
+            @"
+UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,CredentialKeyVaultName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,NodeIPAddresses
+Store001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,StorageSwitchless,1,kv-deploy,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,10.0.1.50
+"@ | Out-File -FilePath $badCsv -Encoding utf8
+            { Import-AzLocalDeploymentCsv -CsvFilePath $badCsv } | Should -Throw '*StorageSwitchless*NodeCount*'
+        }
+
+        It 'Should throw when RackAware has odd NodeCount' {
+            $badCsv = Join-Path $TestDrive 'rackaware-odd.csv'
+            @"
+UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,CredentialKeyVaultName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,NodeIPAddresses
+Store001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,RackAware,3,kv-deploy,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,10.0.1.50;10.0.1.51;10.0.1.52
+"@ | Out-File -FilePath $badCsv -Encoding utf8
+            { Import-AzLocalDeploymentCsv -CsvFilePath $badCsv } | Should -Throw '*RackAware*NodeCount*'
+        }
+
+        It 'Should accept valid StorageSwitchless with NodeCount 2' {
+            $csv = Join-Path $TestDrive 'switchless-2node-valid.csv'
+            @"
+UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,CredentialKeyVaultName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,NodeIPAddresses
+Store001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,StorageSwitchless,2,kv-deploy,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,10.0.1.50;10.0.1.51
+"@ | Out-File -FilePath $csv -Encoding utf8
+            { Import-AzLocalDeploymentCsv -CsvFilePath $csv } | Should -Not -Throw
+        }
+
+        It 'Should accept valid RackAware with NodeCount 4' {
+            $csv = Join-Path $TestDrive 'rackaware-4node-valid.csv'
+            @"
+UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,CredentialKeyVaultName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,NodeIPAddresses
+Store001,TRUE,12345678-1234-1234-1234-123456789abc,12345678-1234-1234-1234-123456789abc,RackAware,4,kv-deploy,255.255.255.0,10.0.1.1,10.0.1.100,10.0.1.110,10.0.1.50;10.0.1.51;10.0.1.52;10.0.1.53
+"@ | Out-File -FilePath $csv -Encoding utf8
+            { Import-AzLocalDeploymentCsv -CsvFilePath $csv } | Should -Not -Throw
         }
     }
 
@@ -3224,6 +3333,7 @@ Describe 'Function: Test-AzLocalAzurePrerequisites' {
             $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
             $result.Status | Should -Be 'Passed'
             ($result.Messages -join '; ') | Should -Match 'AUTO-REGISTERED'
+            ($result.Messages -join '; ') | Should -Match '5-15 minutes'
             Should -Invoke Register-AzResourceProvider -Times 1 -ModuleName AzLocal.DeploymentAutomation
         }
 
@@ -3306,7 +3416,7 @@ Describe 'Function: Test-AzLocalAzurePrerequisites' {
             } -ModuleName AzLocal.DeploymentAutomation
 
             $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
-            # RBAC is advisory — status should still be Passed (only RP failures cause Failed)
+            # RBAC is advisory - status should still be Passed (only RP failures cause Failed)
             $result.Status | Should -Be 'Passed'
             ($result.Messages -join '; ') | Should -Match 'NOT FOUND'
             ($result.Messages -join '; ') | Should -Match 'Reader.*ASSIGNED'
@@ -3319,7 +3429,7 @@ Describe 'Function: Test-AzLocalAzurePrerequisites' {
             Mock Get-AzContext { throw "No Azure context" } -ModuleName AzLocal.DeploymentAutomation
 
             $result = Test-AzLocalAzurePrerequisites -SubscriptionId '12345678-1234-1234-1234-123456789abc' -ResourceGroupName 'rg-test'
-            # RBAC failure is advisory — status still Passed since RPs are OK
+            # RBAC failure is advisory - status still Passed since RPs are OK
             $result.Status | Should -Be 'Passed'
             ($result.Messages -join '; ') | Should -Match 'SKIPPED'
         }
@@ -3724,6 +3834,10 @@ Describe 'Automation Pipelines: File Structure' {
         It 'Should have deployment-monitor.yml' {
             Test-Path (Join-Path $script:PipelinesDir 'github-actions\deployment-monitor.yml') | Should -Be $true
         }
+
+        It 'Should have deployment-status-report.yml' {
+            Test-Path (Join-Path $script:PipelinesDir 'github-actions\deployment-status-report.yml') | Should -Be $true
+        }
     }
 
     Context 'Azure DevOps Pipelines' {
@@ -3737,6 +3851,10 @@ Describe 'Automation Pipelines: File Structure' {
 
         It 'Should have deployment-monitor.yml' {
             Test-Path (Join-Path $script:PipelinesDir 'azure-devops\deployment-monitor.yml') | Should -Be $true
+        }
+
+        It 'Should have deployment-status-report.yml' {
+            Test-Path (Join-Path $script:PipelinesDir 'azure-devops\deployment-status-report.yml') | Should -Be $true
         }
     }
 
@@ -3857,5 +3975,558 @@ Describe 'Deprecated: two-node-switched-parameters-file.json' {
     It 'two-node-switched-parameters-file.json should NOT exist (deprecated in v0.8.0)' {
         $deprecatedPath = Join-Path $PSScriptRoot '..\template-parameter-files\two-node-switched-parameters-file.json'
         Test-Path $deprecatedPath | Should -Be $false
+    }
+}
+
+# ============================================================================
+# Function: Get-AzLocalValidationTroubleshootingHints
+# ============================================================================
+Describe 'Function: Get-AzLocalValidationTroubleshootingHints' {
+
+    Context 'Parameter Validation' {
+        It 'Should exist as a command in the module' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $cmd = Get-Command Get-AzLocalValidationTroubleshootingHints -ErrorAction SilentlyContinue
+                $cmd | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should have mandatory ErrorText parameter' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $cmd = Get-Command Get-AzLocalValidationTroubleshootingHints
+                $cmd.Parameters['ErrorText'].Attributes.Where({ $_ -is [System.Management.Automation.ParameterAttribute] }).Mandatory | Should -Be $true
+            }
+        }
+
+        It 'ErrorText should be of type String' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $cmd = Get-Command Get-AzLocalValidationTroubleshootingHints
+                $cmd.Parameters['ErrorText'].ParameterType.Name | Should -Be 'String'
+            }
+        }
+
+        It 'Should have SearchOnline switch parameter' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $cmd = Get-Command Get-AzLocalValidationTroubleshootingHints
+                $cmd.Parameters.Keys | Should -Contain 'SearchOnline'
+                $cmd.Parameters['SearchOnline'].ParameterType.Name | Should -Be 'SwitchParameter'
+            }
+        }
+
+        It 'SearchOnline should NOT be mandatory' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $cmd = Get-Command Get-AzLocalValidationTroubleshootingHints
+                $attr = $cmd.Parameters['SearchOnline'].Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' }
+                $attr.Mandatory | Should -Be $false
+            }
+        }
+
+        It 'Should have OutputType of PSCustomObject[]' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $cmd = Get-Command Get-AzLocalValidationTroubleshootingHints
+                $cmd.OutputType | Should -Not -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'Known Pattern: NetworkIntentValidationFailed' {
+        It 'Should return a hint for NetworkIntentValidationFailed errors' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'NetworkIntentValidationFailed: adapters do not match with required adapters'
+                $result | Should -Not -BeNullOrEmpty
+                ($result | Where-Object { $_.Title -eq 'Network Adapter Mismatch' }) | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should include Get-NetAdapter in remediation steps' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'NetworkIntentValidationFailed'
+                $hint = $result | Where-Object { $_.Title -eq 'Network Adapter Mismatch' }
+                ($hint.Remediation -join ' ') | Should -Match 'Get-NetAdapter'
+            }
+        }
+    }
+
+    Context 'Known Pattern: Management Intent Double-Wrap' {
+        It 'Should detect vManagement(vManagement(...)) double-wrap pattern' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $errorMsg = 'expected virtual NIC name is [vManagement(vManagement(Mgmt))]'
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText $errorMsg
+                ($result | Where-Object { $_.Title -eq 'Management Intent Name Double-Wrapped' }) | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should recommend using plain intent name without vManagement prefix' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'vManagement(vManagement(Mgmt))'
+                $hint = $result | Where-Object { $_.Title -eq 'Management Intent Name Double-Wrapped' }
+                ($hint.Remediation -join ' ') | Should -Match 'vManagement'
+            }
+        }
+    }
+
+    Context 'Known Pattern: GPO Inheritance Block' {
+        It 'Should detect OuGpoInheritance errors' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'GpoInheritanceBlocked property of the AD OUs to true'
+                ($result | Where-Object { $_.Title -match 'GPO Inheritance' }) | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should mention WMI filters for enforced GPOs' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'OuGpoInheritance'
+                $hint = $result | Where-Object { $_.Title -match 'GPO Inheritance' }
+                ($hint.Remediation -join ' ') | Should -Match 'WMI filter'
+            }
+        }
+    }
+
+    Context 'Known Pattern: Duplicate RBAC Role Assignment' {
+        It 'Should detect RoleAssignmentExists errors' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'The role assignment already exists. The ID of the existing role assignment is cb7707696aeb4790a6cd257b21c5699b.'
+                ($result | Where-Object { $_.Title -match 'Duplicate RBAC' }) | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should include az role assignment delete in remediation' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'RoleAssignmentExists'
+                $hint = $result | Where-Object { $_.Title -match 'Duplicate RBAC' }
+                ($hint.Remediation -join ' ') | Should -Match 'az role assignment delete'
+            }
+        }
+    }
+
+    Context 'Known Pattern: Physical Disk Validation' {
+        It 'Should detect PhysicalDisk validation failures' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'AzStackHci_Hardware_Test_PhysicalDisk and HCISupportedData'
+                ($result | Where-Object { $_.Title -match 'Physical Disk' }) | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should include Get-PhysicalDisk in remediation' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'Test_PhysicalDisk CanPool'
+                $hint = $result | Where-Object { $_.Title -match 'Physical Disk' }
+                ($hint.Remediation -join ' ') | Should -Match 'Get-PhysicalDisk'
+            }
+        }
+
+        It 'Should mention HBA/passthrough mode for RAID controllers' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'Test_PhysicalDisk'
+                $hint = $result | Where-Object { $_.Title -match 'Physical Disk' }
+                ($hint.Remediation -join ' ') | Should -Match 'HBA.*passthrough|passthrough.*HBA'
+            }
+        }
+    }
+
+    Context 'Known Pattern: Deployment Settings Validation Failed' {
+        It 'Should detect UpdateDeploymentSettingsDataFailed errors' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'UpdateDeploymentSettingsDataFailed: Deployment Settings validation failed.'
+                ($result | Where-Object { $_.Title -eq 'Deployment Settings Validation Failed' }) | Should -Not -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'Known Pattern: OperationTimeout' {
+        It 'Should detect OperationTimeout errors' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'OperationTimeout during validation'
+                ($result | Where-Object { $_.Title -eq 'Deployment Settings Validation Timeout' }) | Should -Not -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'Multiple Pattern Matching' {
+        It 'Should return multiple hints when error text matches more than one pattern' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $errorMsg = 'UpdateDeploymentSettingsDataFailed OuGpoInheritance GpoInheritanceBlocked'
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText $errorMsg
+                $result.Count | Should -BeGreaterOrEqual 2
+            }
+        }
+    }
+
+    Context 'Hint Output Structure' {
+        It 'Should return hints with Source, Title, Description, Remediation, and Reference properties' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'NetworkIntentValidationFailed'
+                $hint = $result | Select-Object -First 1
+                $hint.PSObject.Properties.Name | Should -Contain 'Source'
+                $hint.PSObject.Properties.Name | Should -Contain 'Title'
+                $hint.PSObject.Properties.Name | Should -Contain 'Description'
+                $hint.PSObject.Properties.Name | Should -Contain 'Remediation'
+                $hint.PSObject.Properties.Name | Should -Contain 'Reference'
+            }
+        }
+
+        It 'Known pattern hints should have Source set to KnownPattern' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'RoleAssignmentExists'
+                $hint = $result | Where-Object { $_.Source -eq 'KnownPattern' }
+                $hint | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Remediation should be an array of strings' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'OuGpoInheritance'
+                $hint = $result | Select-Object -First 1
+                $hint.Remediation | Should -BeOfType [string]
+                $hint.Remediation.Count | Should -BeGreaterOrEqual 1
+            }
+        }
+
+        It 'Reference should contain a URL' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'NetworkIntentValidationFailed'
+                $hint = $result | Select-Object -First 1
+                $hint.Reference | Should -Match '^https://'
+            }
+        }
+    }
+
+    Context 'Edge Cases' {
+        It 'Should return empty array for empty error text' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText ''
+                $result | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'Should return empty array for whitespace-only error text' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText '   '
+                $result | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'Should return empty array for error text that matches no known patterns' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalValidationTroubleshootingHints -ErrorText 'Some completely unrelated error message about something else'
+                # Should return empty or null (no known patterns matched, no online search)
+                if ($result) {
+                    $result.Count | Should -Be 0
+                }
+            }
+        }
+
+        It 'Should not throw for very long error text' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $longText = 'UpdateDeploymentSettingsDataFailed ' + ('x' * 5000)
+                { Get-AzLocalValidationTroubleshootingHints -ErrorText $longText } | Should -Not -Throw
+            }
+        }
+    }
+}
+
+# ============================================================================
+# New-AzLocalDeploymentReport
+# ============================================================================
+Describe 'Function: New-AzLocalDeploymentReport' {
+
+    # Helper: build mock status results
+    BeforeAll {
+        $script:mockResults = @(
+            [PSCustomObject]@{
+                UniqueID          = 'Store001'
+                ClusterName       = 'hci-Store001'
+                ResourceGroupName = 'rg-hci-Store001'
+                DeploymentName    = 'deploy-Store001'
+                DeploymentStatus  = 'DeploySucceeded'
+                ProvisioningState = 'Succeeded'
+                Message           = "Deployment 'deploy-Store001' state: Succeeded"
+                Duration          = 3.14
+            },
+            [PSCustomObject]@{
+                UniqueID          = 'Store002'
+                ClusterName       = 'hci-Store002'
+                ResourceGroupName = 'rg-hci-Store002'
+                DeploymentName    = 'deploy-Store002'
+                DeploymentStatus  = 'DeployFailed'
+                ProvisioningState = 'Failed'
+                Message           = "Deployment 'deploy-Store002' state: Failed"
+                Duration          = 1.5
+            },
+            [PSCustomObject]@{
+                UniqueID          = 'Store003'
+                ClusterName       = 'hci-Store003'
+                ResourceGroupName = 'rg-hci-Store003'
+                DeploymentName    = 'deploy-Store003'
+                DeploymentStatus  = 'DeployInProgress'
+                ProvisioningState = 'Running'
+                Message           = "Deployment 'deploy-Store003' state: Running"
+                Duration          = 0.8
+            },
+            [PSCustomObject]@{
+                UniqueID          = 'Store004'
+                ClusterName       = 'hci-Store004'
+                ResourceGroupName = 'rg-hci-Store004'
+                DeploymentName    = 'deploy-Store004'
+                DeploymentStatus  = 'NotStarted'
+                ProvisioningState = 'N/A'
+                Message           = "No deployment found."
+                Duration          = 0.2
+            }
+        )
+    }
+
+    Context 'HTML Report Generation' {
+
+        It 'Should generate HTML file when HtmlOutputPath is specified' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $htmlPath = Join-Path $TestDrive 'report.html'
+                $result = New-AzLocalDeploymentReport -StatusResults $mockResults -HtmlOutputPath $htmlPath
+                Test-Path $htmlPath | Should -Be $true
+                $result.Html | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should produce valid HTML structure' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $htmlPath = Join-Path $TestDrive 'structure.html'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -HtmlOutputPath $htmlPath | Out-Null
+                $html = Get-Content $htmlPath -Raw
+                $html | Should -Match '<!DOCTYPE html>'
+                $html | Should -Match '<html'
+                $html | Should -Match '</html>'
+                $html | Should -Match 'Azure Local Deployment Status Report'
+            }
+        }
+
+        It 'Should include all cluster UniqueIDs in HTML' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $htmlPath = Join-Path $TestDrive 'ids.html'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -HtmlOutputPath $htmlPath | Out-Null
+                $html = Get-Content $htmlPath -Raw
+                $html | Should -Match 'Store001'
+                $html | Should -Match 'Store002'
+                $html | Should -Match 'Store003'
+                $html | Should -Match 'Store004'
+            }
+        }
+
+        It 'Should include correct summary counts in HTML' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $htmlPath = Join-Path $TestDrive 'counts.html'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -HtmlOutputPath $htmlPath | Out-Null
+                $html = Get-Content $htmlPath -Raw
+                # Total = 4 clusters
+                $html | Should -Match 'class="number">4<'
+            }
+        }
+
+        It 'Should contain status badge CSS classes' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $htmlPath = Join-Path $TestDrive 'badges.html'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -HtmlOutputPath $htmlPath | Out-Null
+                $html = Get-Content $htmlPath -Raw
+                $html | Should -Match 'status-succeeded'
+                $html | Should -Match 'status-failed'
+                $html | Should -Match 'status-inprogress'
+                $html | Should -Match 'status-notstarted'
+            }
+        }
+
+        It 'Should use custom ReportTitle in HTML' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $htmlPath = Join-Path $TestDrive 'custom-title.html'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -HtmlOutputPath $htmlPath -ReportTitle 'My Custom Report'
+                $html = Get-Content $htmlPath -Raw
+                $html | Should -Match 'My Custom Report'
+            }
+        }
+
+        It 'Should HTML-encode special characters in cluster data' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $specialResults = @(
+                    [PSCustomObject]@{
+                        UniqueID          = 'Test01'
+                        ClusterName       = 'hci-<script>alert(1)</script>'
+                        ResourceGroupName = 'rg-test'
+                        DeploymentName    = 'deploy-test'
+                        DeploymentStatus  = 'NotStarted'
+                        ProvisioningState = 'N/A'
+                        Message           = 'Contains <html> & "quotes"'
+                        Duration          = 0
+                    }
+                )
+                $htmlPath = Join-Path $TestDrive 'xss.html'
+                New-AzLocalDeploymentReport -StatusResults $specialResults -HtmlOutputPath $htmlPath | Out-Null
+                $html = Get-Content $htmlPath -Raw
+                # Should NOT contain raw script tags
+                $html | Should -Not -Match '<script>alert'
+                # Should contain encoded version
+                $html | Should -Match '&lt;script&gt;'
+            }
+        }
+
+        It 'Should create output directory if it does not exist' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $nestedPath = Join-Path $TestDrive 'sub\folder\report.html'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -HtmlOutputPath $nestedPath | Out-Null
+                Test-Path $nestedPath | Should -Be $true
+            }
+        }
+    }
+
+    Context 'Markdown Report Generation' {
+
+        It 'Should generate Markdown file when MarkdownOutputPath is specified' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $mdPath = Join-Path $TestDrive 'report.md'
+                $result = New-AzLocalDeploymentReport -StatusResults $mockResults -MarkdownOutputPath $mdPath
+                Test-Path $mdPath | Should -Be $true
+                $result.Markdown | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should include summary table in Markdown' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $mdPath = Join-Path $TestDrive 'summary.md'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -MarkdownOutputPath $mdPath | Out-Null
+                $md = Get-Content $mdPath -Raw
+                $md | Should -Match 'Succeeded \| 1'
+                $md | Should -Match 'Failed \| 1'
+                $md | Should -Match 'In Progress \| 1'
+                $md | Should -Match 'Not Started \| 1'
+                $md | Should -Match '\*\*Total\*\* \| \*\*4\*\*'
+            }
+        }
+
+        It 'Should include cluster details table in Markdown' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $mdPath = Join-Path $TestDrive 'details.md'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -MarkdownOutputPath $mdPath | Out-Null
+                $md = Get-Content $mdPath -Raw
+                $md | Should -Match 'Store001'
+                $md | Should -Match 'Store002'
+                $md | Should -Match 'hci-Store001'
+            }
+        }
+
+        It 'Should include failed deployments section in Markdown' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $mdPath = Join-Path $TestDrive 'failed.md'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -MarkdownOutputPath $mdPath | Out-Null
+                $md = Get-Content $mdPath -Raw
+                $md | Should -Match 'Failed Deployments'
+                $md | Should -Match 'Store002'
+            }
+        }
+
+        It 'Should use custom ReportTitle in Markdown' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $mdPath = Join-Path $TestDrive 'custom.md'
+                New-AzLocalDeploymentReport -StatusResults $mockResults -MarkdownOutputPath $mdPath -ReportTitle 'Weekly Fleet Status'
+                $md = Get-Content $mdPath -Raw
+                $md | Should -Match 'Weekly Fleet Status'
+            }
+        }
+    }
+
+    Context 'Both Formats' {
+
+        It 'Should generate both HTML and Markdown when both paths are specified' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $htmlPath = Join-Path $TestDrive 'both.html'
+                $mdPath = Join-Path $TestDrive 'both.md'
+                $result = New-AzLocalDeploymentReport -StatusResults $mockResults -HtmlOutputPath $htmlPath -MarkdownOutputPath $mdPath
+                Test-Path $htmlPath | Should -Be $true
+                Test-Path $mdPath | Should -Be $true
+                $result.Html | Should -Not -BeNullOrEmpty
+                $result.Markdown | Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'Should return empty strings when no output paths are specified' {
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ mockResults = $script:mockResults } {
+                param ($mockResults)
+                $result = New-AzLocalDeploymentReport -StatusResults $mockResults
+                $result.Html | Should -BeNullOrEmpty
+                $result.Markdown | Should -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'Edge Cases' {
+
+        It 'Should handle empty results array' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $htmlPath = Join-Path $TestDrive 'empty.html'
+                $mdPath = Join-Path $TestDrive 'empty.md'
+                { New-AzLocalDeploymentReport -StatusResults @() -HtmlOutputPath $htmlPath -MarkdownOutputPath $mdPath } | Should -Not -Throw
+                Test-Path $htmlPath | Should -Be $true
+                $html = Get-Content $htmlPath -Raw
+                $html | Should -Match 'No clusters with ReadyToDeploy = TRUE'
+            }
+        }
+
+        It 'Should handle all-succeeded results' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $allSuccess = @(
+                    [PSCustomObject]@{
+                        UniqueID = 'S1'; ClusterName = 'c1'; ResourceGroupName = 'rg1'
+                        DeploymentName = 'd1'; DeploymentStatus = 'DeploySucceeded'
+                        ProvisioningState = 'Succeeded'; Message = 'OK'; Duration = 1
+                    },
+                    [PSCustomObject]@{
+                        UniqueID = 'S2'; ClusterName = 'c2'; ResourceGroupName = 'rg2'
+                        DeploymentName = 'd2'; DeploymentStatus = 'ClusterExists'
+                        ProvisioningState = 'Succeeded'; Message = 'Exists'; Duration = 0.5
+                    }
+                )
+                $mdPath = Join-Path $TestDrive 'allsuccess.md'
+                New-AzLocalDeploymentReport -StatusResults $allSuccess -MarkdownOutputPath $mdPath | Out-Null
+                $md = Get-Content $mdPath -Raw
+                $md | Should -Match 'Succeeded \| 2'
+                $md | Should -Match 'Failed \| 0'
+                $md | Should -Not -Match 'Failed Deployments'
+            }
+        }
+
+        It 'Should handle ContextError status as failed' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $contextErr = @(
+                    [PSCustomObject]@{
+                        UniqueID = 'CE1'; ClusterName = 'c1'; ResourceGroupName = 'rg1'
+                        DeploymentName = 'd1'; DeploymentStatus = 'ContextError'
+                        ProvisioningState = 'N/A'; Message = 'Failed to set context'; Duration = 0
+                    }
+                )
+                $htmlPath = Join-Path $TestDrive 'contexterr.html'
+                New-AzLocalDeploymentReport -StatusResults $contextErr -HtmlOutputPath $htmlPath | Out-Null
+                $html = Get-Content $htmlPath -Raw
+                $html | Should -Match 'status-failed'
+            }
+        }
+    }
+
+    Context 'OutputType' {
+
+        It 'Should declare [hashtable] OutputType' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $cmd = Get-Command New-AzLocalDeploymentReport
+                $cmd.OutputType.Type.Name | Should -Contain 'hashtable'
+            }
+        }
     }
 }

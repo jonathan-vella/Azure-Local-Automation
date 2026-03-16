@@ -93,6 +93,19 @@ $script:AzLocalLogFilePath = $null
 # Used during Pester testing to prevent VS Code terminal from becoming unresponsive.
 $script:SuppressConsoleOutput = $false
 
-# Private and public functions are loaded via NestedModules in the module manifest (.psd1).
-# Only files explicitly listed there are loaded — this prevents unauthorised .ps1 files
-# placed in the Private/ or Public/ directories from being executed.
+# Dot-source all function files listed in the manifest's NestedModules.
+# When loaded via the .psd1, these are already loaded by NestedModules (harmless re-define).
+# When loaded via the .psm1 directly (e.g., Pester tests bypassing RequiredModules),
+# this ensures all functions are available in the module scope.
+$manifestPath = Join-Path $PSScriptRoot 'AzLocal.DeploymentAutomation.psd1'
+if (Test-Path $manifestPath) {
+    $manifestData = Import-PowerShellDataFile -Path $manifestPath -ErrorAction SilentlyContinue
+    if ($manifestData -and $manifestData.NestedModules) {
+        foreach ($nestedModule in $manifestData.NestedModules) {
+            $nestedPath = Join-Path $PSScriptRoot $nestedModule
+            if (Test-Path $nestedPath) {
+                . $nestedPath
+            }
+        }
+    }
+}
