@@ -899,10 +899,13 @@ The following failure patterns are detected automatically — no additional para
 | Error Pattern | Hint Title | What It Detects |
 |---------------|------------|------------------|
 | `NetworkIntentValidationFailed` | Network Adapter Mismatch | NIC names in deployment parameters don't match the physical adapters on the node(s) |
+| `NetAdapter_RDMA_Operational` | Network Adapter RDMA Operational Status Failure | RDMA is not operational or not supported on adapters - install vendor-specific NIC drivers or configure OverrideAdapterProperty to disable NetworkDirect |
+| `InboxDriver` / `DriverProvider Microsoft` | Network Adapters Using Inbox Drivers | Adapters are using inbox (Microsoft/Windows) drivers instead of vendor-specific drivers required for RDMA and Azure Local |
 | `vManagement(vManagement(...))` | Management Intent Name Double-Wrapped | Intent name includes the `vManagement()` prefix that the system adds automatically |
 | `OuGpoInheritance` / `GpoInheritanceBlocked` | GPO Inheritance Block Required | GPO inheritance is not blocked on the AD OU — may also need WMI filters for enforced parent GPOs |
 | `RoleAssignmentExists` | Duplicate RBAC Role Assignment | A previous deployment attempt already created the role assignment — includes `az role assignment delete` command guidance |
 | `PhysicalDisk` / `CanPool` / `HCISupportedData` | Physical Disk / Storage Validation Failure | Data disks not visible or behind a RAID controller — includes S2D requirements and disk reset steps |
+| `MandatoryRPRegistration` / `ValidateArcIntegration` | Required Resource Providers Not Registered | One or more required Azure RPs are not registered in the subscription - lists all 12 required RPs with registration commands |
 | `OperationTimeout` | Deployment Settings Validation Timeout | Environment checker timed out during validation |
 | `UpdateDeploymentSettingsDataFailed` | Deployment Settings Validation Failed | General wrapper — identifies which validation step failed and provides per-step guidance |
 

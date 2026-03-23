@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.5'
+    ModuleVersion = '0.9.6'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -95,6 +95,12 @@
 
             # Release notes for this version
             ReleaseNotes = @'
+## v0.9.6 - March 2026
+- Added troubleshooting hints for RDMA operational status failures (NetAdapter_RDMA_Operational) - detects when RDMA is not supported or not operational on network adapters and guides users to install vendor-specific NIC drivers or configure OverrideAdapterProperty
+- Added troubleshooting hints for inbox NIC driver detection (InboxDriver) - detects when network adapters are using Microsoft/Windows inbox drivers instead of vendor-specific drivers required for Azure Local deployment
+- Added troubleshooting hints for missing Azure Resource Provider registrations (MandatoryRPRegistration / ValidateArcIntegration) - lists all 12 required RPs with registration commands for both CLI and PowerShell
+- Known patterns now cover 10 common failure scenarios (up from 7)
+
 ## v0.9.5 - March 2026
 - Fixed GitHub Actions script injection vulnerability in all workflow examples (deploy-clusters, validate-deployments, deployment-monitor, deployment-status-report)
 - Replaced direct ${{ github.event.inputs.* }} interpolation in run: blocks with env: variable indirection to prevent arbitrary code execution via crafted workflow_dispatch inputs

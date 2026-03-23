@@ -13,10 +13,13 @@ Function Get-AzLocalValidationTroubleshootingHints {
 
     Known patterns cover:
     - Network adapter mismatches (NetworkIntentValidationFailed)
+    - RDMA operational status failures (NetAdapter_RDMA_Operational)
+    - Inbox NIC driver detection (InboxDriver / DriverProvider Microsoft)
     - Management intent naming issues (vManagement double-wrap)
     - GPO inheritance block requirements (OuGpoInheritance)
     - Duplicate RBAC role assignments (RoleAssignmentExists / Conflict)
     - Physical disk / Storage Spaces Direct validation failures
+    - Resource Provider registration failures (MandatoryRPRegistration / ValidateArcIntegration)
     - Deployment settings validation timeout (OperationTimeout)
     - General deployment settings validation failures (UpdateDeploymentSettingsDataFailed)
 
@@ -79,6 +82,33 @@ Function Get-AzLocalValidationTroubleshootingHints {
             Reference   = 'https://learn.microsoft.com/azure/azure-local/deploy/deployment-azure-resource-manager-template'
         },
         [PSCustomObject]@{
+            Pattern     = 'NetAdapter_RDMA_Operational|RDMA setting on adapters are invalid|NetworkDirect.*RDMA not supported'
+            Title       = 'Network Adapter RDMA Operational Status Failure'
+            Description = 'RDMA is not operational or not supported on one or more network adapters used by network intents.'
+            Remediation = @(
+                "Ensure the correct vendor-specific (non-inbox) NIC drivers are installed - inbox Microsoft drivers typically do not support RDMA."
+                "Run on each node: Get-NetAdapterRdma | Format-Table Name, InterfaceDescription, Enabled, Operational"
+                "If RDMA is not supported by the adapter hardware, configure the network intent with OverrideAdapterProperty to disable NetworkDirect."
+                "Check all network intents (Mgmt, Compute, Storage) - each intent's adapters must have consistent RDMA support."
+                "After installing updated NIC drivers, restart the network adapters or reboot the node before retrying validation."
+            )
+            Reference   = 'https://learn.microsoft.com/azure/azure-local/deploy/deployment-azure-resource-manager-template'
+        },
+        [PSCustomObject]@{
+            Pattern     = 'InboxDriver|inbox.drivers|DriverProvider.*(Microsoft|Windows).*adapters'
+            Title       = 'Network Adapters Using Inbox Drivers'
+            Description = 'One or more network adapters are using inbox (Microsoft/Windows) drivers instead of vendor-specific drivers. Inbox drivers lack features required for Azure Local deployment such as RDMA support.'
+            Remediation = @(
+                "Install the correct vendor-specific NIC drivers from your hardware manufacturer (Dell, HPE, Lenovo, etc.)."
+                "Run on each node: Get-NetAdapter | Select-Object Name, DriverProvider, DriverVersion | Format-Table"
+                "Adapters showing DriverProvider 'Microsoft' or 'Windows' are using inbox drivers and must be updated."
+                "Download the correct drivers from your hardware vendor's support site for the specific NIC model."
+                "After installing drivers, verify with Get-NetAdapter that DriverProvider shows the NIC vendor (e.g., Intel, Mellanox, Broadcom)."
+                "Reference: https://aka.ms/azurelocal/envvalidator/InboxDrivers"
+            )
+            Reference   = 'https://aka.ms/azurelocal/envvalidator/InboxDrivers'
+        },
+        [PSCustomObject]@{
             Pattern     = 'vManagement\(vManagement\(|expected virtual NIC name is \[vManagement\(vManagement'
             Title       = 'Management Intent Name Double-Wrapped'
             Description = 'The management intent name includes the vManagement() prefix, causing a double-wrapped virtual NIC name.'
@@ -133,6 +163,24 @@ Function Get-AzLocalValidationTroubleshootingHints {
                 "  Ref: https://learn.microsoft.com/troubleshoot/windows-server/backup-and-storage/delete-s2d-storage-pool-reuse-disks"
             )
             Reference   = 'https://learn.microsoft.com/azure/azure-local/deploy/deployment-azure-resource-manager-template'
+        },
+        [PSCustomObject]@{
+            Pattern     = 'MandatoryRPRegistration|ValidateArcIntegration.*RPRegistration|Resource Providers are registered'
+            Title       = 'Required Resource Providers Not Registered'
+            Description = 'One or more Azure Resource Providers required for Azure Local deployment are not registered in the subscription.'
+            Remediation = @(
+                "Register all required Resource Providers in the subscription used for deployment."
+                "Required RPs: Microsoft.HybridCompute, Microsoft.GuestConfiguration, Microsoft.HybridConnectivity,"
+                "  Microsoft.AzureStackHCI, Microsoft.Kubernetes, Microsoft.KubernetesConfiguration,"
+                "  Microsoft.ExtendedLocation, Microsoft.ResourceConnector, Microsoft.HybridContainerService,"
+                "  Microsoft.Attestation, Microsoft.Storage, Microsoft.Insights"
+                "Register via CLI:  az provider register --namespace <ProviderNamespace> --wait"
+                "Register via PowerShell:  Register-AzResourceProvider -ProviderNamespace <ProviderNamespace>"
+                "Check status:  Get-AzResourceProvider -ProviderNamespace <ProviderNamespace> | Select-Object ProviderNamespace, RegistrationState"
+                "Registration can take several minutes. Wait until the state shows 'Registered' before retrying."
+                "Ref: https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions#azure-prerequisites"
+            )
+            Reference   = 'https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions#azure-prerequisites'
         },
         [PSCustomObject]@{
             Pattern     = 'OperationTimeout|deployment settings validation call results in.*timeout'
