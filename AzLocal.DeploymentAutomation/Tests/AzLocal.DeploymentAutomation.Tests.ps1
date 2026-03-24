@@ -52,9 +52,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.9.5 in manifest' {
+        It 'Should have version 0.9.7 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '0.9.5'
+            $manifest.ModuleVersion | Should -Be '0.9.7'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -144,8 +144,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 0.9.5' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.5'
+        It 'Should have version 0.9.7' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.7'
         }
     }
 }
@@ -2408,7 +2408,7 @@ Describe 'Function: Watch-AzLocalDeployment' {
             # If no PSDefaultValueAttribute, check the script default via AST
             $paramBlock = $cmd.ScriptBlock.Ast.Body.ParamBlock
             $timeoutParam = $paramBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'TimeoutMinutes' }
-            $timeoutParam.DefaultValue.Value | Should -Be 180
+            $timeoutParam.DefaultValue.Value | Should -Be 0
         }
 
         It 'Should recognise Succeeded as a terminal state' {

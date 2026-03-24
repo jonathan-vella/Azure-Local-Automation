@@ -30,7 +30,7 @@ Function New-AzLocalDeploymentReport {
 
     .NOTES
     Author  : Neil Bird, MSFT
-    Version : 0.9.5
+    Version : 0.9.7
     Created : 2025-06-20
     #>
 

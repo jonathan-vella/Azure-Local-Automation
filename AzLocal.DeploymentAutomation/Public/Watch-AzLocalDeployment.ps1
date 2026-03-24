@@ -60,7 +60,7 @@
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(0, 1440)]
-        [int]$TimeoutMinutes = 180,
+        [int]$TimeoutMinutes = 0,
 
         [Parameter(Mandatory = $false)]
         [switch]$PassThru,

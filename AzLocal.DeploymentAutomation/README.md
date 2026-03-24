@@ -1,6 +1,6 @@
 # AzLocal.DeploymentAutomation
 
-### Latest Version: **0.9.5**
+### Latest Version: **0.9.7**
 
 ```powershell
 # Install the module (initial setup)
@@ -110,6 +110,7 @@ AzLocal.DeploymentAutomation/
 │   ├── Get-AzLocalNamingConfig.ps1
 │   ├── Resolve-AzLocalResourceName.ps1
 │   ├── Format-Json.ps1                        # JSON pretty-printer (PS 5.1 compatible)
+│   ├── New-AzLocalDeploymentReport.ps1         # Deployment status report generation (HTML/Markdown)
 │   ├── New-AzLocalJUnitXml.ps1                # JUnit XML report generation
 │   ├── Import-AzLocalDeploymentCsv.ps1        # CSV import and validation
 │   ├── Test-AzLocalClusterPreFlight.ps1       # Pre-flight validation checks

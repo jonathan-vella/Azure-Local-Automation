@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.6'
+    ModuleVersion = '0.9.7'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -95,6 +95,9 @@
 
             # Release notes for this version
             ReleaseNotes = @'
+## v0.9.7 - March 2026
+- Changed Watch-AzLocalDeployment -TimeoutMinutes default from 180 to 0 (no timeout) so the watcher runs until the deployment reaches a terminal state, accommodating long-running deploy phases
+
 ## v0.9.6 - March 2026
 - Added troubleshooting hints for RDMA operational status failures (NetAdapter_RDMA_Operational) - detects when RDMA is not supported or not operational on network adapters and guides users to install vendor-specific NIC drivers or configure OverrideAdapterProperty
 - Added troubleshooting hints for inbox NIC driver detection (InboxDriver) - detects when network adapters are using Microsoft/Windows inbox drivers instead of vendor-specific drivers required for Azure Local deployment
