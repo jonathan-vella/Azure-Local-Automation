@@ -25,6 +25,10 @@ on:
         description: 'Path to cluster deployments CSV file'
         required: true
         default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+      naming_config_path:
+        description: 'Path to naming-standards-config.json (in repo)'
+        required: true
+        default: 'AzLocal.DeploymentAutomation/.config/naming-standards-config.json'
       require_validation:
         description: 'Require successful validation before deploying'
         required: false
@@ -76,10 +80,12 @@ jobs:
       shell: pwsh
       env:
         INPUT_CSV_FILE_PATH: ${{ github.event.inputs.csv_file_path }}
+        INPUT_NAMING_CONFIG_PATH: ${{ github.event.inputs.naming_config_path }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
 
         $csvPath = $env:INPUT_CSV_FILE_PATH
+        $namingConfigPath = $env:INPUT_NAMING_CONFIG_PATH
 
         if (-not (Test-Path $csvPath)) {
             Write-Error "CSV file not found: $csvPath"
@@ -95,6 +101,7 @@ jobs:
 
         $statusResults = Get-AzLocalDeploymentStatus `
             -CsvFilePath $csvPath `
+            -NamingConfigPath $namingConfigPath `
             -JUnitOutputPath (Join-Path $outputDir "pre-deploy-status.xml")
 
         # Check if any clusters have failed validation
@@ -115,10 +122,12 @@ jobs:
       id: deploy
       env:
         INPUT_CSV_FILE_PATH: ${{ github.event.inputs.csv_file_path }}
+        INPUT_NAMING_CONFIG_PATH: ${{ github.event.inputs.naming_config_path }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
 
         $csvPath = $env:INPUT_CSV_FILE_PATH
+        $namingConfigPath = $env:INPUT_NAMING_CONFIG_PATH
         $outputDir = "./reports"
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
@@ -132,6 +141,7 @@ jobs:
         $results = Start-AzLocalCsvDeployment `
             -CsvFilePath $csvPath `
             -DeploymentMode 'Deploy' `
+            -NamingConfigPath $namingConfigPath `
             -JUnitOutputPath $junitPath `
             -LogFilePath $logPath `
             -Confirm:$false

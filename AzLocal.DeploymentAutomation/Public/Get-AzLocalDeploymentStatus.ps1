@@ -72,7 +72,12 @@
         [string]$MarkdownOutputPath = "",
 
         [Parameter(Mandatory = $false)]
-        [string]$ReportTitle = "Azure Local Deployment Status Report"
+        [string]$ReportTitle = "Azure Local Deployment Status Report",
+
+        # --- Optional: path to a custom naming-standards-config.json file ---
+        # (Overrides the default user profile and module config file resolution)
+        [Parameter(Mandatory = $false)]
+        [string]$NamingConfigPath = ""
     )
 
     # Reset module-scoped log path (prevents bleed-over from previous function calls)
@@ -88,8 +93,13 @@
     Write-AzLocalLog "  CSV File: $CsvFilePath" -Level Info -NoTimestamp
     Write-AzLocalLog "========================================================" -Level Info -NoTimestamp
 
-    # Load naming configuration
-    $NamingConfig = Get-AzLocalNamingConfig
+    # Load naming configuration (user profile, explicit path, or module default)
+    $configResult = Get-AzLocalNamingConfig -Path $NamingConfigPath
+    $NamingConfig = $configResult.Config
+    $resolvedConfigPath = $configResult.ResolvedPath
+
+    # Validate the config has been customised from shipped defaults
+    Test-AzLocalNamingConfigDefaults -Config $NamingConfig -ConfigFilePath $resolvedConfigPath
 
     # Import CSV (ReadyToDeploy = TRUE only)
     # Wrap in @() to ensure array even for single-row CSV (PS 5.1 + StrictMode compatibility)

@@ -21,10 +21,15 @@ on:
         description: 'Path to cluster deployments CSV file'
         required: true
         default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+      naming_config_path:
+        description: 'Path to naming-standards-config.json (in repo)'
+        required: true
+        default: 'AzLocal.DeploymentAutomation/.config/naming-standards-config.json'
 
 env:
   MODULE_PATH: './AzLocal.DeploymentAutomation'
   DEFAULT_CSV_PATH: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+  DEFAULT_NAMING_CONFIG_PATH: 'AzLocal.DeploymentAutomation/.config/naming-standards-config.json'
 
 jobs:
   monitor-deployments:
@@ -64,6 +69,7 @@ jobs:
       id: status
       env:
         INPUT_CSV_FILE_PATH: ${{ github.event.inputs.csv_file_path }}
+        INPUT_NAMING_CONFIG_PATH: ${{ github.event.inputs.naming_config_path }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
 
@@ -71,6 +77,10 @@ jobs:
         $csvPath = $env:INPUT_CSV_FILE_PATH
         if ([string]::IsNullOrEmpty($csvPath)) {
             $csvPath = "${{ env.DEFAULT_CSV_PATH }}"
+        }
+        $namingConfigPath = $env:INPUT_NAMING_CONFIG_PATH
+        if ([string]::IsNullOrEmpty($namingConfigPath)) {
+            $namingConfigPath = "${{ env.DEFAULT_NAMING_CONFIG_PATH }}"
         }
 
         if (-not (Test-Path $csvPath)) {
@@ -90,6 +100,7 @@ jobs:
 
         $results = Get-AzLocalDeploymentStatus `
             -CsvFilePath $csvPath `
+            -NamingConfigPath $namingConfigPath `
             -JUnitOutputPath $junitPath
 
         # Build status counts

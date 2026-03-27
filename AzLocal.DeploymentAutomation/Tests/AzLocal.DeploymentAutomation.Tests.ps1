@@ -52,9 +52,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.9.7 in manifest' {
+        It 'Should have version 0.9.8 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '0.9.7'
+            $manifest.ModuleVersion | Should -Be '0.9.8'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -144,8 +144,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 0.9.7' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.7'
+        It 'Should have version 0.9.8' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.8'
         }
     }
 }
@@ -590,29 +590,31 @@ Describe 'Function: Get-AzLocalNamingConfig' {
     Context 'Config File Loading' {
         It 'Should load the naming configuration successfully' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $config = Get-AzLocalNamingConfig
-                $config | Should -Not -BeNullOrEmpty
+                $result = Get-AzLocalNamingConfig
+                $result | Should -Not -BeNullOrEmpty
+                $result.Config | Should -Not -BeNullOrEmpty
+                $result.ResolvedPath | Should -Not -BeNullOrEmpty
             }
         }
 
         It 'Should return an object with namingStandards property' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $config = Get-AzLocalNamingConfig
-                $config.namingStandards | Should -Not -BeNullOrEmpty
+                $result = Get-AzLocalNamingConfig
+                $result.Config.namingStandards | Should -Not -BeNullOrEmpty
             }
         }
 
         It 'Should return an object with defaults property' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $config = Get-AzLocalNamingConfig
-                $config.defaults | Should -Not -BeNullOrEmpty
+                $result = Get-AzLocalNamingConfig
+                $result.Config.defaults | Should -Not -BeNullOrEmpty
             }
         }
     }
 
     Context 'Naming Standards Structure' {
         BeforeAll {
-            $script:Config = InModuleScope AzLocal.DeploymentAutomation { Get-AzLocalNamingConfig }
+            $script:Config = (InModuleScope AzLocal.DeploymentAutomation { Get-AzLocalNamingConfig }).Config
         }
 
         It 'Should have clusterName naming standard' {
@@ -658,7 +660,7 @@ Describe 'Function: Get-AzLocalNamingConfig' {
 
     Context 'Defaults Structure' {
         BeforeAll {
-            $script:Config = InModuleScope AzLocal.DeploymentAutomation { Get-AzLocalNamingConfig }
+            $script:Config = (InModuleScope AzLocal.DeploymentAutomation { Get-AzLocalNamingConfig }).Config
         }
 
         It 'Should have a default location' {
@@ -699,7 +701,7 @@ Describe 'Function: Get-AzLocalNamingConfig' {
 
     Context 'Naming Patterns Contain Expected Placeholders' {
         BeforeAll {
-            $script:Config = InModuleScope AzLocal.DeploymentAutomation { Get-AzLocalNamingConfig }
+            $script:Config = (InModuleScope AzLocal.DeploymentAutomation { Get-AzLocalNamingConfig }).Config
         }
 
         It 'clusterName should contain {UniqueID}' {
@@ -1683,7 +1685,7 @@ Describe 'Function: Test-AzLocalResourceNames' {
     Context 'Integration with Default Naming Config' {
         It 'Should pass validation for all names resolved from default config with a 3-char UniqueID' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $config = Get-AzLocalNamingConfig
+                $config = (Get-AzLocalNamingConfig).Config
                 $uid = 'ABC'
                 $names = @{
                     'ClusterName'                      = Resolve-AzLocalResourceName -Pattern $config.namingStandards.clusterName -UniqueID $uid
@@ -1702,7 +1704,7 @@ Describe 'Function: Test-AzLocalResourceNames' {
 
         It 'Should reject names resolved from default config with an 8-char UniqueID (exceeds storage account limits)' {
             InModuleScope AzLocal.DeploymentAutomation {
-                $config = Get-AzLocalNamingConfig
+                $config = (Get-AzLocalNamingConfig).Config
                 $uid = 'ABCDEF12'
                 $names = @{
                     'ClusterName'                      = Resolve-AzLocalResourceName -Pattern $config.namingStandards.clusterName -UniqueID $uid
@@ -3132,7 +3134,7 @@ Describe 'Function: Test-AzLocalClusterPreFlight' {
 
     Context 'Pre-Flight Check Logic (Mocked Azure Calls)' {
         BeforeAll {
-            $script:NamingConfig = Get-AzLocalNamingConfig
+            $script:NamingConfig = (Get-AzLocalNamingConfig).Config
 
             # Use lowercase UniqueID to ensure generated storage account names pass
             # Azure naming validation (lowercase alphanumeric only).
@@ -3566,6 +3568,9 @@ Describe 'Function: Start-AzLocalCsvDeployment' {
 
     Context 'CSV-Driven Deployment Logic (Mocked)' {
         BeforeAll {
+            # Mock the default-value validation so tests using the shipped config don't fail
+            Mock Test-AzLocalNamingConfigDefaults {} -ModuleName AzLocal.DeploymentAutomation
+
             $script:CsvPath = Join-Path $TestDrive 'deploy-test.csv'
             $csvContent = @"
 UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,Location,CredentialKeyVaultName,LocalAdminSecretName,LCMAdminSecretName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,DnsServers,NodeIPAddresses
@@ -3672,6 +3677,9 @@ Describe 'Function: Get-AzLocalDeploymentStatus' {
 
     Context 'Status Monitoring Logic (Mocked)' {
         BeforeAll {
+            # Mock the default-value validation so tests using the shipped config don't fail
+            Mock Test-AzLocalNamingConfigDefaults {} -ModuleName AzLocal.DeploymentAutomation
+
             $script:CsvPath = Join-Path $TestDrive 'status-test.csv'
             $csvContent = @"
 UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,Location,CredentialKeyVaultName,LocalAdminSecretName,LCMAdminSecretName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,DnsServers,NodeIPAddresses

@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.7'
+    ModuleVersion = '0.9.8'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -42,6 +42,7 @@
         'Private\Get-AzLocalDeploymentNetworkSettings.ps1'
         'Private\Get-AzLocalNamingConfig.ps1'
         'Private\Get-AzLocalNetworkSettingsFromJson.ps1'
+        'Private\Initialize-AzLocalUserConfig.ps1'
         'Private\Get-AzLocalParameterFilePath.ps1'
         'Private\Get-AzLocalParameterFileSettings.ps1'
         'Private\Get-AzLocalValidationTroubleshootingHints.ps1'
@@ -54,6 +55,7 @@
         'Private\Resolve-AzLocalResourceName.ps1'
         'Private\Test-AzLocalAzurePrerequisites.ps1'
         'Private\Test-AzLocalClusterPreFlight.ps1'
+        'Private\Test-AzLocalNamingConfigDefaults.ps1'
         'Private\Test-AzLocalResourceNames.ps1'
         'Private\Write-AzLocalLog.ps1'
 
@@ -95,6 +97,16 @@
 
             # Release notes for this version
             ReleaseNotes = @'
+## v0.9.8 - March 2026
+- Added -NamingConfigPath parameter to Start-AzLocalTemplateDeployment, Start-AzLocalCsvDeployment, and Get-AzLocalDeploymentStatus for explicit config file specification
+- New user profile config workflow: on first use, the module copies .config/naming-standards-config.json to $env:USERPROFILE\.AzLocalDeploymentAutomation\ so customisations survive Update-Module
+- Config resolution priority: (1) explicit -NamingConfigPath, (2) user profile directory, (3) auto-initialise from module defaults
+- New config validation: deployment functions now detect unmodified placeholder values (contoso.com, xxxxxxxx tenant ID, DC=contoso,DC=com) and block with actionable error messages
+- New internal functions: Initialize-AzLocalUserConfig (profile config setup), Test-AzLocalNamingConfigDefaults (placeholder detection)
+- Updated Get-AzLocalNamingConfig with -Path parameter and user profile fallback logic
+- All CI/CD pipeline examples (GitHub Actions + Azure DevOps) now include naming_config_path/namingConfigPath parameter and pass -NamingConfigPath to all function calls
+- Updated README and automation-pipelines README with new config workflow, parameter tables, and CI/CD guidance
+
 ## v0.9.7 - March 2026
 - Changed Watch-AzLocalDeployment -TimeoutMinutes default from 180 to 0 (no timeout) so the watcher runs until the deployment reaches a terminal state, accommodating long-running deploy phases
 

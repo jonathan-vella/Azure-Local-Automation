@@ -27,6 +27,7 @@
     Reference: https://learn.microsoft.com/en-us/azure/azure-local/deploy/deployment-azure-resource-manager-template
 
     Resource naming standards are loaded from .config/naming-standards-config.json.
+    Use -NamingConfigPath to specify a custom configuration file.
 
     #>
 
@@ -104,7 +105,12 @@
         # --- Optional: skip searching the Azure Local Supportability TSG repository for matching troubleshooting guides on failure ---
         # (Online TSG search is enabled by default; use this switch to disable it)
         [Parameter(Mandatory = $false)]
-        [switch]$SkipOnlineTSGSearch
+        [switch]$SkipOnlineTSGSearch,
+
+        # --- Optional: path to a custom naming-standards-config.json file ---
+        # (Overrides the default user profile and module config file resolution)
+        [Parameter(Mandatory = $false)]
+        [string]$NamingConfigPath = ""
 
     )
 
@@ -147,9 +153,14 @@
         default      { $effectiveNodeCount = $NodeCount }
     }
 
-    # Load naming configuration from .config/naming-standards-config.json
+    # Load naming configuration (user profile, explicit path, or module default)
     Write-Verbose "Loading naming configuration..."
-    $NamingConfig = Get-AzLocalNamingConfig
+    $configResult = Get-AzLocalNamingConfig -Path $NamingConfigPath
+    $NamingConfig = $configResult.Config
+    $resolvedConfigPath = $configResult.ResolvedPath
+
+    # Validate the config has been customised from shipped defaults
+    Test-AzLocalNamingConfigDefaults -Config $NamingConfig -ConfigFilePath $resolvedConfigPath
 
     # Get Unique ID - use parameter if provided, otherwise prompt interactively
     if (-not [string]::IsNullOrWhiteSpace($UniqueID)) {

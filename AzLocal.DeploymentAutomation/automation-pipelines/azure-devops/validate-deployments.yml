@@ -22,6 +22,11 @@ parameters:
     type: string
     default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
 
+  - name: namingConfigPath
+    displayName: 'Path to naming-standards-config.json (in repo)'
+    type: string
+    default: 'AzLocal.DeploymentAutomation/.config/naming-standards-config.json'
+
   - name: dryRun
     displayName: 'Preview which clusters would be validated (WhatIf mode)'
     type: boolean
@@ -86,12 +91,13 @@ stages:
                 # Stage 2 performs the actual ARM validate; this stage only runs pre-flight checks
 
                 $params = @{
-                    CsvFilePath     = $csvPath
-                    DeploymentMode  = 'Validate'
-                    JUnitOutputPath = $junitPath
-                    LogFilePath     = $logPath
-                    WhatIf          = $true
-                    Confirm         = $false
+                    CsvFilePath      = $csvPath
+                    DeploymentMode   = 'Validate'
+                    NamingConfigPath = "${{ parameters.namingConfigPath }}"
+                    JUnitOutputPath  = $junitPath
+                    LogFilePath      = $logPath
+                    WhatIf           = $true
+                    Confirm          = $false
                 }
 
                 $results = Start-AzLocalCsvDeployment @params
@@ -159,6 +165,7 @@ stages:
                 $results = Start-AzLocalCsvDeployment `
                     -CsvFilePath $csvPath `
                     -DeploymentMode 'Validate' `
+                    -NamingConfigPath "${{ parameters.namingConfigPath }}" `
                     -JUnitOutputPath $junitPath `
                     -LogFilePath $logPath `
                     -Confirm:$false

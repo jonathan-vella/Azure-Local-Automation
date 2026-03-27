@@ -1,6 +1,6 @@
 # AzLocal.DeploymentAutomation
 
-### Latest Version: **0.9.7**
+### Latest Version: **0.9.8**
 
 ```powershell
 # Install the module (initial setup)
@@ -108,12 +108,14 @@ AzLocal.DeploymentAutomation/
 │   ├── New-AzLocalDeploymentParameterFile.ps1
 │   ├── Test-AzLocalResourceNames.ps1
 │   ├── Get-AzLocalNamingConfig.ps1
+│   ├── Initialize-AzLocalUserConfig.ps1
 │   ├── Resolve-AzLocalResourceName.ps1
 │   ├── Format-Json.ps1                        # JSON pretty-printer (PS 5.1 compatible)
 │   ├── New-AzLocalDeploymentReport.ps1         # Deployment status report generation (HTML/Markdown)
 │   ├── New-AzLocalJUnitXml.ps1                # JUnit XML report generation
 │   ├── Import-AzLocalDeploymentCsv.ps1        # CSV import and validation
 │   ├── Test-AzLocalClusterPreFlight.ps1       # Pre-flight validation checks
+│   ├── Test-AzLocalNamingConfigDefaults.ps1   # Config default-value validation
 │   ├── Test-AzLocalAzurePrerequisites.ps1     # Azure RP registration + RBAC checks
 │   └── Get-AzLocalValidationTroubleshootingHints.ps1  # Deployment failure analysis + remediation hints
 ├── .config/
@@ -182,18 +184,35 @@ Use `Start-AzLocalTemplateDeployment` to deploy a single Azure Local cluster int
 
 ### Step 1: Customise the Configuration
 
-Before running a deployment, edit `.config/naming-standards-config.json` to match your environment.
+Before running a deployment, you need a customised `naming-standards-config.json` with your environment settings.
 
-**Locating the config file:**
+**First-run automatic setup:** If you run any deployment function without a config file in your user profile, the module automatically copies the default configuration to `$env:USERPROFILE\.AzLocalDeploymentAutomation\naming-standards-config.json` and prompts you to edit it. This ensures your customisations survive module updates via `Update-Module`.
+
+**Manual setup (optional):** You can trigger the config initialisation explicitly:
 
 ```powershell
-# If installed from PowerShell Gallery:
-$configPath = Join-Path (Get-Module AzLocal.DeploymentAutomation -ListAvailable | Select-Object -First 1).ModuleBase '.config\naming-standards-config.json'
-notepad $configPath
+# Import the module
+Import-Module AzLocal.DeploymentAutomation
 
-# If using from source (cloned repo):
-notepad .config\naming-standards-config.json
+# Run any deployment function — the module will auto-initialise the user config
+# and display the path. Then edit the file:
+$configPath = Join-Path $env:USERPROFILE '.AzLocalDeploymentAutomation\naming-standards-config.json'
+notepad $configPath
 ```
+
+**Per-invocation override:** Use `-NamingConfigPath` to point to a specific config file (useful for multi-site deployments with different naming standards):
+
+```powershell
+Start-AzLocalTemplateDeployment -NamingConfigPath 'C:\MyConfigs\site-1-config.json' ...
+```
+
+**Configuration resolution order:**
+
+| Priority | Source | Description |
+|----------|--------|-------------|
+| 1 | `-NamingConfigPath` parameter | Explicit path passed to the function |
+| 2 | User profile directory | `$env:USERPROFILE\.AzLocalDeploymentAutomation\naming-standards-config.json` |
+| 3 | Auto-initialise | Copies module default to user profile directory on first use |
 
 Update these sections:
 
@@ -316,6 +335,7 @@ Connect-AzAccount  # Or use OIDC/Managed Identity in CI/CD
 ```powershell
 Start-AzLocalCsvDeployment `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -NamingConfigPath './AzLocal.DeploymentAutomation/.config/naming-standards-config.json' `
     -DeploymentMode 'Validate' `
     -JUnitOutputPath './reports/validate-results.xml' `
     -Confirm:$false
@@ -328,6 +348,7 @@ This runs automated pre-flight checks (Azure prerequisite validation, resource g
 ```powershell
 Start-AzLocalCsvDeployment `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -NamingConfigPath './AzLocal.DeploymentAutomation/.config/naming-standards-config.json' `
     -DeploymentMode 'Deploy' `
     -JUnitOutputPath './reports/deploy-results.xml' `
     -Confirm:$false
@@ -338,6 +359,7 @@ Start-AzLocalCsvDeployment `
 ```powershell
 Get-AzLocalDeploymentStatus `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -NamingConfigPath './AzLocal.DeploymentAutomation/.config/naming-standards-config.json' `
     -JUnitOutputPath './reports/status-results.xml'
 ```
 
@@ -371,6 +393,7 @@ Main entry point for deploying a single Azure Local cluster.
 | `-LocalAdminSecretName` | `[string]` | No | Key Vault secret name for local admin password (default: `LocalAdminCredential`) |
 | `-LCMAdminSecretName` | `[string]` | No | Key Vault secret name for LCM admin password (default: `AzureStackLCMUserCredential`) |
 | `-SkipOnlineTSGSearch` | `[switch]` | No | Disables the automatic online search of the [Azure Local Supportability TSG repository](https://github.com/Azure/AzureLocal-Supportability/blob/main/TSG/Deployment/README.md) on failure (online search is enabled by default) |
+| `-NamingConfigPath` | `[string]` | No | Path to a custom `naming-standards-config.json` file (overrides user profile and module default) |
 | `-WhatIf` | `[switch]` | No | Shows what deployment actions would be taken without executing them |
 | `-Confirm` | `[switch]` | No | Prompts for confirmation before each deployment phase |
 
@@ -513,6 +536,7 @@ Reads a CSV file and submits ARM deployments for all eligible clusters (where `R
 | `-DeploymentMode` | `[string]` | Yes | `Validate` or `Deploy` |
 | `-JUnitOutputPath` | `[string]` | No | Path to write JUnit XML test results |
 | `-LogFilePath` | `[string]` | No | Path to write a log file for diagnostic output |
+| `-NamingConfigPath` | `[string]` | No | Path to a custom `naming-standards-config.json` file (overrides user profile and module default) |
 | `-WhatIf` | `[switch]` | No | Preview mode — runs pre-flight checks without submitting deployments |
 | `-Confirm` | `[switch]` | No | Prompts for confirmation (use `-Confirm:$false` for CI/CD) |
 
@@ -555,6 +579,7 @@ Checks the current ARM deployment status for all clusters with `ReadyToDeploy = 
 | `-HtmlOutputPath` | `[string]` | No | Path to write a self-contained HTML deployment status report |
 | `-MarkdownOutputPath` | `[string]` | No | Path to write a Markdown status report (for GitHub Step Summary / Azure DevOps) |
 | `-ReportTitle` | `[string]` | No | Custom title for the HTML/Markdown report header (default: 'Azure Local Deployment Status Report') |
+| `-NamingConfigPath` | `[string]` | No | Path to a custom `naming-standards-config.json` file (overrides user profile and module default) |
 | `-LogFilePath` | `[string]` | No | Path to write a log file for diagnostic output |
 
 #### Status Values
@@ -777,6 +802,18 @@ The `environment` section contains tenant-specific values that **must be updated
 
 > **Important:** The `tenantId` is **required** — update this before your first deployment. The `hciResourceProviderObjectID` is optional; if left blank, the module resolves it automatically at runtime. Pre-populating it avoids the Azure AD lookup and is useful for CI/CD pipelines where the service principal may not have directory read permissions.
 
+### Configuration Validation
+
+The module validates that critical settings have been customised from their shipped defaults before any deployment is attempted. If any of the following placeholder values are detected, the deployment is blocked with a clear error listing all values that need updating:
+
+| Setting | Shipped Default | Action Required |
+|---------|----------------|------------------|
+| `environment.tenantId` | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` | Set to your Entra ID tenant GUID |
+| `defaults.domainFqdn` | `contoso.com` | Set to your Active Directory domain FQDN |
+| `namingStandards.adouPath` | `DC=contoso,DC=com` | Update to match your AD structure |
+
+This check runs in `Start-AzLocalTemplateDeployment`, `Start-AzLocalCsvDeployment`, and `Get-AzLocalDeploymentStatus` immediately after the configuration is loaded, and prevents deployments with settings that would always fail.
+
 ### Example Configuration
 
 ```json
@@ -807,7 +844,7 @@ The `environment` section contains tenant-specific values that **must be updated
 
 The following describes what happens when you run `Start-AzLocalTemplateDeployment`:
 
-1. **Load Configuration** — Naming standards and defaults are loaded from `.config/naming-standards-config.json`
+1. **Load Configuration** — Naming standards and defaults are loaded from the user profile, an explicit `-NamingConfigPath`, or the module default (auto-initialised on first use). The loaded config is validated to ensure shipped placeholder values have been replaced.
 2. **Collect Unique ID** — Uses `-UniqueID` parameter or prompts interactively (2–8 alphanumeric chars)
 3. **Collect Network Settings** — Uses `-NetworkSettingsJson` (file path or inline JSON) or prompts interactively for subnet mask, gateway, IP range, and node IPs
 4. **Resolve Credentials** — Key Vault (`-CredentialKeyVaultName`) > PSCredential parameters > interactive `Read-Host -AsSecureString`

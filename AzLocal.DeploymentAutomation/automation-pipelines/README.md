@@ -58,7 +58,8 @@ Before using these pipelines, you need:
 4. **Az PowerShell modules** — `Az.Accounts` (v2.0.0+), `Az.Resources` (v6.0.0+), and `Az.KeyVault` (v4.0.0+)
 5. **Arc-registered nodes** — All physical nodes must be registered with Azure Arc in their target resource groups
 6. **Key Vault** — Deployment credentials (Local Admin and LCM Admin passwords) stored in Azure Key Vault
-7. **Resource providers** — 12 required providers (auto-registered during pre-flight if the identity has `*/register/action`, or [pre-register manually](https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions))
+7. **Naming configuration** — A customised copy of `.config/naming-standards-config.json` checked into your repository with your environment-specific values (tenantId, domain FQDN, OU path, etc.). The pipelines pass this file via the `-NamingConfigPath` parameter. See [Configuration](../README.md#configuration) in the main README for details.
+8. **Resource providers** — 12 required providers (auto-registered during pre-flight if the identity has `*/register/action`, or [pre-register manually](https://learn.microsoft.com/azure/azure-local/deploy/deployment-arc-register-server-permissions))
 
 ---
 
@@ -364,6 +365,8 @@ Copy the YAML files from `github-actions/` to your repository's `.github/workflo
 
 These pipelines use two exported functions from the `AzLocal.DeploymentAutomation` module:
 
+> **Important:** In CI/CD pipelines, always pass `-NamingConfigPath` pointing to a config file checked into source control. Ephemeral CI agents do not have a persistent user profile, so the module's automatic user-profile config initialisation is not appropriate for pipelines.
+
 ### `Start-AzLocalCsvDeployment`
 
 Reads a CSV file and submits ARM deployments for eligible clusters.
@@ -372,6 +375,7 @@ Reads a CSV file and submits ARM deployments for eligible clusters.
 # Validate all ready clusters
 Start-AzLocalCsvDeployment `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -NamingConfigPath './AzLocal.DeploymentAutomation/.config/naming-standards-config.json' `
     -DeploymentMode 'Validate' `
     -JUnitOutputPath './reports/validate-results.xml' `
     -Confirm:$false
@@ -379,6 +383,7 @@ Start-AzLocalCsvDeployment `
 # Deploy all ready clusters
 Start-AzLocalCsvDeployment `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -NamingConfigPath './AzLocal.DeploymentAutomation/.config/naming-standards-config.json' `
     -DeploymentMode 'Deploy' `
     -JUnitOutputPath './reports/deploy-results.xml' `
     -Confirm:$false
@@ -386,6 +391,7 @@ Start-AzLocalCsvDeployment `
 # Preview what would happen (WhatIf)
 Start-AzLocalCsvDeployment `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -NamingConfigPath './AzLocal.DeploymentAutomation/.config/naming-standards-config.json' `
     -DeploymentMode 'Validate' `
     -WhatIf
 ```
@@ -394,11 +400,12 @@ Start-AzLocalCsvDeployment `
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `CsvFilePath` | String | ✅ | Path to the cluster deployments CSV file |
-| `DeploymentMode` | String | ✅ | `Validate` or `Deploy` |
+| `CsvFilePath` | String | Yes | Path to the cluster deployments CSV file |
+| `DeploymentMode` | String | Yes | `Validate` or `Deploy` |
+| `NamingConfigPath` | String | | Path to `naming-standards-config.json` (recommended for CI/CD) |
 | `JUnitOutputPath` | String | | Path to write JUnit XML results |
 | `LogFilePath` | String | | Path to write log file |
-| `WhatIf` | Switch | | Preview mode — runs pre-flight checks without submitting deployments |
+| `WhatIf` | Switch | | Preview mode --- runs pre-flight checks without submitting deployments |
 
 ### `Get-AzLocalDeploymentStatus`
 
@@ -408,11 +415,13 @@ Monitors the status of deployments defined in a CSV file. Optionally generates H
 # Check status of all deployments
 Get-AzLocalDeploymentStatus `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -NamingConfigPath './AzLocal.DeploymentAutomation/.config/naming-standards-config.json' `
     -JUnitOutputPath './reports/status-results.xml'
 
 # Generate HTML + Markdown reports
 Get-AzLocalDeploymentStatus `
     -CsvFilePath './automation-pipelines/cluster-deployments.csv' `
+    -NamingConfigPath './AzLocal.DeploymentAutomation/.config/naming-standards-config.json' `
     -JUnitOutputPath './reports/status-results.xml' `
     -HtmlOutputPath './reports/deployment-status.html' `
     -MarkdownOutputPath './reports/deployment-status.md' `
@@ -423,7 +432,8 @@ Get-AzLocalDeploymentStatus `
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `CsvFilePath` | String | ✅ | Path to the cluster deployments CSV file |
+| `CsvFilePath` | String | Yes | Path to the cluster deployments CSV file |
+| `NamingConfigPath` | String | | Path to `naming-standards-config.json` (recommended for CI/CD) |
 | `JUnitOutputPath` | String | | Path to write JUnit XML results |
 | `HtmlOutputPath` | String | | Path to write a self-contained HTML status report |
 | `MarkdownOutputPath` | String | | Path to write a Markdown status report (for GitHub Step Summary / Azure DevOps) |

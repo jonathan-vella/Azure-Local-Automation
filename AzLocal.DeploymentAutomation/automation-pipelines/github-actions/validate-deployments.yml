@@ -23,6 +23,10 @@ on:
         description: 'Path to cluster deployments CSV file'
         required: true
         default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+      naming_config_path:
+        description: 'Path to naming-standards-config.json (in repo)'
+        required: true
+        default: 'AzLocal.DeploymentAutomation/.config/naming-standards-config.json'
       dry_run:
         description: 'Preview which clusters would be validated (WhatIf mode)'
         required: false
@@ -77,13 +81,20 @@ jobs:
       id: preflight
       env:
         INPUT_CSV_FILE_PATH: ${{ github.event.inputs.csv_file_path }}
+        INPUT_NAMING_CONFIG_PATH: ${{ github.event.inputs.naming_config_path }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
 
         $csvPath = $env:INPUT_CSV_FILE_PATH
+        $namingConfigPath = $env:INPUT_NAMING_CONFIG_PATH
 
         if (-not (Test-Path $csvPath)) {
             Write-Error "CSV file not found: $csvPath"
+            exit 1
+        }
+
+        if (-not (Test-Path $namingConfigPath)) {
+            Write-Error "Naming config file not found: $namingConfigPath"
             exit 1
         }
 
@@ -97,6 +108,7 @@ jobs:
         Write-Host "========================================" -ForegroundColor Cyan
         Write-Host "Pre-Flight Checks" -ForegroundColor Cyan
         Write-Host "CSV File: $csvPath" -ForegroundColor Cyan
+        Write-Host "Config:   $namingConfigPath" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Cyan
 
         # Import CSV to get count
@@ -111,12 +123,13 @@ jobs:
         # Stage 2 performs the actual ARM validate; this stage only runs pre-flight checks
 
         $params = @{
-            CsvFilePath     = $csvPath
-            DeploymentMode  = 'Validate'
-            JUnitOutputPath = $junitPath
-            LogFilePath     = $logPath
-            WhatIf          = $true
-            Confirm         = $false
+            CsvFilePath      = $csvPath
+            DeploymentMode   = 'Validate'
+            NamingConfigPath = $namingConfigPath
+            JUnitOutputPath  = $junitPath
+            LogFilePath      = $logPath
+            WhatIf           = $true
+            Confirm          = $false
         }
 
         # Run pre-flight checks only (WhatIf prevents ARM submission)
@@ -177,10 +190,12 @@ jobs:
       id: validate
       env:
         INPUT_CSV_FILE_PATH: ${{ github.event.inputs.csv_file_path }}
+        INPUT_NAMING_CONFIG_PATH: ${{ github.event.inputs.naming_config_path }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzLocal.DeploymentAutomation.psd1" -Force
 
         $csvPath = $env:INPUT_CSV_FILE_PATH
+        $namingConfigPath = $env:INPUT_NAMING_CONFIG_PATH
         $outputDir = "./reports"
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
@@ -194,6 +209,7 @@ jobs:
         $results = Start-AzLocalCsvDeployment `
             -CsvFilePath $csvPath `
             -DeploymentMode 'Validate' `
+            -NamingConfigPath $namingConfigPath `
             -JUnitOutputPath $junitPath `
             -LogFilePath $logPath `
             -Confirm:$false

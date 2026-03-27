@@ -25,6 +25,10 @@ parameters:
     displayName: 'Path to cluster deployments CSV file'
     type: string
     default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
+  - name: namingConfigPath
+    displayName: 'Path to naming-standards-config.json (in repo)'
+    type: string
+    default: 'AzLocal.DeploymentAutomation/.config/naming-standards-config.json'
 
 variables:
   - name: modulePath
@@ -69,6 +73,7 @@ jobs:
 
             $results = Get-AzLocalDeploymentStatus `
                 -CsvFilePath $csvPath `
+                -NamingConfigPath "${{ parameters.namingConfigPath }}" `
                 -JUnitOutputPath $junitPath
 
             # Build status counts

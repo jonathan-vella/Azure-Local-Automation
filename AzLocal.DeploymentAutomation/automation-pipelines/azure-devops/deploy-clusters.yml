@@ -24,6 +24,11 @@ parameters:
     type: string
     default: 'AzLocal.DeploymentAutomation/automation-pipelines/cluster-deployments.csv'
 
+  - name: namingConfigPath
+    displayName: 'Path to naming-standards-config.json (in repo)'
+    type: string
+    default: 'AzLocal.DeploymentAutomation/.config/naming-standards-config.json'
+
   - name: requireValidation
     displayName: 'Require successful validation before deploying'
     type: boolean
@@ -75,6 +80,7 @@ stages:
 
                 $statusResults = Get-AzLocalDeploymentStatus `
                     -CsvFilePath $csvPath `
+                    -NamingConfigPath "${{ parameters.namingConfigPath }}" `
                     -JUnitOutputPath (Join-Path $outputDir "pre-deploy-status.xml")
 
                 $failedValidation = @($statusResults | Where-Object { $_.DeploymentStatus -like '*Failed*' })
@@ -151,6 +157,7 @@ stages:
                 $results = Start-AzLocalCsvDeployment `
                     -CsvFilePath $csvPath `
                     -DeploymentMode 'Deploy' `
+                    -NamingConfigPath "${{ parameters.namingConfigPath }}" `
                     -JUnitOutputPath $junitPath `
                     -LogFilePath $logPath `
                     -Confirm:$false
