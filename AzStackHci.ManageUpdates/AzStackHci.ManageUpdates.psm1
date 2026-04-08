@@ -118,14 +118,14 @@
     Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
 
 .NOTES
-    Version: 0.5.6
+    Version: 0.5.9
     Author: Neil Bird, Microsoft.
     Requires: Azure CLI (az) installed and authenticated
     API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2025-10-01/hci.json
 #>
 
 # Module constants
-$script:ModuleVersion = '0.5.6'
+$script:ModuleVersion = '0.5.9'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
 
@@ -1083,6 +1083,15 @@ function Start-AzureLocalClusterUpdate {
                     throw "Invalid Resource ID format: $resourceId"
                 }
                 
+                # Extract subscription ID from resource ID and validate it is accessible
+                $subId = ($resourceId -split '/')[2]
+                $setSubResult = az account set --subscription $subId 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    $setSubError = $setSubResult | Out-String
+                    Write-Log -Message "    Subscription '$subId' not found or not accessible in the current Azure CLI context. Ensure you are logged in to the correct Azure tenant (az login --tenant <tenantId>) and have access to this subscription." -Level Error
+                    throw "Subscription '$subId' not found or not accessible. Ensure you are logged in to the correct Azure tenant and have access to this subscription. Error: $($setSubError.Trim())"
+                }
+
                 # Validate resource exists and user has access
                 $validateUri = "https://management.azure.com$resourceId`?api-version=$ApiVersion"
                 Write-Verbose "Validating resource at: $validateUri"
@@ -1090,9 +1099,16 @@ function Start-AzureLocalClusterUpdate {
                     $validateResult = az rest --method GET --uri $validateUri 2>&1
                     if ($LASTEXITCODE -ne 0) {
                         $errorMessage = $validateResult | Out-String
-                        if ($errorMessage -match "ResourceNotFound|ResourceGroupNotFound") {
-                            Write-Log -Message "    Resource not found: $resourceId" -Level Error
-                            throw "Resource not found: $resourceId. Please verify the Resource ID is correct."
+                        if ($errorMessage -match "ResourceGroupNotFound") {
+                            $rgName = ($resourceId -split '/')[4]
+                            Write-Log -Message "    Resource group '$rgName' not found in subscription '$subId'. Verify the resource group name and that the resource has not been deleted." -Level Error
+                            throw "Resource group '$rgName' not found in subscription '$subId'. Verify the resource group name and that the resource has not been deleted."
+                        }
+                        elseif ($errorMessage -match "ResourceNotFound") {
+                            $clusterName = ($resourceId -split '/')[-1]
+                            $rgName = ($resourceId -split '/')[4]
+                            Write-Log -Message "    Cluster '$clusterName' not found in resource group '$rgName'. The cluster may have been deleted or the name may be incorrect." -Level Error
+                            throw "Cluster '$clusterName' not found in resource group '$rgName'. The cluster may have been deleted or the name may be incorrect."
                         }
                         elseif ($errorMessage -match "AuthorizationFailed|Forbidden") {
                             Write-Log -Message "    Access denied: You do not have permission to access $resourceId" -Level Error
@@ -1106,7 +1122,7 @@ function Start-AzureLocalClusterUpdate {
                     Write-Log -Message "    Validated successfully" -Level Success
                 }
                 catch {
-                    if ($_.Exception.Message -match "Resource not found|Access denied|Failed to validate") {
+                    if ($_.Exception.Message -match "Subscription.*not found|not found in|Access denied|Failed to validate") {
                         throw
                     }
                     Write-Log -Message "    Failed to validate resource: $_" -Level Error
@@ -1351,9 +1367,12 @@ function Start-AzureLocalClusterUpdate {
                     }
                 }
                 else {
-                    # Select the first ready update (typically the latest)
-                    $selectedUpdate = $readyUpdates | Select-Object -First 1
-                    Write-Log -Message "Auto-selecting update: $($selectedUpdate.name)" -Level Info
+                    # Select the latest ready update by YYMM version from the update name
+                    # Update names follow format: SolutionXX.YYMM.XXXX.XX where YYMM is year+month
+                    $selectedUpdate = $readyUpdates | Sort-Object {
+                        if ($_.name -match '\.(\d{4})\.') { [int]$Matches[1] } else { 0 }
+                    } -Descending | Select-Object -First 1
+                    Write-Log -Message "Auto-selected latest update: $($selectedUpdate.name)" -Level Info
                 }
 
                 # Step 6: Apply the update

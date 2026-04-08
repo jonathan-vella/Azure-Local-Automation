@@ -5,6 +5,20 @@ All notable changes to the AzStackHci.ManageUpdates module will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] - 2026-04-08
+
+### Improved - Subscription & Resource Validation for `-ClusterResourceIds`
+- **Subscription pre-validation**: When using `-ClusterResourceIds`, the module now extracts the subscription ID from the resource ID and runs `az account set --subscription` before making REST calls. This catches inaccessible subscriptions early with a clear error message instead of a cryptic `az rest` failure.
+- **Specific error messages**: Validation errors are now split into distinct, actionable messages:
+  - **Subscription not found**: Advises the user to verify they are logged into the correct Azure tenant (`az login --tenant <tenantId>`)
+  - **Resource group not found**: Names the specific resource group and subscription, suggests the resource may have been deleted
+  - **Cluster not found**: Names the specific cluster and resource group, suggests the cluster may have been deleted or the name is incorrect
+
+### Improved - Auto-Selection of Latest Cumulative Update
+- When `-UpdateName` is not specified, the module now **selects the latest update by YYMM version** from the update name (e.g., `Solution12.2603.1002.15` = March 2026) instead of taking the first item from the API response
+- This ensures cumulative updates are handled correctly - earlier months are safely skipped when a newer cumulative update is available
+- Update names follow the format `SolutionXX.YYMM.XXXX.XX`, where YYMM represents the year and month
+
 ## [0.5.7] - 2026-01-29
 
 ### Added

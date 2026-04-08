@@ -2,30 +2,27 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.5.7
+**Latest Version:** v0.5.9
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
 Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2025-10-01/hci.json
 
-## What's New in v0.5.7
+## What's New in v0.5.9
 
-### 📁 JSON Export for Cluster Inventory
-- **`Get-AzureLocalClusterInventory`** now supports JSON export in addition to CSV
-- Format is auto-detected from file extension (`.json` or `.csv`)
-- JSON is ideal for CI/CD pipelines, API integrations, and CMDB systems
-- CSV remains the default and is best for Excel-based workflows
+### 🔍 Improved Subscription & Resource Validation
+- **Subscription pre-validation** for `-ClusterResourceIds`: The module now validates subscription access via `az account set` before making REST calls, catching inaccessible subscriptions early with clear, actionable error messages
+- **Specific error messages** for common failures:
+  - **Subscription not found**: Advises logging into the correct Azure tenant (`az login --tenant <tenantId>`)
+  - **Resource group not found**: Names the specific resource group and suggests the resource may have been deleted
+  - **Cluster not found**: Names the specific cluster and suggests it may have been deleted or the name is incorrect
 
-**Example:**
-```powershell
-# Export to JSON for CI/CD pipelines
-Get-AzureLocalClusterInventory -ExportPath "C:\Reports\inventory.json"
+### 📦 Auto-Selection of Latest Cumulative Update
+- When `-UpdateName` is not specified, the module now **selects the latest update by YYMM version** from the update name instead of the first API result
+- Update names follow the format `SolutionXX.YYMM.XXXX.XX` (e.g., `Solution12.2603.1002.15` = March 2026)
+- Since Azure Local updates are cumulative, earlier months are safely skipped when a newer update is available
 
-# Export to CSV for Excel editing (unchanged)
-Get-AzureLocalClusterInventory -ExportPath "C:\Reports\inventory.csv"
-```
-
-> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.5.6 and earlier changes.
+> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.5.7 and earlier changes.
 
 ## Files
 
@@ -363,12 +360,12 @@ Main function to start updates on one or more Azure Local clusters.
 
 **Parameters:**
 - `-ClusterNames` (Required*): Array of cluster names to update. Use this OR `-ClusterResourceIds` OR `-ScopeByUpdateRingTag`.
-- `-ClusterResourceIds` (Required*): Array of full Azure Resource IDs for clusters. Use this when clusters are in different resource groups. Resource IDs are validated before processing to ensure the format is correct, the resource exists, and you have the required permissions. Use this OR `-ClusterNames` OR `-ScopeByUpdateRingTag`.
+- `-ClusterResourceIds` (Required*): Array of full Azure Resource IDs for clusters. Use this when clusters are in different resource groups or subscriptions. Resource IDs are validated before processing: the subscription is verified via `az account set`, and the resource is confirmed to exist with the required permissions. Use this OR `-ClusterNames` OR `-ScopeByUpdateRingTag`.
 - `-ScopeByUpdateRingTag` (Required*): Switch parameter to find clusters by their 'UpdateRing' tag value via Azure Resource Graph. Must be used with `-UpdateRingValue`. Use this OR `-ClusterNames` OR `-ClusterResourceIds`.
 - `-UpdateRingValue` (Required*): The value of the 'UpdateRing' tag to match when using `-ScopeByUpdateRingTag`.
 - `-ResourceGroupName` (Optional): Resource group containing the clusters (only used with `-ClusterNames`)
 - `-SubscriptionId` (Optional): Azure subscription ID (defaults to current, only used with `-ClusterNames`)
-- `-UpdateName` (Optional): Specific update name to apply
+- `-UpdateName` (Optional): Specific update name to apply (e.g., `Solution12.2603.1002.15`). If not specified, the latest cumulative update is auto-selected by YYMM version from the update name
 - `-ApiVersion` (Optional): API version (default: "2025-10-01")
 - `-Force` (Optional): Skip confirmation prompts
 - `-WhatIf` (Optional): Show what would happen without executing

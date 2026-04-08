@@ -3,7 +3,7 @@
     RootModule = 'AzStackHci.ManageUpdates.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.5.8'
+    ModuleVersion = '0.5.9'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -72,6 +72,10 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.5.9 - Subscription Validation Enhancement
+- IMPROVED: Added explicit subscription validation before resource validation to ensure correct Azure CLI context
+- FIXED: Improved error messages for subscription access issues
+
 ## Version 0.5.8 - Security Hardening
 - Fixed GitHub Actions script injection vulnerability in all workflow examples (apply-updates, fleet-update-status, inventory-clusters, manage-updatering-tags)
 - Replaced direct ${{ github.event.inputs.* }} interpolation in run: blocks with env: variable indirection to prevent arbitrary code execution via crafted workflow_dispatch inputs
