@@ -4648,7 +4648,6 @@ function Test-AzureLocalFleetHealthGate {
         
         # Check if we should wait for completion
         if ($WaitForCompletion -and $progress.InProgress -gt 0) {
-            $elapsed = (Get-Date) - $startTime
             $remaining = $timeout - (Get-Date)
             
             if ((Get-Date) -ge $timeout) {
@@ -4956,8 +4955,6 @@ function Invoke-AzureLocalFleetOperation {
         
         # Process batch with throttling (using runspaces for parallelism)
         # Note: Using ForEach-Object -Parallel requires PS7+, so we use sequential with simulated throttle
-        $batchResults = @()
-        
         foreach ($clusterState in $batchClusters) {
             if ($clusterState.Status -eq "Succeeded") {
                 continue  # Skip already succeeded (for resume scenarios)
