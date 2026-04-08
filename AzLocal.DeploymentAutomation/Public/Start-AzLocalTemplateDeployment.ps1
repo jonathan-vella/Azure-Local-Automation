@@ -183,10 +183,6 @@
     # Call function to Get Parameter File Path (StorageSwitchless uses node-count-specific templates)
     $ParameterFilePath = Get-AzLocalParameterFilePath -TypeOfDeployment $TypeOfDeployment -NodeCount $effectiveNodeCount
 
-    # Call function to Get Parameter File Settings
-    Write-Verbose "Loading parameter file settings from $ParameterFilePath..."
-    [PsCustomObject]$ParameterFileSettings = Get-AzLocalParameterFileSettings -ParameterFilePath $ParameterFilePath
-
     $TemplateFilePath = Join-Path $script:ModuleRoot "templates\azure-local-deployment-template.json"
     if(-Not (Test-Path $TemplateFilePath)) {
         Write-AzLocalLog "Template file not found at '$TemplateFilePath'." -Level Error

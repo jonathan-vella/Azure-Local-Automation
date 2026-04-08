@@ -2405,9 +2405,7 @@ Describe 'Function: Watch-AzLocalDeployment' {
     Context 'Terminal State Detection Logic' {
         It 'TimeoutMinutes should default to 180' {
             $cmd = Get-Command Watch-AzLocalDeployment
-            $defaultValue = $cmd.Parameters['TimeoutMinutes'].Attributes |
-                Where-Object { $_ -is [System.Management.Automation.PSDefaultValueAttribute] }
-            # If no PSDefaultValueAttribute, check the script default via AST
+            # Check the script default via AST (PSDefaultValueAttribute is not used for this parameter)
             $paramBlock = $cmd.ScriptBlock.Ast.Body.ParamBlock
             $timeoutParam = $paramBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'TimeoutMinutes' }
             $timeoutParam.DefaultValue.Value | Should -Be 0
