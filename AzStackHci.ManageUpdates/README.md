@@ -6,7 +6,7 @@
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
-Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2025-10-01/hci.json
+Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/examples/PutUpdates.json
 
 ## What's New in v0.6.0
 
