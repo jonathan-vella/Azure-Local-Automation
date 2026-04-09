@@ -2,27 +2,24 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.5.9
+**Latest Version:** v0.6.0
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
 Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2025-10-01/hci.json
 
-## What's New in v0.5.9
+## What's New in v0.6.0
+
+### 🔧 Fixed: Cumulative Update Auto-Selection
+- **Fixed a bug** where auto-selection picked the wrong update when multiple cumulative updates were in `Ready` state
+- Root cause: PowerShell 5.1 `$Matches` variable scope leaking inside `Sort-Object` scriptblocks, causing unpredictable sort order
+- The module now correctly selects the **latest YYMM version** (e.g., `2603` over `2602`) using `-split` instead of regex `$Matches`
 
 ### 🔍 Improved Subscription & Resource Validation
-- **Subscription pre-validation** for `-ClusterResourceIds`: The module now validates subscription access via `az account set` before making REST calls, catching inaccessible subscriptions early with clear, actionable error messages
-- **Specific error messages** for common failures:
-  - **Subscription not found**: Advises logging into the correct Azure tenant (`az login --tenant <tenantId>`)
-  - **Resource group not found**: Names the specific resource group and suggests the resource may have been deleted
-  - **Cluster not found**: Names the specific cluster and suggests it may have been deleted or the name is incorrect
+- **Subscription pre-validation** for `-ClusterResourceIds`: Validates subscription access via `az account set` before REST calls
+- **Specific error messages** for subscription not found, resource group not found, and cluster not found (with deletion guidance)
 
-### 📦 Auto-Selection of Latest Cumulative Update
-- When `-UpdateName` is not specified, the module now **selects the latest update by YYMM version** from the update name instead of the first API result
-- Update names follow the format `SolutionXX.YYMM.XXXX.XX` (e.g., `Solution12.2603.1002.15` = March 2026)
-- Since Azure Local updates are cumulative, earlier months are safely skipped when a newer update is available
-
-> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.5.7 and earlier changes.
+> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.5.9 and earlier changes.
 
 ## Files
 
@@ -541,11 +538,52 @@ $updates | Where-Object { $_.properties.state -eq "Ready" }
 
 ### `Get-AzureLocalUpdateRuns`
 
-Gets update run history and status.
+Gets update run history and status for one or more clusters. Returns formatted objects showing the update name, state, duration, step progress, and current/failed step.
+
+**Parameters:**
+- `-ClusterName` (Required*): Single cluster name (original behavior)
+- `-ClusterNames`, `-ClusterResourceIds`, or `-ScopeByUpdateRingTag`/`-UpdateRingValue`: Multi-cluster mode
+- `-ResourceGroupName` (Optional): Resource group (only with `-ClusterName`/`-ClusterNames`)
+- `-UpdateName` (Optional): Filter runs for a specific update
+- `-Latest` (Optional): Return only the most recent update run per cluster
+- `-Raw` (Optional): Return raw API response objects instead of formatted output
+- `-ExportPath` (Optional): Export results to CSV, JSON, or JUnit XML
+
+**Output Properties:**
+| Property | Description |
+|----------|-------------|
+| `UpdateName` | The update package name (e.g., `Solution12.2603.1002.500`) |
+| `State` | Current state: `InProgress`, `Succeeded`, `Failed`, etc. |
+| `StartTime` | When the update run started |
+| `Duration` | How long the update took (e.g., `2.5 hours`, `45 minutes (running)`) |
+| `Progress` | Step completion (e.g., `3/5 steps`) |
+| `CurrentStep` | Currently executing or failed step name |
+
+**Examples:**
 
 ```powershell
-$runs = Get-AzureLocalUpdateRuns -ClusterName "MyCluster" -ResourceGroupName "MyRG"
-$runs | Format-Table name, @{L='State';E={$_.properties.state}}, @{L='Started';E={$_.properties.timeStarted}}
+# Get all update runs for a cluster
+Get-AzureLocalUpdateRuns -ClusterName "MyCluster" -ResourceGroupName "MyRG"
+
+# Get only the latest update run
+Get-AzureLocalUpdateRuns -ClusterName "MyCluster" -Latest
+
+# Get raw API response for programmatic processing
+Get-AzureLocalUpdateRuns -ClusterName "MyCluster" -Raw
+
+# Multi-cluster: Get latest run for all clusters in an update ring
+Get-AzureLocalUpdateRuns -ScopeByUpdateRingTag -UpdateRingValue "Wave1" -Latest
+
+# Export update run history to CSV
+Get-AzureLocalUpdateRuns -ScopeByUpdateRingTag -UpdateRingValue "Production" -Latest -ExportPath "C:\Reports\runs.csv"
+```
+
+**Sample Output:**
+```
+UpdateName                State       StartTime        Duration     Progress    CurrentStep
+----------                -----       ---------        --------     --------    -----------
+Solution12.2603.1002.500  InProgress  2026-04-09 16:50 1.2 hours    3/5 steps   DownloadSBE
+Solution12.2602.1002.501  Succeeded   2026-03-15 09:00 2.5 hours    5/5 steps
 ```
 
 ### `Get-AzureLocalClusterInventory`

@@ -118,14 +118,14 @@
     Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
 
 .NOTES
-    Version: 0.5.9
+    Version: 0.6.0
     Author: Neil Bird, Microsoft.
     Requires: Azure CLI (az) installed and authenticated
     API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2025-10-01/hci.json
 #>
 
 # Module constants
-$script:ModuleVersion = '0.5.9'
+$script:ModuleVersion = '0.6.0'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
 
@@ -1369,8 +1369,10 @@ function Start-AzureLocalClusterUpdate {
                 else {
                     # Select the latest ready update by YYMM version from the update name
                     # Update names follow format: SolutionXX.YYMM.XXXX.XX where YYMM is year+month
+                    # Use -split instead of $Matches to avoid PS 5.1 scope issues in Sort-Object scriptblocks
                     $selectedUpdate = $readyUpdates | Sort-Object {
-                        if ($_.name -match '\.(\d{4})\.') { [int]$Matches[1] } else { 0 }
+                        $yymm = ($_.name -split '\.')[1]
+                        if ($yymm -match '^\d{4}$') { [int]$yymm } else { 0 }
                     } -Descending | Select-Object -First 1
                     Write-Log -Message "Auto-selected latest update: $($selectedUpdate.name)" -Level Info
                 }

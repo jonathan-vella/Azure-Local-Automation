@@ -3,7 +3,7 @@
     RootModule = 'AzStackHci.ManageUpdates.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.5.9'
+    ModuleVersion = '0.6.0'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -72,6 +72,10 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.6.0 - Cumulative Update Auto-Selection Fix
+- FIXED: Auto-selection now correctly picks the latest cumulative update by YYMM version (was selecting wrong update due to PS 5.1 $Matches scope issue in Sort-Object)
+- IMPROVED: Subscription and resource validation with specific error messages for subscription not found, resource group not found, and cluster not found
+
 ## Version 0.5.9 - Subscription Validation Enhancement
 - IMPROVED: Added explicit subscription validation before resource validation to ensure correct Azure CLI context
 - FIXED: Improved error messages for subscription access issues
