@@ -121,7 +121,7 @@
     Version: 0.6.0
     Author: Neil Bird, Microsoft.
     Requires: Azure CLI (az) installed and authenticated
-    API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/examples/PutUpdates.json
+    API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 #>
 
 # Module constants
