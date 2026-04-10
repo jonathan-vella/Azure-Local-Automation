@@ -92,7 +92,8 @@ jobs:
         $results = Get-AzureLocalClusterUpdateReadiness `
             -ScopeByUpdateRingTag `
             -UpdateRingValue $updateRing `
-            -ExportPath $csvPath
+            -ExportPath $csvPath `
+            -PassThru
         
         $totalCount = $results.Count
         $readyCount = ($results | Where-Object { $_.ReadyForUpdate -eq $true }).Count
@@ -196,19 +197,21 @@ jobs:
         Write-Host "========================================" -ForegroundColor Cyan
         
         # Run updates
-        $results = Start-AzureLocalClusterUpdate @params
+        $results = Start-AzureLocalClusterUpdate @params -PassThru
         
         Write-Host ""
         Write-Host "Update operation complete"
         
         # Count results
-        $succeeded = ($results | Where-Object { $_.Status -eq 'Started' -or $_.Status -eq 'Success' }).Count
-        $skipped = ($results | Where-Object { $_.Status -eq 'Skipped' }).Count
-        $failed = ($results | Where-Object { $_.Status -eq 'Failed' }).Count
+        $succeeded = ($results | Where-Object { $_.Status -eq 'Started' -or $_.Status -eq 'Success' -or $_.Status -eq 'UpdateStarted' }).Count
+        $skipped = ($results | Where-Object { $_.Status -in @('Skipped', 'NotReady', 'NoUpdatesAvailable', 'NoReadyUpdates', 'NotFound', 'UpdateNotFound') }).Count
+        $failed = ($results | Where-Object { $_.Status -in @('Failed', 'Error') }).Count
+        $healthBlocked = ($results | Where-Object { $_.Status -eq 'HealthCheckBlocked' }).Count
         
         echo "SUCCEEDED=$succeeded" >> $env:GITHUB_OUTPUT
         echo "SKIPPED=$skipped" >> $env:GITHUB_OUTPUT
         echo "FAILED=$failed" >> $env:GITHUB_OUTPUT
+        echo "HEALTH_BLOCKED=$healthBlocked" >> $env:GITHUB_OUTPUT
     
     - name: Upload Update Logs
       uses: actions/upload-artifact@v4
@@ -265,6 +268,7 @@ jobs:
         Write-Host "| ✅ Updates Started | $succeeded |" >> $env:GITHUB_STEP_SUMMARY
         Write-Host "| ⏭️ Skipped | $skipped |" >> $env:GITHUB_STEP_SUMMARY
         Write-Host "| ❌ Failed | $failed |" >> $env:GITHUB_STEP_SUMMARY
+        Write-Host "| 🏥 Health Blocked | $healthBlocked |" >> $env:GITHUB_STEP_SUMMARY
 
   # Handle case when no clusters are ready
   no-clusters-ready:

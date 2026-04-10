@@ -2,24 +2,37 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.6.0
+**Latest Version:** v0.6.1
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
 Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 
-## What's New in v0.6.0
+## What's New in v0.6.1
 
-### 🔧 Fixed: Cumulative Update Auto-Selection
-- **Fixed a bug** where auto-selection picked the wrong update when multiple cumulative updates were in `Ready` state
-- Root cause: PowerShell 5.1 `$Matches` variable scope leaking inside `Sort-Object` scriptblocks, causing unpredictable sort order
-- The module now correctly selects the **latest YYMM version** (e.g., `2603` over `2602`) using `-split` instead of regex `$Matches`
+### 🏥 New: Pre-Update Health Check Validation
+- **New function `Test-AzureLocalClusterHealth`** validates cluster health before applying updates
+- Queries health check results from ARM (`updateSummaries` resource) to identify Critical, Warning, and Informational failures
+- Critical failures block updates from being applied - this function shows you exactly what needs fixing
+- Supports `-BlockingOnly` to show only update-blocking issues
+- Export results to CSV, JSON, or JUnit XML for CI/CD integration
 
-### 🔍 Improved Subscription & Resource Validation
-- **Subscription pre-validation** for `-ClusterResourceIds`: Validates subscription access via `az account set` before REST calls
-- **Specific error messages** for subscription not found, resource group not found, and cluster not found (with deletion guidance)
+### 🔒 Automatic Health Gate in `Start-AzureLocalClusterUpdate`
+- Before applying an update, the function now automatically checks for Critical health failures (Step 3b)
+- If blocking issues are found, the cluster is skipped with detailed failure information and remediation guidance
+- No more cryptic "Update is blocked due to health check failure" errors without context
 
-> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.5.9 and earlier changes.
+### 📈 Enhanced Diagnostics in `Get-AzureLocalUpdateRuns`
+- When the latest update run failed due to health check failures, the function automatically queries and displays the Critical failures
+- Shows remediation steps inline so you know exactly what to fix
+
+### 🔇 Cleaner Console Output with `-PassThru`
+- Functions no longer dump object lists to the console by default
+- Formatted tables and diagnostics are still displayed — only the raw object output is suppressed
+- Use `-PassThru` to return objects for pipeline/variable capture: `$results = Start-AzureLocalClusterUpdate ... -PassThru`
+- CI/CD pipeline examples updated accordingly
+
+> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.6.0 and earlier changes.
 
 ## Files
 
@@ -586,6 +599,55 @@ Solution12.2603.1002.500  InProgress  2026-04-09 16:50 1.2 hours    3/5 steps   
 Solution12.2602.1002.501  Succeeded   2026-03-15 09:00 2.5 hours    5/5 steps
 ```
 
+### `Test-AzureLocalClusterHealth`
+
+Validates cluster health before applying updates by checking for blocking health check failures. Critical failures prevent updates from being applied.
+
+**Parameters:**
+- `-ClusterResourceIds`, `-ClusterNames`, or `-ScopeByUpdateRingTag`/`-UpdateRingValue`: Target clusters
+- `-BlockingOnly` (Optional): Show only Critical severity failures (the ones that block updates)
+- `-ExportPath` (Optional): Export results to CSV, JSON, or JUnit XML
+
+**Examples:**
+
+```powershell
+# Check health for a single cluster
+Test-AzureLocalClusterHealth -ClusterResourceIds @("/subscriptions/.../clusters/Seattle")
+
+# Check only update-blocking issues for an update ring
+Test-AzureLocalClusterHealth -ScopeByUpdateRingTag -UpdateRingValue "Wave1" -BlockingOnly
+
+# Export health results to CSV
+Test-AzureLocalClusterHealth -ClusterNames @("Cluster01", "Cluster02") -ExportPath "C:\Reports\health.csv"
+```
+
+**Sample Output:**
+```
+========================================
+Health Validation Summary
+========================================
+Total Clusters:  1
+Passed:          0 (no critical failures)
+Blocked:         1 (critical failures present)
+
+Health Check Failures:
+
+ClusterName  Severity  CheckName           Description
+-----------  --------  ---------           -----------
+Seattle      Critical  Test-CauSetup       CAU is not configured correctly
+Seattle      Critical  Test-StoragePool    Storage pool health degraded
+
+Remediation for Critical (Update-Blocking) Failures:
+  Seattle - Test-CauSetup: Run Test-CauSetup on the cluster to validate CAU configuration
+  Seattle - Test-StoragePool: Check storage pool health using Get-StoragePool
+
+HEALTH VALIDATION FAILED - Critical health issues must be resolved before updates can proceed
+```
+
+> **Note**: `Start-AzureLocalClusterUpdate` automatically runs this check (Step 3b) before applying updates. If Critical failures are found, the cluster is skipped with detailed diagnostics.
+
+---
+
 ### `Get-AzureLocalClusterInventory`
 
 Gets an inventory of all Azure Local clusters with their UpdateRing tag status. This function supports both CSV and JSON export formats for different workflows.
@@ -984,7 +1046,6 @@ Evaluates fleet health to determine if it's safe to proceed with additional upda
 | `-UpdateRingValue` | String | Yes* | - | The UpdateRing tag value to filter by |
 | `-MaxFailurePercent` | Int | No | `5` | Maximum allowed failure percentage (0-100) |
 | `-MinSuccessPercent` | Int | No | `90` | Minimum required success percentage (0-100) |
-| `-AllowHealthWarnings` | Switch | No | - | Consider clusters with health warnings as acceptable |
 | `-WaitForCompletion` | Switch | No | - | Wait for in-progress updates to complete before evaluating |
 | `-WaitTimeoutMinutes` | Int | No | `120` | Maximum wait time for completion (minutes) |
 | `-PollIntervalSeconds` | Int | No | `60` | How often to check status while waiting |

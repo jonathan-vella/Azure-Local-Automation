@@ -34,12 +34,12 @@ Describe 'Module: AzStackHci.ManageUpdates' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.5.8' {
-            $script:ModuleInfo.Version | Should -Be '0.5.8'
+        It 'Should have version 0.6.1' {
+            $script:ModuleInfo.Version | Should -Be '0.6.1'
         }
 
-        It 'Should export exactly 15 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 15
+        It 'Should export exactly 16 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 16
         }
 
         It 'Should export the expected functions' {
@@ -59,7 +59,9 @@ Describe 'Module: AzStackHci.ManageUpdates' {
                 'Test-AzureLocalFleetHealthGate',
                 'Export-AzureLocalFleetState',
                 'Resume-AzureLocalFleetUpdate',
-                'Stop-AzureLocalFleetUpdate'
+                'Stop-AzureLocalFleetUpdate',
+                # Pre-Update Health Validation (v0.6.1)
+                'Test-AzureLocalClusterHealth'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -826,10 +828,6 @@ Describe 'Function: Test-AzureLocalFleetHealthGate' {
             $command.Parameters.Keys | Should -Contain 'MinSuccessPercent'
         }
 
-        It 'Should have AllowHealthWarnings parameter' {
-            $command.Parameters.Keys | Should -Contain 'AllowHealthWarnings'
-        }
-
         It 'Should have WaitForCompletion parameter' {
             $command.Parameters.Keys | Should -Contain 'WaitForCompletion'
         }
@@ -968,3 +966,105 @@ Describe 'Fleet Functions: Naming Conventions' {
 }
 
 #endregion Fleet-Scale Operations Tests
+
+#region Pre-Update Health Validation Tests (v0.6.1)
+
+Describe 'Function: Test-AzureLocalClusterHealth' {
+    
+    Context 'Parameter Validation' {
+        BeforeAll {
+            $command = Get-Command Test-AzureLocalClusterHealth
+        }
+
+        It 'Should have ClusterResourceIds parameter' {
+            $command.Parameters.Keys | Should -Contain 'ClusterResourceIds'
+        }
+
+        It 'Should have ClusterNames parameter' {
+            $command.Parameters.Keys | Should -Contain 'ClusterNames'
+        }
+
+        It 'Should have ScopeByUpdateRingTag parameter' {
+            $command.Parameters.Keys | Should -Contain 'ScopeByUpdateRingTag'
+        }
+
+        It 'Should have UpdateRingValue parameter' {
+            $command.Parameters.Keys | Should -Contain 'UpdateRingValue'
+        }
+
+        It 'Should have BlockingOnly parameter' {
+            $command.Parameters.Keys | Should -Contain 'BlockingOnly'
+        }
+
+        It 'Should have ApiVersion parameter' {
+            $command.Parameters.Keys | Should -Contain 'ApiVersion'
+        }
+
+        It 'Should have ExportPath parameter' {
+            $command.Parameters.Keys | Should -Contain 'ExportPath'
+        }
+
+        It 'Should have ResourceGroupName parameter' {
+            $command.Parameters.Keys | Should -Contain 'ResourceGroupName'
+        }
+
+        It 'Should have SubscriptionId parameter' {
+            $command.Parameters.Keys | Should -Contain 'SubscriptionId'
+        }
+    }
+
+    Context 'Parameter Sets' {
+        BeforeAll {
+            $command = Get-Command Test-AzureLocalClusterHealth
+        }
+
+        It 'Should have ByResourceId parameter set' {
+            $command.ParameterSets.Name | Should -Contain 'ByResourceId'
+        }
+
+        It 'Should have ByName parameter set' {
+            $command.ParameterSets.Name | Should -Contain 'ByName'
+        }
+
+        It 'Should have ByTag parameter set' {
+            $command.ParameterSets.Name | Should -Contain 'ByTag'
+        }
+
+        It 'Should have ClusterResourceIds mandatory in ByResourceId set' {
+            $param = $command.Parameters['ClusterResourceIds']
+            $attr = $param.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.ParameterSetName -eq 'ByResourceId' }
+            $attr.Mandatory | Should -Be $true
+        }
+
+        It 'Should have ClusterNames mandatory in ByName set' {
+            $param = $command.Parameters['ClusterNames']
+            $attr = $param.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.ParameterSetName -eq 'ByName' }
+            $attr.Mandatory | Should -Be $true
+        }
+
+        It 'Should have ScopeByUpdateRingTag mandatory in ByTag set' {
+            $param = $command.Parameters['ScopeByUpdateRingTag']
+            $attr = $param.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.ParameterSetName -eq 'ByTag' }
+            $attr.Mandatory | Should -Be $true
+        }
+    }
+
+    Context 'Output Type' {
+        BeforeAll {
+            $command = Get-Command Test-AzureLocalClusterHealth
+        }
+
+        It 'Should have OutputType declared' {
+            $command.OutputType | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    Context 'Naming Convention' {
+        It 'Should use AzureLocal noun prefix' {
+            $noun = 'Test-AzureLocalClusterHealth'.Split('-')[1]
+            $noun | Should -BeLike 'AzureLocal*'
+        }
+    }
+}
+
+#endregion Pre-Update Health Validation Tests

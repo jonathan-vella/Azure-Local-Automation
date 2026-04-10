@@ -75,7 +75,8 @@ stages:
                 $results = Get-AzureLocalClusterUpdateReadiness `
                     -ScopeByUpdateRingTag `
                     -UpdateRingValue $updateRing `
-                    -ExportPath $csvPath
+                    -ExportPath $csvPath `
+                    -PassThru
                 
                 $totalCount = $results.Count
                 $readyCount = ($results | Where-Object { $_.ReadyForUpdate -eq $true }).Count
@@ -197,22 +198,27 @@ stages:
                 Write-Host "========================================" -ForegroundColor Cyan
                 
                 # Run updates
-                $results = Start-AzureLocalClusterUpdate @params
+                $results = Start-AzureLocalClusterUpdate @params -PassThru
                 
                 Write-Host ""
                 Write-Host "Update operation complete"
                 
                 # Count results
-                $succeeded = ($results | Where-Object { $_.Status -eq 'Started' -or $_.Status -eq 'Success' }).Count
-                $skipped = ($results | Where-Object { $_.Status -eq 'Skipped' }).Count
-                $failed = ($results | Where-Object { $_.Status -eq 'Failed' }).Count
+                $succeeded = ($results | Where-Object { $_.Status -eq 'Started' -or $_.Status -eq 'Success' -or $_.Status -eq 'UpdateStarted' }).Count
+                $skipped = ($results | Where-Object { $_.Status -in @('Skipped', 'NotReady', 'NoUpdatesAvailable', 'NoReadyUpdates', 'NotFound', 'UpdateNotFound') }).Count
+                $failed = ($results | Where-Object { $_.Status -in @('Failed', 'Error') }).Count
+                $healthBlocked = ($results | Where-Object { $_.Status -eq 'HealthCheckBlocked' }).Count
                 
                 Write-Host "##vso[task.setvariable variable=Succeeded;isOutput=true]$succeeded"
                 Write-Host "##vso[task.setvariable variable=Skipped;isOutput=true]$skipped"
                 Write-Host "##vso[task.setvariable variable=Failed;isOutput=true]$failed"
+                Write-Host "##vso[task.setvariable variable=HealthBlocked;isOutput=true]$healthBlocked"
                 
                 if ($failed -gt 0) {
                     Write-Host "##vso[task.logissue type=error]$failed cluster(s) failed to start updates"
+                }
+                if ($healthBlocked -gt 0) {
+                    Write-Host "##vso[task.logissue type=warning]$healthBlocked cluster(s) blocked by critical health check failures"
                 }
           
           - task: PublishBuildArtifacts@1

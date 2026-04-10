@@ -5,6 +5,41 @@ All notable changes to the AzStackHci.ManageUpdates module will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-04-10
+
+### Added - Pre-Update Health Check Validation
+- **New function `Test-AzureLocalClusterHealth`**: Queries cluster health check results from ARM to identify Critical, Warning, and Informational failures before applying updates
+  - Supports all input methods: `-ClusterResourceIds`, `-ClusterNames`, `-ScopeByUpdateRingTag`
+  - `-BlockingOnly` switch to show only Critical severity failures (the ones that block updates)
+  - Export results to CSV, JSON, or JUnit XML
+  - Returns pass/fail result per cluster (pass = no Critical failures)
+
+### Improved - Pre-Update Health Gate in `Start-AzureLocalClusterUpdate`
+- Added automatic Step 3b health validation before attempting to apply an update
+- If Critical health check failures are detected, the cluster is skipped with detailed failure information
+- Failure details include check name, description, and remediation guidance
+- Skipped clusters are logged to the Update_Skipped CSV with health check failure details
+
+### Improved - Health Check Diagnostics in `Get-AzureLocalUpdateRuns`
+- When the latest update run failed with "health check failure" in the CurrentStep, the function now automatically queries and displays the Critical health failures blocking the update
+- Shows remediation steps for each blocking failure
+
+### Changed - `-PassThru` Required for Object Output
+- Functions now suppress object output by default to avoid console noise (e.g., list-format dump of all update runs)
+- Use `-PassThru` to return objects for pipeline/variable capture: `$results = Get-AzureLocalUpdateRuns ... -PassThru`
+- Functions affected: `Start-AzureLocalClusterUpdate`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns`, `Get-AzureLocalClusterUpdateReadiness`, `Set-AzureLocalClusterUpdateRingTag`, `Test-AzureLocalClusterHealth`
+- CI/CD pipeline examples updated to use `-PassThru` where return values are captured
+- `HealthCheckBlocked` status added to JUnit XML failure mapping and CI/CD result counting
+
+### Improved - Node-Level Health Failure Reporting
+- Health check failures now display the physical node name (`TargetResourceName`) where the failure occurred
+- Node name shown in console output, CSV skip logs, JUnit XML exports, and JSON exports
+- Example: `[Critical] Test PowerShell Module Version (Node: SEA-NODE1): ...`
+
+### Improved - Console Output Formatting
+- `Get-AzureLocalUpdateRuns` latest run detail view now uses tab-indented `Format-List` with spacing for readability
+- Removed non-ASCII Unicode characters (checkmark/cross) from fleet operation output for cross-system encoding compatibility
+
 ## [0.6.0] - 2026-04-09
 
 ### Fixed - Cumulative Update Auto-Selection

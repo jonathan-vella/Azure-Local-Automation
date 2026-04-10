@@ -118,14 +118,14 @@
     Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
 
 .NOTES
-    Version: 0.6.0
+    Version: 0.6.1
     Author: Neil Bird, Microsoft.
     Requires: Azure CLI (az) installed and authenticated
     API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 #>
 
 # Module constants
-$script:ModuleVersion = '0.6.0'
+$script:ModuleVersion = '0.6.1'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
 
@@ -494,7 +494,8 @@ function Get-HealthCheckFailureSummary {
                 continue
             }
             $displayName = if ($check.displayName) { $check.displayName } elseif ($check.name) { ($check.name -split '/')[0] } else { "Unknown Check" }
-            $failures += "[$severity] $displayName"
+            $targetNode = if ($check.targetResourceName) { " ($($check.targetResourceName))" } else { "" }
+            $failures += "[$severity] $displayName$targetNode"
         }
     }
 
@@ -709,9 +710,9 @@ function Export-ResultsToJUnitXml {
         [void]$xmlBuilder.AppendLine("    <testcase name=`"$(ConvertTo-XmlSafeString $testName)`" classname=`"$TestSuiteName.$OperationType`" time=`"$testTime`">")
 
         switch ($result.Status) {
-            { $_ -in @("Failed", "Error") } {
+            { $_ -in @("Failed", "Error", "HealthCheckBlocked") } {
                 $message = ConvertTo-XmlSafeString ($result.Message)
-                $errorType = if ($result.Status -eq "Error") { "Error" } else { "AssertionError" }
+                $errorType = if ($result.Status -eq "Error") { "Error" } elseif ($result.Status -eq "HealthCheckBlocked") { "HealthCheckBlocked" } else { "AssertionError" }
                 [void]$xmlBuilder.AppendLine("      <failure message=`"$message`" type=`"$errorType`">")
                 [void]$xmlBuilder.AppendLine("Cluster: $clusterName")
                 [void]$xmlBuilder.AppendLine("Status: $($result.Status)")
@@ -956,7 +957,10 @@ function Start-AzureLocalClusterUpdate {
         [switch]$EnableTranscript,
 
         [Parameter(Mandatory = $false)]
-        [string]$ExportResultsPath
+        [string]$ExportResultsPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
     )
 
     begin {
@@ -1278,6 +1282,46 @@ function Start-AzureLocalClusterUpdate {
                     continue
                 }
 
+                # Step 3b: Pre-update health validation - check for Critical health failures
+                Write-Log -Message "Step 3b: Checking cluster health for update-blocking issues..." -Level Info
+                $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($clusterInfo.id) -BlockingOnly
+                if ($healthResults -and $healthResults.Count -gt 0 -and $healthResults[0].CriticalCount -gt 0) {
+                    $critFailures = $healthResults[0].Failures | Where-Object { $_.Severity -eq "Critical" }
+                    Write-Log -Message "Cluster '$clusterName' has $($healthResults[0].CriticalCount) critical health check failure(s) that will block the update:" -Level Error
+                    foreach ($failure in $critFailures) {
+                        $nodeInfo = if ($failure.TargetResourceName) { " (Node: $($failure.TargetResourceName))" } else { "" }
+                        Write-Log -Message "  [Critical] $($failure.CheckName)$nodeInfo`: $($failure.Description)" -Level Error
+                        if ($failure.Remediation) {
+                            Write-Log -Message "    Remediation: $($failure.Remediation)" -Level Warning
+                        }
+                    }
+                    
+                    $clusterRgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                    $clusterSubId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                    $critSummary = ($critFailures | ForEach-Object { $_.CheckName }) -join '; '
+                    
+                    Write-UpdateCsvLog -LogType Skipped `
+                        -ClusterName $clusterName `
+                        -ResourceGroup $clusterRgName `
+                        -SubscriptionId $clusterSubId `
+                        -Message "Update blocked by critical health check failures: $critSummary" `
+                        -UpdateState $updateSummary.properties.state `
+                        -HealthState "Failure" `
+                        -HealthCheckFailures $critSummary
+                    
+                    $results += [PSCustomObject]@{
+                        ClusterName   = $clusterName
+                        Status        = "HealthCheckBlocked"
+                        Message       = "Critical health failures: $critSummary"
+                        UpdateName    = $null
+                        StartTime     = $clusterStartTime
+                        EndTime       = Get-Date
+                        Duration      = $null
+                    }
+                    continue
+                }
+                Write-Log -Message "No critical health issues found - cluster is eligible for update" -Level Success
+
                 # Step 4: List available updates
                 Write-Log -Message "Step 4: Listing available updates..." -Level Info
                 $availableUpdates = Get-AzureLocalAvailableUpdates -ClusterResourceId $clusterInfo.id `
@@ -1480,7 +1524,7 @@ function Start-AzureLocalClusterUpdate {
         $totalClusters = $results.Count
         $succeeded = @($results | Where-Object { $_.Status -eq "UpdateStarted" }).Count
         $failed = @($results | Where-Object { $_.Status -in @("Failed", "Error") }).Count
-        $skipped = @($results | Where-Object { $_.Status -in @("Skipped", "NotReady", "NoUpdatesAvailable", "NoReadyUpdates", "NotFound", "UpdateNotFound") }).Count
+        $skipped = @($results | Where-Object { $_.Status -in @("Skipped", "NotReady", "NoUpdatesAvailable", "NoReadyUpdates", "NotFound", "UpdateNotFound", "HealthCheckBlocked") }).Count
 
         Write-Log -Message "Total clusters processed: $totalClusters" -Level Info
         Write-Log -Message "Updates started: $succeeded" -Level Success
@@ -1595,7 +1639,9 @@ function Start-AzureLocalClusterUpdate {
         Write-Log -Message "Azure Local Cluster Update - Completed" -Level Header
         Write-Log -Message "========================================" -Level Header
 
-        return $results
+        if ($PassThru) {
+            return $results
+        }
     }
 }
 
@@ -2049,7 +2095,9 @@ function Get-AzureLocalUpdateSummary {
     }
 
     Write-Log -Message "" -Level Info
-    return $results
+    if ($PassThru) {
+        return $results
+    }
 }
 
 function Get-AzureLocalAvailableUpdates {
@@ -2438,7 +2486,9 @@ function Get-AzureLocalAvailableUpdates {
     }
 
     Write-Log -Message "" -Level Info
-    return $results
+    if ($PassThru) {
+        return $results
+    }
 }
 
 function Invoke-AzureLocalUpdateApply {
@@ -2584,7 +2634,10 @@ function Get-AzureLocalUpdateRuns {
         [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
         [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
         [ValidateSet('Auto', 'Csv', 'Json', 'JUnitXml')]
-        [string]$ExportFormat = 'Auto'
+        [string]$ExportFormat = 'Auto',
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
     )
 
     # Helper function to format update runs
@@ -2668,7 +2721,7 @@ function Get-AzureLocalUpdateRuns {
 
     # Helper function to get runs for a single cluster
     function Get-ClusterUpdateRuns {
-        param($resourceId, $clusterName, $updateNameFilter, $apiVer)
+        param($resourceId, $updateNameFilter, $apiVer)
         
         $allRuns = @()
         
@@ -2721,7 +2774,7 @@ function Get-AzureLocalUpdateRuns {
         Write-Log -Message "Found cluster: $($clusterInfo.id)" -Level Success
 
         Write-Log -Message "Querying update runs..." -Level Info
-        $allRuns = Get-ClusterUpdateRuns -resourceId $clusterInfo.id -clusterName $ClusterName -updateNameFilter $UpdateName -apiVer $ApiVersion
+        $allRuns = Get-ClusterUpdateRuns -resourceId $clusterInfo.id -updateNameFilter $UpdateName -apiVer $ApiVersion
         Write-Log -Message "Found $($allRuns.Count) update run(s)" -Level $(if ($allRuns.Count -gt 0) { "Success" } else { "Warning" })
 
         if ($Raw) {
@@ -2748,13 +2801,46 @@ function Get-AzureLocalUpdateRuns {
             Write-Log -Message "Update Runs for Cluster: $ClusterName" -Level Header
             Write-Log -Message ("=" * 60) -Level Header
             $formattedRuns | Format-Table -AutoSize | Out-String | Write-Host
+
+            # If the latest run failed due to health check, show blocking health failures
+            $latestRun = $formattedRuns | Select-Object -First 1
+            if ($latestRun.State -eq "Failed" -and $latestRun.CurrentStep -match "health check") {
+                Write-Log -Message "The latest update run was blocked by health check failures." -Level Warning
+                Write-Log -Message "Querying current health check status..." -Level Info
+                $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($clusterInfo.id) -BlockingOnly
+                if ($healthResults -and $healthResults[0].CriticalCount -gt 0) {
+                    Write-Log -Message "" -Level Info
+                    Write-Log -Message "The following critical health issues must be resolved before this update can proceed:" -Level Error
+                    foreach ($failure in $healthResults[0].Failures) {
+                        $nodeInfo = if ($failure.TargetResourceName) { " (Node: $($failure.TargetResourceName))" } else { "" }
+                        Write-Log -Message "  [Critical] $($failure.CheckName)$nodeInfo`: $($failure.Description)" -Level Error
+                        if ($failure.Remediation) {
+                            Write-Log -Message "    Remediation: $($failure.Remediation)" -Level Warning
+                        }
+                    }
+                }
+            }
         }
         else {
             Write-Log -Message "" -Level Info
             Write-Log -Message "No update runs found for cluster '$ClusterName'" -Level Warning
         }
 
-        return $formattedRuns
+        # Display latest run details
+        if ($formattedRuns.Count -gt 0) {
+            Write-Log -Message "" -Level Info
+            Write-Log -Message "Latest Update Run:" -Level Header
+            Write-Host ""
+            $formattedRuns | Select-Object -First 1 | Format-List | Out-String -Stream | ForEach-Object {
+                if ($_ -ne "") { Write-Host "`t$_" }
+            }
+            Write-Host ""
+        }
+
+        if ($PassThru) {
+            return $formattedRuns
+        }
+        return
     }
 
     # Multi-cluster mode
@@ -2886,7 +2972,7 @@ function Get-AzureLocalUpdateRuns {
             }
 
             # Get update runs
-            $runs = Get-ClusterUpdateRuns -resourceId $resourceId -clusterName $clusterName -updateNameFilter $UpdateName -apiVer $ApiVersion
+            $runs = Get-ClusterUpdateRuns -resourceId $resourceId -updateNameFilter $UpdateName -apiVer $ApiVersion
 
             if ($runs.Count -gt 0) {
                 # Get latest run for display
@@ -2986,6 +3072,35 @@ function Get-AzureLocalUpdateRuns {
     Write-Log -Message "Update Runs:" -Level Header
     $allFormattedRuns | Format-Table ClusterName, UpdateName, State, StartTime, Duration, Progress -AutoSize
 
+    # Check for health-check-blocked failures and show diagnostics
+    $healthBlockedRuns = @($allFormattedRuns | Where-Object { $_.State -eq "Failed" -and $_.CurrentStep -match "health check" })
+    if ($healthBlockedRuns.Count -gt 0) {
+        $affectedClusters = @($healthBlockedRuns | Select-Object -ExpandProperty ClusterName -Unique)
+        Write-Log -Message "" -Level Info
+        Write-Log -Message "Detected $($healthBlockedRuns.Count) update run(s) blocked by health check failures." -Level Warning
+        Write-Log -Message "Querying current health check status for affected cluster(s)..." -Level Info
+        
+        foreach ($affectedCluster in $affectedClusters) {
+            # Find the resource ID for this cluster from the clusters we already processed
+            $clusterEntry = $clustersToProcess | Where-Object { $_.Name -eq $affectedCluster }
+            $rid = $clusterEntry.ResourceId
+            if (-not $rid) { continue }
+            
+            $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($rid) -BlockingOnly
+            if ($healthResults -and $healthResults[0].CriticalCount -gt 0) {
+                Write-Log -Message "" -Level Info
+                Write-Log -Message "Critical health issues blocking updates on '$affectedCluster':" -Level Error
+                foreach ($failure in $healthResults[0].Failures) {
+                    $nodeInfo = if ($failure.TargetResourceName) { " (Node: $($failure.TargetResourceName))" } else { "" }
+                    Write-Log -Message "  [Critical] $($failure.CheckName)$nodeInfo`: $($failure.Description)" -Level Error
+                    if ($failure.Remediation) {
+                        Write-Log -Message "    Remediation: $($failure.Remediation)" -Level Warning
+                    }
+                }
+            }
+        }
+    }
+
     # Export if path specified
     if ($ExportPath) {
         try {
@@ -3033,7 +3148,23 @@ function Get-AzureLocalUpdateRuns {
     }
 
     Write-Log -Message "" -Level Info
-    return $allFormattedRuns
+
+    # Display latest run details per cluster
+    if ($allFormattedRuns.Count -gt 0) {
+        $latestPerCluster = $allFormattedRuns | Group-Object ClusterName | ForEach-Object {
+            $_.Group | Sort-Object StartTime -Descending | Select-Object -First 1
+        }
+        Write-Log -Message "Latest Update Run per Cluster:" -Level Header
+        Write-Host ""
+        $latestPerCluster | Format-List | Out-String -Stream | ForEach-Object {
+            if ($_ -ne "") { Write-Host "`t$_" }
+        }
+        Write-Host ""
+    }
+
+    if ($PassThru) {
+        return $allFormattedRuns
+    }
 }
 
 function Get-AzureLocalClusterUpdateReadiness {
@@ -3132,7 +3263,10 @@ function Get-AzureLocalClusterUpdateReadiness {
 
         [Parameter(Mandatory = $false)]
         [ValidateSet('Auto', 'Csv', 'Json', 'JUnitXml')]
-        [string]$ExportFormat = 'Auto'
+        [string]$ExportFormat = 'Auto',
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
     )
 
     Write-Log -Message "" -Level Info
@@ -3477,7 +3611,9 @@ function Get-AzureLocalClusterUpdateReadiness {
     }
 
     Write-Log -Message "" -Level Info
-    return $results
+    if ($PassThru) {
+        return $results
+    }
 }
 
 function Get-AzureLocalClusterInventory {
@@ -3811,7 +3947,10 @@ function Set-AzureLocalClusterUpdateRingTag {
         [switch]$Force,
 
         [Parameter(Mandatory = $false)]
-        [string]$LogFolderPath
+        [string]$LogFolderPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
     )
 
     # Set default log folder
@@ -4224,7 +4363,9 @@ function Set-AzureLocalClusterUpdateRingTag {
     Write-Host ""
     $results | Format-Table ClusterName, Action, PreviousTagValue, NewTagValue, Status -AutoSize
     
-    return $results
+    if ($PassThru) {
+        return $results
+    }
 }
 
 #region Fleet-Scale Operations (v0.5.6)
@@ -4557,10 +4698,6 @@ function Test-AzureLocalFleetHealthGate {
         Minimum required success percentage. Default: 90.
         If fewer than this percentage succeed, the gate fails.
     
-    .PARAMETER AllowHealthWarnings
-        If set, clusters with HealthState="Warning" are considered acceptable.
-        By default, only "Success" health states pass.
-    
     .PARAMETER WaitForCompletion
         Wait for in-progress updates to complete before evaluating.
     
@@ -4605,9 +4742,6 @@ function Test-AzureLocalFleetHealthGate {
         [Parameter(Mandatory = $false)]
         [ValidateRange(0, 100)]
         [int]$MinSuccessPercent = 90,
-        
-        [Parameter(Mandatory = $false)]
-        [switch]$AllowHealthWarnings,
         
         [Parameter(Mandatory = $false)]
         [switch]$WaitForCompletion,
@@ -4714,10 +4848,10 @@ function Test-AzureLocalFleetHealthGate {
     # Display result
     Write-Log -Message "" -Level Info
     if ($passed) {
-        Write-Log -Message "✓ HEALTH GATE PASSED" -Level Success
+        Write-Log -Message "[OK]HEALTH GATE: PASSED" -Level Success
     }
     else {
-        Write-Log -Message "✗ HEALTH GATE FAILED" -Level Error
+        Write-Log -Message "[FAILED]HEALTH GATE: FAILED" -Level Error
         foreach ($reason in $reasons) {
             Write-Log -Message "  - $reason" -Level Error
         }
@@ -5025,12 +5159,12 @@ function Invoke-AzureLocalFleetOperation {
             if ($success) {
                 $clusterState.Status = "Succeeded"
                 $state.SucceededCount++
-                Write-Log -Message "  ✓ $($clusterState.ClusterName) - Succeeded" -Level Success
+                Write-Log -Message "  [OK] $($clusterState.ClusterName) - Succeeded" -Level Success
             }
             else {
                 $clusterState.Status = "Failed"
                 $state.FailedCount++
-                Write-Log -Message "  ✗ $($clusterState.ClusterName) - Failed: $lastError" -Level Error
+                Write-Log -Message "  [FAILED] $($clusterState.ClusterName) - Failed: $lastError" -Level Error
             }
             
             $state.CompletedCount++
@@ -5300,6 +5434,350 @@ function Stop-AzureLocalFleetUpdate {
 
 #endregion Fleet-Scale Operations
 
+#region Pre-Update Health Validation (v0.6.1)
+
+function Test-AzureLocalClusterHealth {
+    <#
+    .SYNOPSIS
+        Validates cluster health before applying updates by checking for blocking health check failures.
+    
+    .DESCRIPTION
+        Queries the health check results from each cluster's update summary to identify
+        Critical, Warning, and Informational failures. Critical failures block updates
+        from being applied.
+        
+        This function can be used as a standalone pre-flight check or is called
+        automatically by Start-AzureLocalClusterUpdate before applying updates.
+        
+        Health check data is stored in ARM on the cluster's updateSummaries resource
+        and is refreshed approximately every 24 hours.
+    
+    .PARAMETER ClusterResourceIds
+        An array of full Azure Resource IDs for the clusters to check.
+    
+    .PARAMETER ClusterNames
+        An array of Azure Local cluster names to check.
+    
+    .PARAMETER ScopeByUpdateRingTag
+        Find clusters by their 'UpdateRing' tag value via Azure Resource Graph.
+    
+    .PARAMETER UpdateRingValue
+        The value of the 'UpdateRing' tag to match when using -ScopeByUpdateRingTag.
+    
+    .PARAMETER ResourceGroupName
+        Resource group containing the clusters (only used with -ClusterNames).
+    
+    .PARAMETER SubscriptionId
+        Azure subscription ID (defaults to current subscription).
+    
+    .PARAMETER BlockingOnly
+        Show only Critical severity failures (the ones that block updates).
+    
+    .PARAMETER ApiVersion
+        Azure REST API version to use. Default: "2025-10-01".
+    
+    .PARAMETER ExportPath
+        Export results to CSV (.csv), JSON (.json), or JUnit XML (.xml) file.
+    
+    .OUTPUTS
+        PSCustomObject[] - Array of health check results per cluster.
+    
+    .EXAMPLE
+        Test-AzureLocalClusterHealth -ClusterResourceIds @("/subscriptions/.../clusters/Seattle")
+        Checks health for a single cluster by resource ID.
+    
+    .EXAMPLE
+        Test-AzureLocalClusterHealth -ScopeByUpdateRingTag -UpdateRingValue "Wave1" -BlockingOnly
+        Shows only Critical (update-blocking) health failures for all Wave1 clusters.
+    
+    .EXAMPLE
+        Test-AzureLocalClusterHealth -ClusterNames "MyCluster" -ExportPath "C:\Reports\health.csv"
+        Checks health and exports results to CSV.
+    #>
+    [CmdletBinding(DefaultParameterSetName = 'ByResourceId')]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByResourceId')]
+        [string[]]$ClusterResourceIds,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByName')]
+        [string[]]$ClusterNames,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [switch]$ScopeByUpdateRingTag,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [string]$UpdateRingValue,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [string]$SubscriptionId,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$BlockingOnly,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ApiVersion = $script:DefaultApiVersion,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ExportPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
+    )
+
+    Write-Log -Message "" -Level Info
+    Write-Log -Message "========================================" -Level Header
+    Write-Log -Message "Azure Local Cluster Health Validation" -Level Header
+    Write-Log -Message "========================================" -Level Header
+
+    # Verify Azure CLI
+    try {
+        $null = az account show 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "Not logged in" }
+        Write-Log -Message "Azure CLI authentication verified" -Level Success
+    }
+    catch {
+        Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
+        return
+    }
+
+    # Build cluster list (reuse existing patterns)
+    $clustersToCheck = @()
+
+    if ($PSCmdlet.ParameterSetName -eq 'ByTag') {
+        if (-not (Install-AzGraphExtension)) {
+            Write-Error "Failed to install Azure CLI 'resource-graph' extension."
+            return
+        }
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$UpdateRingValue' | project id, name, resourceGroup, subscriptionId"
+        $argResult = az graph query -q $argQuery --first 1000 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log -Message "Azure Resource Graph query failed." -Level Error
+            return
+        }
+        $clusters = ($argResult | ConvertFrom-Json).data
+        if (-not $clusters -or $clusters.Count -eq 0) {
+            Write-Log -Message "No clusters found with UpdateRing = '$UpdateRingValue'" -Level Warning
+            return @()
+        }
+        foreach ($c in $clusters) {
+            $clustersToCheck += @{ ResourceId = $c.id; Name = $c.name }
+        }
+    }
+    elseif ($PSCmdlet.ParameterSetName -eq 'ByResourceId') {
+        foreach ($rid in $ClusterResourceIds) {
+            $clustersToCheck += @{ ResourceId = $rid; Name = ($rid -split '/')[-1] }
+        }
+    }
+    else {
+        if (-not $SubscriptionId) { $SubscriptionId = (az account show --query id -o tsv) }
+        foreach ($name in $ClusterNames) {
+            $clustersToCheck += @{ ResourceId = $null; Name = $name }
+        }
+    }
+
+    Write-Log -Message "Checking health for $($clustersToCheck.Count) cluster(s)..." -Level Info
+
+    $results = @()
+    $overallPassed = $true
+
+    foreach ($cluster in $clustersToCheck) {
+        $clusterName = $cluster.Name
+        Write-Host "  Checking: $clusterName..." -ForegroundColor Gray -NoNewline
+
+        try {
+            # Get resource ID if needed
+            $resourceId = $cluster.ResourceId
+            if (-not $resourceId) {
+                $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
+                    -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
+                if ($clusterInfo) { $resourceId = $clusterInfo.id }
+            }
+            if (-not $resourceId) {
+                Write-Host " Not Found" -ForegroundColor Red
+                $results += [PSCustomObject]@{
+                    ClusterName = $clusterName; HealthState = "Not Found"; Passed = $false
+                    CriticalCount = 0; WarningCount = 0; InfoCount = 0; Failures = @()
+                }
+                $overallPassed = $false
+                continue
+            }
+
+            # Get update summary (contains healthCheckResult)
+            $summary = Get-AzureLocalUpdateSummary -ClusterResourceId $resourceId -ApiVersion $ApiVersion
+            if (-not $summary -or -not $summary.properties.healthCheckResult) {
+                Write-Host " No Health Data" -ForegroundColor Yellow
+                $results += [PSCustomObject]@{
+                    ClusterName = $clusterName; HealthState = "No Data"; Passed = $true
+                    CriticalCount = 0; WarningCount = 0; InfoCount = 0; Failures = @()
+                }
+                continue
+            }
+
+            $healthState = if ($summary.properties.healthState) { $summary.properties.healthState } else { "Unknown" }
+            $healthChecks = $summary.properties.healthCheckResult
+
+            # Extract failures
+            $failures = @()
+            foreach ($check in $healthChecks) {
+                if ($check.status -eq "Failed") {
+                    $sev = if ($check.severity) { $check.severity } else { "Unknown" }
+                    if ($BlockingOnly -and $sev -ne "Critical") { continue }
+                    $displayName = if ($check.displayName) { $check.displayName } elseif ($check.name) { ($check.name -split '/')[0] } else { "Unknown" }
+                    $failures += [PSCustomObject]@{
+                        ClusterName        = $clusterName
+                        CheckName          = $displayName
+                        Severity           = $sev
+                        Description        = if ($check.description) { $check.description } else { "" }
+                        Remediation        = if ($check.remediation) { $check.remediation } else { "" }
+                        TargetResourceName = if ($check.targetResourceName) { $check.targetResourceName } else { "" }
+                        Timestamp          = if ($check.timestamp) { $check.timestamp } else { "" }
+                    }
+                }
+            }
+
+            $critCount = @($failures | Where-Object { $_.Severity -eq "Critical" }).Count
+            $warnCount = @($failures | Where-Object { $_.Severity -eq "Warning" }).Count
+            $infoCount = @($failures | Where-Object { $_.Severity -eq "Informational" }).Count
+            $passed = ($critCount -eq 0)
+            if (-not $passed) { $overallPassed = $false }
+
+            # Console output
+            if ($passed -and $failures.Count -eq 0) {
+                Write-Host " Healthy" -ForegroundColor Green
+            }
+            elseif ($passed) {
+                Write-Host " Warnings ($warnCount)" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host " BLOCKED ($critCount critical)" -ForegroundColor Red
+            }
+
+            $results += [PSCustomObject]@{
+                ClusterName   = $clusterName
+                HealthState   = $healthState
+                Passed        = $passed
+                CriticalCount = $critCount
+                WarningCount  = $warnCount
+                InfoCount     = $infoCount
+                Failures      = $failures
+            }
+        }
+        catch {
+            Write-Host " Error: $($_.Exception.Message)" -ForegroundColor Red
+            $results += [PSCustomObject]@{
+                ClusterName = $clusterName; HealthState = "Error"; Passed = $false
+                CriticalCount = 0; WarningCount = 0; InfoCount = 0; Failures = @()
+            }
+            $overallPassed = $false
+        }
+    }
+
+    # Summary
+    Write-Log -Message "" -Level Info
+    Write-Log -Message "========================================" -Level Header
+    Write-Log -Message "Health Validation Summary" -Level Header
+    Write-Log -Message "========================================" -Level Header
+
+    $totalClusters = $results.Count
+    $passedCount = @($results | Where-Object { $_.Passed -eq $true }).Count
+    $failedCount = $totalClusters - $passedCount
+
+    Write-Log -Message "Total Clusters:  $totalClusters" -Level Info
+    Write-Log -Message "Passed:          $passedCount (no critical failures)" -Level $(if ($passedCount -eq $totalClusters) { "Success" } else { "Info" })
+    Write-Log -Message "Blocked:         $failedCount (critical failures present)" -Level $(if ($failedCount -gt 0) { "Error" } else { "Info" })
+
+    # Display failure details
+    $allFailures = @($results | ForEach-Object { $_.Failures } | Where-Object { $_ })
+    if ($allFailures.Count -gt 0) {
+        Write-Log -Message "" -Level Info
+        Write-Log -Message "Health Check Failures:" -Level Header
+        $allFailures | Format-Table ClusterName, Severity, CheckName, TargetResourceName, Description -AutoSize -Wrap | Out-String -Stream | ForEach-Object {
+            if ($_ -ne "") { Write-Log -Message $_ -Level Info }
+        }
+
+        # Show remediation for Critical failures
+        $criticalFailures = @($allFailures | Where-Object { $_.Severity -eq "Critical" })
+        if ($criticalFailures.Count -gt 0) {
+            Write-Log -Message "" -Level Info
+            Write-Log -Message "Remediation for Critical (Update-Blocking) Failures:" -Level Warning
+            foreach ($f in $criticalFailures) {
+                if ($f.Remediation) {
+                    $nodeInfo = if ($f.TargetResourceName) { " ($($f.TargetResourceName))" } else { "" }
+                    Write-Log -Message "  $($f.ClusterName) - $($f.CheckName)$nodeInfo`: $($f.Remediation)" -Level Warning
+                }
+            }
+        }
+    }
+    else {
+        Write-Log -Message "" -Level Info
+        Write-Log -Message "No health check failures detected. All clusters are ready for updates." -Level Success
+    }
+
+    # Overall result
+    Write-Log -Message "" -Level Info
+    if ($overallPassed) {
+        Write-Log -Message "HEALTH VALIDATION PASSED - All clusters are ready for updates" -Level Success
+    }
+    else {
+        Write-Log -Message "HEALTH VALIDATION FAILED - Critical health issues must be resolved before updates can proceed" -Level Error
+    }
+
+    # Export if path specified
+    if ($ExportPath -and $allFailures.Count -gt 0) {
+        try {
+            $exportDir = Split-Path -Path $ExportPath -Parent
+            if ($exportDir -and -not (Test-Path $exportDir)) {
+                New-Item -ItemType Directory -Path $exportDir -Force | Out-Null
+            }
+            $extension = [System.IO.Path]::GetExtension($ExportPath).ToLower()
+            switch ($extension) {
+                '.csv' {
+                    $allFailures | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
+                    Write-Log -Message "Results exported to CSV: $ExportPath" -Level Success
+                }
+                '.json' {
+                    $exportData = @{
+                        Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        OverallPassed = $overallPassed
+                        TotalClusters = $totalClusters
+                        Passed = $passedCount
+                        Blocked = $failedCount
+                        Failures = $allFailures
+                    }
+                    $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $ExportPath -Encoding UTF8
+                    Write-Log -Message "Results exported to JSON: $ExportPath" -Level Success
+                }
+                '.xml' {
+                    $junitResults = $allFailures | ForEach-Object {
+                        $junitNodeInfo = if ($_.TargetResourceName) { " (Node: $($_.TargetResourceName))" } else { "" }
+                        [PSCustomObject]@{
+                            ClusterName = $_.ClusterName; Status = "Failed"
+                            Message = "$($_.Severity): $($_.CheckName)$junitNodeInfo - $($_.Description)"
+                            UpdateName = $_.CheckName; CurrentState = $_.Severity
+                        }
+                    }
+                    Export-ResultsToJUnitXml -Results $junitResults -OutputPath $ExportPath `
+                        -TestSuiteName "AzureLocalClusterHealth" -OperationType "HealthCheck"
+                    Write-Log -Message "Results exported to JUnit XML: $ExportPath" -Level Success
+                }
+            }
+        }
+        catch {
+            Write-Log -Message "Failed to export results: $($_.Exception.Message)" -Level Error
+        }
+    }
+
+    if ($PassThru) {
+        return $results
+    }
+}
+
+#endregion Pre-Update Health Validation
+
 # Export module members (public functions only)
 Export-ModuleMember -Function @(
     'Connect-AzureLocalServicePrincipal',
@@ -5317,6 +5795,8 @@ Export-ModuleMember -Function @(
     'Test-AzureLocalFleetHealthGate',
     'Export-AzureLocalFleetState',
     'Resume-AzureLocalFleetUpdate',
-    'Stop-AzureLocalFleetUpdate'
+    'Stop-AzureLocalFleetUpdate',
+    # Pre-Update Health Validation (v0.6.1)
+    'Test-AzureLocalClusterHealth'
 )
 

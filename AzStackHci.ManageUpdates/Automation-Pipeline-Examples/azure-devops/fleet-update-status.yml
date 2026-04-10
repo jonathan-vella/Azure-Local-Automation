@@ -127,7 +127,7 @@ stages:
           $readinessJson = Join-Path $outputDir "readiness-status.json"
           $readinessXml = Join-Path $outputDir "readiness-status.xml"
           
-          $readiness = Get-AzureLocalClusterUpdateReadiness @readinessParams -ExportPath $readinessCsv
+          $readiness = Get-AzureLocalClusterUpdateReadiness @readinessParams -ExportPath $readinessCsv -PassThru
           
           # Export to JSON
           $readinessExport = @{
@@ -233,7 +233,7 @@ stages:
               $summaryParams['ClusterResourceIds'] = $resourceIds
           }
           
-          $summaries = Get-AzureLocalUpdateSummary @summaryParams
+          $summaries = Get-AzureLocalUpdateSummary @summaryParams -PassThru
           Write-Host "Update summaries collected for $($summaries.Count) cluster(s)" -ForegroundColor Green
           
           # Step 4b: Get available updates across fleet
@@ -252,7 +252,7 @@ stages:
               $availableParams['ClusterResourceIds'] = $resourceIds
           }
           
-          $available = Get-AzureLocalAvailableUpdates @availableParams
+          $available = Get-AzureLocalAvailableUpdates @availableParams -PassThru
           Write-Host "Found $($available.Count) available update(s) across fleet" -ForegroundColor Green
           
           # Step 4c: Optionally collect recent update runs using fleet-wide query
@@ -273,7 +273,7 @@ stages:
                   $runsParams['ClusterNames'] = $clusterNames
               }
               
-              $allRuns = Get-AzureLocalUpdateRuns @runsParams
+              $allRuns = Get-AzureLocalUpdateRuns @runsParams -PassThru
               Write-Host "Update runs collected for $($allRuns.Count) cluster(s)" -ForegroundColor Green
               
               # Display summary

@@ -3,7 +3,7 @@
     RootModule = 'AzStackHci.ManageUpdates.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.6.0'
+    ModuleVersion = '0.6.1'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -43,7 +43,9 @@
         'Test-AzureLocalFleetHealthGate',
         'Export-AzureLocalFleetState',
         'Resume-AzureLocalFleetUpdate',
-        'Stop-AzureLocalFleetUpdate'
+        'Stop-AzureLocalFleetUpdate',
+        # Pre-Update Health Validation (v0.6.1)
+        'Test-AzureLocalClusterHealth'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -72,6 +74,11 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.6.1 - Pre-Update Health Check Validation
+- NEW: `Test-AzureLocalClusterHealth` function for pre-update health validation
+- IMPROVED: `Start-AzureLocalClusterUpdate` now checks for critical health failures before applying updates
+- IMPROVED: `Get-AzureLocalUpdateRuns` shows health check failure details when updates are blocked by health issues
+
 ## Version 0.6.0 - Cumulative Update Auto-Selection Fix
 - FIXED: Auto-selection now correctly picks the latest cumulative update by YYMM version (was selecting wrong update due to PS 5.1 $Matches scope issue in Sort-Object)
 - IMPROVED: Subscription and resource validation with specific error messages for subscription not found, resource group not found, and cluster not found
