@@ -5,6 +5,27 @@ All notable changes to the AzStackHci.ManageUpdates module will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-04-15
+
+### Added - Fleet Status Data Collection
+- **New function `Get-AzureLocalFleetStatusData`**: Single-pass data collection with parallel `Start-Job` support
+- `-ThrottleLimit` parameter (default: 4, max: 8) splits cluster list into parallel batches
+- `-ExportPath` exports fleet data as JSON artifact for CI/CD pipeline job passing
+- `-StatusData` parameter on `New-AzureLocalFleetStatusHtmlReport` accepts pre-collected data to skip API calls
+- Stable JSON schema (v1.0) with SchemaVersion, Timestamp, ModuleVersion, Scope, Readiness, ClusterDetails, LatestRuns, HealthResults
+
+### Performance
+- `New-AzureLocalFleetStatusHtmlReport` now uses single-pass data collection instead of calling 6 separate module functions
+- Reduced Azure REST API calls from ~230 to ~85 for 21 clusters (~63% reduction)
+- ByTag scope resolves resource IDs upfront via single ARG query instead of each downstream function querying independently
+- Update summary, available updates, and health check data fetched once per cluster and reused
+- Update run queries reuse already-fetched update list instead of re-fetching via `Get-AzureLocalAvailableUpdates`
+- Progress counter shows `[N/M]` per cluster during data collection for better visibility
+
+### Fixed
+- 'Up to Date' counter now recognizes `AppliedSuccessfully` state from ARM API (was showing 0 for completed clusters)
+- Recommended Update no longer shows the version a cluster is already on when state is `AppliedSuccessfully`/`UpToDate`
+
 ## [0.6.3] - 2026-04-15
 
 ### Fixed

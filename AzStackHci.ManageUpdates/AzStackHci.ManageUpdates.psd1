@@ -3,7 +3,7 @@
     RootModule = 'AzStackHci.ManageUpdates.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.6.3'
+    ModuleVersion = '0.6.4'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -46,7 +46,8 @@
         'Stop-AzureLocalFleetUpdate',
         # Pre-Update Health Validation (v0.6.1)
         'Test-AzureLocalClusterHealth',
-        # Fleet Status Reporting (v0.6.3)
+        # Fleet Status Data Collection & Reporting (v0.6.4)
+        'Get-AzureLocalFleetStatusData',
         'New-AzureLocalFleetStatusHtmlReport'
     )
 
@@ -76,6 +77,21 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.6.4 - HTML Report Performance Optimization & Fleet Status Data
+- NEW: `Get-AzureLocalFleetStatusData` function for efficient single-pass fleet data collection with parallel Start-Job support
+- NEW: -ThrottleLimit parameter (default: 4, max: 8) splits cluster list into parallel batches via Start-Job
+- NEW: -ExportPath exports fleet data as JSON artifact for CI/CD pipeline job passing
+- NEW: -StatusData parameter on New-AzureLocalFleetStatusHtmlReport accepts pre-collected data to skip API calls
+- NEW: Stable JSON schema (v1.0) with SchemaVersion, Timestamp, ModuleVersion, Scope, Readiness, ClusterDetails, LatestRuns, HealthResults
+- PERF: New-AzureLocalFleetStatusHtmlReport now uses single-pass data collection instead of calling 6 separate module functions
+- PERF: Reduced Azure REST API calls from ~230 to ~85 for 21 clusters (~63% reduction)
+- PERF: ByTag scope resolves resource IDs upfront via single ARG query instead of each downstream function querying independently
+- PERF: Update summary, available updates, and health check data fetched once per cluster and reused across readiness, details, and health sections
+- PERF: Update run queries reuse already-fetched update list instead of re-fetching via Get-AzureLocalAvailableUpdates
+- FIXED: 'Up to Date' counter now recognizes 'AppliedSuccessfully' state from ARM API (was showing 0 for clusters that completed updates)
+- FIXED: Recommended Update no longer shows the version a cluster is already on when state is AppliedSuccessfully/UpToDate
+- IMPROVED: Progress counter shows [N/M] per cluster during data collection for better visibility
+
 ## Version 0.6.3 - Bug Fixes, Security & Code Quality
 - FIXED: -PassThru parameter correctly added to Get-AzureLocalUpdateSummary param block (was in function body but missing from declaration)
 - FIXED: OutputPath now pre-validated upfront (drive existence, .html extension) to fail fast before API calls

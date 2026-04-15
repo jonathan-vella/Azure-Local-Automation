@@ -685,7 +685,7 @@ The Fleet Update Status pipeline generates JUnit XML that integrates with CI/CD 
 
 ### Standalone HTML Report
 
-For ad-hoc or offline reporting outside of CI/CD pipelines, use the `New-AzureLocalFleetStatusHtmlReport` function (v0.6.3) to generate a self-contained HTML report. This is useful for:
+For ad-hoc or offline reporting outside of CI/CD pipelines, use the `New-AzureLocalFleetStatusHtmlReport` function (v0.6.4) to generate a self-contained HTML report. This is useful for:
 - Sharing fleet status via email or SharePoint
 - Executive reporting without CI/CD dashboard access
 - On-demand health checks from a local workstation

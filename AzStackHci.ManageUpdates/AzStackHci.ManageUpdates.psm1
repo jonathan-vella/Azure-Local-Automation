@@ -118,14 +118,14 @@
     Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
 
 .NOTES
-    Version: 0.6.3
+    Version: 0.6.4
     Author: Neil Bird, Microsoft.
     Requires: Azure CLI (az) installed and authenticated
     API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 #>
 
 # Module constants
-$script:ModuleVersion = '0.6.3'
+$script:ModuleVersion = '0.6.4'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
 
@@ -2112,7 +2112,7 @@ function Get-AzureLocalUpdateSummary {
     Write-Log -Message "========================================" -Level Header
     
     $totalClusters = $results.Count
-    $upToDate = @($results | Where-Object { $_.UpdateState -eq "UpToDate" }).Count
+    $upToDate = @($results | Where-Object { $_.UpdateState -in @("UpToDate", "AppliedSuccessfully") }).Count
     $updateAvailable = @($results | Where-Object { $_.UpdateState -in @("UpdateAvailable", "Ready") }).Count
     $inProgress = @($results | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
     $healthFailures = @($results | Where-Object { $_.HealthState -eq "Failure" }).Count
@@ -2163,7 +2163,7 @@ function Get-AzureLocalUpdateSummary {
                     $junitResults = $results | ForEach-Object {
                         [PSCustomObject]@{
                             ClusterName  = $_.ClusterName
-                            Status       = if ($_.HealthState -eq "Failure") { "Failed" } elseif ($_.UpdateState -eq "UpToDate") { "Passed" } else { "Skipped" }
+                            Status       = if ($_.HealthState -eq "Failure") { "Failed" } elseif ($_.UpdateState -in @("UpToDate", "AppliedSuccessfully")) { "Passed" } else { "Skipped" }
                             Message      = "UpdateState: $($_.UpdateState), HealthState: $($_.HealthState), CurrentVersion: $($_.CurrentVersion)"
                             UpdateName   = $_.CurrentVersion
                             CurrentState = $_.UpdateState
@@ -3550,7 +3550,9 @@ function Get-AzureLocalClusterUpdateReadiness {
             
             # Determine recommended update (prefer ready updates, fallback to any available)
             # Sort by YYMM version (SolutionXX.YYMM.XXXX.XX) to select the latest
+            # Don't show updates the cluster is already on (AppliedSuccessfully/UpToDate states)
             $recommendedUpdate = ""
+            $isUpToDateState = $updateState -in @("UpToDate", "AppliedSuccessfully")
             if ($readyUpdates.Count -gt 0) {
                 $latestReady = Get-LatestUpdateByYYMM -Updates $readyUpdates
                 $recommendedUpdate = $latestReady.name
@@ -3563,7 +3565,7 @@ function Get-AzureLocalClusterUpdateReadiness {
                     $updateVersionCounts[$recommendedUpdate] = 1
                 }
             }
-            elseif ($availableUpdates.Count -gt 0) {
+            elseif (-not $isUpToDateState -and $availableUpdates.Count -gt 0) {
                 # Fallback: show latest available update even if not ready (e.g., downloading)
                 $latestAvailable = Get-LatestUpdateByYYMM -Updates $availableUpdates
                 $recommendedUpdate = $latestAvailable.name
@@ -5934,6 +5936,475 @@ function Test-AzureLocalClusterHealth {
 
 #endregion Pre-Update Health Validation
 
+#region Fleet Status Data Collection (v0.6.4)
+
+function Get-AzureLocalFleetStatusData {
+    <#
+    .SYNOPSIS
+        Collects comprehensive fleet status data from Azure Local clusters with optional parallelism.
+    
+    .DESCRIPTION
+        Performs a single-pass data collection across Azure Local clusters, making only 3 core API
+        calls per cluster (cluster info, update summary, available updates) plus update run queries.
+        
+        Returns a structured PSCustomObject containing readiness, cluster details, update runs,
+        and health check data. This object can be:
+        - Exported to JSON for CI/CD pipeline artifact passing between jobs
+        - Passed to New-AzureLocalFleetStatusHtmlReport via -StatusData to avoid redundant API calls
+        - Used directly for custom reporting or analysis
+        
+        When -ThrottleLimit is greater than 1, splits the cluster list into batches and uses
+        Start-Job for parallel data collection. Each job imports the module and calls this
+        function with -ThrottleLimit 1 for its batch. Results are merged automatically.
+        
+        Note: Azure ARM allows ~200 reads/5 minutes per subscription. With ThrottleLimit 4
+        and 4 API calls per cluster, parallel execution processes clusters ~4x faster while
+        staying within throttling limits for most fleet sizes.
+    
+    .PARAMETER ClusterResourceIds
+        An array of full Azure Resource IDs for the clusters to collect data for.
+    
+    .PARAMETER ClusterNames
+        An array of Azure Local cluster names to collect data for.
+    
+    .PARAMETER ScopeByUpdateRingTag
+        Find clusters by their 'UpdateRing' tag value via Azure Resource Graph.
+    
+    .PARAMETER UpdateRingValue
+        The value of the 'UpdateRing' tag to match when using -ScopeByUpdateRingTag.
+    
+    .PARAMETER AllClusters
+        Discovers all Azure Local clusters via Azure Resource Graph (limited to 100).
+    
+    .PARAMETER ResourceGroupName
+        Resource group containing the clusters (only used with -ClusterNames).
+    
+    .PARAMETER SubscriptionId
+        Azure subscription ID (defaults to current subscription).
+    
+    .PARAMETER IncludeUpdateRuns
+        Collect latest update run history per cluster.
+    
+    .PARAMETER IncludeHealthDetails
+        Collect detailed health check failure data per cluster.
+    
+    .PARAMETER ThrottleLimit
+        Number of parallel workers for data collection. Default: 4.
+        Set to 1 for sequential collection. Maximum: 8 (to respect ARM throttling).
+    
+    .PARAMETER ExportPath
+        Path to export the collected data as JSON. This JSON artifact can be passed
+        between CI/CD pipeline jobs to avoid redundant API calls.
+    
+    .OUTPUTS
+        PSCustomObject with properties: SchemaVersion, Timestamp, ModuleVersion, Scope,
+        Readiness, ClusterDetails, LatestRuns, HealthResults.
+    
+    .EXAMPLE
+        # Collect data for all clusters (parallel)
+        $data = Get-AzureLocalFleetStatusData -AllClusters -IncludeUpdateRuns -IncludeHealthDetails
+    
+    .EXAMPLE
+        # Export to JSON artifact for CI/CD pipeline
+        Get-AzureLocalFleetStatusData -ScopeByUpdateRingTag -UpdateRingValue "Wave1" -ExportPath "fleet-data.json"
+    
+    .EXAMPLE
+        # Collect data then generate HTML report (no redundant API calls)
+        $data = Get-AzureLocalFleetStatusData -AllClusters -ThrottleLimit 4 -IncludeUpdateRuns -IncludeHealthDetails
+        New-AzureLocalFleetStatusHtmlReport -StatusData $data -OutputPath "report.html"
+    
+    .EXAMPLE
+        # Sequential collection (for debugging or small fleets)
+        $data = Get-AzureLocalFleetStatusData -ClusterResourceIds $ids -ThrottleLimit 1
+    #>
+    [CmdletBinding(DefaultParameterSetName = 'All')]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByResourceId')]
+        [string[]]$ClusterResourceIds,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByName')]
+        [string[]]$ClusterNames,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [switch]$ScopeByUpdateRingTag,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [string]$UpdateRingValue,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'All')]
+        [switch]$AllClusters,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [string]$SubscriptionId,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeUpdateRuns,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeHealthDetails,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 8)]
+        [int]$ThrottleLimit = 4,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ExportPath
+    )
+
+    # Verify Azure CLI
+    try {
+        $null = az account show 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "Not logged in" }
+    }
+    catch {
+        Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
+        return $null
+    }
+
+    # Resolve scope to resource IDs
+    $allResourceIds = @()
+    $scopeDescription = ""
+
+    switch ($PSCmdlet.ParameterSetName) {
+        'ByTag' {
+            if (-not (Install-AzGraphExtension)) {
+                Write-Log -Message "Failed to install 'resource-graph' extension." -Level Error
+                return $null
+            }
+            $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id"
+            $argResult = az graph query -q $argQuery --first 1000 2>&1
+            if ($LASTEXITCODE -ne 0) { Write-Log -Message "ARG query failed." -Level Error; return $null }
+            $tagData = ($argResult | ConvertFrom-Json).data
+            if (-not $tagData -or $tagData.Count -eq 0) { Write-Log -Message "No clusters found with UpdateRing = '$UpdateRingValue'" -Level Warning; return $null }
+            $allResourceIds = @($tagData | Select-Object -ExpandProperty id)
+            $scopeDescription = "UpdateRing = $UpdateRingValue"
+        }
+        'ByResourceId' {
+            $allResourceIds = $ClusterResourceIds
+            $scopeDescription = "$($ClusterResourceIds.Count) cluster(s) by Resource ID"
+        }
+        'ByName' {
+            if (-not $SubscriptionId) { $SubscriptionId = (az account show --query id -o tsv) }
+            foreach ($name in $ClusterNames) {
+                $infoParams = @{ ClusterName = $name; SubscriptionId = $SubscriptionId }
+                if ($ResourceGroupName) { $infoParams['ResourceGroupName'] = $ResourceGroupName }
+                $ci = Get-AzureLocalClusterInfo @infoParams
+                if ($ci -and $ci.id) { $allResourceIds += $ci.id }
+                else { Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning }
+            }
+            $scopeDescription = "$($ClusterNames.Count) cluster(s) by name"
+        }
+        'All' {
+            $inventory = @(Get-AzureLocalClusterInventory -PassThru)
+            if (-not $inventory -or $inventory.Count -eq 0) { Write-Log -Message "No clusters found." -Level Warning; return $null }
+            if ($inventory.Count -gt 100) { $inventory = $inventory | Select-Object -First 100 }
+            $allResourceIds = @($inventory | Select-Object -ExpandProperty ResourceId)
+            $scopeDescription = "All clusters ($($allResourceIds.Count))"
+        }
+    }
+
+    if ($allResourceIds.Count -eq 0) {
+        Write-Log -Message "No cluster resource IDs resolved." -Level Warning
+        return $null
+    }
+
+    Write-Log -Message "Collecting fleet status data for $($allResourceIds.Count) cluster(s) [ThrottleLimit=$ThrottleLimit]..." -Level Info
+
+    # Determine if parallel execution is warranted
+    $useParallel = ($ThrottleLimit -gt 1) -and ($allResourceIds.Count -gt $ThrottleLimit)
+
+    $readiness = @()
+    $clusterDetails = @()
+    $latestRuns = @()
+    $healthResults = @()
+
+    if ($useParallel) {
+        #--- Parallel collection using Start-Job ---
+        $batchSize = [math]::Ceiling($allResourceIds.Count / $ThrottleLimit)
+        $batches = @()
+        for ($i = 0; $i -lt $allResourceIds.Count; $i += $batchSize) {
+            $batches += ,@($allResourceIds[$i..[math]::Min($i + $batchSize - 1, $allResourceIds.Count - 1)])
+        }
+
+        Write-Log -Message "Splitting $($allResourceIds.Count) clusters into $($batches.Count) parallel batches of ~$batchSize" -Level Info
+
+        $modulePath = Join-Path -Path $PSScriptRoot -ChildPath 'AzStackHci.ManageUpdates.psm1'
+        $incRuns = $IncludeUpdateRuns.IsPresent
+        $incHealth = $IncludeHealthDetails.IsPresent
+        $apiVer = $script:DefaultApiVersion
+
+        $jobScriptBlock = {
+            param([string[]]$BatchIds, [string]$ApiVer, [bool]$IncRuns, [bool]$IncHealth, [string]$ModPath)
+            Import-Module $ModPath -Force -ErrorAction Stop
+            $params = @{
+                ClusterResourceIds = $BatchIds
+                ThrottleLimit = 1
+            }
+            if ($IncRuns) { $params['IncludeUpdateRuns'] = $true }
+            if ($IncHealth) { $params['IncludeHealthDetails'] = $true }
+            $result = Get-AzureLocalFleetStatusData @params
+            $result | ConvertTo-Json -Depth 15 -Compress
+        }
+
+        $jobs = @()
+        $batchNum = 0
+        foreach ($batch in $batches) {
+            $batchNum++
+            Write-Log -Message "  Starting batch $batchNum ($($batch.Count) clusters)..." -Level Info
+            $jobs += Start-Job -ScriptBlock $jobScriptBlock -ArgumentList @($batch, $apiVer, $incRuns, $incHealth, $modulePath)
+        }
+
+        Write-Log -Message "Waiting for $($jobs.Count) parallel jobs to complete..." -Level Info
+        $jobs | Wait-Job | Out-Null
+
+        foreach ($job in $jobs) {
+            if ($job.State -eq 'Failed') {
+                Write-Log -Message "  Job $($job.Id) failed: $($job.ChildJobs[0].JobStateInfo.Reason)" -Level Error
+                continue
+            }
+            $jobOutput = Receive-Job $job -ErrorAction SilentlyContinue
+            if (-not $jobOutput) { continue }
+            $jobJson = $jobOutput -join "`n"
+            try {
+                $jobData = $jobJson | ConvertFrom-Json
+                if ($jobData.Readiness) { $readiness += @($jobData.Readiness) }
+                if ($jobData.ClusterDetails) { $clusterDetails += @($jobData.ClusterDetails) }
+                if ($jobData.LatestRuns) { $latestRuns += @($jobData.LatestRuns) }
+                if ($jobData.HealthResults) { $healthResults += @($jobData.HealthResults) }
+            }
+            catch {
+                Write-Log -Message "  Failed to parse job output: $($_.Exception.Message)" -Level Error
+            }
+        }
+        $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+
+        Write-Log -Message "Parallel collection complete: $($readiness.Count) cluster(s) collected" -Level Success
+    }
+    else {
+        #--- Sequential collection (single-pass per cluster) ---
+        $apiVer = $script:DefaultApiVersion
+        $clusterIndex = 0
+        $totalToProcess = $allResourceIds.Count
+
+        foreach ($rid in $allResourceIds) {
+            $clusterIndex++
+            $clusterName = ($rid -split '/')[-1]
+            $rgName = ($rid -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+            $subId = ($rid -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+
+            Write-Host "  [$clusterIndex/$totalToProcess] $clusterName..." -ForegroundColor Gray -NoNewline
+
+            try {
+                # API Call 1/3: GET cluster info
+                $clusterInfoUri = "https://management.azure.com${rid}?api-version=$apiVer"
+                $clusterInfo = az rest --method GET --uri $clusterInfoUri 2>$null | ConvertFrom-Json
+                if ($LASTEXITCODE -ne 0 -or $null -eq $clusterInfo) {
+                    Write-Host " Not Found" -ForegroundColor Red
+                    $readiness += [PSCustomObject]@{
+                        ClusterName = $clusterName; ResourceGroup = $rgName; SubscriptionId = $subId
+                        ClusterState = "Not Found"; UpdateState = "N/A"; HealthState = "N/A"
+                        ReadyForUpdate = $false; AvailableUpdates = ""; ReadyUpdates = ""
+                        RecommendedUpdate = ""; HealthCheckFailures = ""
+                    }
+                    $clusterDetails += [PSCustomObject]@{
+                        ClusterName = $clusterName; ResourceGroup = $rgName
+                        CurrentVersion = "N/A"; NodeCount = "N/A"; ResourceId = $rid
+                    }
+                    continue
+                }
+
+                $clusterState = $clusterInfo.properties.status
+                $nodeCount = "N/A"
+                if ($clusterInfo.properties.reportedProperties.nodes) {
+                    $nodeCount = $clusterInfo.properties.reportedProperties.nodes.Count
+                }
+
+                # API Call 2/3: GET update summary
+                $summaryUri = "https://management.azure.com${rid}/updateSummaries/default?api-version=$apiVer"
+                $updateSummary = az rest --method GET --uri $summaryUri 2>$null | ConvertFrom-Json
+                $hasSummary = ($LASTEXITCODE -eq 0 -and $null -ne $updateSummary -and $null -ne $updateSummary.properties)
+
+                $updateState = if ($hasSummary -and $updateSummary.properties.state) { $updateSummary.properties.state } else { "Unknown" }
+                $healthState = if ($hasSummary -and $updateSummary.properties.healthState) { $updateSummary.properties.healthState } else { "Unknown" }
+                $currentVersion = if ($hasSummary -and $updateSummary.properties.currentVersion) { $updateSummary.properties.currentVersion } else { "N/A" }
+
+                # API Call 3/3: GET available updates
+                $updatesUri = "https://management.azure.com${rid}/updates?api-version=$apiVer"
+                $updatesResponse = az rest --method GET --uri $updatesUri 2>$null | ConvertFrom-Json
+                $hasUpdates = ($LASTEXITCODE -eq 0 -and $null -ne $updatesResponse -and $null -ne $updatesResponse.value)
+                $availableUpdates = if ($hasUpdates) { @($updatesResponse.value) } else { @() }
+                $readyUpdates = @($availableUpdates | Where-Object { $_.properties.state -eq "Ready" })
+
+                $availableUpdateNames = ($availableUpdates | ForEach-Object { $_.name }) -join "; "
+                $readyUpdateNames = ($readyUpdates | ForEach-Object { $_.name }) -join "; "
+                $recommendedUpdate = ""
+                $isUpToDateState = $updateState -in @("UpToDate", "AppliedSuccessfully")
+                if ($readyUpdates.Count -gt 0) {
+                    $latestReady = Get-LatestUpdateByYYMM -Updates $readyUpdates
+                    $recommendedUpdate = $latestReady.name
+                }
+                elseif (-not $isUpToDateState -and $availableUpdates.Count -gt 0) {
+                    $latestAvailable = Get-LatestUpdateByYYMM -Updates $availableUpdates
+                    $recommendedUpdate = $latestAvailable.name
+                }
+                $isReady = ($updateState -in @("UpdateAvailable", "Ready")) -and ($readyUpdates.Count -gt 0)
+
+                $healthCheckFailures = ""
+                if ($hasSummary -and $healthState -notin @("Success", "Unknown")) {
+                    $healthCheckFailures = Get-HealthCheckFailureSummary -UpdateSummary $updateSummary
+                }
+
+                $readiness += [PSCustomObject]@{
+                    ClusterName = $clusterName; ResourceGroup = $rgName; SubscriptionId = $subId
+                    ClusterState = $clusterState; UpdateState = $updateState; HealthState = $healthState
+                    ReadyForUpdate = $isReady; AvailableUpdates = $availableUpdateNames
+                    ReadyUpdates = $readyUpdateNames; RecommendedUpdate = $recommendedUpdate
+                    HealthCheckFailures = $healthCheckFailures
+                }
+                $clusterDetails += [PSCustomObject]@{
+                    ClusterName = $clusterName; ResourceGroup = $rgName
+                    CurrentVersion = $currentVersion; NodeCount = $nodeCount; ResourceId = $rid
+                }
+
+                # Update runs (reuse already-fetched update list)
+                if ($IncludeUpdateRuns) {
+                    $clusterBestRun = $null
+                    $clusterBestRunTime = ""
+                    foreach ($update in $availableUpdates) {
+                        $runsUri = "https://management.azure.com${rid}/updates/$($update.name)/updateRuns?api-version=$apiVer"
+                        $runsResult = az rest --method GET --uri $runsUri 2>$null | ConvertFrom-Json
+                        if ($LASTEXITCODE -eq 0 -and $runsResult.value) {
+                            foreach ($run in $runsResult.value) {
+                                $runTime = $run.properties.timeStarted
+                                if (-not $clusterBestRun -or ($runTime -and $runTime -gt $clusterBestRunTime)) {
+                                    $clusterBestRun = $run
+                                    $clusterBestRunTime = $runTime
+                                }
+                            }
+                        }
+                    }
+                    if ($clusterBestRun) {
+                        $runProps = $clusterBestRun.properties
+                        $runDuration = ""
+                        if ($runProps.timeStarted) {
+                            $runStartTime = [datetime]$runProps.timeStarted
+                            if ($runProps.lastUpdatedTime) {
+                                $durationSpan = ([datetime]$runProps.lastUpdatedTime) - $runStartTime
+                                $runDuration = if ($durationSpan.TotalHours -ge 1) { "{0:N1} hours" -f $durationSpan.TotalHours } else { "{0:N0} minutes" -f $durationSpan.TotalMinutes }
+                            }
+                            elseif ($runProps.state -eq "InProgress") {
+                                $runDuration = "{0:N1} hours (running)" -f ((Get-Date) - $runStartTime).TotalHours
+                            }
+                        }
+                        $currentStep = ""; $currentStepDetail = ""; $runProgress = ""
+                        if ($runProps.progress -and $runProps.progress.steps) {
+                            $steps = $runProps.progress.steps
+                            $runProgress = "$(($steps | Where-Object { $_.status -eq 'Success' }).Count)/$($steps.Count) steps"
+                            $ipStep = $steps | Where-Object { $_.status -eq "InProgress" } | Select-Object -First 1
+                            $fStep = $steps | Where-Object { $_.status -in @("Error", "Failed") } | Select-Object -First 1
+                            if ($ipStep) { $currentStep = $ipStep.name } elseif ($fStep) { $currentStep = "$($fStep.name) (FAILED)" }
+                            $currentStepDetail = Get-CurrentStepPath -Steps $steps -IncludeErrorMessage
+                            if ([string]::IsNullOrWhiteSpace($currentStepDetail)) { $currentStepDetail = $currentStep }
+                        }
+                        $updateNameExtracted = ""; $runId = ""
+                        if ($clusterBestRun.id -match '/updates/([^/]+)/updateRuns/([^/]+)$') { $updateNameExtracted = $matches[1]; $runId = $matches[2] }
+                        else { $runId = $clusterBestRun.name }
+                        $latestRuns += [PSCustomObject]@{
+                            ClusterName = $clusterName; UpdateName = $updateNameExtracted; RunId = $runId
+                            State = $runProps.state
+                            StartTime = if ($runProps.timeStarted) { ([datetime]$runProps.timeStarted).ToString("yyyy-MM-dd HH:mm") } else { "" }
+                            Duration = $runDuration; Progress = $runProgress
+                            CurrentStep = $currentStep; CurrentStepDetail = $currentStepDetail
+                            Location = $runProps.location
+                        }
+                    }
+                }
+
+                # Health details (from already-fetched update summary)
+                if ($IncludeHealthDetails) {
+                    $failures = @()
+                    if ($hasSummary -and $updateSummary.properties.healthCheckResult) {
+                        foreach ($check in $updateSummary.properties.healthCheckResult) {
+                            if ($check.status -eq "Failed") {
+                                $sev = if ($check.severity) { $check.severity } else { "Unknown" }
+                                $displayName = if ($check.displayName) { $check.displayName } elseif ($check.name) { ($check.name -split '/')[0] } else { "Unknown" }
+                                $failures += [PSCustomObject]@{
+                                    ClusterName = $clusterName; CheckName = $displayName; Severity = $sev
+                                    Description = if ($check.description) { $check.description } else { "" }
+                                    Remediation = if ($check.remediation) { $check.remediation } else { "" }
+                                    TargetResourceName = if ($check.targetResourceName) { $check.targetResourceName } else { "" }
+                                    Timestamp = if ($check.timestamp) { $check.timestamp } else { "" }
+                                }
+                            }
+                        }
+                    }
+                    $critCount = @($failures | Where-Object { $_.Severity -eq "Critical" }).Count
+                    $warnCount = @($failures | Where-Object { $_.Severity -eq "Warning" }).Count
+                    $infoCount = @($failures | Where-Object { $_.Severity -eq "Informational" }).Count
+                    $healthResults += [PSCustomObject]@{
+                        ClusterName = $clusterName; HealthState = $healthState; Passed = ($critCount -eq 0)
+                        CriticalCount = $critCount; WarningCount = $warnCount; InfoCount = $infoCount
+                        Failures = $failures
+                    }
+                }
+
+                # Status output
+                if ($isReady) { Write-Host " Ready" -ForegroundColor Green }
+                elseif ($updateState -eq "UpdateInProgress") { Write-Host " In Progress" -ForegroundColor Yellow }
+                elseif ($updateState -in @("UpToDate", "AppliedSuccessfully")) { Write-Host " Up to Date" -ForegroundColor Green }
+                elseif ($healthState -eq "Failure") { Write-Host " Health Failure" -ForegroundColor Red }
+                else { Write-Host " $updateState" -ForegroundColor Gray }
+            }
+            catch {
+                Write-Host " Error: $($_.Exception.Message)" -ForegroundColor Red
+                $readiness += [PSCustomObject]@{
+                    ClusterName = $clusterName; ResourceGroup = $rgName; SubscriptionId = $subId
+                    ClusterState = "Error"; UpdateState = "Error"; HealthState = "Error"
+                    ReadyForUpdate = $false; AvailableUpdates = ""; ReadyUpdates = ""
+                    RecommendedUpdate = ""; HealthCheckFailures = $_.Exception.Message
+                }
+                $clusterDetails += [PSCustomObject]@{
+                    ClusterName = $clusterName; ResourceGroup = $rgName
+                    CurrentVersion = "N/A"; NodeCount = "N/A"; ResourceId = $rid
+                }
+            }
+        }
+
+        Write-Log -Message "Sequential collection complete: $($readiness.Count) cluster(s)" -Level Success
+    }
+
+    # Build result object with stable schema
+    $result = [PSCustomObject]@{
+        SchemaVersion  = "1.0"
+        Timestamp      = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
+        ModuleVersion  = $script:ModuleVersion
+        Scope          = $scopeDescription
+        TotalClusters  = $readiness.Count
+        Readiness      = $readiness
+        ClusterDetails = $clusterDetails
+        LatestRuns     = $latestRuns
+        HealthResults  = $healthResults
+    }
+
+    # Export to JSON if path specified
+    if ($ExportPath) {
+        $exportDir = Split-Path -Path $ExportPath -Parent
+        if ($exportDir -and -not (Test-Path $exportDir)) {
+            New-Item -ItemType Directory -Path $exportDir -Force | Out-Null
+        }
+        $result | ConvertTo-Json -Depth 15 | Out-File -FilePath $ExportPath -Encoding UTF8 -Force
+        Write-Log -Message "Fleet status data exported to: $ExportPath" -Level Success
+    }
+
+    return $result
+}
+
+#endregion Fleet Status Data Collection
+
 #region Fleet Status HTML Report
 
 function New-AzureLocalFleetStatusHtmlReport {
@@ -6065,6 +6536,13 @@ function New-AzureLocalFleetStatusHtmlReport {
         [string]$Title = "",
 
         [Parameter(Mandatory = $false)]
+        [PSCustomObject]$StatusData,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 8)]
+        [int]$ThrottleLimit = 4,
+
+        [Parameter(Mandatory = $false)]
         [switch]$PassThru
     )
 
@@ -6087,70 +6565,45 @@ function New-AzureLocalFleetStatusHtmlReport {
         return
     }
 
-    # Build common parameter splatting for downstream calls
-    # For ByName, resolve resource IDs once upfront to avoid repeated lookups
-    $scopeParams = @{}
-    switch ($PSCmdlet.ParameterSetName) {
-        'ByTag' {
-            $scopeParams['ScopeByUpdateRingTag'] = $true
-            $scopeParams['UpdateRingValue'] = $UpdateRingValue
-        }
-        'ByResourceId' {
-            $scopeParams['ClusterResourceIds'] = $ClusterResourceIds
-        }
-        'ByName' {
-            Write-Log -Message "Resolving cluster name(s) to resource ID(s)..." -Level Info
-            if (-not $SubscriptionId) {
-                $SubscriptionId = (az account show --query id -o tsv)
-            }
-            $resolvedIds = @()
-            foreach ($name in $ClusterNames) {
-                $infoParams = @{ ClusterName = $name; SubscriptionId = $SubscriptionId }
-                if ($ResourceGroupName) { $infoParams['ResourceGroupName'] = $ResourceGroupName }
-                $clusterInfo = Get-AzureLocalClusterInfo @infoParams
-                if ($clusterInfo -and $clusterInfo.id) {
-                    $resolvedIds += $clusterInfo.id
-                    Write-Log -Message "  Resolved '$name' -> $($clusterInfo.id)" -Level Success
-                }
-                else {
-                    Write-Log -Message "  Could not resolve cluster '$name' - skipping" -Level Warning
-                }
-            }
-            if ($resolvedIds.Count -eq 0) {
-                Write-Log -Message "No clusters could be resolved. Cannot generate report." -Level Warning
-                return
-            }
-            $scopeParams['ClusterResourceIds'] = $resolvedIds
-        }
-        'All' {
-            Write-Log -Message "Discovering all Azure Local clusters..." -Level Info
-            $inventory = @(Get-AzureLocalClusterInventory -PassThru)
-            if (-not $inventory -or $inventory.Count -eq 0) {
-                Write-Log -Message "No clusters found. Cannot generate report." -Level Warning
-                return
-            }
-            $maxClusters = 100
-            if ($inventory.Count -gt $maxClusters) {
-                Write-Log -Message "Found $($inventory.Count) clusters - limiting to first $maxClusters" -Level Warning
-                $inventory = $inventory | Select-Object -First $maxClusters
-            }
-            $allResourceIds = @($inventory | Select-Object -ExpandProperty ResourceId)
-            Write-Log -Message "  Found $($allResourceIds.Count) cluster(s)" -Level Success
-            $scopeParams['ClusterResourceIds'] = $allResourceIds
-        }
+    # If pre-collected StatusData is provided, skip all API calls and go straight to rendering
+    if ($StatusData) {
+        Write-Log -Message "Using pre-collected StatusData ($($StatusData.TotalClusters) clusters, collected $($StatusData.Timestamp))" -Level Info
+        $readiness = @($StatusData.Readiness)
+        $clusterDetails = @($StatusData.ClusterDetails)
+        $latestRuns = @($StatusData.LatestRuns)
+        $healthResults = @($StatusData.HealthResults)
+        [array]$updateRuns = @()
+        if ($IncludeUpdateRuns) { [array]$updateRuns = @($latestRuns) }
     }
+    else {
+        # Collect data via Get-AzureLocalFleetStatusData (single-pass, parallel-capable)
+        $collectParams = @{ ThrottleLimit = $ThrottleLimit }
+        if ($IncludeUpdateRuns) { $collectParams['IncludeUpdateRuns'] = $true }
+        if ($IncludeHealthDetails) { $collectParams['IncludeHealthDetails'] = $true }
 
-    #--- Step 1: Collect readiness data ---
-    Write-Log -Message "Step 1: Collecting update readiness status..." -Level Info
-    $readiness = @()
-    try {
-        $rawReadiness = @(Get-AzureLocalClusterUpdateReadiness @scopeParams -PassThru)
-        # Filter out empty/null results (upstream functions may return placeholder objects)
-        $readiness = @($rawReadiness | Where-Object { $_.ClusterName })
-        Write-Log -Message "  Readiness data collected for $($readiness.Count) cluster(s)" -Level Success
-    }
-    catch {
-        Write-Log -Message "  Failed to collect readiness data: $($_.Exception.Message)" -Level Error
+        switch ($PSCmdlet.ParameterSetName) {
+            'ByTag'        { $collectParams['ScopeByUpdateRingTag'] = $true; $collectParams['UpdateRingValue'] = $UpdateRingValue }
+            'ByResourceId' { $collectParams['ClusterResourceIds'] = $ClusterResourceIds }
+            'ByName'       {
+                $collectParams['ClusterNames'] = $ClusterNames
+                if ($ResourceGroupName) { $collectParams['ResourceGroupName'] = $ResourceGroupName }
+                if ($SubscriptionId) { $collectParams['SubscriptionId'] = $SubscriptionId }
+            }
+            'All'          { $collectParams['AllClusters'] = $true }
+        }
+
+        $StatusData = Get-AzureLocalFleetStatusData @collectParams
+        if (-not $StatusData) {
+            Write-Log -Message "No data collected. Cannot generate report." -Level Warning
+            return
+        }
+
+        $readiness = @($StatusData.Readiness)
+        $clusterDetails = @($StatusData.ClusterDetails)
+        $latestRuns = @($StatusData.LatestRuns)
+        $healthResults = @($StatusData.HealthResults)
+        [array]$updateRuns = @()
+        if ($IncludeUpdateRuns) { [array]$updateRuns = @($latestRuns) }
     }
 
     if ($readiness.Count -eq 0) {
@@ -6168,132 +6621,9 @@ function New-AzureLocalFleetStatusHtmlReport {
         }
     }
 
-    #--- Step 2: Collect update summaries ---
-    Write-Log -Message "Step 2: Collecting update summaries..." -Level Info
-    $summaries = @()
-    try {
-        $rawSummaries = @(Get-AzureLocalUpdateSummary @scopeParams -PassThru)
-        $summaries = @($rawSummaries | Where-Object { $_.ClusterName })
-        Write-Log -Message "  Update summaries collected for $($summaries.Count) cluster(s)" -Level Success
-    }
-    catch {
-        Write-Log -Message "  Failed to collect update summaries: $($_.Exception.Message)" -Level Warning
-    }
-
-    #--- Step 3: Collect available updates ---
-    Write-Log -Message "Step 3: Collecting available updates..." -Level Info
-    $available = @()
-    try {
-        $rawAvailable = @(Get-AzureLocalAvailableUpdates @scopeParams -PassThru)
-        $available = @($rawAvailable | Where-Object { $_.ClusterName })
-        $clusterCount = ($available | Select-Object -Property ClusterName -Unique).Count
-        Write-Log -Message "  Found $($available.Count) available update(s) for $clusterCount cluster(s)" -Level Success
-    }
-    catch {
-        Write-Log -Message "  Failed to collect available updates: $($_.Exception.Message)" -Level Warning
-    }
-
-    #--- Step 4: Collect cluster info for identity section ---
-    Write-Log -Message "Step 4: Collecting cluster details..." -Level Info
-    $clusterDetails = @()
-    # Use already-resolved resource IDs when available to avoid redundant lookups
-    $resolvedResourceIds = if ($scopeParams.ContainsKey('ClusterResourceIds')) { $scopeParams['ClusterResourceIds'] } else { @() }
-
-    foreach ($cluster in $readiness) {
-        $clusterName = $cluster.ClusterName
-        $resourceGroup = $cluster.ResourceGroup
-        $clusterSubId = $cluster.SubscriptionId
-
-        # Get current version from summaries, with fallback to direct API call
-        $summary = $summaries | Where-Object { $_.ClusterName -eq $clusterName } | Select-Object -First 1
-        $currentVersion = if ($summary -and $summary.CurrentVersion) { $summary.CurrentVersion } else { "N/A" }
-
-        # Fallback: if summaries didn't return version, try direct API call
-        if ($currentVersion -eq "N/A") {
-            $matchedIdForVersion = $resolvedResourceIds | Where-Object { ($_ -split '/')[-1] -eq $clusterName } | Select-Object -First 1
-            if ($matchedIdForVersion) {
-                try {
-                    $directSummary = Get-AzureLocalUpdateSummary -ClusterResourceId $matchedIdForVersion
-                    if ($directSummary -and $directSummary.properties.currentVersion) {
-                        $currentVersion = $directSummary.properties.currentVersion
-                    }
-                }
-                catch { }
-            }
-        }
-
-        # Get node count and resource ID - use pre-resolved ID if available
-        $nodeCount = "N/A"
-        $resourceId = ""
-        try {
-            # Find matching resource ID from the pre-resolved list
-            $matchedId = $resolvedResourceIds | Where-Object { ($_ -split '/')[-1] -eq $clusterName } | Select-Object -First 1
-            if ($matchedId) {
-                # Direct GET with known resource ID (no search needed)
-                $uri = "https://management.azure.com${matchedId}?api-version=$($script:DefaultApiVersion)"
-                $clusterInfo = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
-            }
-            else {
-                # Fallback to name-based lookup (e.g., ByTag mode where IDs may not match by name)
-                $clusterInfoParams = @{ ClusterName = $clusterName }
-                if ($resourceGroup) { $clusterInfoParams['ResourceGroupName'] = $resourceGroup }
-                if ($clusterSubId) { $clusterInfoParams['SubscriptionId'] = $clusterSubId }
-                $clusterInfo = Get-AzureLocalClusterInfo @clusterInfoParams
-            }
-            if ($clusterInfo) {
-                $resourceId = if ($clusterInfo.id) { $clusterInfo.id } else { "" }
-                if ($clusterInfo.properties.reportedProperties.nodes) {
-                    $nodeCount = $clusterInfo.properties.reportedProperties.nodes.Count
-                }
-            }
-        }
-        catch {
-            Write-Log -Message "  Could not retrieve cluster info for $clusterName" -Level Verbose
-        }
-
-        $clusterDetails += [PSCustomObject]@{
-            ClusterName    = $clusterName
-            ResourceGroup  = $resourceGroup
-            CurrentVersion = $currentVersion
-            NodeCount      = $nodeCount
-            ResourceId     = $resourceId
-        }
-    }
-    Write-Log -Message "  Cluster details collected for $($clusterDetails.Count) cluster(s)" -Level Success
-
-    #--- Step 5: Always collect latest update runs (needed for Active Update column) ---
-    $latestRuns = @()
-    Write-Log -Message "Step 5: Collecting latest update run per cluster..." -Level Info
-    try {
-        $rawRuns = @(Get-AzureLocalUpdateRuns @scopeParams -Latest -PassThru)
-        $latestRuns = @($rawRuns | Where-Object { $_.ClusterName })
-        Write-Log -Message "  Latest update runs collected for $($latestRuns.Count) cluster(s)" -Level Success
-    }
-    catch {
-        Write-Log -Message "  Failed to collect update runs: $($_.Exception.Message)" -Level Warning
-    }
-
-    # For the full Update Run History section, reuse the same data
-    [array]$updateRuns = @()
-    if ($IncludeUpdateRuns) { [array]$updateRuns = @($latestRuns) }
-
-    #--- Step 6 (optional): Collect health details ---
-    $healthResults = @()
-    if ($IncludeHealthDetails) {
-        Write-Log -Message "Step 6: Collecting detailed health check results..." -Level Info
-        try {
-            $rawHealth = @(Test-AzureLocalClusterHealth @scopeParams -PassThru)
-            $healthResults = @($rawHealth | Where-Object { $_.ClusterName })
-            Write-Log -Message "  Health data collected for $($healthResults.Count) cluster(s)" -Level Success
-        }
-        catch {
-            Write-Log -Message "  Failed to collect health data: $($_.Exception.Message)" -Level Warning
-        }
-    }
-
     #--- Calculate summary statistics ---
     $totalClusters = $readiness.Count
-    $upToDate   = @($readiness | Where-Object { $_.UpdateState -eq "UpToDate" }).Count
+    $upToDate   = @($readiness | Where-Object { $_.UpdateState -in @("UpToDate", "AppliedSuccessfully") }).Count
     $inProgress = @($readiness | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
     $updateAvailable = @($readiness | Where-Object { $_.ReadyForUpdate -eq $true }).Count
     $healthFailures  = @($readiness | Where-Object { $_.HealthState -eq "Failure" }).Count
@@ -6306,11 +6636,13 @@ function New-AzureLocalFleetStatusHtmlReport {
     $pctOther      = if ($totalClusters -gt 0) { [math]::Round(($otherCount / $totalClusters) * 100, 1) } else { 0 }
 
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $scopeDescription = switch ($PSCmdlet.ParameterSetName) {
-        'ByTag'        { "UpdateRing = $UpdateRingValue" }
-        'ByResourceId' { "$($ClusterResourceIds.Count) cluster(s) by Resource ID" }
-        'ByName'       { "$($ClusterNames.Count) cluster(s) by name" }
-        'All'          { "All clusters ($($scopeParams['ClusterResourceIds'].Count))" }
+    $scopeDescription = if ($StatusData.Scope) { $StatusData.Scope } else {
+        switch ($PSCmdlet.ParameterSetName) {
+            'ByTag'        { "UpdateRing = $UpdateRingValue" }
+            'ByResourceId' { "$($ClusterResourceIds.Count) cluster(s) by Resource ID" }
+            'ByName'       { "$($ClusterNames.Count) cluster(s) by name" }
+            'All'          { "All clusters ($totalClusters)" }
+        }
     }
 
     #--- Build cluster identity section HTML (used at top or bottom depending on count) ---
@@ -6659,12 +6991,13 @@ function New-AzureLocalFleetStatusHtmlReport {
 
     foreach ($cluster in $readiness) {
         $updateBadge = switch ($cluster.UpdateState) {
-            'UpToDate'          { 'status-uptodate' }
-            'UpdateInProgress'  { 'status-inprogress' }
-            'UpdateFailed'      { 'status-failure' }
-            'UpdateAvailable'   { 'status-available' }
-            'Ready'             { 'status-available' }
-            default             { 'status-unknown' }
+            'UpToDate'              { 'status-uptodate' }
+            'AppliedSuccessfully'   { 'status-uptodate' }
+            'UpdateInProgress'      { 'status-inprogress' }
+            'UpdateFailed'          { 'status-failure' }
+            'UpdateAvailable'       { 'status-available' }
+            'Ready'                 { 'status-available' }
+            default                 { 'status-unknown' }
         }
         $healthBadge = switch ($cluster.HealthState) {
             'Success' { 'status-uptodate' }
@@ -7044,7 +7377,8 @@ Export-ModuleMember -Function @(
     'Stop-AzureLocalFleetUpdate',
     # Pre-Update Health Validation (v0.6.1)
     'Test-AzureLocalClusterHealth',
-    # Fleet Status Reporting (v0.6.3)
+    # Fleet Status Data Collection & Reporting (v0.6.4)
+    'Get-AzureLocalFleetStatusData',
     'New-AzureLocalFleetStatusHtmlReport'
 )
 

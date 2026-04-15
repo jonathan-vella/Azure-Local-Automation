@@ -2,11 +2,23 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.6.3
+**Latest Version:** v0.6.4
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
 Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
+
+## What's New in v0.6.4
+
+### Fleet Status Data Collection & Performance
+- **New function `Get-AzureLocalFleetStatusData`** with parallel `Start-Job` support (`-ThrottleLimit 4` default)
+- Export fleet data as JSON artifacts for CI/CD pipeline job passing (`-ExportPath`)
+- `New-AzureLocalFleetStatusHtmlReport` accepts `-StatusData` to render from pre-collected data (zero API calls)
+- `New-AzureLocalFleetStatusHtmlReport` now internally uses `Get-AzureLocalFleetStatusData` with parallel batching
+- Single-pass data collection reduces Azure REST API calls from ~230 to ~85 for 21 clusters (~63% reduction)
+- Fixed `AppliedSuccessfully` state recognition (Up to Date card was showing 0)
+- Fixed Recommended Update showing versions clusters are already on
+- Fixed Recommended Update showing versions clusters are already on
 
 ## What's New in v0.6.3
 
