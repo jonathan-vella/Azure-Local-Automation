@@ -2,11 +2,48 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.6.1
+**Latest Version:** v0.6.2
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
 Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
+
+## What's New in v0.6.2
+
+### 📊 New: Fleet Status HTML Report
+- **New function `New-AzureLocalFleetStatusHtmlReport`** generates self-contained HTML reports for fleet update status
+- Collects readiness, update summaries, available updates, health checks, and update run history into a single report
+- Executive summary cards with color-coded progress bar showing fleet-wide update adoption
+- Cluster Information section with name, current version, node count, resource group, resource ID
+- Cluster Status Details with Active Update column (shows in-progress/failed update) and Recommended Update
+- Recent Update Run History with recursive Current Step traversal (up to 8+ levels deep)
+- Health Check Failures with severity filter (Critical/Warning/Informational) and collapsible per-cluster groups for multi-cluster reports
+- Azure Local purple gradient design with embedded Azure Local instance logo
+- `-AllClusters` switch discovers all clusters via ARG (limited to 100); auto-generates title from cluster name for single-cluster reports
+- Supports all input methods: `-ClusterResourceIds`, `-ClusterNames`, `-ScopeByUpdateRingTag`, `-AllClusters`
+- Use `-PassThru` to capture the HTML string for email body or further processing
+
+```powershell
+# Generate HTML report for a single cluster (auto-titles as "Seattle - Update Status Report")
+New-AzureLocalFleetStatusHtmlReport -ClusterNames Seattle `
+    -OutputPath "C:\Reports\seattle.html" -IncludeHealthDetails -IncludeUpdateRuns
+
+# Generate report for all clusters across the subscription (up to 100)
+New-AzureLocalFleetStatusHtmlReport -AllClusters `
+    -OutputPath "C:\Reports\fleet-all.html" -IncludeHealthDetails -IncludeUpdateRuns
+
+# Generate report for all Wave1 clusters
+New-AzureLocalFleetStatusHtmlReport -ScopeByUpdateRingTag -UpdateRingValue "Wave1" `
+    -OutputPath "C:\Reports\wave1-status.html" -IncludeHealthDetails -IncludeUpdateRuns
+```
+
+### ⚡ Performance: Resolve-Once Pattern
+- All functions that accept `-ClusterNames` now resolve names to resource IDs **once upfront**
+- Eliminates redundant API calls when multiple functions are called sequentially
+- CI/CD pipelines use `-ClusterResourceIds` consistently (reduces ~800 to ~300 API calls for 100 clusters)
+- `Test-AzureLocalClusterHealth` accepts `-UpdateSummary` to skip redundant fetch
+
+> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.6.1 and earlier changes.
 
 ## What's New in v0.6.1
 

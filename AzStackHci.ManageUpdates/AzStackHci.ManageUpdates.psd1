@@ -3,7 +3,7 @@
     RootModule = 'AzStackHci.ManageUpdates.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.6.1'
+    ModuleVersion = '0.6.2'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -45,7 +45,9 @@
         'Resume-AzureLocalFleetUpdate',
         'Stop-AzureLocalFleetUpdate',
         # Pre-Update Health Validation (v0.6.1)
-        'Test-AzureLocalClusterHealth'
+        'Test-AzureLocalClusterHealth',
+        # Fleet Status Reporting (v0.6.2)
+        'New-AzureLocalFleetStatusHtmlReport'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -74,6 +76,25 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.6.2 - Fleet Status HTML Report & Performance
+- NEW: `New-AzureLocalFleetStatusHtmlReport` generates self-contained HTML reports for fleet update status
+- Collects readiness, update summaries, available updates, health checks, and update run history
+- Supports all input methods: -ClusterResourceIds, -ClusterNames, -ScopeByUpdateRingTag, -AllClusters
+- -AllClusters switch discovers all clusters via ARG (limited to 100)
+- Cluster Information section with name, current version, node count, resource group, resource ID
+- Active Update column shows in-progress/failed updates; Recommended Update shows N/A when active update exists
+- Recursive update step traversal (up to 8+ levels) with error messages in Current Step column
+- Health Check Failures with severity filter checkboxes (Informational hidden by default)
+- Collapsible per-cluster health check groups for multi-cluster reports
+- Azure Local purple gradient design with embedded instance logo
+- Auto-generated title from cluster name for single-cluster reports
+- FIXED: RecommendedUpdate now correctly selects latest update by YYMM version sort
+- FIXED: -PassThru parameter added to Get-AzureLocalUpdateSummary and Get-AzureLocalAvailableUpdates
+- FIXED: CurrentStepDetail property now correctly included in multi-cluster update run output
+- PERFORMANCE: All functions resolve -ClusterNames to resource IDs once upfront (eliminates redundant API calls)
+- PERFORMANCE: Test-AzureLocalClusterHealth accepts -UpdateSummary to skip redundant fetch
+- PERFORMANCE: CI/CD pipelines use -ClusterResourceIds consistently (reduces ~800 to ~300 API calls for 100 clusters)
+
 ## Version 0.6.1 - Pre-Update Health Check Validation
 - NEW: `Test-AzureLocalClusterHealth` function for pre-update health validation
 - IMPROVED: `Start-AzureLocalClusterUpdate` now checks for critical health failures before applying updates

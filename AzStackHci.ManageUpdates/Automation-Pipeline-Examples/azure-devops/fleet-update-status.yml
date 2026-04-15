@@ -216,24 +216,28 @@ stages:
           Write-Host "JUnit XML saved to: $readinessXml" -ForegroundColor Green
           
           # Step 4: Collect additional fleet data using v0.5.6 fleet-wide capabilities
+          # NOTE: Readiness (Step 2) already fetches summaries and available updates internally.
+          # Steps 4a/4b re-export this data in dedicated CSV files for analysis.
+          # Use ClusterResourceIds (not ClusterNames) to avoid redundant name-to-ID resolution.
+          
+          # Build resource ID list for downstream calls (avoids per-cluster name resolution)
+          $fleetResourceIds = @()
+          if ($scope -eq 'by-update-ring' -and $updateRing) {
+              # For tag-based scope, get IDs from readiness results
+              $fleetResourceIds = @($readiness | Where-Object { $_.SubscriptionId -and $_.ResourceGroup -and $_.ClusterName } | ForEach-Object {
+                  "/subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/Microsoft.AzureStackHCI/clusters/$($_.ClusterName)"
+              })
+          }
+          else {
+              $fleetResourceIds = @($inventory | Select-Object -ExpandProperty ResourceId)
+          }
           
           # Step 4a: Get update summary across fleet
           Write-Host ""
           Write-Host "Step 4a: Collecting fleet update summaries..." -ForegroundColor Yellow
           
           $summaryCsv = Join-Path $outputDir "update-summaries.csv"
-          $summaryParams = @{ ExportPath = $summaryCsv }
-          
-          if ($scope -eq 'by-update-ring' -and $updateRing) {
-              $summaryParams['ScopeByUpdateRingTag'] = $true
-              $summaryParams['UpdateRingValue'] = $updateRing
-          }
-          else {
-              $resourceIds = $inventory | Select-Object -ExpandProperty ResourceId
-              $summaryParams['ClusterResourceIds'] = $resourceIds
-          }
-          
-          $summaries = Get-AzureLocalUpdateSummary @summaryParams -PassThru
+          $summaries = Get-AzureLocalUpdateSummary -ClusterResourceIds $fleetResourceIds -ExportPath $summaryCsv -PassThru
           Write-Host "Update summaries collected for $($summaries.Count) cluster(s)" -ForegroundColor Green
           
           # Step 4b: Get available updates across fleet
@@ -241,18 +245,7 @@ stages:
           Write-Host "Step 4b: Collecting available updates..." -ForegroundColor Yellow
           
           $availableCsv = Join-Path $outputDir "available-updates.csv"
-          $availableParams = @{ ExportPath = $availableCsv }
-          
-          if ($scope -eq 'by-update-ring' -and $updateRing) {
-              $availableParams['ScopeByUpdateRingTag'] = $true
-              $availableParams['UpdateRingValue'] = $updateRing
-          }
-          else {
-              $resourceIds = $inventory | Select-Object -ExpandProperty ResourceId
-              $availableParams['ClusterResourceIds'] = $resourceIds
-          }
-          
-          $available = Get-AzureLocalAvailableUpdates @availableParams -PassThru
+          $available = Get-AzureLocalAvailableUpdates -ClusterResourceIds $fleetResourceIds -ExportPath $availableCsv -PassThru
           Write-Host "Found $($available.Count) available update(s) across fleet" -ForegroundColor Green
           
           # Step 4c: Optionally collect recent update runs using fleet-wide query
@@ -261,19 +254,7 @@ stages:
               Write-Host "Step 4c: Collecting recent update run history..." -ForegroundColor Yellow
               
               $runsCsv = Join-Path $outputDir "update-runs.csv"
-              $runsParams = @{ Latest = $true; ExportPath = $runsCsv }
-              
-              if ($scope -eq 'by-update-ring' -and $updateRing) {
-                  $runsParams['ScopeByUpdateRingTag'] = $true
-                  $runsParams['UpdateRingValue'] = $updateRing
-              }
-              else {
-                  # Use cluster names from inventory for fleet-wide query
-                  $clusterNames = $inventory | ForEach-Object { $_.ClusterName }
-                  $runsParams['ClusterNames'] = $clusterNames
-              }
-              
-              $allRuns = Get-AzureLocalUpdateRuns @runsParams -PassThru
+              $allRuns = Get-AzureLocalUpdateRuns -ClusterResourceIds $fleetResourceIds -Latest -ExportPath $runsCsv -PassThru
               Write-Host "Update runs collected for $($allRuns.Count) cluster(s)" -ForegroundColor Green
               
               # Display summary

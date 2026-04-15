@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     AzStackHci.ManageUpdates module for automating updates on Azure Local (Azure Stack HCI) clusters.
@@ -118,14 +118,14 @@
     Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
 
 .NOTES
-    Version: 0.6.1
+    Version: 0.6.2
     Author: Neil Bird, Microsoft.
     Requires: Azure CLI (az) installed and authenticated
     API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 #>
 
 # Module constants
-$script:ModuleVersion = '0.6.1'
+$script:ModuleVersion = '0.6.2'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
 
@@ -623,6 +623,75 @@ function Get-LastUpdateRunErrorSummary {
     }
 }
 
+function Get-LatestUpdateByYYMM {
+    <#
+    .SYNOPSIS
+        Selects the latest update from a list by YYMM version in the update name.
+    .DESCRIPTION
+        Update names follow format: SolutionXX.YYMM.XXXX.XX where YYMM is year+month.
+        Uses -split instead of $Matches to avoid PS 5.1 scope issues in Sort-Object.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [array]$Updates
+    )
+
+    if (-not $Updates -or $Updates.Count -eq 0) { return $null }
+
+    $Updates | Sort-Object {
+        $yymm = ($_.name -split '\.')[1]
+        if ($yymm -match '^\d{4}$') { [int]$yymm } else { 0 }
+    } -Descending | Select-Object -First 1
+}
+
+function Get-CurrentStepPath {
+    <#
+    .SYNOPSIS
+        Recursively walks the update run step hierarchy to find the deepest InProgress or Failed step.
+    .DESCRIPTION
+        Update runs can have steps nested up to 8-9 levels deep. This function traverses
+        the step.steps children recursively and returns the full path (e.g., "Step1 > Step2 > Step3").
+        Looks for InProgress or Error/Failed status, returning the deepest match.
+        Also captures the errorMessage from the deepest failed step if available.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [array]$Steps,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ParentPath = "",
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeErrorMessage,
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxDepth = 20
+    )
+
+    if (-not $Steps -or $Steps.Count -eq 0 -or $MaxDepth -le 0) { return "" }
+
+    foreach ($step in $Steps) {
+        if (-not $step.name) { continue }
+        $currentPath = if ($ParentPath) { "$ParentPath > $($step.name)" } else { $step.name }
+
+        if ($step.status -in @("InProgress", "Error", "Failed")) {
+            # Check if there are deeper nested steps with the same status
+            if ($step.steps -and $step.steps.Count -gt 0) {
+                $deeper = Get-CurrentStepPath -Steps $step.steps -ParentPath $currentPath -IncludeErrorMessage:$IncludeErrorMessage -MaxDepth ($MaxDepth - 1)
+                if ($deeper) { return $deeper }
+            }
+            # At the deepest level - append error message if requested and available
+            if ($IncludeErrorMessage -and $step.errorMessage) {
+                return "$currentPath : $($step.errorMessage)"
+            }
+            return $currentPath
+        }
+    }
+    return ""
+}
+
 function Export-ResultsToJUnitXml {
     <#
     .SYNOPSIS
@@ -1038,7 +1107,7 @@ function Start-AzureLocalClusterUpdate {
             }
             
             # Build Azure Resource Graph query to find clusters by tag - use single line to avoid escaping issues with az CLI
-            $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$UpdateRingValue' | project id, name, resourceGroup, subscriptionId, tags"
+            $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id, name, resourceGroup, subscriptionId, tags"
             
             Write-Verbose "ARG Query: $argQuery"
             
@@ -1139,8 +1208,20 @@ function Start-AzureLocalClusterUpdate {
         }
         else {
             Write-Log -Message "Clusters to process: $($ClusterNames -join ', ')" -Level Info
+            # Resolve names to resource IDs upfront to avoid per-cluster lookups
+            if (-not $SubscriptionId) {
+                $SubscriptionId = (az account show --query id -o tsv)
+            }
             foreach ($name in $ClusterNames) {
-                $clustersToProcess += @{ ResourceId = $null; Name = $name }
+                $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
+                    -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
+                if ($clusterInfo) {
+                    $clustersToProcess += @{ ResourceId = $clusterInfo.id; Name = $clusterInfo.name }
+                    Write-Log -Message "  Resolved '$name' -> $($clusterInfo.id)" -Level Success
+                }
+                else {
+                    Write-Log -Message "  Cluster '$name' not found - skipping" -Level Warning
+                }
             }
         }
 
@@ -1284,7 +1365,7 @@ function Start-AzureLocalClusterUpdate {
 
                 # Step 3b: Pre-update health validation - check for Critical health failures
                 Write-Log -Message "Step 3b: Checking cluster health for update-blocking issues..." -Level Info
-                $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($clusterInfo.id) -BlockingOnly
+                $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($clusterInfo.id) -BlockingOnly -UpdateSummary $updateSummary
                 if ($healthResults -and $healthResults.Count -gt 0 -and $healthResults[0].CriticalCount -gt 0) {
                     $critFailures = $healthResults[0].Failures | Where-Object { $_.Severity -eq "Critical" }
                     Write-Log -Message "Cluster '$clusterName' has $($healthResults[0].CriticalCount) critical health check failure(s) that will block the update:" -Level Error
@@ -1412,12 +1493,7 @@ function Start-AzureLocalClusterUpdate {
                 }
                 else {
                     # Select the latest ready update by YYMM version from the update name
-                    # Update names follow format: SolutionXX.YYMM.XXXX.XX where YYMM is year+month
-                    # Use -split instead of $Matches to avoid PS 5.1 scope issues in Sort-Object scriptblocks
-                    $selectedUpdate = $readyUpdates | Sort-Object {
-                        $yymm = ($_.name -split '\.')[1]
-                        if ($yymm -match '^\d{4}$') { [int]$yymm } else { 0 }
-                    } -Descending | Select-Object -First 1
+                    $selectedUpdate = Get-LatestUpdateByYYMM -Updates $readyUpdates
                     Write-Log -Message "Auto-selected latest update: $($selectedUpdate.name)" -Level Info
                 }
 
@@ -1856,7 +1932,7 @@ function Get-AzureLocalUpdateSummary {
         
         Write-Log -Message "Querying Azure Resource Graph for clusters with tag 'UpdateRing' = '$UpdateRingValue'..." -Level Info
         
-        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$UpdateRingValue' | project id, name, resourceGroup, subscriptionId, tags"
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id, name, resourceGroup, subscriptionId, tags"
         
         try {
             $argResult = az graph query -q $argQuery --first 1000 2>&1
@@ -1900,16 +1976,23 @@ function Get-AzureLocalUpdateSummary {
         }
     }
     else {
-        # ByName
+        # ByName - resolve names to resource IDs upfront to avoid per-cluster lookups
         if (-not $SubscriptionId) {
             $SubscriptionId = (az account show --query id -o tsv)
         }
         foreach ($name in $ClusterNames) {
-            $clustersToProcess += @{ 
-                ResourceId = $null
-                Name = $name
-                ResourceGroup = $ResourceGroupName
-                SubscriptionId = $SubscriptionId
+            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
+                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
+            if ($clusterInfo) {
+                $clustersToProcess += @{ 
+                    ResourceId = $clusterInfo.id
+                    Name = $clusterInfo.name
+                    ResourceGroup = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                    SubscriptionId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                }
+            }
+            else {
+                Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
             }
         }
     }
@@ -2202,7 +2285,10 @@ function Get-AzureLocalAvailableUpdates {
         [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
         [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
         [ValidateSet('Auto', 'Csv', 'Json', 'JUnitXml')]
-        [string]$ExportFormat = 'Auto'
+        [string]$ExportFormat = 'Auto',
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
     )
 
     # Original single-cluster behavior
@@ -2248,7 +2334,7 @@ function Get-AzureLocalAvailableUpdates {
         
         Write-Log -Message "Querying Azure Resource Graph for clusters with tag 'UpdateRing' = '$UpdateRingValue'..." -Level Info
         
-        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$UpdateRingValue' | project id, name, resourceGroup, subscriptionId, tags"
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id, name, resourceGroup, subscriptionId, tags"
         
         try {
             $argResult = az graph query -q $argQuery --first 1000 2>&1
@@ -2292,16 +2378,23 @@ function Get-AzureLocalAvailableUpdates {
         }
     }
     else {
-        # ByName
+        # ByName - resolve names to resource IDs upfront to avoid per-cluster lookups
         if (-not $SubscriptionId) {
             $SubscriptionId = (az account show --query id -o tsv)
         }
         foreach ($name in $ClusterNames) {
-            $clustersToProcess += @{ 
-                ResourceId = $null
-                Name = $name
-                ResourceGroup = $ResourceGroupName
-                SubscriptionId = $SubscriptionId
+            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
+                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
+            if ($clusterInfo) {
+                $clustersToProcess += @{ 
+                    ResourceId = $clusterInfo.id
+                    Name = $clusterInfo.name
+                    ResourceGroup = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                    SubscriptionId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                }
+            }
+            else {
+                Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
             }
         }
     }
@@ -2666,8 +2759,9 @@ function Get-AzureLocalUpdateRuns {
             }
         }
 
-        # Get current step info
+        # Get current step info (with recursive nested step traversal)
         $currentStep = ""
+        $currentStepDetail = ""
         $progress = ""
         if ($props.progress -and $props.progress.steps) {
             $steps = $props.progress.steps
@@ -2675,6 +2769,7 @@ function Get-AzureLocalUpdateRuns {
             $totalSteps = $steps.Count
             $progress = "$completedSteps/$totalSteps steps"
             
+            # Get top-level step name
             $inProgressStep = $steps | Where-Object { $_.status -eq "InProgress" } | Select-Object -First 1
             $failedStep = $steps | Where-Object { $_.status -in @("Error", "Failed") } | Select-Object -First 1
             
@@ -2683,6 +2778,19 @@ function Get-AzureLocalUpdateRuns {
             }
             elseif ($failedStep) {
                 $currentStep = "$($failedStep.name) (FAILED)"
+            }
+
+            # Get deepest step path (recursive traversal up to 8+ levels)
+            # Include error message for failed steps to show health validation details
+            $currentStepDetail = Get-CurrentStepPath -Steps $steps -IncludeErrorMessage
+            if ([string]::IsNullOrWhiteSpace($currentStepDetail)) {
+                $currentStepDetail = $currentStep
+            }
+            # For health-check-blocked updates, ensure the message is clear
+            if ($currentStepDetail -match 'health check' -and $props.state -eq 'Failed') {
+                if ($currentStepDetail -notmatch 'Critical health issues') {
+                    $currentStepDetail = "$currentStepDetail - Critical health issues must be resolved before updates can proceed"
+                }
             }
         }
 
@@ -2701,14 +2809,15 @@ function Get-AzureLocalUpdateRuns {
         }
 
         $result = [PSCustomObject]@{
-            UpdateName  = $updateNameExtracted
-            RunId       = $runId
-            State       = $props.state
-            StartTime   = if ($props.timeStarted) { ([datetime]$props.timeStarted).ToString("yyyy-MM-dd HH:mm") } else { "" }
-            Duration    = $duration
-            Progress    = $progress
-            CurrentStep = $currentStep
-            Location    = $props.location
+            UpdateName       = $updateNameExtracted
+            RunId            = $runId
+            State            = $props.state
+            StartTime        = if ($props.timeStarted) { ([datetime]$props.timeStarted).ToString("yyyy-MM-dd HH:mm") } else { "" }
+            Duration         = $duration
+            Progress         = $progress
+            CurrentStep      = $currentStep
+            CurrentStepDetail = $currentStepDetail
+            Location         = $props.location
         }
         
         # Add ClusterName property for multi-cluster mode
@@ -2873,7 +2982,7 @@ function Get-AzureLocalUpdateRuns {
         
         Write-Log -Message "Querying Azure Resource Graph for clusters with tag 'UpdateRing' = '$UpdateRingValue'..." -Level Info
         
-        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$UpdateRingValue' | project id, name, resourceGroup, subscriptionId, tags"
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id, name, resourceGroup, subscriptionId, tags"
         
         try {
             $argResult = az graph query -q $argQuery --first 1000 2>&1
@@ -2917,16 +3026,23 @@ function Get-AzureLocalUpdateRuns {
         }
     }
     else {
-        # ByName
+        # ByName - resolve names to resource IDs upfront to avoid per-cluster lookups
         if (-not $SubscriptionId) {
             $SubscriptionId = (az account show --query id -o tsv)
         }
         foreach ($name in $ClusterNames) {
-            $clustersToProcess += @{ 
-                ResourceId = $null
-                Name = $name
-                ResourceGroup = $ResourceGroupName
-                SubscriptionId = $SubscriptionId
+            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
+                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
+            if ($clusterInfo) {
+                $clustersToProcess += @{ 
+                    ResourceId = $clusterInfo.id
+                    Name = $clusterInfo.name
+                    ResourceGroup = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                    SubscriptionId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                }
+            }
+            else {
+                Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
             }
         }
     }
@@ -2958,15 +3074,16 @@ function Get-AzureLocalUpdateRuns {
             if (-not $resourceId) {
                 Write-Host " Not Found" -ForegroundColor Red
                 $allFormattedRuns += [PSCustomObject]@{
-                    ClusterName = $clusterName
-                    UpdateName  = "N/A"
-                    RunId       = ""
-                    State       = "Cluster Not Found"
-                    StartTime   = ""
-                    Duration    = ""
-                    Progress    = ""
-                    CurrentStep = ""
-                    Location    = ""
+                    ClusterName       = $clusterName
+                    UpdateName        = "N/A"
+                    RunId             = ""
+                    State             = "Cluster Not Found"
+                    StartTime         = ""
+                    Duration          = ""
+                    Progress          = ""
+                    CurrentStep       = ""
+                    CurrentStepDetail = ""
+                    Location          = ""
                 }
                 continue
             }
@@ -3001,45 +3118,48 @@ function Get-AzureLocalUpdateRuns {
                     $formatted = Format-UpdateRun -run $run -clusterName $clusterName
                     # Reorder properties to have ClusterName first
                     $allFormattedRuns += [PSCustomObject]@{
-                        ClusterName = $clusterName
-                        UpdateName  = $formatted.UpdateName
-                        RunId       = $formatted.RunId
-                        State       = $formatted.State
-                        StartTime   = $formatted.StartTime
-                        Duration    = $formatted.Duration
-                        Progress    = $formatted.Progress
-                        CurrentStep = $formatted.CurrentStep
-                        Location    = $formatted.Location
+                        ClusterName       = $clusterName
+                        UpdateName        = $formatted.UpdateName
+                        RunId             = $formatted.RunId
+                        State             = $formatted.State
+                        StartTime         = $formatted.StartTime
+                        Duration          = $formatted.Duration
+                        Progress          = $formatted.Progress
+                        CurrentStep       = $formatted.CurrentStep
+                        CurrentStepDetail = $formatted.CurrentStepDetail
+                        Location          = $formatted.Location
                     }
                 }
             }
             else {
                 Write-Host " No runs" -ForegroundColor Gray
                 $allFormattedRuns += [PSCustomObject]@{
-                    ClusterName = $clusterName
-                    UpdateName  = "None"
-                    RunId       = ""
-                    State       = "No Runs"
-                    StartTime   = ""
-                    Duration    = ""
-                    Progress    = ""
-                    CurrentStep = ""
-                    Location    = ""
+                    ClusterName       = $clusterName
+                    UpdateName        = "None"
+                    RunId             = ""
+                    State             = "No Runs"
+                    StartTime         = ""
+                    Duration          = ""
+                    Progress          = ""
+                    CurrentStep       = ""
+                    CurrentStepDetail = ""
+                    Location          = ""
                 }
             }
         }
         catch {
             Write-Host " Error: $($_.Exception.Message)" -ForegroundColor Red
             $allFormattedRuns += [PSCustomObject]@{
-                ClusterName = $clusterName
-                UpdateName  = "Error"
-                RunId       = ""
-                State       = "Error"
-                StartTime   = ""
-                Duration    = ""
-                Progress    = ""
-                CurrentStep = $_.Exception.Message
-                Location    = ""
+                ClusterName       = $clusterName
+                UpdateName        = "Error"
+                RunId             = ""
+                State             = "Error"
+                StartTime         = ""
+                Duration          = ""
+                Progress          = ""
+                CurrentStep       = $_.Exception.Message
+                CurrentStepDetail = $_.Exception.Message
+                Location          = ""
             }
         }
     }
@@ -3301,7 +3421,7 @@ function Get-AzureLocalClusterUpdateReadiness {
         Write-Log -Message "Querying Azure Resource Graph for clusters with tag 'UpdateRing' = '$UpdateRingValue'..." -Level Info
         
         # Build Azure Resource Graph query - use single line to avoid escaping issues with az CLI
-        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$UpdateRingValue' | project id, name, resourceGroup, subscriptionId, tags"
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id, name, resourceGroup, subscriptionId, tags"
         
         try {
             $argResult = az graph query -q $argQuery --first 1000 2>&1
@@ -3345,16 +3465,23 @@ function Get-AzureLocalClusterUpdateReadiness {
         }
     }
     else {
-        # ByName
+        # ByName - resolve names to resource IDs upfront to avoid per-cluster lookups
         if (-not $SubscriptionId) {
             $SubscriptionId = (az account show --query id -o tsv)
         }
         foreach ($name in $ClusterNames) {
-            $clustersToProcess += @{ 
-                ResourceId = $null
-                Name = $name
-                ResourceGroup = $ResourceGroupName
-                SubscriptionId = $SubscriptionId
+            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
+                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
+            if ($clusterInfo) {
+                $clustersToProcess += @{ 
+                    ResourceId = $clusterInfo.id
+                    Name = $clusterInfo.name
+                    ResourceGroup = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                    SubscriptionId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                }
+            }
+            else {
+                Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
             }
         }
     }
@@ -3419,9 +3546,11 @@ function Get-AzureLocalClusterUpdateReadiness {
             $readyUpdateNames = ($readyUpdates | ForEach-Object { $_.name }) -join "; "
             
             # Determine recommended update (prefer ready updates, fallback to any available)
+            # Sort by YYMM version (SolutionXX.YYMM.XXXX.XX) to select the latest
             $recommendedUpdate = ""
             if ($readyUpdates.Count -gt 0) {
-                $recommendedUpdate = ($readyUpdates | Select-Object -First 1).name
+                $latestReady = Get-LatestUpdateByYYMM -Updates $readyUpdates
+                $recommendedUpdate = $latestReady.name
                 
                 # Track update version counts (only for ready updates)
                 if ($updateVersionCounts.ContainsKey($recommendedUpdate)) {
@@ -3432,8 +3561,9 @@ function Get-AzureLocalClusterUpdateReadiness {
                 }
             }
             elseif ($availableUpdates.Count -gt 0) {
-                # Fallback: show first available update even if not ready (e.g., downloading)
-                $recommendedUpdate = ($availableUpdates | Select-Object -First 1).name
+                # Fallback: show latest available update even if not ready (e.g., downloading)
+                $latestAvailable = Get-LatestUpdateByYYMM -Updates $availableUpdates
+                $recommendedUpdate = $latestAvailable.name
             }
 
             # Determine if ready for update
@@ -5479,6 +5609,11 @@ function Test-AzureLocalClusterHealth {
     .PARAMETER ExportPath
         Export results to CSV (.csv), JSON (.json), or JUnit XML (.xml) file.
     
+    .PARAMETER UpdateSummary
+        Pre-fetched update summary object from Get-AzureLocalUpdateSummary.
+        When provided, skips the internal summary fetch to avoid redundant API calls.
+        Only used when checking a single cluster via -ClusterResourceIds with one ID.
+    
     .OUTPUTS
         PSCustomObject[] - Array of health check results per cluster.
     
@@ -5525,6 +5660,9 @@ function Test-AzureLocalClusterHealth {
         [string]$ExportPath,
 
         [Parameter(Mandatory = $false)]
+        [object]$UpdateSummary,
+
+        [Parameter(Mandatory = $false)]
         [switch]$PassThru
     )
 
@@ -5552,7 +5690,7 @@ function Test-AzureLocalClusterHealth {
             Write-Error "Failed to install Azure CLI 'resource-graph' extension."
             return
         }
-        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$UpdateRingValue' | project id, name, resourceGroup, subscriptionId"
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id, name, resourceGroup, subscriptionId"
         $argResult = az graph query -q $argQuery --first 1000 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Log -Message "Azure Resource Graph query failed." -Level Error
@@ -5573,9 +5711,17 @@ function Test-AzureLocalClusterHealth {
         }
     }
     else {
+        # ByName - resolve names to resource IDs upfront to avoid per-cluster lookups
         if (-not $SubscriptionId) { $SubscriptionId = (az account show --query id -o tsv) }
         foreach ($name in $ClusterNames) {
-            $clustersToCheck += @{ ResourceId = $null; Name = $name }
+            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
+                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
+            if ($clusterInfo) {
+                $clustersToCheck += @{ ResourceId = $clusterInfo.id; Name = $clusterInfo.name }
+            }
+            else {
+                Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
+            }
         }
     }
 
@@ -5607,7 +5753,14 @@ function Test-AzureLocalClusterHealth {
             }
 
             # Get update summary (contains healthCheckResult)
-            $summary = Get-AzureLocalUpdateSummary -ClusterResourceId $resourceId -ApiVersion $ApiVersion
+            # Use pre-fetched summary if provided, otherwise fetch from API
+            $summary = $null
+            if ($UpdateSummary -and $clustersToCheck.Count -eq 1) {
+                $summary = $UpdateSummary
+            }
+            else {
+                $summary = Get-AzureLocalUpdateSummary -ClusterResourceId $resourceId -ApiVersion $ApiVersion
+            }
             if (-not $summary -or -not $summary.properties.healthCheckResult) {
                 Write-Host " No Health Data" -ForegroundColor Yellow
                 $results += [PSCustomObject]@{
@@ -5778,6 +5931,1082 @@ function Test-AzureLocalClusterHealth {
 
 #endregion Pre-Update Health Validation
 
+#region Fleet Status HTML Report
+
+function New-AzureLocalFleetStatusHtmlReport {
+    <#
+    .SYNOPSIS
+        Generates a self-contained HTML report of fleet update status.
+    
+    .DESCRIPTION
+        Collects update status data from Azure Local clusters and generates a standalone
+        HTML report suitable for email, SharePoint, or offline viewing. The report includes
+        executive summary cards, a progress bar, cluster status table with color-coded badges,
+        and optional sections for health check failures and update run history.
+        
+        Data is collected using the module's existing functions:
+        - Get-AzureLocalClusterInventory (cluster list and UpdateRing tags)
+        - Get-AzureLocalClusterUpdateReadiness (health state, readiness)
+        - Get-AzureLocalUpdateSummary (current update versions)
+        - Get-AzureLocalAvailableUpdates (pending updates)
+        - Get-AzureLocalUpdateRuns (recent update history, optional)
+        - Test-AzureLocalClusterHealth (detailed health checks, optional)
+    
+    .PARAMETER ClusterResourceIds
+        An array of full Azure Resource IDs for the clusters to include in the report.
+    
+    .PARAMETER ClusterNames
+        An array of Azure Local cluster names to include in the report.
+    
+    .PARAMETER ScopeByUpdateRingTag
+        Find clusters by their 'UpdateRing' tag value via Azure Resource Graph.
+    
+    .PARAMETER UpdateRingValue
+        The value of the 'UpdateRing' tag to match when using -ScopeByUpdateRingTag.
+    
+    .PARAMETER ResourceGroupName
+        Resource group containing the clusters (only used with -ClusterNames).
+    
+    .PARAMETER SubscriptionId
+        Azure subscription ID (defaults to current subscription).
+    
+    .PARAMETER AllClusters
+        Discovers all Azure Local clusters via Azure Resource Graph and includes them
+        in the report. Limited to the first 100 clusters to prevent excessive API calls.
+        Uses the current Azure CLI subscription context.
+    
+    .PARAMETER OutputPath
+        File path for the HTML report output. Required.
+    
+    .PARAMETER IncludeUpdateRuns
+        Include recent update run history section in the report.
+    
+    .PARAMETER IncludeHealthDetails
+        Include detailed health check failure section in the report.
+    
+    .PARAMETER Title
+        Custom report title. Auto-generated if not specified:
+        single cluster = '<ClusterName> - Update Status Report',
+        multiple clusters = 'Azure Local Fleet Update Status Report'.
+    
+    .PARAMETER PassThru
+        Returns the HTML content as a string in addition to writing the file.
+    
+    .OUTPUTS
+        System.String - HTML content (only when -PassThru is specified).
+    
+    .EXAMPLE
+        New-AzureLocalFleetStatusHtmlReport -AllClusters -OutputPath "C:\Reports\fleet-all.html"
+        Generates an HTML report for all clusters (up to 100) across the subscription.
+    
+    .EXAMPLE
+        New-AzureLocalFleetStatusHtmlReport -ScopeByUpdateRingTag -UpdateRingValue "Wave1" -OutputPath "C:\Reports\wave1-status.html"
+        Generates an HTML report for all Wave1 clusters.
+    
+    .EXAMPLE
+        New-AzureLocalFleetStatusHtmlReport -ClusterNames @("Cluster01","Cluster02") -OutputPath "C:\Reports\fleet.html" -IncludeHealthDetails -IncludeUpdateRuns
+        Generates a full report with health details and update run history.
+    
+    .EXAMPLE
+        $html = New-AzureLocalFleetStatusHtmlReport -ScopeByUpdateRingTag -UpdateRingValue "Production" -OutputPath "C:\Reports\prod.html" -PassThru
+        Generates the report and also captures the HTML string for further use (e.g., email body).
+    #>
+    [CmdletBinding(DefaultParameterSetName = 'All')]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByResourceId')]
+        [string[]]$ClusterResourceIds,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByName')]
+        [string[]]$ClusterNames,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [switch]$ScopeByUpdateRingTag,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [string]$UpdateRingValue,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'All')]
+        [switch]$AllClusters,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [string]$SubscriptionId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OutputPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeUpdateRuns,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeHealthDetails,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Title = "",
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
+    )
+
+    Write-Log -Message "" -Level Info
+    Write-Log -Message "========================================" -Level Header
+    Write-Log -Message "Fleet Status HTML Report Generation" -Level Header
+    Write-Log -Message "========================================" -Level Header
+
+    # Load System.Web for HtmlEncode (XSS protection)
+    Add-Type -AssemblyName System.Web -ErrorAction SilentlyContinue
+
+    # Verify Azure CLI
+    try {
+        $null = az account show 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "Not logged in" }
+        Write-Log -Message "Azure CLI authentication verified" -Level Success
+    }
+    catch {
+        Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
+        return
+    }
+
+    # Build common parameter splatting for downstream calls
+    # For ByName, resolve resource IDs once upfront to avoid repeated lookups
+    $scopeParams = @{}
+    switch ($PSCmdlet.ParameterSetName) {
+        'ByTag' {
+            $scopeParams['ScopeByUpdateRingTag'] = $true
+            $scopeParams['UpdateRingValue'] = $UpdateRingValue
+        }
+        'ByResourceId' {
+            $scopeParams['ClusterResourceIds'] = $ClusterResourceIds
+        }
+        'ByName' {
+            Write-Log -Message "Resolving cluster name(s) to resource ID(s)..." -Level Info
+            if (-not $SubscriptionId) {
+                $SubscriptionId = (az account show --query id -o tsv)
+            }
+            $resolvedIds = @()
+            foreach ($name in $ClusterNames) {
+                $infoParams = @{ ClusterName = $name; SubscriptionId = $SubscriptionId }
+                if ($ResourceGroupName) { $infoParams['ResourceGroupName'] = $ResourceGroupName }
+                $clusterInfo = Get-AzureLocalClusterInfo @infoParams
+                if ($clusterInfo -and $clusterInfo.id) {
+                    $resolvedIds += $clusterInfo.id
+                    Write-Log -Message "  Resolved '$name' -> $($clusterInfo.id)" -Level Success
+                }
+                else {
+                    Write-Log -Message "  Could not resolve cluster '$name' - skipping" -Level Warning
+                }
+            }
+            if ($resolvedIds.Count -eq 0) {
+                Write-Log -Message "No clusters could be resolved. Cannot generate report." -Level Warning
+                return
+            }
+            $scopeParams['ClusterResourceIds'] = $resolvedIds
+        }
+        'All' {
+            Write-Log -Message "Discovering all Azure Local clusters..." -Level Info
+            $inventory = @(Get-AzureLocalClusterInventory -PassThru)
+            if (-not $inventory -or $inventory.Count -eq 0) {
+                Write-Log -Message "No clusters found. Cannot generate report." -Level Warning
+                return
+            }
+            $maxClusters = 100
+            if ($inventory.Count -gt $maxClusters) {
+                Write-Log -Message "Found $($inventory.Count) clusters - limiting to first $maxClusters" -Level Warning
+                $inventory = $inventory | Select-Object -First $maxClusters
+            }
+            $allResourceIds = @($inventory | Select-Object -ExpandProperty ResourceId)
+            Write-Log -Message "  Found $($allResourceIds.Count) cluster(s)" -Level Success
+            $scopeParams['ClusterResourceIds'] = $allResourceIds
+        }
+    }
+
+    #--- Step 1: Collect readiness data ---
+    Write-Log -Message "Step 1: Collecting update readiness status..." -Level Info
+    $readiness = @()
+    try {
+        $rawReadiness = @(Get-AzureLocalClusterUpdateReadiness @scopeParams -PassThru)
+        # Filter out empty/null results (upstream functions may return placeholder objects)
+        $readiness = @($rawReadiness | Where-Object { $_.ClusterName })
+        Write-Log -Message "  Readiness data collected for $($readiness.Count) cluster(s)" -Level Success
+    }
+    catch {
+        Write-Log -Message "  Failed to collect readiness data: $($_.Exception.Message)" -Level Error
+    }
+
+    if ($readiness.Count -eq 0) {
+        Write-Log -Message "No clusters found. Cannot generate report." -Level Warning
+        return
+    }
+
+    # Auto-generate title if not explicitly provided
+    if ([string]::IsNullOrWhiteSpace($Title)) {
+        if ($readiness.Count -eq 1) {
+            $Title = "$($readiness[0].ClusterName) - Update Status Report"
+        }
+        else {
+            $Title = "Azure Local Fleet Update Status Report"
+        }
+    }
+
+    #--- Step 2: Collect update summaries ---
+    Write-Log -Message "Step 2: Collecting update summaries..." -Level Info
+    $summaries = @()
+    try {
+        $rawSummaries = @(Get-AzureLocalUpdateSummary @scopeParams -PassThru)
+        $summaries = @($rawSummaries | Where-Object { $_.ClusterName })
+        Write-Log -Message "  Update summaries collected for $($summaries.Count) cluster(s)" -Level Success
+    }
+    catch {
+        Write-Log -Message "  Failed to collect update summaries: $($_.Exception.Message)" -Level Warning
+    }
+
+    #--- Step 3: Collect available updates ---
+    Write-Log -Message "Step 3: Collecting available updates..." -Level Info
+    $available = @()
+    try {
+        $rawAvailable = @(Get-AzureLocalAvailableUpdates @scopeParams -PassThru)
+        $available = @($rawAvailable | Where-Object { $_.ClusterName })
+        $clusterCount = ($available | Select-Object -Property ClusterName -Unique).Count
+        Write-Log -Message "  Found $($available.Count) available update(s) for $clusterCount cluster(s)" -Level Success
+    }
+    catch {
+        Write-Log -Message "  Failed to collect available updates: $($_.Exception.Message)" -Level Warning
+    }
+
+    #--- Step 4: Collect cluster info for identity section ---
+    Write-Log -Message "Step 4: Collecting cluster details..." -Level Info
+    $clusterDetails = @()
+    # Use already-resolved resource IDs when available to avoid redundant lookups
+    $resolvedResourceIds = if ($scopeParams.ContainsKey('ClusterResourceIds')) { $scopeParams['ClusterResourceIds'] } else { @() }
+
+    foreach ($cluster in $readiness) {
+        $clusterName = $cluster.ClusterName
+        $resourceGroup = $cluster.ResourceGroup
+        $clusterSubId = $cluster.SubscriptionId
+
+        # Get current version from summaries, with fallback to direct API call
+        $summary = $summaries | Where-Object { $_.ClusterName -eq $clusterName } | Select-Object -First 1
+        $currentVersion = if ($summary -and $summary.CurrentVersion) { $summary.CurrentVersion } else { "N/A" }
+
+        # Fallback: if summaries didn't return version, try direct API call
+        if ($currentVersion -eq "N/A") {
+            $matchedIdForVersion = $resolvedResourceIds | Where-Object { ($_ -split '/')[-1] -eq $clusterName } | Select-Object -First 1
+            if ($matchedIdForVersion) {
+                try {
+                    $directSummary = Get-AzureLocalUpdateSummary -ClusterResourceId $matchedIdForVersion
+                    if ($directSummary -and $directSummary.properties.currentVersion) {
+                        $currentVersion = $directSummary.properties.currentVersion
+                    }
+                }
+                catch { }
+            }
+        }
+
+        # Get node count and resource ID - use pre-resolved ID if available
+        $nodeCount = "N/A"
+        $resourceId = ""
+        try {
+            # Find matching resource ID from the pre-resolved list
+            $matchedId = $resolvedResourceIds | Where-Object { ($_ -split '/')[-1] -eq $clusterName } | Select-Object -First 1
+            if ($matchedId) {
+                # Direct GET with known resource ID (no search needed)
+                $uri = "https://management.azure.com${matchedId}?api-version=$($script:DefaultApiVersion)"
+                $clusterInfo = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+            }
+            else {
+                # Fallback to name-based lookup (e.g., ByTag mode where IDs may not match by name)
+                $clusterInfoParams = @{ ClusterName = $clusterName }
+                if ($resourceGroup) { $clusterInfoParams['ResourceGroupName'] = $resourceGroup }
+                if ($clusterSubId) { $clusterInfoParams['SubscriptionId'] = $clusterSubId }
+                $clusterInfo = Get-AzureLocalClusterInfo @clusterInfoParams
+            }
+            if ($clusterInfo) {
+                $resourceId = if ($clusterInfo.id) { $clusterInfo.id } else { "" }
+                if ($clusterInfo.properties.reportedProperties.nodes) {
+                    $nodeCount = $clusterInfo.properties.reportedProperties.nodes.Count
+                }
+            }
+        }
+        catch {
+            Write-Log -Message "  Could not retrieve cluster info for $clusterName" -Level Verbose
+        }
+
+        $clusterDetails += [PSCustomObject]@{
+            ClusterName    = $clusterName
+            ResourceGroup  = $resourceGroup
+            CurrentVersion = $currentVersion
+            NodeCount      = $nodeCount
+            ResourceId     = $resourceId
+        }
+    }
+    Write-Log -Message "  Cluster details collected for $($clusterDetails.Count) cluster(s)" -Level Success
+
+    #--- Step 5: Always collect latest update runs (needed for Active Update column) ---
+    $latestRuns = @()
+    Write-Log -Message "Step 5: Collecting latest update run per cluster..." -Level Info
+    try {
+        $rawRuns = @(Get-AzureLocalUpdateRuns @scopeParams -Latest -PassThru)
+        $latestRuns = @($rawRuns | Where-Object { $_.ClusterName })
+        Write-Log -Message "  Latest update runs collected for $($latestRuns.Count) cluster(s)" -Level Success
+    }
+    catch {
+        Write-Log -Message "  Failed to collect update runs: $($_.Exception.Message)" -Level Warning
+    }
+
+    # For the full Update Run History section, reuse the same data
+    [array]$updateRuns = @()
+    if ($IncludeUpdateRuns) { [array]$updateRuns = @($latestRuns) }
+
+    #--- Step 6 (optional): Collect health details ---
+    $healthResults = @()
+    if ($IncludeHealthDetails) {
+        Write-Log -Message "Step 6: Collecting detailed health check results..." -Level Info
+        try {
+            $rawHealth = @(Test-AzureLocalClusterHealth @scopeParams -PassThru)
+            $healthResults = @($rawHealth | Where-Object { $_.ClusterName })
+            Write-Log -Message "  Health data collected for $($healthResults.Count) cluster(s)" -Level Success
+        }
+        catch {
+            Write-Log -Message "  Failed to collect health data: $($_.Exception.Message)" -Level Warning
+        }
+    }
+
+    #--- Calculate summary statistics ---
+    $totalClusters = $readiness.Count
+    $upToDate   = @($readiness | Where-Object { $_.UpdateState -eq "UpToDate" }).Count
+    $inProgress = @($readiness | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
+    $updateAvailable = @($readiness | Where-Object { $_.ReadyForUpdate -eq $true }).Count
+    $healthFailures  = @($readiness | Where-Object { $_.HealthState -eq "Failure" }).Count
+    $otherCount = [math]::Max(0, $totalClusters - $upToDate - $inProgress - $updateAvailable - $healthFailures)
+
+    $pctUpToDate   = if ($totalClusters -gt 0) { [math]::Round(($upToDate / $totalClusters) * 100, 1) } else { 0 }
+    $pctInProgress = if ($totalClusters -gt 0) { [math]::Round(($inProgress / $totalClusters) * 100, 1) } else { 0 }
+    $pctAvailable  = if ($totalClusters -gt 0) { [math]::Round(($updateAvailable / $totalClusters) * 100, 1) } else { 0 }
+    $pctFailures   = if ($totalClusters -gt 0) { [math]::Round(($healthFailures / $totalClusters) * 100, 1) } else { 0 }
+    $pctOther      = if ($totalClusters -gt 0) { [math]::Round(($otherCount / $totalClusters) * 100, 1) } else { 0 }
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $scopeDescription = switch ($PSCmdlet.ParameterSetName) {
+        'ByTag'        { "UpdateRing = $UpdateRingValue" }
+        'ByResourceId' { "$($ClusterResourceIds.Count) cluster(s) by Resource ID" }
+        'ByName'       { "$($ClusterNames.Count) cluster(s) by name" }
+        'All'          { "All clusters ($($scopeParams['ClusterResourceIds'].Count))" }
+    }
+
+    #--- Build cluster identity section HTML (used at top or bottom depending on count) ---
+    $clusterIdentityHtml = [System.Text.StringBuilder]::new()
+    $identitySectionTitle = if ($clusterDetails.Count -le 10) { "Cluster Information" } else { "Appendix: Cluster Information" }
+    [void]$clusterIdentityHtml.Append(@"
+
+    <div class="section">
+        <h2>$([System.Web.HttpUtility]::HtmlEncode($identitySectionTitle))</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Cluster Name</th>
+                    <th>Current Version</th>
+                    <th>Node Count</th>
+                    <th>Resource Group</th>
+                    <th>Resource ID</th>
+                </tr>
+            </thead>
+            <tbody>
+"@)
+    foreach ($detail in $clusterDetails) {
+        $encDetailName    = [System.Web.HttpUtility]::HtmlEncode($detail.ClusterName)
+        $encDetailVersion = [System.Web.HttpUtility]::HtmlEncode($detail.CurrentVersion)
+        $encDetailNodes   = [System.Web.HttpUtility]::HtmlEncode($detail.NodeCount)
+        $encDetailRG      = [System.Web.HttpUtility]::HtmlEncode($detail.ResourceGroup)
+        $encDetailRID     = [System.Web.HttpUtility]::HtmlEncode($detail.ResourceId)
+        $detailPortalUrl  = if ($detail.ResourceId) { [System.Web.HttpUtility]::HtmlEncode("https://portal.azure.com/#@/resource$($detail.ResourceId)") } else { "" }
+
+        $detailNameCell = if ($detailPortalUrl) {
+            "<a href=`"$detailPortalUrl`" class=`"portal-link`" target=`"_blank`" title=`"Open in Azure Portal`"><strong>$encDetailName</strong></a>"
+        } else { "<strong>$encDetailName</strong>" }
+
+        [void]$clusterIdentityHtml.Append(@"
+
+                <tr>
+                    <td>$detailNameCell</td>
+                    <td>$encDetailVersion</td>
+                    <td>$encDetailNodes</td>
+                    <td>$encDetailRG</td>
+                    <td class="resource-id-cell">$encDetailRID</td>
+                </tr>
+"@)
+    }
+    [void]$clusterIdentityHtml.Append(@"
+
+            </tbody>
+        </table>
+    </div>
+"@)
+    $clusterIdentitySection = $clusterIdentityHtml.ToString()
+
+    #--- Build HTML ---
+    Write-Log -Message "Generating HTML report..." -Level Info
+
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.Append(@"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>$([System.Web.HttpUtility]::HtmlEncode($Title))</title>
+    <style>
+        :root {
+            --success-color: #28a745;
+            --failure-color: #dc3545;
+            --warning-color: #ffc107;
+            --info-color: #17a2b8;
+            --pending-color: #6c757d;
+            --bg-color: #f8f9fa;
+            --card-bg: #ffffff;
+            --text-color: #212529;
+            --border-color: #dee2e6;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        header {
+            background: linear-gradient(135deg, #552F99, #B596F5);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            position: relative;
+        }
+        header h1 { font-size: 2em; margin-bottom: 10px; }
+        header p { opacity: 0.9; }
+        header .logo {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            width: 64px;
+            height: 64px;
+            opacity: 0.9;
+        }
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .summary-card {
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-left: 4px solid var(--border-color);
+        }
+        .summary-card.total      { border-left-color: #9266E6; }
+        .summary-card.uptodate   { border-left-color: var(--success-color); }
+        .summary-card.inprogress { border-left-color: var(--warning-color); }
+        .summary-card.available  { border-left-color: var(--info-color); }
+        .summary-card.failures   { border-left-color: var(--failure-color); }
+        .summary-card .number {
+            font-size: 2.5em; font-weight: bold; display: block;
+        }
+        .summary-card.total .number      { color: #9266E6; }
+        .summary-card.uptodate .number   { color: var(--success-color); }
+        .summary-card.inprogress .number { color: var(--warning-color); }
+        .summary-card.available .number  { color: var(--info-color); }
+        .summary-card.failures .number   { color: var(--failure-color); }
+        .summary-card .label {
+            text-transform: uppercase; font-size: 0.85em;
+            color: #6c757d; letter-spacing: 1px;
+        }
+        .progress-bar-container {
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .progress-bar-container h3 { margin-bottom: 10px; }
+        .progress {
+            height: 30px; background: #e9ecef;
+            border-radius: 15px; overflow: hidden; display: flex;
+        }
+        .progress-uptodate   { background: var(--success-color); }
+        .progress-inprogress { background: var(--warning-color); }
+        .progress-available  { background: var(--info-color); }
+        .progress-failures   { background: var(--failure-color); }
+        .progress-other      { background: var(--pending-color); }
+        .section {
+            background: var(--card-bg);
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow-x: auto;
+            margin-bottom: 20px;
+        }
+        .section h2 {
+            background: #f1f3f5;
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        table {
+            width: 100%; border-collapse: collapse;
+            min-width: 800px;
+        }
+        th {
+            background: #f8f9fa; padding: 12px 16px;
+            text-align: left; font-weight: 600;
+            border-bottom: 2px solid var(--border-color);
+            white-space: nowrap;
+        }
+        td {
+            padding: 12px 16px;
+            border-bottom: 1px solid #f1f3f5;
+        }
+        tr:hover td { background: #f8f9fa; }
+        .status-badge {
+            display: inline-block; padding: 4px 12px;
+            border-radius: 12px; font-size: 0.85em;
+            font-weight: 600; white-space: nowrap;
+        }
+        .status-uptodate      { background: #d4edda; color: #155724; }
+        .status-inprogress    { background: #fff3cd; color: #856404; }
+        .status-available     { background: #d1ecf1; color: #0c5460; }
+        .status-failure       { background: #f8d7da; color: #721c24; }
+        .status-unknown       { background: #e2e3e5; color: #383d41; }
+        .severity-critical    { background: #f8d7da; color: #721c24; font-weight: 600; }
+        .severity-warning     { background: #fff3cd; color: #856404; }
+        .severity-info        { background: #d1ecf1; color: #0c5460; }
+        .message-cell {
+            max-width: 500px;
+            white-space: normal;
+            word-wrap: break-word;
+            font-size: 0.9em;
+        }
+        .resource-id-cell {
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.85em;
+            white-space: nowrap;
+            user-select: all;
+        }
+        a.portal-link {
+            color: #0078d4;
+            text-decoration: none;
+            border-bottom: 1px dashed #0078d4;
+        }
+        a.portal-link:hover {
+            color: #005a9e;
+            border-bottom-color: #005a9e;
+        }
+        details {
+            margin-bottom: 8px;
+        }
+        details summary {
+            cursor: pointer;
+            padding: 10px 16px;
+            border-bottom: 1px solid #f1f3f5;
+            font-weight: 600;
+            list-style: none;
+        }
+        details summary::-webkit-details-marker { display: none; }
+        details summary::before {
+            content: '\25B6';
+            display: inline-block;
+            margin-right: 8px;
+            transition: transform 0.2s;
+            font-size: 0.8em;
+        }
+        details[open] summary::before {
+            transform: rotate(90deg);
+        }
+        details[open] summary {
+            border-bottom: 2px solid var(--border-color);
+        }
+        .failure-summary-counts {
+            font-weight: normal;
+            font-size: 0.9em;
+            color: #6c757d;
+            margin-left: 8px;
+        }
+        .failure-summary-top-issue {
+            font-weight: normal;
+            font-size: 0.85em;
+            color: #495057;
+            margin-left: 4px;
+        }
+        footer {
+            text-align: center; padding: 20px;
+            color: #6c757d; font-size: 0.9em;
+        }
+        .severity-filter {
+            padding: 10px 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.9em;
+        }
+        .severity-filter label {
+            margin-right: 16px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .severity-filter input[type="checkbox"] {
+            margin-right: 4px;
+            cursor: pointer;
+        }
+        tr.sev-hidden { display: none; }
+    </style>
+    <script>
+    function toggleSeverity(severity, checked) {
+        var rows = document.querySelectorAll('tr.sev-' + severity);
+        for (var i = 0; i < rows.length; i++) {
+            if (checked) { rows[i].classList.remove('sev-hidden'); }
+            else { rows[i].classList.add('sev-hidden'); }
+        }
+    }
+    </script>
+</head>
+<body>
+<div class="container">
+    <header>
+        <svg class="logo" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg"><path d="M125.25 107.513c-1.13 4.978-7.317 9.827-18.488 13.625a152.571 152.571 0 0 1-85.704.121c-10.303-3.648-15.864-8.263-16.732-13.021-.15-.839 0-13.895 0-13.895l121.159-1.123s-.092 13.681-.235 14.293Z" fill="#5EA0EF"/><path d="M65.04 115.031c33.479-.336 60.525-9.991 60.409-21.564-.116-11.573-27.35-20.683-60.83-20.347-33.479.336-60.525 9.99-60.409 21.564.116 11.573 27.35 20.683 60.83 20.347Z" fill="#50E6FF"/><path d="M105.989 11H22.011A3.011 3.011 0 0 0 19 14.011v18.585a3.011 3.011 0 0 0 3.011 3.011h83.978a3.011 3.011 0 0 0 3.011-3.01V14.01a3.011 3.011 0 0 0-3.011-3.01Z" fill="#B596F5"/><path d="M100.23 15.307h-3.72c-.83 0-1.504.673-1.504 1.503v3.72c0 .83.673 1.503 1.503 1.503h3.721c.83 0 1.502-.673 1.502-1.503v-3.72c0-.83-.672-1.503-1.502-1.503Zm0 9.273h-3.72c-.83 0-1.504.673-1.504 1.503v3.72c0 .83.673 1.503 1.503 1.503h3.721c.83 0 1.502-.673 1.502-1.503v-3.72c0-.83-.672-1.503-1.502-1.503Z" fill="#F2F2F2"/><path d="M105.989 40.166H22.011A3.011 3.011 0 0 0 19 43.176v18.586a3.011 3.011 0 0 0 3.011 3.011h83.978a3.011 3.011 0 0 0 3.011-3.01V43.176a3.01 3.01 0 0 0-3.011-3.011Z" fill="#9266E6"/><path d="M100.23 44.467h-3.72c-.83 0-1.504.673-1.504 1.503v3.72c0 .83.673 1.503 1.503 1.503h3.721c.83 0 1.502-.673 1.502-1.503v-3.72c0-.83-.672-1.503-1.502-1.503Zm0 9.273h-3.72c-.83 0-1.504.673-1.504 1.503v3.72c0 .83.673 1.503 1.503 1.503h3.721c.83 0 1.502-.673 1.502-1.502v-3.72c0-.83-.672-1.504-1.502-1.504Z" fill="#F2F2F2"/><path d="M105.989 69.326H22.011A3.011 3.011 0 0 0 19 72.336v18.586a3.011 3.011 0 0 0 3.011 3.011h83.978a3.01 3.01 0 0 0 3.011-3.01V72.336a3.011 3.011 0 0 0-3.011-3.011Z" fill="#552F99"/><path d="M100.23 73.627h-3.72c-.83 0-1.504.673-1.504 1.503v3.72c0 .83.673 1.503 1.503 1.503h3.721c.83 0 1.502-.673 1.502-1.502V75.13c0-.83-.672-1.503-1.502-1.503Zm0 9.273h-3.72c-.83 0-1.504.673-1.504 1.503v3.72c0 .83.673 1.503 1.503 1.503h3.721c.83 0 1.502-.672 1.502-1.502v-3.72c0-.83-.672-1.504-1.502-1.504Z" fill="#F2F2F2"/></svg>
+        <h1>$([System.Web.HttpUtility]::HtmlEncode($Title))</h1>
+        <p>Generated $([System.Web.HttpUtility]::HtmlEncode($timestamp)) | Scope: $([System.Web.HttpUtility]::HtmlEncode($scopeDescription))</p>
+    </header>
+
+    <div class="summary">
+        <div class="summary-card total">
+            <span class="number">$([System.Web.HttpUtility]::HtmlEncode($totalClusters))</span>
+            <span class="label">Total Clusters</span>
+        </div>
+        <div class="summary-card uptodate">
+            <span class="number">$([System.Web.HttpUtility]::HtmlEncode($upToDate))</span>
+            <span class="label">Up to Date</span>
+        </div>
+        <div class="summary-card inprogress">
+            <span class="number">$([System.Web.HttpUtility]::HtmlEncode($inProgress))</span>
+            <span class="label">In Progress</span>
+        </div>
+        <div class="summary-card available">
+            <span class="number">$([System.Web.HttpUtility]::HtmlEncode($updateAvailable))</span>
+            <span class="label">Ready for Update</span>
+        </div>
+        <div class="summary-card failures">
+            <span class="number">$([System.Web.HttpUtility]::HtmlEncode($healthFailures))</span>
+            <span class="label">Health Failures</span>
+        </div>
+    </div>
+
+    <div class="progress-bar-container">
+        <h3>Fleet Update Progress</h3>
+        <div class="progress">
+            <div class="progress-uptodate" style="width: $pctUpToDate%;" title="Up to Date: $upToDate ($pctUpToDate%)"></div>
+            <div class="progress-inprogress" style="width: $pctInProgress%;" title="In Progress: $inProgress ($pctInProgress%)"></div>
+            <div class="progress-available" style="width: $pctAvailable%;" title="Ready for Update: $updateAvailable ($pctAvailable%)"></div>
+            <div class="progress-failures" style="width: $pctFailures%;" title="Health Failures: $healthFailures ($pctFailures%)"></div>
+            <div class="progress-other" style="width: $pctOther%;" title="Other: $otherCount ($pctOther%)"></div>
+        </div>
+    </div>
+"@)
+
+    # Insert cluster identity section at top for 10 or fewer clusters
+    if ($clusterDetails.Count -le 10) {
+        [void]$sb.Append($clusterIdentitySection)
+    }
+
+    [void]$sb.Append(@"
+
+    <div class="section">
+        <h2>Cluster Status Details</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Cluster Name</th>
+                    <th>Resource Group</th>
+                    <th>Update State</th>
+                    <th>Health State</th>
+                    <th>Ready</th>
+                    <th>Active Update</th>
+                    <th>Recommended Update</th>
+                </tr>
+            </thead>
+            <tbody>
+"@)
+
+    foreach ($cluster in $readiness) {
+        $updateBadge = switch ($cluster.UpdateState) {
+            'UpToDate'          { 'status-uptodate' }
+            'UpdateInProgress'  { 'status-inprogress' }
+            'UpdateFailed'      { 'status-failure' }
+            'UpdateAvailable'   { 'status-available' }
+            'Ready'             { 'status-available' }
+            default             { 'status-unknown' }
+        }
+        $healthBadge = switch ($cluster.HealthState) {
+            'Success' { 'status-uptodate' }
+            'Failure' { 'status-failure' }
+            'Warning' { 'status-inprogress' }
+            default   { 'status-unknown' }
+        }
+        $readyText = if ($cluster.ReadyForUpdate) { "Yes" } else { "No" }
+        $encReadyText = [System.Web.HttpUtility]::HtmlEncode($readyText)
+
+        # Determine active update (in-progress or failed) from latest run data
+        $activeUpdate = ""
+        $activeUpdateBadge = ""
+        $activeUpdateName = ""
+        $recommendedDisplay = $cluster.RecommendedUpdate
+        $clusterLatestRun = $latestRuns | Where-Object { $_.ClusterName -eq $cluster.ClusterName } | Select-Object -First 1
+        if ($clusterLatestRun -and $clusterLatestRun.State -in @("InProgress", "Failed")) {
+            $activeUpdate = "$($clusterLatestRun.UpdateName) ($($clusterLatestRun.State))"
+            $activeUpdateName = $clusterLatestRun.UpdateName
+            $activeUpdateBadge = if ($clusterLatestRun.State -eq "InProgress") { "status-inprogress" } else { "status-failure" }
+            # Show N/A for recommended when there's an active update that must be completed
+            $recommendedDisplay = "N/A"
+        }
+
+        # Build portal URLs
+        $clusterResourceId = ($clusterDetails | Where-Object { $_.ClusterName -eq $cluster.ClusterName } | Select-Object -First 1).ResourceId
+        $clusterPortalUrl = if ($clusterResourceId) { [System.Web.HttpUtility]::HtmlEncode("https://portal.azure.com/#@/resource$clusterResourceId") } else { "" }
+        $updatePortalUrl = if ($clusterResourceId -and $activeUpdateName) { [System.Web.HttpUtility]::HtmlEncode("https://portal.azure.com/#@/resource$clusterResourceId/updates") } else { "" }
+
+        $encName    = [System.Web.HttpUtility]::HtmlEncode($cluster.ClusterName)
+        $encRG      = [System.Web.HttpUtility]::HtmlEncode($cluster.ResourceGroup)
+        $encUpdate  = [System.Web.HttpUtility]::HtmlEncode($cluster.UpdateState)
+        $encHealth  = [System.Web.HttpUtility]::HtmlEncode($cluster.HealthState)
+        $encActive  = [System.Web.HttpUtility]::HtmlEncode($activeUpdate)
+        $encRecommended = [System.Web.HttpUtility]::HtmlEncode($recommendedDisplay)
+
+        # Cluster name as portal link
+        $nameCell = if ($clusterPortalUrl) {
+            "<a href=`"$clusterPortalUrl`" class=`"portal-link`" target=`"_blank`" title=`"Open in Azure Portal`"><strong>$encName</strong></a>"
+        } else { "<strong>$encName</strong>" }
+
+        # Active update as portal link
+        $activeCell = if ($activeUpdate -and $updatePortalUrl) {
+            "<a href=`"$updatePortalUrl`" class=`"portal-link`" target=`"_blank`" title=`"View updates in Azure Portal`"><span class=`"status-badge $activeUpdateBadge`">$encActive</span></a>"
+        } elseif ($activeUpdate) {
+            "<span class=`"status-badge $activeUpdateBadge`">$encActive</span>"
+        } else { "" }
+
+        [void]$sb.Append(@"
+
+                <tr>
+                    <td>$nameCell</td>
+                    <td>$encRG</td>
+                    <td><span class="status-badge $updateBadge">$encUpdate</span></td>
+                    <td><span class="status-badge $healthBadge">$encHealth</span></td>
+                    <td>$encReadyText</td>
+                    <td>$activeCell</td>
+                    <td>$encRecommended</td>
+                </tr>
+"@)
+    }
+
+    [void]$sb.Append(@"
+
+            </tbody>
+        </table>
+    </div>
+"@)
+
+    #--- Update Run History section (optional) ---
+    if ($IncludeUpdateRuns -and $updateRuns.Count -gt 0) {
+        [void]$sb.Append(@"
+
+    <div class="section">
+        <h2>Recent Update Run History</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Cluster</th>
+                    <th>Update Name</th>
+                    <th>State</th>
+                    <th>Progress</th>
+                    <th>Current Step</th>
+                    <th>Duration</th>
+                    <th>Start Time</th>
+                </tr>
+            </thead>
+            <tbody>
+"@)
+        foreach ($run in $updateRuns) {
+            $runBadge = switch ($run.State) {
+                'Succeeded'  { 'status-uptodate' }
+                'Failed'     { 'status-failure' }
+                'InProgress' { 'status-inprogress' }
+                default      { 'status-unknown' }
+            }
+            # Build portal links for cluster and update
+            $runClusterRid = ($clusterDetails | Where-Object { $_.ClusterName -eq $run.ClusterName } | Select-Object -First 1).ResourceId
+            $runClusterUrl = if ($runClusterRid) { [System.Web.HttpUtility]::HtmlEncode("https://portal.azure.com/#@/resource$runClusterRid") } else { "" }
+            $runUpdateUrl  = if ($runClusterRid) { [System.Web.HttpUtility]::HtmlEncode("https://portal.azure.com/#@/resource$runClusterRid/updates") } else { "" }
+
+            $encRunCluster  = [System.Web.HttpUtility]::HtmlEncode($run.ClusterName)
+            $encRunUpdate   = [System.Web.HttpUtility]::HtmlEncode($run.UpdateName)
+            $encRunState    = [System.Web.HttpUtility]::HtmlEncode($run.State)
+            $encRunProgress = [System.Web.HttpUtility]::HtmlEncode($run.Progress)
+            $encRunStep     = [System.Web.HttpUtility]::HtmlEncode($run.CurrentStepDetail)
+            $encRunDuration = [System.Web.HttpUtility]::HtmlEncode($run.Duration)
+            $encRunStart    = [System.Web.HttpUtility]::HtmlEncode($run.StartTime)
+
+            $runClusterCell = if ($runClusterUrl) {
+                "<a href=`"$runClusterUrl`" class=`"portal-link`" target=`"_blank`"><strong>$encRunCluster</strong></a>"
+            } else { "<strong>$encRunCluster</strong>" }
+
+            $runUpdateCell = if ($runUpdateUrl) {
+                "<a href=`"$runUpdateUrl`" class=`"portal-link`" target=`"_blank`" title=`"View update history in Azure Portal`">$encRunUpdate</a>"
+            } else { $encRunUpdate }
+
+            [void]$sb.Append(@"
+
+                <tr>
+                    <td>$runClusterCell</td>
+                    <td>$runUpdateCell</td>
+                    <td><span class="status-badge $runBadge">$encRunState</span></td>
+                    <td>$encRunProgress</td>
+                    <td class="message-cell" title="$encRunStep">$encRunStep</td>
+                    <td>$encRunDuration</td>
+                    <td>$encRunStart</td>
+                </tr>
+"@)
+        }
+
+        [void]$sb.Append(@"
+
+            </tbody>
+        </table>
+    </div>
+"@)
+    }
+
+    #--- Health Check Failures section (optional) ---
+    if ($IncludeHealthDetails -and $healthResults.Count -gt 0) {
+        $allFailures = @($healthResults | ForEach-Object { $_.Failures } | Where-Object { $_ })
+        if ($allFailures.Count -gt 0) {
+            $uniqueFailureClusters = @($allFailures | Select-Object -ExpandProperty ClusterName -Unique)
+
+            if ($uniqueFailureClusters.Count -le 1) {
+                # Single cluster: flat table (no collapsing)
+                [void]$sb.Append(@"
+
+    <div class="section">
+        <h2>Health Check Failures</h2>
+        <div class="severity-filter">
+            Filter by Severity:
+            <label><input type="checkbox" checked onchange="toggleSeverity('critical', this.checked)"> Critical</label>
+            <label><input type="checkbox" checked onchange="toggleSeverity('warning', this.checked)"> Warning</label>
+            <label><input type="checkbox" onchange="toggleSeverity('informational', this.checked)"> Informational</label>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Cluster</th>
+                    <th>Severity</th>
+                    <th>Check Name</th>
+                    <th>Target</th>
+                    <th>Description</th>
+                    <th>Remediation</th>
+                </tr>
+            </thead>
+            <tbody>
+"@)
+                foreach ($failure in $allFailures) {
+                    $sevBadge = switch ($failure.Severity) {
+                        'Critical'      { 'severity-critical' }
+                        'Warning'       { 'severity-warning' }
+                        'Informational' { 'severity-info' }
+                        default         { 'status-unknown' }
+                    }
+                    $sevClass = "sev-$($failure.Severity.ToLower())"
+                    $sevHidden = if ($failure.Severity -eq 'Informational') { ' sev-hidden' } else { '' }
+                    $encCluster = [System.Web.HttpUtility]::HtmlEncode($failure.ClusterName)
+                    $encSev     = [System.Web.HttpUtility]::HtmlEncode($failure.Severity)
+                    $encCheck   = [System.Web.HttpUtility]::HtmlEncode($failure.CheckName)
+                    $encTarget  = [System.Web.HttpUtility]::HtmlEncode($failure.TargetResourceName)
+                    $encDesc    = [System.Web.HttpUtility]::HtmlEncode($failure.Description)
+                    $encRemed   = [System.Web.HttpUtility]::HtmlEncode($failure.Remediation)
+
+                    [void]$sb.Append(@"
+
+                <tr class="$sevClass$sevHidden">
+                    <td><strong>$encCluster</strong></td>
+                    <td><span class="status-badge $sevBadge">$encSev</span></td>
+                    <td>$encCheck</td>
+                    <td>$encTarget</td>
+                    <td class="message-cell" title="$encDesc">$encDesc</td>
+                    <td class="message-cell" title="$encRemed">$encRemed</td>
+                </tr>
+"@)
+                }
+
+                [void]$sb.Append(@"
+
+            </tbody>
+        </table>
+    </div>
+"@)
+            }
+            else {
+                # Multiple clusters: collapsible per-cluster groups
+                [void]$sb.Append(@"
+
+    <div class="section">
+        <h2>Health Check Failures</h2>
+        <div class="severity-filter">
+            Filter by Severity:
+            <label><input type="checkbox" checked onchange="toggleSeverity('critical', this.checked)"> Critical</label>
+            <label><input type="checkbox" checked onchange="toggleSeverity('warning', this.checked)"> Warning</label>
+            <label><input type="checkbox" onchange="toggleSeverity('informational', this.checked)"> Informational</label>
+        </div>
+"@)
+                foreach ($clusterGroup in $uniqueFailureClusters) {
+                    $clusterFailures = @($allFailures | Where-Object { $_.ClusterName -eq $clusterGroup })
+                    $critCount = @($clusterFailures | Where-Object { $_.Severity -eq 'Critical' }).Count
+                    $warnCount = @($clusterFailures | Where-Object { $_.Severity -eq 'Warning' }).Count
+                    $infoCount = @($clusterFailures | Where-Object { $_.Severity -eq 'Informational' }).Count
+
+                    # Determine worst severity badge and top issue
+                    $worstBadge = if ($critCount -gt 0) { 'severity-critical' } elseif ($warnCount -gt 0) { 'severity-warning' } else { 'severity-info' }
+                    $worstLabel = if ($critCount -gt 0) { 'Critical' } elseif ($warnCount -gt 0) { 'Warning' } else { 'Informational' }
+                    $topIssue = ($clusterFailures | Sort-Object { switch ($_.Severity) { 'Critical' { 0 } 'Warning' { 1 } default { 2 } } } | Select-Object -First 1).CheckName
+
+                    # Build count summary
+                    $countParts = @()
+                    if ($critCount -gt 0) { $countParts += "$critCount Critical" }
+                    if ($warnCount -gt 0) { $countParts += "$warnCount Warning" }
+                    if ($infoCount -gt 0) { $countParts += "$infoCount Informational" }
+                    $countSummary = $countParts -join ', '
+
+                    $encGroupName = [System.Web.HttpUtility]::HtmlEncode($clusterGroup)
+                    $encTopIssue  = [System.Web.HttpUtility]::HtmlEncode($topIssue)
+
+                    [void]$sb.Append(@"
+
+        <details>
+            <summary>
+                <strong>$encGroupName</strong>
+                <span class="status-badge $worstBadge">$([System.Web.HttpUtility]::HtmlEncode($worstLabel))</span>
+                <span class="failure-summary-counts">$([System.Web.HttpUtility]::HtmlEncode($countSummary))</span>
+                <span class="failure-summary-top-issue">| $encTopIssue</span>
+            </summary>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Severity</th>
+                        <th>Check Name</th>
+                        <th>Target</th>
+                        <th>Description</th>
+                        <th>Remediation</th>
+                    </tr>
+                </thead>
+                <tbody>
+"@)
+                    foreach ($failure in $clusterFailures) {
+                        $sevBadge = switch ($failure.Severity) {
+                            'Critical'      { 'severity-critical' }
+                            'Warning'       { 'severity-warning' }
+                            'Informational' { 'severity-info' }
+                            default         { 'status-unknown' }
+                        }
+                        $sevClass = "sev-$($failure.Severity.ToLower())"
+                        $sevHidden = if ($failure.Severity -eq 'Informational') { ' sev-hidden' } else { '' }
+                        $encSev    = [System.Web.HttpUtility]::HtmlEncode($failure.Severity)
+                        $encCheck  = [System.Web.HttpUtility]::HtmlEncode($failure.CheckName)
+                        $encTarget = [System.Web.HttpUtility]::HtmlEncode($failure.TargetResourceName)
+                        $encDesc   = [System.Web.HttpUtility]::HtmlEncode($failure.Description)
+                        $encRemed  = [System.Web.HttpUtility]::HtmlEncode($failure.Remediation)
+
+                        [void]$sb.Append(@"
+
+                    <tr class="$sevClass$sevHidden">
+                        <td><span class="status-badge $sevBadge">$encSev</span></td>
+                        <td>$encCheck</td>
+                        <td>$encTarget</td>
+                        <td class="message-cell" title="$encDesc">$encDesc</td>
+                        <td class="message-cell" title="$encRemed">$encRemed</td>
+                    </tr>
+"@)
+                    }
+
+                    [void]$sb.Append(@"
+
+                </tbody>
+            </table>
+        </details>
+"@)
+                }
+
+                [void]$sb.Append(@"
+
+    </div>
+"@)
+            }
+        }
+    }
+
+    #--- Cluster identity appendix for large fleets (>10 clusters) ---
+    if ($clusterDetails.Count -gt 10) {
+        [void]$sb.Append($clusterIdentitySection)
+    }
+
+    #--- Footer ---
+    $moduleVersion = (Get-Module AzStackHci.ManageUpdates | Select-Object -First 1).Version
+    if (-not $moduleVersion) {
+        $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath 'AzStackHci.ManageUpdates.psd1'
+        if (Test-Path $manifestPath) {
+            $manifest = Import-PowerShellDataFile -Path $manifestPath -ErrorAction SilentlyContinue
+            $moduleVersion = $manifest.ModuleVersion
+        }
+        if (-not $moduleVersion) { $moduleVersion = "unknown" }
+    }
+
+    [void]$sb.Append(@"
+
+    <footer>
+        <p>Generated by AzStackHci.ManageUpdates v$moduleVersion | $timestamp</p>
+        <p>This report is provided as-is with no warranty. Not a Microsoft supported service offering.</p>
+    </footer>
+</div>
+</body>
+</html>
+"@)
+
+    $htmlContent = $sb.ToString()
+
+    #--- Write to file ---
+    $outputDir = Split-Path -Path $OutputPath -Parent
+    if ($outputDir -and -not (Test-Path $outputDir)) {
+        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+    }
+    $htmlContent | Out-File -FilePath $OutputPath -Encoding UTF8 -Force
+
+    Write-Log -Message "" -Level Info
+    Write-Log -Message "HTML fleet status report written to: $OutputPath" -Level Success
+    try {
+        $fullPath = (Resolve-Path $OutputPath -ErrorAction Stop).Path
+        $fileUri = "file:///$($fullPath -replace '\\', '/')"
+        Write-Log -Message "  Open report: $fileUri" -Level Info
+    }
+    catch {
+        Write-Log -Message "  Open report: $OutputPath" -Level Info
+    }
+    Write-Log -Message "  Total Clusters: $totalClusters | Up to Date: $upToDate | In Progress: $inProgress | Ready: $updateAvailable | Failures: $healthFailures" -Level Info
+
+    if ($PassThru) {
+        return $htmlContent
+    }
+}
+
+#endregion Fleet Status HTML Report
+
 # Export module members (public functions only)
 Export-ModuleMember -Function @(
     'Connect-AzureLocalServicePrincipal',
@@ -5797,6 +7026,8 @@ Export-ModuleMember -Function @(
     'Resume-AzureLocalFleetUpdate',
     'Stop-AzureLocalFleetUpdate',
     # Pre-Update Health Validation (v0.6.1)
-    'Test-AzureLocalClusterHealth'
+    'Test-AzureLocalClusterHealth',
+    # Fleet Status Reporting (v0.6.2)
+    'New-AzureLocalFleetStatusHtmlReport'
 )
 

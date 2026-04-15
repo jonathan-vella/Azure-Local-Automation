@@ -34,12 +34,12 @@ Describe 'Module: AzStackHci.ManageUpdates' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.6.1' {
-            $script:ModuleInfo.Version | Should -Be '0.6.1'
+        It 'Should have version 0.6.2' {
+            $script:ModuleInfo.Version | Should -Be '0.6.2'
         }
 
-        It 'Should export exactly 16 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 16
+        It 'Should export exactly 17 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 17
         }
 
         It 'Should export the expected functions' {
@@ -61,7 +61,9 @@ Describe 'Module: AzStackHci.ManageUpdates' {
                 'Resume-AzureLocalFleetUpdate',
                 'Stop-AzureLocalFleetUpdate',
                 # Pre-Update Health Validation (v0.6.1)
-                'Test-AzureLocalClusterHealth'
+                'Test-AzureLocalClusterHealth',
+                # Fleet Status Reporting (v0.6.2)
+                'New-AzureLocalFleetStatusHtmlReport'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -535,6 +537,112 @@ Describe 'Function: Get-AzureLocalUpdateRuns' {
             $command.ParameterSets.Name | Should -Contain 'ByName'
             $command.ParameterSets.Name | Should -Contain 'ByResourceId'
             $command.ParameterSets.Name | Should -Contain 'ByTag'
+        }
+    }
+}
+
+Describe 'Function: New-AzureLocalFleetStatusHtmlReport' {
+    
+    Context 'Parameter Validation' {
+        BeforeAll {
+            $command = Get-Command New-AzureLocalFleetStatusHtmlReport
+        }
+
+        It 'Should have ClusterNames parameter' {
+            $command.Parameters.Keys | Should -Contain 'ClusterNames'
+        }
+
+        It 'Should have ClusterResourceIds parameter' {
+            $command.Parameters.Keys | Should -Contain 'ClusterResourceIds'
+        }
+
+        It 'Should have ScopeByUpdateRingTag parameter' {
+            $command.Parameters.Keys | Should -Contain 'ScopeByUpdateRingTag'
+        }
+
+        It 'Should have UpdateRingValue parameter' {
+            $command.Parameters.Keys | Should -Contain 'UpdateRingValue'
+        }
+
+        It 'Should have OutputPath parameter' {
+            $command.Parameters.Keys | Should -Contain 'OutputPath'
+        }
+
+        It 'OutputPath should be mandatory' {
+            $param = $command.Parameters['OutputPath']
+            $attr = $param.Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' }
+            $attr.Mandatory | Should -Contain $true
+        }
+
+        It 'Should have IncludeUpdateRuns switch parameter' {
+            $command.Parameters['IncludeUpdateRuns'].SwitchParameter | Should -Be $true
+        }
+
+        It 'Should have IncludeHealthDetails switch parameter' {
+            $command.Parameters['IncludeHealthDetails'].SwitchParameter | Should -Be $true
+        }
+
+        It 'Should have Title parameter' {
+            $command.Parameters.Keys | Should -Contain 'Title'
+        }
+
+        It 'Should have PassThru switch parameter' {
+            $command.Parameters['PassThru'].SwitchParameter | Should -Be $true
+        }
+
+        It 'Should have AllClusters switch parameter' {
+            $command.Parameters['AllClusters'].SwitchParameter | Should -Be $true
+        }
+    }
+
+    Context 'Parameter Sets' {
+        BeforeAll {
+            $command = Get-Command New-AzureLocalFleetStatusHtmlReport
+        }
+
+        It 'Should have ByName parameter set' {
+            $command.ParameterSets.Name | Should -Contain 'ByName'
+        }
+
+        It 'Should have ByResourceId parameter set' {
+            $command.ParameterSets.Name | Should -Contain 'ByResourceId'
+        }
+
+        It 'Should have ByTag parameter set' {
+            $command.ParameterSets.Name | Should -Contain 'ByTag'
+        }
+
+        It 'Should have All parameter set' {
+            $command.ParameterSets.Name | Should -Contain 'All'
+        }
+
+        It 'Should default to All parameter set' {
+            $command.DefaultParameterSet | Should -Be 'All'
+        }
+
+        It 'ClusterNames should be mandatory in ByName parameter set' {
+            $param = $command.Parameters['ClusterNames']
+            $attr = $param.Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' -and $_.ParameterSetName -eq 'ByName' }
+            $attr.Mandatory | Should -Be $true
+        }
+
+        It 'ClusterResourceIds should be mandatory in ByResourceId parameter set' {
+            $param = $command.Parameters['ClusterResourceIds']
+            $attr = $param.Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' -and $_.ParameterSetName -eq 'ByResourceId' }
+            $attr.Mandatory | Should -Be $true
+        }
+
+        It 'ScopeByUpdateRingTag should be mandatory in ByTag parameter set' {
+            $param = $command.Parameters['ScopeByUpdateRingTag']
+            $attr = $param.Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' -and $_.ParameterSetName -eq 'ByTag' }
+            $attr.Mandatory | Should -Be $true
+        }
+    }
+
+    Context 'OutputType' {
+        It 'Should have OutputType of String' {
+            $outputTypes = (Get-Command New-AzureLocalFleetStatusHtmlReport).OutputType
+            $outputTypes.Type.Name | Should -Contain 'String'
         }
     }
 }

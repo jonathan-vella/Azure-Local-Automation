@@ -5,6 +5,54 @@ All notable changes to the AzStackHci.ManageUpdates module will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-04-15
+
+### Added - Fleet Status HTML Report
+- **New function `New-AzureLocalFleetStatusHtmlReport`**: Generates self-contained HTML reports for fleet update status
+  - Collects data from `Get-AzureLocalClusterUpdateReadiness`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns`, and `Test-AzureLocalClusterHealth`
+  - Executive summary cards: Total Clusters, Up to Date, In Progress, Ready for Update, Health Failures
+  - Stacked progress bar showing fleet-wide update adoption percentages
+  - Cluster Information section: cluster name, current version, node count, resource group, resource ID (top for <=10 clusters, appendix for >10)
+  - Cluster Status Details with Active Update column (in-progress/failed update with badge) and Recommended Update (shows N/A when active update exists)
+  - Recent Update Run History with recursive Current Step traversal (up to 8+ levels) including error messages for health-check-blocked updates
+  - Health Check Failures with severity filter checkboxes (Critical/Warning checked, Informational unchecked by default)
+  - Collapsible per-cluster health check groups for multi-cluster reports (2+ clusters) with severity summary and top issue in collapsed view
+  - `-AllClusters` switch discovers all clusters via Azure Resource Graph (limited to 100)
+  - Auto-generated title: single cluster = `"<ClusterName> - Update Status Report"`, multiple = `"Azure Local Fleet Update Status Report"`
+  - Azure Local purple gradient header with embedded Azure Local instance SVG logo
+  - Supports all input methods: `-ClusterResourceIds`, `-ClusterNames`, `-ScopeByUpdateRingTag`, `-AllClusters`
+  - `-PassThru` returns HTML string for use as email body or further processing
+  - Self-contained inline CSS and minimal JavaScript (severity filter), no external dependencies
+  - XSS-safe via `System.Web.HttpUtility::HtmlEncode` on all dynamic values
+
+### Fixed - RecommendedUpdate YYMM Sort
+- `Get-AzureLocalClusterUpdateReadiness` now correctly selects the latest update by YYMM version (was using `Select-Object -First 1` without sorting, could select older update)
+- Extracted shared `Get-LatestUpdateByYYMM` private helper used by both `Get-AzureLocalClusterUpdateReadiness` and `Start-AzureLocalClusterUpdate`
+
+### Added - Recursive Update Step Traversal
+- New `Get-CurrentStepPath` private helper recursively walks update run step hierarchy (up to 8+ levels deep) to find the deepest InProgress or Failed step
+- `Get-AzureLocalUpdateRuns` now returns `CurrentStepDetail` property with full step path (e.g., "PreUpdate > ScanForUpdates > DownloadUpdates")
+- HTML report shows Current Step column in Update Run History table
+
+### Improved - Performance: Resolve-Once Pattern for `-ClusterNames`
+- All functions that accept `-ClusterNames` now resolve names to resource IDs **once upfront** instead of deferring to per-cluster loops
+- Eliminates redundant `Get-AzureLocalClusterInfo` API calls when multiple functions are called sequentially with the same cluster names
+- Functions affected: `Start-AzureLocalClusterUpdate`, `Get-AzureLocalClusterUpdateReadiness`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns`, `Test-AzureLocalClusterHealth`
+- `New-AzureLocalFleetStatusHtmlReport` resolves names once and passes `-ClusterResourceIds` to all 6 downstream calls (reduces API calls from 6N to N for N clusters)
+- `Test-AzureLocalClusterHealth` now accepts `-UpdateSummary` parameter to skip redundant summary fetch when called from `Start-AzureLocalClusterUpdate`
+
+### Improved - CI/CD Pipeline Performance
+- `fleet-update-status.yml` (GitHub Actions and Azure DevOps): Steps 4a/4b/4c now use `-ClusterResourceIds` from inventory instead of `-ClusterNames` or tag-based re-queries
+- Eliminates redundant name-to-ID resolution and duplicate scope queries in pipeline data collection steps
+- For a 100-cluster fleet: reduces API calls from ~800-900 to ~300
+
+### Fixed - Missing `-PassThru` Parameter
+- Added `-PassThru` parameter to `Get-AzureLocalUpdateSummary` and `Get-AzureLocalAvailableUpdates` (parameter was used in function body but missing from declaration)
+
+### Fixed - `CurrentStepDetail` Not Propagated
+- `CurrentStepDetail` property now correctly included in multi-cluster update run output (was missing from PSCustomObject re-mapping)
+- Added `CurrentStepDetail` to all 3 fallback PSCustomObject blocks (Cluster Not Found, No Runs, Error)
+
 ## [0.6.1] - 2026-04-10
 
 ### Added - Pre-Update Health Check Validation

@@ -15,6 +15,8 @@ Four pipelines are provided for each platform:
 | **Apply Updates** | Applies updates to clusters filtered by UpdateRing tag value |
 | **Fleet Update Status** | 📊 Monitors update status across entire fleet with JUnit XML reports for dashboards |
 
+> 📝 **Tip**: For ad-hoc reporting outside of CI/CD, you can also generate a standalone HTML report using `New-AzureLocalFleetStatusHtmlReport`. See [Standalone HTML Report](#standalone-html-report) below.
+
 ## Prerequisites
 
 Before using these pipelines, you need:
@@ -588,6 +590,21 @@ This workflow shows how to use all four pipelines together for a staged update d
    - Run "Manage UpdateRing Tags" pipeline
    - Verify tags in Azure Portal
 
+> 💡 **Local Alternative (No Pipeline Required)**: You can skip the download/upload workflow above and manage UpdateRing tags directly from PowerShell. This is often simpler for initial setup or small environments:
+>
+> ```powershell
+> # Step 1: Export cluster inventory to CSV
+> Import-Module .\AzStackHci.ManageUpdates.psd1
+> Get-AzureLocalClusterInventory -ExportPath "C:\Temp\cluster-inventory.csv"
+>
+> # Step 2: Open the CSV in Excel, add UpdateRing values, save
+>
+> # Step 3: Apply the tags directly from PowerShell
+> Set-AzureLocalClusterUpdateRingTag -InputCsvPath "C:\Temp\cluster-inventory.csv"
+> ```
+>
+> This approach avoids the need to run the Inventory pipeline, download artifacts, re-upload, and run the Manage Tags pipeline. The `Set-AzureLocalClusterUpdateRingTag` function reads the same CSV format and applies tags directly via the Azure REST API.
+
 #### Phase 2: Update Deployment (Recurring)
 
 4. **Wave1 Updates (Pilot clusters)**
@@ -665,6 +682,35 @@ The Fleet Update Status pipeline generates JUnit XML that integrates with CI/CD 
 - Results appear in Tests tab with analytics
 - Configure test trend widgets on dashboards
 - Set up alerts for test failures
+
+### Standalone HTML Report
+
+For ad-hoc or offline reporting outside of CI/CD pipelines, use the `New-AzureLocalFleetStatusHtmlReport` function (v0.6.2) to generate a self-contained HTML report. This is useful for:
+- Sharing fleet status via email or SharePoint
+- Executive reporting without CI/CD dashboard access
+- On-demand health checks from a local workstation
+
+```powershell
+Import-Module .\AzStackHci.ManageUpdates.psd1
+
+# Generate a report for all clusters (up to 100) - auto-discovers via ARG
+New-AzureLocalFleetStatusHtmlReport -AllClusters `
+    -OutputPath "C:\Reports\fleet-all.html" -IncludeHealthDetails -IncludeUpdateRuns
+
+# Generate a report for a single cluster (auto-titles as "Seattle - Update Status Report")
+New-AzureLocalFleetStatusHtmlReport -ClusterNames Seattle `
+    -OutputPath "C:\Reports\seattle.html" -IncludeHealthDetails -IncludeUpdateRuns
+
+# Generate a report for all Wave1 clusters
+New-AzureLocalFleetStatusHtmlReport -ScopeByUpdateRingTag -UpdateRingValue "Wave1" `
+    -OutputPath "C:\Reports\wave1-status.html" -IncludeHealthDetails -IncludeUpdateRuns
+
+# Capture HTML for email body
+$html = New-AzureLocalFleetStatusHtmlReport -ClusterNames @("Cluster01","Cluster02") `
+    -OutputPath "C:\Reports\fleet.html" -PassThru
+```
+
+The report includes executive summary cards, cluster information, status table with Active Update and Recommended Update columns, update run history with recursive step traversal, and health check failures with severity filtering.
 
 ---
 
