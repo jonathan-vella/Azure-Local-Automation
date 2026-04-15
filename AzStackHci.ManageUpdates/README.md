@@ -2,11 +2,24 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.6.2
+**Latest Version:** v0.6.3
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
 Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
+
+## What's New in v0.6.3
+
+### Bug Fixes, Security & Code Quality
+- Fixed `-PassThru` parameter on `Get-AzureLocalUpdateSummary` (was missing from param declaration)
+- `-OutputPath` now pre-validated upfront (drive existence, .html extension) to fail fast before API calls
+- Portal URLs in HTML report now HTML-encoded to prevent attribute injection
+- ARG KQL queries now escape single quotes in `UpdateRingValue` to prevent injection
+- All dynamic HTML values consistently HTML-encoded
+- `Get-CurrentStepPath` has MaxDepth=20 safety limit
+- Cluster name matching uses exact segment comparison instead of suffix pattern
+
+> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.6.2 and earlier changes.
 
 ## What's New in v0.6.2
 

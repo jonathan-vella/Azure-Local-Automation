@@ -118,14 +118,14 @@
     Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
 
 .NOTES
-    Version: 0.6.2
+    Version: 0.6.3
     Author: Neil Bird, Microsoft.
     Requires: Azure CLI (az) installed and authenticated
     API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 #>
 
 # Module constants
-$script:ModuleVersion = '0.6.2'
+$script:ModuleVersion = '0.6.3'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
 
@@ -1886,7 +1886,10 @@ function Get-AzureLocalUpdateSummary {
         [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
         [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
         [ValidateSet('Auto', 'Csv', 'Json', 'JUnitXml')]
-        [string]$ExportFormat = 'Auto'
+        [string]$ExportFormat = 'Auto',
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
     )
 
     # Original single-cluster behavior
@@ -6036,6 +6039,20 @@ function New-AzureLocalFleetStatusHtmlReport {
         [string]$SubscriptionId,
 
         [Parameter(Mandatory = $true)]
+        [ValidateScript({
+            $parent = Split-Path $_ -Parent
+            if ($parent -and -not (Test-Path $parent)) {
+                # Check if the drive at least exists
+                $drive = Split-Path $_ -Qualifier -ErrorAction SilentlyContinue
+                if ($drive -and -not (Test-Path $drive)) {
+                    throw "Drive '$drive' does not exist. Check the output path."
+                }
+            }
+            if ($_ -notmatch '\.html?$') {
+                throw "OutputPath must end with .html extension."
+            }
+            $true
+        })]
         [string]$OutputPath,
 
         [Parameter(Mandatory = $false)]
@@ -7027,7 +7044,7 @@ Export-ModuleMember -Function @(
     'Stop-AzureLocalFleetUpdate',
     # Pre-Update Health Validation (v0.6.1)
     'Test-AzureLocalClusterHealth',
-    # Fleet Status Reporting (v0.6.2)
+    # Fleet Status Reporting (v0.6.3)
     'New-AzureLocalFleetStatusHtmlReport'
 )
 

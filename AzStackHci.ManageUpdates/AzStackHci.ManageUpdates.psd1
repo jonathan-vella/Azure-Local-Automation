@@ -3,7 +3,7 @@
     RootModule = 'AzStackHci.ManageUpdates.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.6.2'
+    ModuleVersion = '0.6.3'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -46,7 +46,7 @@
         'Stop-AzureLocalFleetUpdate',
         # Pre-Update Health Validation (v0.6.1)
         'Test-AzureLocalClusterHealth',
-        # Fleet Status Reporting (v0.6.2)
+        # Fleet Status Reporting (v0.6.3)
         'New-AzureLocalFleetStatusHtmlReport'
     )
 
@@ -76,6 +76,19 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.6.3 - Bug Fixes, Security & Code Quality
+- FIXED: -PassThru parameter correctly added to Get-AzureLocalUpdateSummary param block (was in function body but missing from declaration)
+- FIXED: OutputPath now pre-validated upfront (drive existence, .html extension) to fail fast before API calls
+- SECURITY: Portal URLs in HTML report href attributes now HTML-encoded to prevent attribute injection
+- SECURITY: UpdateRingValue in ARG KQL queries now escapes single quotes to prevent KQL injection
+- SECURITY: All dynamic HTML values consistently HTML-encoded (summary cards, timestamps, severity labels, readyText)
+- IMPROVED: Get-CurrentStepPath now has MaxDepth=20 safety limit to prevent stack overflow on malformed data
+- IMPROVED: Get-LatestUpdateByYYMM now guards against empty/null input
+- IMPROVED: Cluster name matching uses exact segment comparison instead of -like suffix pattern
+- IMPROVED: $otherCount clamped to 0 minimum to prevent negative progress bar values
+- IMPROVED: Module version fallback reads from .psd1 manifest instead of hardcoded string
+- IMPROVED: Resolve-Path for file URI wrapped in try/catch for robustness
+
 ## Version 0.6.2 - Fleet Status HTML Report & Performance
 - NEW: `New-AzureLocalFleetStatusHtmlReport` generates self-contained HTML reports for fleet update status
 - Collects readiness, update summaries, available updates, health checks, and update run history

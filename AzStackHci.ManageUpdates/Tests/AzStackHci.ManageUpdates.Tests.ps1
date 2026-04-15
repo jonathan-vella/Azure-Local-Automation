@@ -34,8 +34,8 @@ Describe 'Module: AzStackHci.ManageUpdates' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.6.2' {
-            $script:ModuleInfo.Version | Should -Be '0.6.2'
+        It 'Should have version 0.6.3' {
+            $script:ModuleInfo.Version | Should -Be '0.6.3'
         }
 
         It 'Should export exactly 17 functions' {
@@ -62,7 +62,7 @@ Describe 'Module: AzStackHci.ManageUpdates' {
                 'Stop-AzureLocalFleetUpdate',
                 # Pre-Update Health Validation (v0.6.1)
                 'Test-AzureLocalClusterHealth',
-                # Fleet Status Reporting (v0.6.2)
+                # Fleet Status Reporting (v0.6.3)
                 'New-AzureLocalFleetStatusHtmlReport'
             )
             

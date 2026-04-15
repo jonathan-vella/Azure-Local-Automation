@@ -5,6 +5,25 @@ All notable changes to the AzStackHci.ManageUpdates module will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-04-15
+
+### Fixed
+- `-PassThru` parameter correctly added to `Get-AzureLocalUpdateSummary` param block (was in function body but missing from declaration)
+- `-OutputPath` now pre-validated upfront (drive existence, `.html` extension) to fail fast before API calls
+
+### Security
+- Portal URLs in HTML report `href` attributes now HTML-encoded to prevent attribute injection
+- `UpdateRingValue` in ARG KQL queries now escapes single quotes to prevent KQL injection (all 6 query locations)
+- All dynamic HTML values consistently HTML-encoded: summary card numbers, timestamps, severity labels, readyText, collapse headers
+
+### Improved
+- `Get-CurrentStepPath` now has `MaxDepth=20` safety limit to prevent stack overflow on malformed step data
+- `Get-LatestUpdateByYYMM` now guards against empty/null input array
+- Cluster name matching uses exact last-segment comparison (`-split '/'`)[-1]`) instead of `-like` suffix pattern
+- `$otherCount` in progress bar clamped to 0 minimum to prevent negative values
+- Module version fallback reads from `.psd1` manifest via `Import-PowerShellDataFile` instead of hardcoded string
+- `Resolve-Path` for file URI wrapped in `try/catch` for robustness when file write fails
+
 ## [0.6.2] - 2026-04-15
 
 ### Added - Fleet Status HTML Report
