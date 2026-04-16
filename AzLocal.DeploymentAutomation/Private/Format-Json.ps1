@@ -75,9 +75,6 @@
             $line
         }
 
-    # Remove escape characters from the JSON string
-    $result = $result | ForEach-Object { [regex]::Unescape($_) }
-
     if ($AsArray) { return $result }
     return $result -Join [Environment]::NewLine
 }

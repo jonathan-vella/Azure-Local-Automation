@@ -52,9 +52,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.9.8 in manifest' {
+        It 'Should have version 0.9.81 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '0.9.8'
+            $manifest.ModuleVersion | Should -Be '0.9.81'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -144,8 +144,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 0.9.8' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.8'
+        It 'Should have version 0.9.81' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.81'
         }
     }
 }

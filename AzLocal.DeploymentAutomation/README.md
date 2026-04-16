@@ -1,6 +1,6 @@
 # AzLocal.DeploymentAutomation
 
-### Latest Version: **0.9.8**
+### Latest Version: **0.9.81**
 
 ```powershell
 # Install the module (initial setup)
@@ -1038,7 +1038,7 @@ The test suite validates:
 | LogFilePath Parameter | Presence, type, and non-mandatory flag on exported functions |
 | Pre-Flight Checks | Resource group, Azure prerequisites (RP registration + RBAC), Arc node, cluster existence, deployment state checks (mocked) |
 | Azure Prerequisites | Resource provider registration (12 providers), auto-registration, RBAC role validation, identity type handling (mocked) |
-| Validation Troubleshooting Hints | Known pattern matching (7 patterns), hint output structure, online TSG search keyword extraction, empty/null input handling, `-SkipOnlineTSGSearch` parameter on exported functions |
+| Validation Troubleshooting Hints | Known pattern matching (10 patterns), hint output structure, online TSG search keyword extraction, empty/null input handling, `-SkipOnlineTSGSearch` parameter on exported functions |
 | CSV Deployment | Batch deployment with pre-flight, JUnit output, skip logic (mocked) |
 | Deployment Status | Status monitoring with all status categories (mocked) |
 | CI/CD Pipelines | Automation pipeline file structure, CSV format, workflow file existence |

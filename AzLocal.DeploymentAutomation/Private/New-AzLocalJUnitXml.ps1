@@ -92,13 +92,16 @@
     # Pretty-print the XML
     $stringWriter = [System.IO.StringWriter]::new()
     $xmlWriter = [System.Xml.XmlTextWriter]::new($stringWriter)
-    $xmlWriter.Formatting = [System.Xml.Formatting]::Indented
-    $xmlWriter.Indentation = 2
-    $xml.WriteTo($xmlWriter)
-    $xmlWriter.Flush()
-    $xmlContent = $stringWriter.ToString()
-    $xmlWriter.Close()
-    $stringWriter.Close()
+    try {
+        $xmlWriter.Formatting = [System.Xml.Formatting]::Indented
+        $xmlWriter.Indentation = 2
+        $xml.WriteTo($xmlWriter)
+        $xmlWriter.Flush()
+        $xmlContent = $stringWriter.ToString()
+    } finally {
+        $xmlWriter.Close()
+        $stringWriter.Close()
+    }
 
     if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
         $outputDir = Split-Path $OutputPath -Parent

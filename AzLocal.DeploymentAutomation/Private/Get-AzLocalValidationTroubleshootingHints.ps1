@@ -241,7 +241,7 @@ Function Get-AzLocalValidationTroubleshootingHints {
                 'Accept'     = 'application/vnd.github.v3+json'
                 'User-Agent' = 'AzLocal.DeploymentAutomation'
             }
-            $tsgFiles = @(Invoke-RestMethod -Uri $apiUrl -Headers $headers -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop)
+            $tsgFiles = @(Invoke-RestMethod -Uri $apiUrl -Headers $headers -TimeoutSec 15 -ErrorAction Stop)
 
             # Build search keywords from the error text
             [System.Collections.ArrayList]$searchTerms = @()

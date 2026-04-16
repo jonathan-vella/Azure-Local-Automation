@@ -243,6 +243,9 @@
     }
     Test-AzLocalResourceNames -Names $namesToValidate
 
+    # Wrap all post-credential code in try/finally to ensure SecureString disposal on any failure path
+    try{
+
     # Resolve credentials: Key Vault > PSCredential parameter > Interactive prompt
     # Priority: CredentialKeyVaultName (highest) > LocalAdminCredential/LCMAdminCredential > Read-Host (lowest)
 
@@ -508,7 +511,6 @@
         }
     }
 
-    try{
         # Execute each deployment phase (Validate, then optionally Deploy)
         foreach ($phase in $deploymentPhases) {
 
@@ -565,12 +567,14 @@
             }
         }
     } catch {
-        Write-AzLocalLog "Error during '$phase' deployment: $($_.Exception.Message)" -Level Error
+        # Save the original error before any nested catch can overwrite $_
+        $deployError = $_
+        Write-AzLocalLog "Error during '$phase' deployment: $($deployError.Exception.Message)" -Level Error
 
         # Surface ARM inner error details when available (InvalidTemplateDeployment wraps the real errors)
-        if ($_.ErrorDetails.Message) {
+        if ($deployError.ErrorDetails.Message) {
             try {
-                $errorBody = $_.ErrorDetails.Message | ConvertFrom-Json
+                $errorBody = $deployError.ErrorDetails.Message | ConvertFrom-Json
                 if ($errorBody.error.details) {
                     Write-AzLocalLog "ARM validation inner errors:" -Level Error
                     foreach ($detail in $errorBody.error.details) {
@@ -579,7 +583,7 @@
                 }
             } catch {
                 # ErrorDetails wasn't JSON - log it raw
-                Write-AzLocalLog "Error details: $($_.ErrorDetails.Message)" -Level Error
+                Write-AzLocalLog "Error details: $($deployError.ErrorDetails.Message)" -Level Error
             }
         }
 
@@ -589,13 +593,13 @@
         }
 
         # Provide troubleshooting hints for common validation/deployment failures
-        $troubleshootErrorText = "$($_.Exception.Message)"
-        if ($_.ErrorDetails.Message) { $troubleshootErrorText += " $($_.ErrorDetails.Message)" }
+        $troubleshootErrorText = "$($deployError.Exception.Message)"
+        if ($deployError.ErrorDetails.Message) { $troubleshootErrorText += " $($deployError.ErrorDetails.Message)" }
         $troubleshootParams = @{ ErrorText = $troubleshootErrorText }
         if (-not $SkipOnlineTSGSearch) { $troubleshootParams['SearchOnline'] = $true }
         Get-AzLocalValidationTroubleshootingHints @troubleshootParams
 
-        throw
+        throw $deployError
     } finally {
         # Securely dispose sensitive credential variables from memory
         if ($localAdminPassword -is [System.Security.SecureString]) { $localAdminPassword.Dispose() }

@@ -45,6 +45,11 @@
         4 = 'storage-switchless-4node-parameters-file.json'
     }
 
+    # Validate NodeCount for StorageSwitchless (only 2-4 nodes have parameter file templates)
+    if ($TypeOfDeployment -eq 'StorageSwitchless' -and $NodeCount -notin 2,3,4) {
+        throw "StorageSwitchless deployments support 2-4 nodes only. NodeCount '$NodeCount' is not valid."
+    }
+
     $parameterFileMap = @{
         'SingleNode'          = 'single-node-parameters-file.json'
         'StorageSwitchless'   = $switchlessFileMap[$NodeCount]

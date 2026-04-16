@@ -124,6 +124,7 @@
     Write-AzLocalLog "Polling every $PollingIntervalSeconds seconds. Press Ctrl+C to stop monitoring." -Level Verbose
 
     # Polling loop
+    $consecutiveFailures = 0
     while ($true) {
 
         # Check timeout
@@ -142,8 +143,14 @@
         # Poll deployment status
         try {
             $deployment = Get-AzResourceGroupDeployment -ResourceGroupName $ResourceGroupName -Name $DeploymentName -ErrorAction Stop
+            $consecutiveFailures = 0
         } catch {
-            Write-AzLocalLog "Failed to poll deployment status. Retrying..." -Level Warning
+            $consecutiveFailures++
+            Write-AzLocalLog "Failed to poll deployment status (attempt $consecutiveFailures): $($_.Exception.Message)" -Level Warning
+            if ($consecutiveFailures -ge 10) {
+                Write-AzLocalLog "Polling failed 10 consecutive times. Stopping monitor." -Level Error
+                throw "Deployment polling failed after 10 consecutive attempts. Last error: $($_.Exception.Message)"
+            }
             continue
         }
 

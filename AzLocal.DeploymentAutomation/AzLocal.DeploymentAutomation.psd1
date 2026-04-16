@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.8'
+    ModuleVersion = '0.9.81'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -16,7 +16,7 @@
     CompanyName = 'Microsoft'
 
     # Copyright statement for this module
-    Copyright = '(c) Neil Bird. All rights reserved. See LICENSE for details.'
+    Copyright = '(c) Neil Bird. Published using MIT License, See LICENSE file for details.'
 
     # Description of the functionality provided by this module
     Description = 'AzLocal.DeploymentAutomation module for deploying Azure Local using ARM templates and parameter files using PowerShell. Supports SingleNode, StorageSwitched (2-16 nodes with storage network switch), StorageSwitchless (2-4 nodes), and RackAware (2, 4, 6, 8 nodes) deployments. Resource naming standards are configurable via .config/naming-standards-config.json.'
@@ -97,6 +97,18 @@
 
             # Release notes for this version
             ReleaseNotes = @'
+## v0.9.81 - April 2026
+- Fixed bug in Start-AzLocalTemplateDeployment where $_ was shadowed by a nested catch block, causing ARM deployment error details to be silently lost
+- Fixed credential SecureString disposal gap: moved try/finally to wrap all post-credential code so credentials are always disposed even if pre-deployment checks throw
+- Fixed Invoke-RestMethod -UseBasicParsing invalid parameter in Get-AzLocalValidationTroubleshootingHints (PS 5.1 does not support this parameter on Invoke-RestMethod) - online TSG search was silently broken
+- Fixed [regex]::Unescape() in Format-Json corrupting legitimate escape sequences (UNC paths, literal backslashes) in JSON output
+- Added NodeCount validation for StorageSwitchless in Get-AzLocalParameterFilePath and New-AzLocalDeploymentParameterFile - now throws a clear error instead of silently producing an invalid path
+- Added NodeCount > 0 validation for multi-node deployment types in Get-AzLocalDeploymentNetworkSettings
+- Added consecutive failure counter (limit 10) to Watch-AzLocalDeployment polling loop with error message logging - prevents unbounded silent retry on persistent failures
+- Fixed IDisposable resource leak in New-AzLocalJUnitXml: XmlWriter and StringWriter now wrapped in try/finally
+- Replaced non-ASCII emoji characters in New-AzLocalDeploymentReport with ASCII-compatible text markers to comply with encoding convention
+- Fixed version mismatch between .NOTES and HTML footer in New-AzLocalDeploymentReport
+
 ## v0.9.8 - March 2026
 - Added -NamingConfigPath parameter to Start-AzLocalTemplateDeployment, Start-AzLocalCsvDeployment, and Get-AzLocalDeploymentStatus for explicit config file specification
 - New user profile config workflow: on first use, the module copies .config/naming-standards-config.json to $env:USERPROFILE\.AzLocalDeploymentAutomation\ so customisations survive Update-Module

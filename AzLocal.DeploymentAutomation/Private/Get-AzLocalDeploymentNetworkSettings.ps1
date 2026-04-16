@@ -23,6 +23,11 @@
         [int]$NodeCount = 0
     )
 
+    # Validate NodeCount for multi-node deployment types
+    if ($TypeOfDeployment -ne 'SingleNode' -and $NodeCount -le 0) {
+        throw "NodeCount must be greater than 0 for '$TypeOfDeployment' deployments."
+    }
+
     # Determine the effective node count based on deployment type
     switch ($TypeOfDeployment) {
         "SingleNode"            { $effectiveNodeCount = 1 }

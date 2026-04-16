@@ -315,7 +315,8 @@ Copy the YAML files from `github-actions/` to your repository's `.github/workflo
 .github/workflows/
 ├── validate-deployments.yml
 ├── deploy-clusters.yml
-└── deployment-monitor.yml
+├── deployment-monitor.yml
+└── deployment-status-report.yml
 ```
 
 ### Step 2: Add Repository Secrets
@@ -406,6 +407,7 @@ Start-AzLocalCsvDeployment `
 | `JUnitOutputPath` | String | | Path to write JUnit XML results |
 | `LogFilePath` | String | | Path to write log file |
 | `WhatIf` | Switch | | Preview mode --- runs pre-flight checks without submitting deployments |
+| `Confirm` | Switch | | Suppresses confirmation prompts when set to `$false` (e.g., `-Confirm:$false` for CI/CD) |
 
 ### `Get-AzLocalDeploymentStatus`
 
