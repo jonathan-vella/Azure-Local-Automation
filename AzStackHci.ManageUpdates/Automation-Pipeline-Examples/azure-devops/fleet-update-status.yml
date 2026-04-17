@@ -130,6 +130,7 @@ stages:
           $readiness = Get-AzureLocalClusterUpdateReadiness @readinessParams -ExportPath $readinessCsv -PassThru
           
           # Export to JSON
+          $hasPrerequisite = @($readiness | Where-Object { $_.HasPrerequisiteUpdates -ne "" }).Count
           $readinessExport = @{
               Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
               TotalClusters = $readiness.Count
@@ -137,6 +138,7 @@ stages:
                   Ready = @($readiness | Where-Object { $_.ReadyForUpdate -eq $true }).Count
                   InProgress = @($readiness | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
                   HealthFailures = @($readiness | Where-Object { $_.HealthState -eq "Failure" }).Count
+                  HasPrerequisite = $hasPrerequisite
                   NotReady = @($readiness | Where-Object { $_.ReadyForUpdate -ne $true -and $_.UpdateState -ne "UpdateInProgress" }).Count
               }
               Clusters = $readiness
@@ -149,7 +151,7 @@ stages:
           
           $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
           $totalTests = $readiness.Count
-          $failures = @($readiness | Where-Object { $_.HealthState -eq "Failure" -or $_.UpdateState -eq "Failed" }).Count
+          $failures = @($readiness | Where-Object { $_.HealthState -eq "Failure" -or $_.UpdateState -eq "Failed" -or $_.HasPrerequisiteUpdates -ne "" }).Count
           $inProgress = @($readiness | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
           $ready = @($readiness | Where-Object { $_.ReadyForUpdate -eq $true }).Count
           $upToDate = @($readiness | Where-Object { $_.UpdateState -eq "UpToDate" }).Count
@@ -167,12 +169,22 @@ stages:
               
               $status = "passed"
               $failureMessage = ""
+              $failureType = "UpdateFailure"
               
               if ($cluster.HealthState -eq "Failure" -or $cluster.UpdateState -eq "Failed") {
                   $status = "failed"
+                  $failureType = "UpdateFailure"
                   $failureMessage = "Health: $($cluster.HealthState), UpdateState: $($cluster.UpdateState)"
                   if ($cluster.HealthCheckFailures) {
                       $failureMessage += ", Issues: $($cluster.HealthCheckFailures -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;')"
+                  }
+              }
+              elseif ($cluster.HasPrerequisiteUpdates -ne "") {
+                  $status = "failed"
+                  $failureType = "HasPrerequisite"
+                  $failureMessage = "Updates blocked by SBE prerequisite: $($cluster.HasPrerequisiteUpdates -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;')"
+                  if ($cluster.SBEDependency) {
+                      $failureMessage += " - Vendor: $($cluster.SBEDependency -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;')"
                   }
               }
               
@@ -183,6 +195,8 @@ stages:
           Update State: $($cluster.UpdateState)
           Health State: $($cluster.HealthState)
           Ready for Update: $($cluster.ReadyForUpdate)
+          Has Prerequisite Updates: $($cluster.HasPrerequisiteUpdates)
+          SBE Dependency: $($cluster.SBEDependency)
           Recommended Update: $($cluster.RecommendedUpdate)
           "@
               $systemOut = $systemOut -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;'
@@ -196,7 +210,7 @@ stages:
               if ($status -eq "failed") {
                   $xmlContent += @"
           
-                <failure message="Cluster has update issues" type="UpdateFailure">$failureMessage</failure>
+                <failure message="Cluster has update issues" type="$failureType">$failureMessage</failure>
           "@
               }
               
@@ -281,6 +295,7 @@ stages:
           Write-Host "##vso[task.setvariable variable=inProgress;isOutput=true]$inProgress"
           Write-Host "##vso[task.setvariable variable=ready;isOutput=true]$ready"
           Write-Host "##vso[task.setvariable variable=failures;isOutput=true]$failures"
+          Write-Host "##vso[task.setvariable variable=hasPrerequisite;isOutput=true]$hasPrerequisite"
           
           if ($failures -gt 0) {
               Write-Warning "⚠️ $failures cluster(s) have update failures or health issues!"
@@ -314,8 +329,9 @@ stages:
         $inProgress = "$(collect.inProgress)"
         $ready = "$(collect.ready)"
         $failures = "$(collect.failures)"
+        $hasPrerequisite = "$(collect.hasPrerequisite)"
         
-        Write-Host "##vso[task.uploadsummary]Fleet Status: $total clusters, $upToDate up-to-date, $inProgress in-progress, $ready ready, $failures failures"
+        Write-Host "##vso[task.uploadsummary]Fleet Status: $total clusters, $upToDate up-to-date, $inProgress in-progress, $ready ready, $failures failures, $hasPrerequisite SBE-blocked"
         
         $summary = @"
         ## 📊 Fleet Update Status Summary
@@ -326,7 +342,21 @@ stages:
         | **Up to Date** | $upToDate |
         | **Update In Progress** | $inProgress |
         | **Ready for Update** | $ready |
+        | **SBE Prerequisite Blocked** | $hasPrerequisite |
         | **Health Failures** | $failures |
+        "@
+        
+        # Actions Required section
+        $actionsRequired = @()
+        if ([int]$failures -gt 0) { $actionsRequired += "- **$failures cluster(s) have health failures** - Resolve critical health check issues in Azure Portal" }
+        if ([int]$hasPrerequisite -gt 0) { $actionsRequired += "- **$hasPrerequisite cluster(s) blocked by SBE prerequisite** - Install the required Solution Builder Extension (SBE) update from the hardware vendor. See ``available-updates.csv`` for vendor details" }
+        
+        if ($actionsRequired.Count -gt 0) {
+            $summary += "`n`n### Actions Required`n`n"
+            $summary += ($actionsRequired -join "`n")
+        }
+        
+        $summary += @"
         
         ### Reports Available in Artifacts
         - `readiness-status.csv` - Detailed cluster status

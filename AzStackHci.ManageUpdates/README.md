@@ -1,8 +1,8 @@
-﻿# Azure Local - Managing Updates Module (AzStackHci.ManageUpdates)
+# Azure Local - Managing Updates Module (AzStackHci.ManageUpdates)
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.6.6
+**Latest Version:** v0.6.4
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
@@ -10,15 +10,62 @@ Azure Stack HCI REST API specification (includes update management endpoints): h
 
 ## What's New in v0.6.4
 
-### Fleet Status Data Collection & Performance
-- **New function `Get-AzureLocalFleetStatusData`** with parallel `Start-Job` support (`-ThrottleLimit 4` default)
-- Export fleet data as JSON artifacts for CI/CD pipeline job passing (`-ExportPath`)
-- `New-AzureLocalFleetStatusHtmlReport` accepts `-StatusData` to render from pre-collected data (zero API calls)
-- `New-AzureLocalFleetStatusHtmlReport` now internally uses `Get-AzureLocalFleetStatusData` with parallel batching
-- Single-pass data collection reduces Azure REST API calls from ~230 to ~85 for 21 clusters (~63% reduction)
-- Fixed `AppliedSuccessfully` state recognition (Up to Date card was showing 0)
-- Fixed Recommended Update showing versions clusters are already on
-- Fixed Recommended Update showing versions clusters are already on
+### Azure CLI Availability Check & Auto-Install
+- **New internal function `Test-AzCliAvailable`**: Checks if Azure CLI (`az`) is installed before any `az` invocation
+- In interactive sessions, prompts the user to download and install when `az` is not found
+- In non-interactive environments (CI/CD pipelines), throws immediately with clear installation instructions
+- All exported functions and SingleCluster code paths now call `Test-AzCliAvailable` before first `az` CLI usage
+
+### Fleet Status Data Collection
+- **New function `Get-AzureLocalFleetStatusData`**: Single-pass data collection with parallel `Start-Job` support
+- `-ThrottleLimit` parameter (default: 4, max: 8) splits cluster list into parallel batches
+- `-ExportPath` exports fleet data as JSON artifact for CI/CD pipeline job passing
+- `-StatusData` parameter on `New-AzureLocalFleetStatusHtmlReport` accepts pre-collected data to skip API calls
+- Stable JSON schema (v1.0) with SchemaVersion, Timestamp, ModuleVersion, Scope, Readiness, ClusterDetails, LatestRuns, HealthResults
+
+### Update State Alignment
+- All per-update state filters now use module-level constants (`$script:ReadyStates`, `$script:PrereqStates`) aligned with current ARM API states
+- `ReadyToInstall` state is now recognized alongside `Ready` across all functions: `Start-AzureLocalClusterUpdate`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalClusterUpdateReadiness`, `Get-AzureLocalFleetStatusData`, `Get-AzureLocalUpdateSummary`
+- Update summary state checks include `ReadyToInstall` for accurate "Update Available" counting
+
+### HasPrerequisite & SBE Dependency Awareness
+- **`Get-AzureLocalAvailableUpdates`**: Now shows HasPrerequisite/AdditionalContentRequired counts alongside Ready counts in console output (both single-cluster and multi-cluster modes)
+- **`Get-AzureLocalAvailableUpdates`**: Result objects include `PackageType` and `SBEDependency` properties for updates blocked by SBE prerequisites
+- **`Get-AzureLocalAvailableUpdates`**: Summary section shows clusters blocked by SBE prerequisites with vendor dependency details (Publisher, Family, ReleaseNotes)
+- **`Get-AzureLocalAvailableUpdates`**: New `-Raw` switch returns unprocessed ARM API objects for programmatic use (internal callers use this automatically)
+- **`Start-AzureLocalClusterUpdate`**: Provides detailed SBE dependency info when updates are blocked by HasPrerequisite/AdditionalContentRequired state, with guidance to install the SBE from the hardware vendor
+- **`Get-AzureLocalClusterUpdateReadiness`**: Surfaces `HasPrerequisiteUpdates` and `SBEDependency` in result objects for downstream consumption
+- **`Get-AzureLocalClusterUpdateReadiness`**: Console output shows "Has Prerequisite (SBE update required)" for clusters with only prerequisite-blocked updates
+- **`Get-AzureLocalClusterUpdateReadiness`**: Summary section includes count of clusters blocked by SBE prerequisites with vendor-specific guidance
+- **`Get-AzureLocalFleetStatusData`**: Sequential collection now extracts HasPrerequisite and SBE dependency info into readiness data
+- **`Get-AzureLocalFleetStatusData`**: Status output shows "Has Prerequisite" for clusters with only prerequisite-blocked updates
+
+### Maintenance Schedule Tag Support
+- **New exported function `Test-AzureLocalUpdateScheduleAllowed`**: Master gate that evaluates `UpdateWindow` and `UpdateExclusions` Azure resource tags to determine if an update should proceed
+- **New internal function `ConvertFrom-AzLocalUpdateWindow`**: Parses maintenance window tag syntax (`<days>:<HH:MM>-<HH:MM>`) including day ranges, wildcards (`*`/`Daily`), and overnight windows
+- **New internal function `ConvertFrom-AzLocalUpdateExclusion`**: Parses exclusion/blackout period tag syntax (`YYYY-MM-DD/YYYY-MM-DD`) with wildcard year support for recurring patterns
+- `Start-AzureLocalClusterUpdate` now checks schedule tags before applying updates; returns `ScheduleBlocked` status when outside maintenance windows or during exclusion periods
+- Exclusion periods take priority over maintenance windows
+
+### Performance
+- `New-AzureLocalFleetStatusHtmlReport` now uses single-pass data collection instead of calling 6 separate module functions
+- Reduced Azure REST API calls from ~230 to ~85 for 21 clusters (~63% reduction)
+- ByTag scope resolves resource IDs upfront via single ARG query instead of each downstream function querying independently
+- Update summary, available updates, and health check data fetched once per cluster and reused
+- Progress counter shows `[N/M]` per cluster during data collection for better visibility
+
+### CI/CD Pipeline Improvements
+- **Apply Updates pipelines**: Summary now includes `ScheduleBlocked` count alongside Started/Skipped/Failed/HealthBlocked; adds "Actions Required" section with remediation guidance
+- **Fleet Update Status pipelines**: HasPrerequisite clusters now appear as `Failed (HasPrerequisite)` in JUnit XML instead of silently passing; SBE vendor details shown in test output
+- **Fleet Status JSON**: Summary block now includes `HasPrerequisite` count as a distinct metric (previously lumped into `NotReady`)
+- **Fleet Status summaries**: Both GitHub Actions and Azure DevOps summaries now show `SBE Prerequisite Blocked` row and "Actions Required" section
+- **Readiness CSV/JSON**: `UpdateWindow` and `UpdateExclusions` tag values now included in readiness output, so ops teams can see which clusters have schedule restrictions
+
+### Fixed
+- `Get-AzureLocalClusterInfo`, `Invoke-AzureLocalUpdateApply`, and SingleCluster paths in `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns` had no `az` CLI availability check - previously threw unhelpful `CommandNotFoundException`
+- Existing auth check catch blocks now differentiate 'az not installed' from 'az not logged in' with distinct error messages
+- 'Up to Date' counter now recognizes `AppliedSuccessfully` state from ARM API (was showing 0 for completed clusters)
+- Recommended Update no longer shows the version a cluster is already on when state is `AppliedSuccessfully`/`UpToDate`
 
 ## What's New in v0.6.3
 
@@ -334,44 +381,80 @@ Start-AzureLocalClusterUpdate -ClusterNames "MyCluster01" -UpdateName "Solution1
 Get-AzureLocalUpdateRuns -ClusterName "MyCluster01" -ResourceGroupName "MyRG"
 ```
 
-### 7. Set Up UpdateRing Tags for Staged Rollouts
+### 7. Set Up Update Management Tags for Staged Rollouts
 
-UpdateRing tags enable you to organize clusters into deployment waves (e.g., Pilot, Wave1, Production) for staged update rollouts.
+Three Azure resource tags control how clusters are grouped and when updates are applied:
+
+| Tag | Purpose | Required? | Set By |
+|-----|---------|-----------|--------|
+| `UpdateRing` | Groups clusters into deployment waves (e.g., Pilot, Wave1, Production) | **Yes** - needed for `-ScopeByUpdateRingTag` | `Set-AzureLocalClusterUpdateRingTag` or CSV import |
+| `UpdateWindow` | Defines allowed maintenance windows in UTC (e.g., `Sat-Sun:02:00-06:00`) | Optional | CSV import via `Set-AzureLocalClusterUpdateRingTag` |
+| `UpdateExclusions` | Defines blackout/change-freeze periods (e.g., `2026-12-20/2027-01-03`) | Optional | CSV import via `Set-AzureLocalClusterUpdateRingTag` |
+
+> **What happens if you only set `UpdateRing`?** Updates proceed immediately with **no schedule restrictions**. The `UpdateWindow` and `UpdateExclusions` tags are entirely optional - if neither is present on a cluster, the schedule check returns "No schedule restrictions defined" and the update starts as soon as the pipeline runs. Add `UpdateWindow` and `UpdateExclusions` tags when you need to control *when* updates can be applied.
 
 **Step 1: Inventory clusters and export to CSV**
 ```powershell
-# Get all clusters and their current UpdateRing tags, export to CSV
+# Get all clusters with their current tags, export to CSV
 Get-AzureLocalClusterInventory -ExportPath "C:\Temp\cluster-inventory.csv"
 ```
 
-**Step 2: Edit the CSV file**
-- Open `cluster-inventory.csv` in Excel or a text editor
-- Add or modify the `UpdateRing` column values for each cluster:
-  | ClusterName | UpdateRing |
-  |-------------|------------|
-  | HCI-Pilot01 | Pilot |
-  | HCI-Pilot02 | Pilot |
-  | HCI-Prod01  | Wave1 |
-  | HCI-Prod02  | Wave1 |
-  | HCI-Critical| Production |
-- Save the file
+The CSV includes columns for all three tags: `UpdateRing`, `UpdateWindow`, and `UpdateExclusions`.
 
-**Step 3: Apply the tags from CSV**
+**Step 2: Edit the CSV in Excel**
+
+Open `cluster-inventory.csv` and populate the tag columns:
+
+| ClusterName | UpdateRing | UpdateWindow | UpdateExclusions |
+|-------------|------------|--------------|------------------|
+| HCI-Pilot01 | Pilot | | |
+| HCI-Pilot02 | Pilot | | |
+| HCI-Prod01  | Wave1 | Sat-Sun:02:00-06:00 | 20**-12-20/20**-01-03 |
+| HCI-Prod02  | Wave1 | Sat-Sun:02:00-06:00 | 20**-12-20/20**-01-03 |
+| HCI-Critical| Production | Sat:02:00-06:00 | 20**-12-20/20**-01-03 |
+
+- **UpdateRing** (required): The deployment wave for this cluster
+- **UpdateWindow** (optional): UTC maintenance window. Format: `<days>:<HH:MM>-<HH:MM>`. Multiple windows separated by `;`. Examples:
+  - `Sat-Sun:02:00-06:00` — Weekends 2-6 AM UTC
+  - `Mon-Fri:22:00-06:00` — Weeknights 10 PM - 6 AM UTC (overnight wrap supported)
+  - `Sat:22:00-06:00;Sun:22:00-06:00` — Two separate windows
+  - `Daily:02:00-06:00` or `*:02:00-06:00` — Every day 2-6 AM UTC
+- **UpdateExclusions** (optional): Change-freeze periods. Format: `YYYY-MM-DD/YYYY-MM-DD`. Multiple ranges separated by `,`. Wildcards with `*` for recurring annual patterns. Examples:
+  - `2026-12-20/2027-01-03` — Specific date range
+  - `20**-12-20/20**-01-03` — Every year, Dec 20 to Jan 3
+
+Save the file.
+
+**Step 3: Apply all tags from CSV**
 ```powershell
-# Apply UpdateRing tags from the edited CSV
+# Apply UpdateRing, UpdateWindow, and UpdateExclusions tags from the edited CSV
 Set-AzureLocalClusterUpdateRingTag -InputCsvPath "C:\Temp\cluster-inventory.csv"
 
-# Or apply with -Force to skip confirmation
+# Preview changes first with -WhatIf
+Set-AzureLocalClusterUpdateRingTag -InputCsvPath "C:\Temp\cluster-inventory.csv" -WhatIf
+
+# Force overwrite existing tags
 Set-AzureLocalClusterUpdateRingTag -InputCsvPath "C:\Temp\cluster-inventory.csv" -Force
 ```
 
+The function reads `UpdateWindow` and `UpdateExclusions` columns from the CSV (if present) and sets them alongside the `UpdateRing` tag in a single PATCH operation. Existing tags on the cluster are preserved.
+
 **Step 4: Verify tags were applied**
 ```powershell
-# Re-run inventory to confirm tags
+# Re-run inventory to confirm all tags
 Get-AzureLocalClusterInventory
 ```
 
-**Step 5: Update clusters by UpdateRing**
+**Step 5: Test schedule logic interactively (optional)**
+```powershell
+# Test if a specific time would be allowed by a maintenance window
+Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat-Sun:02:00-06:00" -UpdateExclusions "2026-12-20/2027-01-03"
+
+# Test a specific future time
+Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat:02:00-06:00" -TestTime ([datetime]"2026-04-19 03:00:00")
+```
+
+**Step 6: Update clusters by UpdateRing**
 ```powershell
 # Update all clusters in the "Pilot" ring first
 Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Pilot" -Force
@@ -399,7 +482,7 @@ Authenticates to Azure using a Service Principal or Managed Identity (MSI) for C
 - `-UseManagedIdentity` (Optional): Use Managed Identity authentication instead of Service Principal
 - `-ManagedIdentityClientId` (Optional): Client ID of a user-assigned managed identity. If not specified, system-assigned identity is used.
 - `-ServicePrincipalId` (Optional): Application (client) ID. Can also use `AZURE_CLIENT_ID` environment variable.
-- `-ServicePrincipalSecret` (Optional): Client secret. Can also use `AZURE_CLIENT_SECRET` environment variable.
+- `-ServicePrincipalSecret` (Optional): Client secret as `[SecureString]` (preferred) or `[string]`. Can also use `AZURE_CLIENT_SECRET` environment variable. A security warning is logged when a plaintext `[string]` is passed because command-line arguments may be visible to other users/EDR on the host.
 - `-TenantId` (Optional): Azure AD tenant ID. Can also use `AZURE_TENANT_ID` environment variable.
 - `-Force` (Optional): Force re-authentication even if already logged in.
 
@@ -420,7 +503,11 @@ $env:AZURE_CLIENT_SECRET = 'your-secret'
 $env:AZURE_TENANT_ID = 'your-tenant-id'
 Connect-AzureLocalServicePrincipal
 
-# Using parameters for Service Principal (not recommended - secrets may be logged)
+# Using a SecureString for the secret (preferred when passing via parameter)
+$secret = Read-Host -AsSecureString -Prompt 'Service Principal Secret'
+Connect-AzureLocalServicePrincipal -ServicePrincipalId $appId -ServicePrincipalSecret $secret -TenantId $tenant
+
+# Plaintext [string] still works but logs a security warning - prefer SecureString or env var
 Connect-AzureLocalServicePrincipal -ServicePrincipalId $appId -ServicePrincipalSecret $secret -TenantId $tenant
 ```
 
@@ -604,11 +691,16 @@ Write-Host "Update State: $($summary.properties.state)"
 
 ### `Get-AzureLocalAvailableUpdates`
 
-Lists all available updates for a cluster.
+Lists all available updates for a cluster with enriched state information including SBE dependency details.
 
 ```powershell
+# Get enriched update objects (default) - includes PackageType, SBEDependency, UpdateState
 $updates = Get-AzureLocalAvailableUpdates -ClusterResourceId $cluster.id
-$updates | Where-Object { $_.properties.state -eq "Ready" }
+$updates | Where-Object { $_.UpdateState -eq "Ready" }
+
+# Get raw ARM API objects for programmatic processing
+$raw = Get-AzureLocalAvailableUpdates -ClusterResourceId $cluster.id -Raw
+$raw | Where-Object { $_.properties.state -eq "Ready" }
 ```
 
 ### `Get-AzureLocalUpdateRuns`

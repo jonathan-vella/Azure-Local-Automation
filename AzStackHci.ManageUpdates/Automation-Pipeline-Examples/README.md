@@ -422,20 +422,20 @@ Repeat for each of the 4 pipeline files.
 
 ### 2. Manage UpdateRing Tags Pipeline
 
-**Purpose:** Creates or updates UpdateRing tags on clusters based on a CSV input file.
+**Purpose:** Creates or updates update management tags on clusters based on a CSV input file.
 
 **Inputs:**
-- CSV file with `ResourceId` and `UpdateRing` columns
+- CSV file with `ResourceId` and `UpdateRing` columns (required), plus optional `UpdateWindow` and `UpdateExclusions` columns
 - Optional: Force flag to overwrite existing tags
 
 **Workflow:**
 1. Run Inventory pipeline to get current state
 2. Download the CSV artifact
-3. Edit the CSV to set desired UpdateRing values
+3. Edit the CSV to set `UpdateRing` values (required), and optionally `UpdateWindow` and `UpdateExclusions` values
 4. Upload the modified CSV to the repository or as pipeline input
 5. Run this pipeline to apply the tags
 
-**Use Case:** Organize clusters into update rings (Wave1, Wave2, Production, etc.) for staged rollouts.
+**Use Case:** Organize clusters into update rings (Wave1, Wave2, Production, etc.) for staged rollouts, and optionally define per-cluster maintenance windows and change-freeze periods.
 
 ### 3. Apply Updates Pipeline
 
@@ -447,10 +447,10 @@ Repeat for each of the 4 pipeline files.
 
 **Outputs:**
 - JUnit XML test results for CI/CD visualization
-- CSV logs of started/skipped updates
-- Detailed execution logs
+- CSV logs of started/skipped/schedule-blocked updates
+- Detailed execution logs with per-cluster status (Started, Skipped, Failed, HealthCheckBlocked, ScheduleBlocked)
 
-**Use Case:** Execute updates on a specific ring of clusters as part of a staged deployment.
+**Use Case:** Execute updates on a specific ring of clusters as part of a staged deployment. Clusters outside their `UpdateWindow` maintenance window or within an `UpdateExclusions` blackout period are automatically skipped with a `ScheduleBlocked` status.
 
 ### 4. Fleet Update Status Pipeline
 
@@ -467,9 +467,9 @@ Repeat for each of the 4 pipeline files.
 **Outputs:**
 | Artifact | Description |
 |----------|-------------|
-| `readiness-status.xml` | JUnit XML for CI/CD test visualization (passed=healthy, failed=issues) |
-| `readiness-status.csv` | Detailed cluster status spreadsheet |
-| `readiness-status.json` | Machine-readable format for integrations |
+| `readiness-status.xml` | JUnit XML for CI/CD test visualization (passed=healthy, failed=issues/SBE blocked) |
+| `readiness-status.csv` | Detailed cluster status spreadsheet (includes UpdateWindow, UpdateExclusions, SBEDependency) |
+| `readiness-status.json` | Machine-readable format with summary counts including HasPrerequisite |
 | `cluster-inventory.csv` | Full cluster inventory |
 | `update-summaries.csv` | Fleet-wide update state summaries from Azure (current state, last updated, etc.) |
 | `available-updates.csv` | All available updates across the fleet with versions and health states |
@@ -479,7 +479,8 @@ Repeat for each of the 4 pipeline files.
 | Test Status | Meaning |
 |-------------|---------|
 | ✅ **Passed** | Cluster is healthy and up-to-date or ready for updates |
-| ❌ **Failed** | Cluster has health failures or update issues requiring attention |
+| ❌ **Failed** (UpdateFailure) | Cluster has health failures or update issues requiring attention |
+| ❌ **Failed** (HasPrerequisite) | Cluster has updates blocked by an SBE prerequisite - install the vendor SBE update first |
 
 **Dashboard Integration:**
 - **GitHub Actions**: Results appear in the workflow run's "Tests" summary
@@ -577,13 +578,17 @@ This workflow shows how to use all four pipelines together for a staged update d
 2. **Download and Edit CSV**
    - Download `ClusterInventory_*.csv` from pipeline artifacts
    - Open in Excel
-   - Add UpdateRing values to the `UpdateRing` column:
-     | ClusterName | UpdateRing |
-     |-------------|------------|
-     | HCI-Pilot01 | Wave1 |
-     | HCI-Pilot02 | Wave1 |
-     | HCI-Prod01  | Wave2 |
-     | HCI-Critical| Production |
+   - Set values for the update management tag columns:
+     | ClusterName | UpdateRing | UpdateWindow | UpdateExclusions |
+     |-------------|------------|--------------|------------------|
+     | HCI-Pilot01 | Wave1 | | |
+     | HCI-Pilot02 | Wave1 | | |
+     | HCI-Prod01  | Wave2 | Sat-Sun:02:00-06:00 | 20**-12-20/20**-01-03 |
+     | HCI-Critical| Production | Sat:02:00-06:00 | 20**-12-20/20**-01-03 |
+   
+   - **UpdateRing** (required): The deployment wave for staged rollouts
+   - **UpdateWindow** (optional): UTC maintenance window when updates are allowed. If omitted, updates proceed with no time restrictions.
+   - **UpdateExclusions** (optional): Blackout/change-freeze periods. If omitted, no date restrictions. Use `*` for recurring annual patterns.
 
 3. **Apply Tags**
    - Upload modified CSV to repository or provide as input
@@ -597,13 +602,13 @@ This workflow shows how to use all four pipelines together for a staged update d
 > Import-Module .\AzStackHci.ManageUpdates.psd1
 > Get-AzureLocalClusterInventory -ExportPath "C:\Temp\cluster-inventory.csv"
 >
-> # Step 2: Open the CSV in Excel, add UpdateRing values, save
+> # Step 2: Open the CSV in Excel — set UpdateRing, UpdateWindow, and UpdateExclusions values, save
 >
-> # Step 3: Apply the tags directly from PowerShell
+> # Step 3: Apply all tags directly from PowerShell
 > Set-AzureLocalClusterUpdateRingTag -InputCsvPath "C:\Temp\cluster-inventory.csv"
 > ```
 >
-> This approach avoids the need to run the Inventory pipeline, download artifacts, re-upload, and run the Manage Tags pipeline. The `Set-AzureLocalClusterUpdateRingTag` function reads the same CSV format and applies tags directly via the Azure REST API.
+> This approach avoids the need to run the Inventory pipeline, download artifacts, re-upload, and run the Manage Tags pipeline. The `Set-AzureLocalClusterUpdateRingTag` function reads `UpdateRing`, `UpdateWindow`, and `UpdateExclusions` columns from the CSV (if present) and applies them in a single PATCH operation via the Azure REST API.
 
 #### Phase 2: Update Deployment (Recurring)
 
@@ -715,6 +720,40 @@ The report includes executive summary cards, cluster information, status table w
 ---
 
 ## Scheduling Updates and Maintenance Windows
+
+### Per-Cluster Maintenance Schedule Tags
+
+Azure resource tags on each cluster control when the Apply Updates pipeline is allowed to start updates:
+
+| Tag | Format | Example | Purpose |
+|-----|--------|---------|---------|
+| `UpdateWindow` | `<days>:<HH:MM>-<HH:MM>` | `Sat-Sun:02:00-06:00` | Maintenance window (UTC). Updates only start within this window. |
+| `UpdateExclusions` | `YYYY-MM-DD/YYYY-MM-DD` | `2026-12-20/2027-01-03` | Blackout periods. No updates during these dates. Supports wildcards (`20**-12-20/20**-01-03` for recurring annual freeze). |
+
+**Behavior:**
+- If **neither tag** is set, updates proceed with no schedule restrictions
+- If `UpdateWindow` is set, updates are only started when the current UTC time falls within the window
+- If `UpdateExclusions` is set, updates are blocked during blackout periods — **exclusions take priority** over windows
+- The pipeline returns `ScheduleBlocked` status for clusters outside their window, with the reason in the log output
+- Schedule check failures (e.g., malformed tag values) are **non-blocking** — the update proceeds with a warning
+
+**Multiple windows** can be separated with `;`: `Mon-Fri:22:00-06:00;Sat-Sun:02:00-10:00`
+
+**Day ranges** support wrap-around: `Fri-Mon:22:00-06:00` covers Friday through Monday
+
+**Overnight windows** are supported: `Sat:22:00-06:00` means Saturday 10 PM to Sunday 6 AM UTC
+
+You can test schedule logic interactively before configuring pipelines:
+
+```powershell
+# Test if current UTC time is within a maintenance window
+Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat-Sun:02:00-06:00" -UpdateExclusions "2026-12-20/2027-01-03"
+
+# Test a specific time
+Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat:02:00-06:00" -TestTime ([datetime]"2026-04-19 03:00:00")
+```
+
+The `readiness-status.csv` from the Fleet Update Status pipeline includes `UpdateWindow` and `UpdateExclusions` columns so ops teams can see which clusters have schedule restrictions defined.
 
 ### Planning Update Deployments
 

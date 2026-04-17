@@ -7,8 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.4] - 2026-04-16
 
-### Improved - LENS Workbook State Alignment & HasPrerequisite Awareness
-- All per-update state filters now use module-level constants (`$script:ReadyStates`, `$script:PrereqStates`) aligned with LENS workbook v0.8.6 states
+### Security & Code Quality (2026-04-17 revision)
+- **SECURITY**: `Connect-AzureLocalServicePrincipal` now accepts `-ServicePrincipalSecret` as either `[string]` or `[SecureString]`. When a plaintext `[string]` is passed, a warning is emitted because the secret can be visible in the process command line to other users on the host. SecureString or the `AZURE_CLIENT_SECRET` environment variable are preferred. The plaintext copy is zeroed in memory via `Marshal.ZeroFreeBSTR` in a `finally` block immediately after `az login` returns.
+- **NEW internal helper `Invoke-AzRestJson`**: centralises `az rest` invocation, stderr capture (`2>&1`), `$LASTEXITCODE` handling, and safe `ConvertFrom-Json` parsing. Returns a uniform `{Ok, Data, Error}` object so callers no longer have to duplicate guard logic and a malformed JSON response cannot throw an uncaught exception under Strict Mode. Body is written to a temp file and cleaned up in `finally`.
+- **NEW internal helper `ConvertTo-AzLocalAdditionalProperties`**: safely normalises the ARM `additionalProperties` field (which may be a JSON string or a deserialised object). All 5 previous call sites now route through this helper, so a single cluster returning malformed SBE metadata no longer silently loses its HasPrerequisite/SBE dependency info and instead logs a `-Verbose` parse warning.
+- **FIXED**: `Get-AzureLocalFleetStatusData` parallel `Start-Job` path:
+  - Module path (`$PSScriptRoot\AzStackHci.ManageUpdates.psm1`) is now validated with `Test-Path` before dispatching jobs; if it is not reachable, the function throws a clear error instead of every job failing silently with an `Import-Module` error.
+  - Result accumulators (`Readiness`, `ClusterDetails`, `LatestRuns`, `HealthResults`, `$jobs`) switched from `@() + $item` (O(n²), pipeline-fragile) to `System.Collections.Generic.List[object]` with explicit `.Add()` calls.
+  - Failed jobs, empty job output, and `ConvertFrom-Json` parse failures now surface each affected cluster (resource ID + reason) in a new `FailedClusters` property of the return object so no cluster is silently dropped from fleet reports.
+- **IMPROVED**: `Connect-AzureLocalServicePrincipal`, `Test-AzCliAvailable`, and the MSI installer path now use `Write-Log` instead of `Write-Host` for durable, timestamped, CI-friendly output. Aligns with repository conventions in `.github/copilot-instructions.md`.
+- **IMPROVED**: `Test-AzCliAvailable` MSI install no longer blocks indefinitely. `Start-Process msiexec.exe -Wait` was replaced with `Start-Process ... -PassThru` plus `WaitForExit(1800000)` (30 minute cap) with a kill-and-throw on timeout to prevent indefinite hangs in automation environments.
+- **FIXED**: Confusing ternary in `Test-AzureLocalUpdateScheduleAllowed` final return: `ExclusionActive = if ($null -eq $exclusionActive) { $null } else { $false }` (which looked like it could never return `$true`) simplified to `ExclusionActive = $exclusionActive`. Behaviour is identical because the `$true` branch already returns early.
+- **DOCS**: Azure REST API calls that parse response bodies are now safer under `Set-StrictMode -Version Latest`; `Invoke-AzRestJson` is available for future migrations of the remaining `az rest ... | ConvertFrom-Json` call sites.
+
+### Inter-Function & Fleet-Scale Fixes (2026-04-17 revision)
+- **FIXED**: `Test-AzureLocalUpdateScheduleAllowed` and `Test-AzLocalUpdateWindow` now normalise a non-UTC `-TestTime` (Local/Unspecified `DateTimeKind`) to UTC with a `Write-Verbose` note. Previously a caller passing `Get-Date` (local time) could silently evaluate the wrong maintenance-window hour/day, causing fleet updates to run outside their intended windows.
+- **FIXED**: `Get-LatestUpdateByYYMM` emits a `Write-Verbose` warning when no input update name matches the expected `Solution<XX>.<YYMM>.<build>.<rev>` pattern. Previously, when every input failed to parse, all entries mapped to YYMM=0 and the first element of a stable sort was returned as the "latest" — technically arbitrary. Callers under `-Verbose` now see the mismatch.
+- **IMPROVED**: `Get-AzureLocalAvailableUpdates -ClusterResourceId` (SingleCluster mode) now prints the same banner/Summary/Format-Table UX as the multi-cluster paths when `-Raw` is not specified. `-Raw` preserves the legacy silent behaviour for internal callers (`Start-AzureLocalClusterUpdate`, `Get-AzureLocalUpdateRuns`, `Get-AzureLocalClusterUpdateReadiness`).
+- **KNOWN (not changed)**: `$script:LogFilePath` and `$script:FleetOperationState` are module-scope script variables. Sequential calls to multiple logging functions in the same session will overwrite the log path. Concurrent fleet operations in the same PowerShell session are not supported (use separate runspaces/processes). This is a logging-infrastructure design decision deferred to a future refactor.
+
+### Added - Azure CLI Availability Check & Auto-Install
+- **New internal function `Test-AzCliAvailable`**: Checks if Azure CLI (az) is installed before any az invocation
+- When az CLI is not found in interactive sessions, prompts the user to download and install from `https://aka.ms/installazurecliwindowsx64`
+- In non-interactive environments (CI/CD pipelines), throws immediately with clear installation instructions
+- All exported functions and SingleCluster code paths now call `Test-AzCliAvailable` before first az CLI usage
+
+### Added - Fleet Status Data Collection
+- **New function `Get-AzureLocalFleetStatusData`**: Single-pass data collection with parallel `Start-Job` support
+- `-ThrottleLimit` parameter (default: 4, max: 8) splits cluster list into parallel batches
+- `-ExportPath` exports fleet data as JSON artifact for CI/CD pipeline job passing
+- `-StatusData` parameter on `New-AzureLocalFleetStatusHtmlReport` accepts pre-collected data to skip API calls
+- Stable JSON schema (v1.0) with SchemaVersion, Timestamp, ModuleVersion, Scope, Readiness, ClusterDetails, LatestRuns, HealthResults
+
+### Improved - Update State Alignment
+- All per-update state filters now use module-level constants (`$script:ReadyStates`, `$script:PrereqStates`) aligned with current ARM API states
 - `ReadyToInstall` state is now recognized alongside `Ready` across all functions: `Start-AzureLocalClusterUpdate`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalClusterUpdateReadiness`, `Get-AzureLocalFleetStatusData`, `Get-AzureLocalUpdateSummary`
 - Update summary state checks include `ReadyToInstall` for accurate "Update Available" counting
 
@@ -22,28 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Get-AzureLocalClusterUpdateReadiness`**: Summary section includes count of clusters blocked by SBE prerequisites with vendor-specific guidance
 - **`Get-AzureLocalFleetStatusData`**: Sequential collection now extracts HasPrerequisite and SBE dependency info into readiness data
 - **`Get-AzureLocalFleetStatusData`**: Status output shows "Has Prerequisite" for clusters with only prerequisite-blocked updates
-- Aligned with Azure Local LENS workbook update state handling: Ready, ReadyToInstall, AdditionalContentRequired, HasPrerequisite, HealthCheckFailed, Downloading, Preparing, HealthChecking
+- Aligned with current ARM API update state handling: Ready, ReadyToInstall, AdditionalContentRequired, HasPrerequisite, HealthCheckFailed, Downloading, Preparing, HealthChecking
 
-## [0.6.5] - 2026-04-16
-
-### Added - Azure CLI Availability Check & Auto-Install
-- **New internal function `Test-AzCliAvailable`**: Checks if Azure CLI (az) is installed before any az invocation
-- When az CLI is not found in interactive sessions, prompts the user to download and install from `https://aka.ms/installazurecliwindowsx64`
-- In non-interactive environments (CI/CD pipelines), throws immediately with clear installation instructions
-- All exported functions and SingleCluster code paths now call `Test-AzCliAvailable` before first az CLI usage
-
-### Fixed
-- `Get-AzureLocalClusterInfo`, `Invoke-AzureLocalUpdateApply`, and SingleCluster paths in `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns` had no az CLI availability check - previously threw unhelpful `CommandNotFoundException`
-- Existing auth check catch blocks now differentiate 'az not installed' from 'az not logged in' with distinct error messages
-
-## [0.6.4] - 2026-04-15
-
-### Added - Fleet Status Data Collection
-- **New function `Get-AzureLocalFleetStatusData`**: Single-pass data collection with parallel `Start-Job` support
-- `-ThrottleLimit` parameter (default: 4, max: 8) splits cluster list into parallel batches
-- `-ExportPath` exports fleet data as JSON artifact for CI/CD pipeline job passing
-- `-StatusData` parameter on `New-AzureLocalFleetStatusHtmlReport` accepts pre-collected data to skip API calls
-- Stable JSON schema (v1.0) with SchemaVersion, Timestamp, ModuleVersion, Scope, Readiness, ClusterDetails, LatestRuns, HealthResults
+### Added - Maintenance Schedule Tag Support
+- **New exported function `Test-AzureLocalUpdateScheduleAllowed`**: Master gate evaluating `UpdateWindow` and `UpdateExclusions` Azure resource tags
+- **New internal function `ConvertFrom-AzLocalUpdateWindow`**: Parses maintenance window tag syntax (`<days>:<HH:MM>-<HH:MM>`) with day ranges, wildcards, and overnight windows
+- **New internal function `ConvertFrom-AzLocalUpdateExclusion`**: Parses exclusion/blackout period tag syntax (`YYYY-MM-DD/YYYY-MM-DD`) with wildcard year support
+- `Start-AzureLocalClusterUpdate` checks schedule tags before applying updates; returns `ScheduleBlocked` status when outside maintenance windows or during exclusion periods
+- Exclusion periods take priority over maintenance windows
 
 ### Performance
 - `New-AzureLocalFleetStatusHtmlReport` now uses single-pass data collection instead of calling 6 separate module functions
@@ -54,8 +72,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Progress counter shows `[N/M]` per cluster during data collection for better visibility
 
 ### Fixed
+- `Get-AzureLocalClusterInfo`, `Invoke-AzureLocalUpdateApply`, and SingleCluster paths in `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns` had no az CLI availability check - previously threw unhelpful `CommandNotFoundException`
+- Existing auth check catch blocks now differentiate 'az not installed' from 'az not logged in' with distinct error messages
 - 'Up to Date' counter now recognizes `AppliedSuccessfully` state from ARM API (was showing 0 for completed clusters)
 - Recommended Update no longer shows the version a cluster is already on when state is `AppliedSuccessfully`/`UpToDate`
+
+### Improved - CI/CD Pipeline Reporting
+- Apply Updates pipeline summaries now include `ScheduleBlocked` count and "Actions Required" section with remediation guidance
+- Fleet Update Status JUnit XML now marks HasPrerequisite clusters as `Failed (HasPrerequisite)` instead of passing silently
+- Fleet Status JSON summary includes `HasPrerequisite` as a distinct count (previously lumped into `NotReady`)
+- Fleet Status dashboard summaries show `SBE Prerequisite Blocked` row and "Actions Required" section
+- `Get-AzureLocalClusterUpdateReadiness` and `Get-AzureLocalFleetStatusData` result objects now include `UpdateWindow` and `UpdateExclusions` tag values
+
+### Improved - Tag Management Workflow
+- `Get-AzureLocalClusterInventory` now includes `UpdateWindow` and `UpdateExclusions` columns in CSV/JSON output
+- `Set-AzureLocalClusterUpdateRingTag` now reads optional `UpdateWindow` and `UpdateExclusions` columns from CSV and sets them alongside `UpdateRing` in a single PATCH operation
 
 ## [0.6.3] - 2026-04-15
 

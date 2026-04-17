@@ -208,17 +208,22 @@ stages:
                 $skipped = ($results | Where-Object { $_.Status -in @('Skipped', 'NotReady', 'NoUpdatesAvailable', 'NoReadyUpdates', 'NotFound', 'UpdateNotFound') }).Count
                 $failed = ($results | Where-Object { $_.Status -in @('Failed', 'Error') }).Count
                 $healthBlocked = ($results | Where-Object { $_.Status -eq 'HealthCheckBlocked' }).Count
+                $scheduleBlocked = ($results | Where-Object { $_.Status -eq 'ScheduleBlocked' }).Count
                 
                 Write-Host "##vso[task.setvariable variable=Succeeded;isOutput=true]$succeeded"
                 Write-Host "##vso[task.setvariable variable=Skipped;isOutput=true]$skipped"
                 Write-Host "##vso[task.setvariable variable=Failed;isOutput=true]$failed"
                 Write-Host "##vso[task.setvariable variable=HealthBlocked;isOutput=true]$healthBlocked"
+                Write-Host "##vso[task.setvariable variable=ScheduleBlocked;isOutput=true]$scheduleBlocked"
                 
                 if ($failed -gt 0) {
                     Write-Host "##vso[task.logissue type=error]$failed cluster(s) failed to start updates"
                 }
                 if ($healthBlocked -gt 0) {
                     Write-Host "##vso[task.logissue type=warning]$healthBlocked cluster(s) blocked by critical health check failures"
+                }
+                if ($scheduleBlocked -gt 0) {
+                    Write-Host "##vso[task.logissue type=warning]$scheduleBlocked cluster(s) blocked by maintenance schedule (outside UpdateWindow or in UpdateExclusions period)"
                 }
           
           - task: PublishBuildArtifacts@1
@@ -262,6 +267,22 @@ stages:
                 if ($dryRun) {
                     $summary += "`n`n⚠️ **This was a dry run. No updates were applied.**"
                     $summary += "`n`nRe-run the pipeline with 'Preview' set to false to apply updates."
+                }
+                else {
+                    # Add Actions Required section for non-dry-run
+                    $actionsRequired = @()
+                    $healthBlocked = "$(applyUpdates.HealthBlocked)"
+                    $scheduleBlocked = "$(applyUpdates.ScheduleBlocked)"
+                    $failed = "$(applyUpdates.Failed)"
+                    
+                    if ([int]$failed -gt 0) { $actionsRequired += "- **$failed cluster(s) failed** - Review pipeline logs and cluster health in Azure Portal" }
+                    if ([int]$healthBlocked -gt 0) { $actionsRequired += "- **$healthBlocked cluster(s) blocked by health checks** - Resolve critical health failures before retrying" }
+                    if ([int]$scheduleBlocked -gt 0) { $actionsRequired += "- **$scheduleBlocked cluster(s) outside maintenance window** - Updates will proceed when the cluster's UpdateWindow schedule allows, or re-run during the maintenance window" }
+                    
+                    if ($actionsRequired.Count -gt 0) {
+                        $summary += "`n`n## ⚠️ Actions Required`n"
+                        $summary += ($actionsRequired -join "`n")
+                    }
                 }
                 
                 $summary | Out-File "$(Build.ArtifactStagingDirectory)/summary.md" -Encoding UTF8

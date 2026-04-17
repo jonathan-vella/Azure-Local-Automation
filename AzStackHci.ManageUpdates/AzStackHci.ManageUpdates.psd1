@@ -48,7 +48,9 @@
         'Test-AzureLocalClusterHealth',
         # Fleet Status Data Collection & Reporting (v0.6.4)
         'Get-AzureLocalFleetStatusData',
-        'New-AzureLocalFleetStatusHtmlReport'
+        'New-AzureLocalFleetStatusHtmlReport',
+        # Update Schedule Tag Helpers (v0.6.4)
+        'Test-AzureLocalUpdateScheduleAllowed'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -77,40 +79,31 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.6.6 - HasPrerequisite & SBE Dependency Awareness
-- IMPROVED: `Get-AzureLocalAvailableUpdates` multi-cluster mode now shows HasPrerequisite/AdditionalContentRequired counts alongside Ready counts
-- IMPROVED: `Get-AzureLocalAvailableUpdates` result objects include new PackageType and SBEDependency properties for updates blocked by SBE prerequisites
-- IMPROVED: `Get-AzureLocalAvailableUpdates` summary section shows clusters blocked by SBE prerequisites with vendor dependency details (Publisher, Family, ReleaseNotes)
-- IMPROVED: `Start-AzureLocalClusterUpdate` now provides detailed SBE dependency info when updates are blocked by HasPrerequisite/AdditionalContentRequired state
-- IMPROVED: `Get-AzureLocalClusterUpdateReadiness` surfaces HasPrerequisiteUpdates and SBEDependency in result objects
-- IMPROVED: `Get-AzureLocalClusterUpdateReadiness` console output shows 'Has Prerequisite (SBE update required)' for clusters with only prerequisite-blocked updates
-- IMPROVED: `Get-AzureLocalClusterUpdateReadiness` summary section includes count of clusters blocked by SBE prerequisites with vendor-specific guidance
-- IMPROVED: `Get-AzureLocalFleetStatusData` sequential collection now extracts HasPrerequisite and SBE dependency info into readiness data
-- IMPROVED: `Get-AzureLocalFleetStatusData` status output shows 'Has Prerequisite' for clusters with only prerequisite-blocked updates
-- Aligned with Azure Local LENS workbook update state handling: Ready, ReadyToInstall, AdditionalContentRequired, HasPrerequisite, HealthCheckFailed, Downloading, Preparing, HealthChecking
+## Version 0.6.4 - Improved update readiness checks: HasPrerequisite, Az CLI Check & Fleet Status Data
 
-## Version 0.6.5 - Azure CLI Availability Check & Auto-Install
-- NEW: `Test-AzCliAvailable` internal helper function checks if Azure CLI (az) is installed
-- NEW: When az CLI is not found, interactively prompts to download and install from https://aka.ms/installazurecliwindowsx64
-- NEW: In non-interactive environments (CI/CD), throws immediately with clear install instructions
-- NEW: All exported functions and SingleCluster code paths now call Test-AzCliAvailable before any az CLI invocation
-- FIXED: `Get-AzureLocalClusterInfo`, `Invoke-AzureLocalUpdateApply`, and SingleCluster paths in `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns` previously had no az CLI availability check - would throw unhelpful CommandNotFoundException
-- IMPROVED: Existing auth check catch blocks now differentiate 'az not installed' from 'az not logged in' with distinct error messages
+### Security & Code Quality (2026-04-17 revision)
+- SECURITY: Connect-AzureLocalServicePrincipal now accepts -ServicePrincipalSecret as [SecureString] (preferred) or [string] with a security warning. Plaintext secret memory is scrubbed after az login returns.
+- NEW: Invoke-AzRestJson internal helper centralises az rest invocation with safe LASTEXITCODE checks and ConvertFrom-Json error handling.
+- NEW: ConvertTo-AzLocalAdditionalProperties internal helper safely parses ARM additionalProperties (all 5 SBE-parse call sites now use it).
+- FIXED: Get-AzureLocalFleetStatusData parallel Start-Job path - module path validated, accumulators use List[object] instead of O(n squared) += pattern, and failed jobs surface affected clusters via new FailedClusters result property.
+- IMPROVED: Auth/Az CLI installer functions use Write-Log instead of Write-Host for CI-friendly logging.
+- IMPROVED: Test-AzCliAvailable MSI install uses 30-minute timeout to prevent indefinite hangs.
+- FIXED: Test-AzureLocalUpdateScheduleAllowed ExclusionActive return simplified (behaviour-preserving clarity fix).
 
-## Version 0.6.4 - HTML Report Performance Optimization & Fleet Status Data
-- NEW: `Get-AzureLocalFleetStatusData` function for efficient single-pass fleet data collection with parallel Start-Job support
+### Original 0.6.4 content
+- NEW: Test-AzCliAvailable internal helper checks if Azure CLI (az) is installed before any az invocation
+- NEW: Get-AzureLocalFleetStatusData function for efficient single-pass fleet data collection with parallel Start-Job support
 - NEW: -ThrottleLimit parameter (default: 4, max: 8) splits cluster list into parallel batches via Start-Job
 - NEW: -ExportPath exports fleet data as JSON artifact for CI/CD pipeline job passing
 - NEW: -StatusData parameter on New-AzureLocalFleetStatusHtmlReport accepts pre-collected data to skip API calls
 - NEW: Stable JSON schema (v1.0) with SchemaVersion, Timestamp, ModuleVersion, Scope, Readiness, ClusterDetails, LatestRuns, HealthResults
-- PERF: New-AzureLocalFleetStatusHtmlReport now uses single-pass data collection instead of calling 6 separate module functions
-- PERF: Reduced Azure REST API calls from ~230 to ~85 for 21 clusters (~63% reduction)
-- PERF: ByTag scope resolves resource IDs upfront via single ARG query instead of each downstream function querying independently
-- PERF: Update summary, available updates, and health check data fetched once per cluster and reused across readiness, details, and health sections
-- PERF: Update run queries reuse already-fetched update list instead of re-fetching via Get-AzureLocalAvailableUpdates
-- FIXED: 'Up to Date' counter now recognizes 'AppliedSuccessfully' state from ARM API (was showing 0 for clusters that completed updates)
+- IMPROVED: All per-update state filters now use module-level constants aligned with LENS workbook v0.8.6 states
+- IMPROVED: ReadyToInstall state recognized alongside Ready across all functions
+- IMPROVED: HasPrerequisite/SBE dependency awareness across Get-AzureLocalAvailableUpdates, Start-AzureLocalClusterUpdate, Get-AzureLocalClusterUpdateReadiness, Get-AzureLocalFleetStatusData
+- PERF: New-AzureLocalFleetStatusHtmlReport uses single-pass data collection (~63% API call reduction)
+- FIXED: Az CLI availability check prevents unhelpful CommandNotFoundException errors
+- FIXED: 'Up to Date' counter now recognizes 'AppliedSuccessfully' state from ARM API
 - FIXED: Recommended Update no longer shows the version a cluster is already on when state is AppliedSuccessfully/UpToDate
-- IMPROVED: Progress counter shows [N/M] per cluster during data collection for better visibility
 
 ## Version 0.6.3 - Bug Fixes, Security & Code Quality
 - FIXED: -PassThru parameter correctly added to Get-AzureLocalUpdateSummary param block (was in function body but missing from declaration)

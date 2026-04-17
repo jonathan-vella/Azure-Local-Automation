@@ -139,6 +139,7 @@ jobs:
         $readiness = Get-AzureLocalClusterUpdateReadiness @readinessParams -ExportPath $readinessCsv -PassThru
         
         # Also export to JSON
+        $hasPrerequisite = @($readiness | Where-Object { $_.HasPrerequisiteUpdates -ne "" }).Count
         $readinessExport = @{
             Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
             TotalClusters = $readiness.Count
@@ -146,6 +147,7 @@ jobs:
                 Ready = ($readiness | Where-Object { $_.ReadyForUpdate -eq $true }).Count
                 InProgress = ($readiness | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
                 HealthFailures = ($readiness | Where-Object { $_.HealthState -eq "Failure" }).Count
+                HasPrerequisite = $hasPrerequisite
                 NotReady = ($readiness | Where-Object { $_.ReadyForUpdate -ne $true -and $_.UpdateState -ne "UpdateInProgress" }).Count
             }
             Clusters = $readiness
@@ -159,7 +161,7 @@ jobs:
         # Build JUnit XML manually for more control over test case details
         $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
         $totalTests = $readiness.Count
-        $failures = @($readiness | Where-Object { $_.HealthState -eq "Failure" -or $_.UpdateState -eq "Failed" }).Count
+        $failures = @($readiness | Where-Object { $_.HealthState -eq "Failure" -or $_.UpdateState -eq "Failed" -or $_.HasPrerequisiteUpdates -ne "" }).Count
         $inProgress = @($readiness | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
         $ready = @($readiness | Where-Object { $_.ReadyForUpdate -eq $true }).Count
         $upToDate = @($readiness | Where-Object { $_.UpdateState -eq "UpToDate" }).Count
@@ -186,12 +188,22 @@ jobs:
             # Determine test outcome
             $status = "passed"
             $failureMessage = ""
+            $failureType = ""
             
             if ($cluster.HealthState -eq "Failure" -or $cluster.UpdateState -eq "Failed") {
                 $status = "failed"
+                $failureType = "UpdateFailure"
                 $failureMessage = "Health: $($cluster.HealthState), UpdateState: $($cluster.UpdateState)"
                 if ($cluster.HealthCheckFailures) {
                     $failureMessage += ", Issues: $($cluster.HealthCheckFailures -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;')"
+                }
+            }
+            elseif ($cluster.HasPrerequisiteUpdates -ne "") {
+                $status = "failed"
+                $failureType = "HasPrerequisite"
+                $failureMessage = "Updates blocked by SBE prerequisite: $($cluster.HasPrerequisiteUpdates -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;')"
+                if ($cluster.SBEDependency) {
+                    $failureMessage += " - Vendor: $($cluster.SBEDependency -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;')"
                 }
             }
             
@@ -204,6 +216,8 @@ jobs:
             $systemOut += "Ready for Update: $($cluster.ReadyForUpdate)`n"
             $systemOut += "Available Updates: $($cluster.AvailableUpdates)`n"
             $systemOut += "Ready Updates: $($cluster.ReadyUpdates)`n"
+            $systemOut += "Has Prerequisite Updates: $($cluster.HasPrerequisiteUpdates)`n"
+            $systemOut += "SBE Dependency: $($cluster.SBEDependency)`n"
             $systemOut += "Recommended Update: $($cluster.RecommendedUpdate)"
             $systemOut = $systemOut -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;'
             
@@ -211,7 +225,7 @@ jobs:
             $xmlContent += "      <system-out><![CDATA[$systemOut]]></system-out>`n"
             
             if ($status -eq "failed") {
-                $xmlContent += "      <failure message=`"Cluster has update issues`" type=`"UpdateFailure`">$failureMessage</failure>`n"
+                $xmlContent += "      <failure message=`"Cluster has update issues`" type=`"$failureType`">$failureMessage</failure>`n"
             }
             
             $xmlContent += "    </testcase>`n"
@@ -289,6 +303,7 @@ jobs:
         echo "IN_PROGRESS=$inProgress" >> $env:GITHUB_OUTPUT
         echo "READY=$ready" >> $env:GITHUB_OUTPUT
         echo "FAILURES=$failures" >> $env:GITHUB_OUTPUT
+        echo "HAS_PREREQUISITE=$hasPrerequisite" >> $env:GITHUB_OUTPUT
         
         # Fail the workflow if there are health failures
         if ($failures -gt 0) {
@@ -324,6 +339,7 @@ jobs:
         $inProgress = "${{ steps.fleet-status.outputs.IN_PROGRESS }}"
         $ready = "${{ steps.fleet-status.outputs.READY }}"
         $failures = "${{ steps.fleet-status.outputs.FAILURES }}"
+        $hasPrerequisite = "${{ steps.fleet-status.outputs.HAS_PREREQUISITE }}"
         
         $summary = @"
         ## 📊 Fleet Update Status Summary
@@ -334,7 +350,21 @@ jobs:
         | **Up to Date** | $upToDate | ✅ |
         | **Update In Progress** | $inProgress | 🔄 |
         | **Ready for Update** | $ready | 📥 |
+        | **SBE Prerequisite Blocked** | $hasPrerequisite | $(if ([int]$hasPrerequisite -gt 0) { '⏳' } else { '✅' }) |
         | **Health Failures** | $failures | $(if ([int]$failures -gt 0) { '❌' } else { '✅' }) |
+        "@
+        
+        # Actions Required section
+        $actions = @()
+        if ([int]$failures -gt 0) { $actions += "- **$failures cluster(s) have health failures** - Resolve critical health check issues in Azure Portal" }
+        if ([int]$hasPrerequisite -gt 0) { $actions += "- **$hasPrerequisite cluster(s) blocked by SBE prerequisite** - Install the required Solution Builder Extension (SBE) update from the hardware vendor. See ``available-updates.csv`` for vendor details (Publisher, Family)" }
+        
+        if ($actions.Count -gt 0) {
+            $summary += "`n`n### ⚠️ Actions Required`n`n"
+            $summary += ($actions -join "`n")
+        }
+        
+        $summary += @"
         
         ### Reports Available
         - 📄 `readiness-status.csv` - Detailed cluster status for spreadsheet analysis

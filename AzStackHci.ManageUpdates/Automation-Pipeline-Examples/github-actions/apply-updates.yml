@@ -207,11 +207,13 @@ jobs:
         $skipped = ($results | Where-Object { $_.Status -in @('Skipped', 'NotReady', 'NoUpdatesAvailable', 'NoReadyUpdates', 'NotFound', 'UpdateNotFound') }).Count
         $failed = ($results | Where-Object { $_.Status -in @('Failed', 'Error') }).Count
         $healthBlocked = ($results | Where-Object { $_.Status -eq 'HealthCheckBlocked' }).Count
+        $scheduleBlocked = ($results | Where-Object { $_.Status -eq 'ScheduleBlocked' }).Count
         
         echo "SUCCEEDED=$succeeded" >> $env:GITHUB_OUTPUT
         echo "SKIPPED=$skipped" >> $env:GITHUB_OUTPUT
         echo "FAILED=$failed" >> $env:GITHUB_OUTPUT
         echo "HEALTH_BLOCKED=$healthBlocked" >> $env:GITHUB_OUTPUT
+        echo "SCHEDULE_BLOCKED=$scheduleBlocked" >> $env:GITHUB_OUTPUT
     
     - name: Upload Update Logs
       uses: actions/upload-artifact@v4
@@ -240,6 +242,8 @@ jobs:
         $succeeded = "${{ steps.apply-updates.outputs.SUCCEEDED }}"
         $skipped = "${{ steps.apply-updates.outputs.SKIPPED }}"
         $failed = "${{ steps.apply-updates.outputs.FAILED }}"
+        $healthBlocked = "${{ steps.apply-updates.outputs.HEALTH_BLOCKED }}"
+        $scheduleBlocked = "${{ steps.apply-updates.outputs.SCHEDULE_BLOCKED }}"
         $readyCount = "${{ needs.check-readiness.outputs.ready_count }}"
         $totalCount = "${{ needs.check-readiness.outputs.total_count }}"
         
@@ -269,6 +273,22 @@ jobs:
         Write-Host "| ⏭️ Skipped | $skipped |" >> $env:GITHUB_STEP_SUMMARY
         Write-Host "| ❌ Failed | $failed |" >> $env:GITHUB_STEP_SUMMARY
         Write-Host "| 🏥 Health Blocked | $healthBlocked |" >> $env:GITHUB_STEP_SUMMARY
+        Write-Host "| 🕐 Schedule Blocked | $scheduleBlocked |" >> $env:GITHUB_STEP_SUMMARY
+        
+        # Actions Required section - summarize what needs manual attention
+        $actionsNeeded = @()
+        if ([int]$failed -gt 0) { $actionsNeeded += "- **$failed cluster(s) failed** - Review pipeline logs and cluster health in Azure Portal" }
+        if ([int]$healthBlocked -gt 0) { $actionsNeeded += "- **$healthBlocked cluster(s) blocked by health checks** - Resolve critical health failures before retrying" }
+        if ([int]$scheduleBlocked -gt 0) { $actionsNeeded += "- **$scheduleBlocked cluster(s) outside maintenance window** - Updates will proceed when the cluster's UpdateWindow schedule allows, or re-run during the maintenance window" }
+        
+        if ($actionsNeeded.Count -gt 0) {
+            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "### ⚠️ Actions Required" >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
+            foreach ($action in $actionsNeeded) {
+                Write-Host $action >> $env:GITHUB_STEP_SUMMARY
+            }
+        }
 
   # Handle case when no clusters are ready
   no-clusters-ready:
