@@ -76,22 +76,42 @@ $manifest = Test-ModuleManifest -Path $manifestPath -ErrorAction Stop
 Write-Host "  Module:  $($manifest.Name)" -ForegroundColor Green
 Write-Host "  Version: $($manifest.Version)" -ForegroundColor Green
 
-# ── 6. Prompt for API key and publish ──────────────────────────────────────────
+# ── 6. Prompt for API key (masked) and publish ─────────────────────────────────
 Write-Host ""
-$apiKey = Read-Host -Prompt "Enter your PowerShell Gallery NuGet API key"
-if ([string]::IsNullOrWhiteSpace($apiKey)) {
+Write-Host "Paste your PowerShell Gallery NuGet API key (input is masked, nothing will echo):" -ForegroundColor Yellow
+$secureApiKey = Read-Host -Prompt "API key" -AsSecureString
+if ($null -eq $secureApiKey -or $secureApiKey.Length -eq 0) {
     throw 'API key cannot be empty. Publish cancelled.'
 }
 
-Write-Host ""
-Write-Host "[$ModuleName] Publishing v$($manifest.Version) to PSGallery..." -ForegroundColor Cyan
-
-if ($PSCmdlet.ShouldProcess("$ModuleName v$($manifest.Version)", 'Publish to PowerShell Gallery')) {
-    Publish-Module -Path $StagingDir -Repository PSGallery -NuGetApiKey $apiKey -Verbose
-    Write-Host ""
-    Write-Host "[$ModuleName] Published successfully!" -ForegroundColor Green
-    Write-Host "  https://www.powershellgallery.com/packages/$ModuleName/$($manifest.Version)" -ForegroundColor Gray
-}
-
-# ── 7. Clean up API key variable ──────────────────────────────────────────────
+# Convert SecureString to plaintext only at the moment of use, then scrub it.
+$bstr   = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureApiKey)
 $apiKey = $null
+try {
+    $apiKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+
+    if ([string]::IsNullOrWhiteSpace($apiKey)) {
+        throw 'API key cannot be empty. Publish cancelled.'
+    }
+
+    Write-Host ""
+    Write-Host "[$ModuleName] Publishing v$($manifest.Version) to PSGallery..." -ForegroundColor Cyan
+
+    if ($PSCmdlet.ShouldProcess("$ModuleName v$($manifest.Version)", 'Publish to PowerShell Gallery')) {
+        Publish-Module -Path $StagingDir -Repository PSGallery -NuGetApiKey $apiKey -Verbose
+        Write-Host ""
+        Write-Host "[$ModuleName] Published successfully!" -ForegroundColor Green
+        Write-Host "  https://www.powershellgallery.com/packages/$ModuleName/$($manifest.Version)" -ForegroundColor Gray
+    }
+}
+finally {
+    # Zero the unmanaged plaintext buffer and drop references so the key
+    # is not left sitting in process memory after publish completes.
+    if ($bstr -ne [IntPtr]::Zero) {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) | Out-Null
+    }
+    $apiKey = $null
+    if ($secureApiKey) { $secureApiKey.Dispose() }
+    $secureApiKey = $null
+    [System.GC]::Collect()
+}
