@@ -5,6 +5,37 @@ All notable changes to the AzStackHci.ManageUpdates module will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-04-16
+
+### Improved - LENS Workbook State Alignment & HasPrerequisite Awareness
+- All per-update state filters now use module-level constants (`$script:ReadyStates`, `$script:PrereqStates`) aligned with LENS workbook v0.8.6 states
+- `ReadyToInstall` state is now recognized alongside `Ready` across all functions: `Start-AzureLocalClusterUpdate`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalClusterUpdateReadiness`, `Get-AzureLocalFleetStatusData`, `Get-AzureLocalUpdateSummary`
+- Update summary state checks include `ReadyToInstall` for accurate "Update Available" counting
+
+### Improved - HasPrerequisite & SBE Dependency Awareness
+- **`Get-AzureLocalAvailableUpdates`**: Multi-cluster mode now shows HasPrerequisite/AdditionalContentRequired counts alongside Ready counts in console output
+- **`Get-AzureLocalAvailableUpdates`**: Result objects include new `PackageType` and `SBEDependency` properties for updates blocked by SBE prerequisites
+- **`Get-AzureLocalAvailableUpdates`**: Summary section shows clusters blocked by SBE prerequisites with vendor dependency details (Publisher, Family, ReleaseNotes)
+- **`Start-AzureLocalClusterUpdate`**: Provides detailed SBE dependency info when updates are blocked by HasPrerequisite/AdditionalContentRequired state, with guidance to install the SBE from the hardware vendor
+- **`Get-AzureLocalClusterUpdateReadiness`**: Surfaces `HasPrerequisiteUpdates` and `SBEDependency` in result objects for downstream consumption
+- **`Get-AzureLocalClusterUpdateReadiness`**: Console output shows "Has Prerequisite (SBE update required)" for clusters with only prerequisite-blocked updates
+- **`Get-AzureLocalClusterUpdateReadiness`**: Summary section includes count of clusters blocked by SBE prerequisites with vendor-specific guidance
+- **`Get-AzureLocalFleetStatusData`**: Sequential collection now extracts HasPrerequisite and SBE dependency info into readiness data
+- **`Get-AzureLocalFleetStatusData`**: Status output shows "Has Prerequisite" for clusters with only prerequisite-blocked updates
+- Aligned with Azure Local LENS workbook update state handling: Ready, ReadyToInstall, AdditionalContentRequired, HasPrerequisite, HealthCheckFailed, Downloading, Preparing, HealthChecking
+
+## [0.6.5] - 2026-04-16
+
+### Added - Azure CLI Availability Check & Auto-Install
+- **New internal function `Test-AzCliAvailable`**: Checks if Azure CLI (az) is installed before any az invocation
+- When az CLI is not found in interactive sessions, prompts the user to download and install from `https://aka.ms/installazurecliwindowsx64`
+- In non-interactive environments (CI/CD pipelines), throws immediately with clear installation instructions
+- All exported functions and SingleCluster code paths now call `Test-AzCliAvailable` before first az CLI usage
+
+### Fixed
+- `Get-AzureLocalClusterInfo`, `Invoke-AzureLocalUpdateApply`, and SingleCluster paths in `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns` had no az CLI availability check - previously threw unhelpful `CommandNotFoundException`
+- Existing auth check catch blocks now differentiate 'az not installed' from 'az not logged in' with distinct error messages
+
 ## [0.6.4] - 2026-04-15
 
 ### Added - Fleet Status Data Collection

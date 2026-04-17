@@ -118,16 +118,26 @@
     Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
 
 .NOTES
-    Version: 0.6.4
+    Version: 0.6.5
     Author: Neil Bird, Microsoft.
     Requires: Azure CLI (az) installed and authenticated
     API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 #>
 
 # Module constants
-$script:ModuleVersion = '0.6.4'
+$script:ModuleVersion = '0.6.5'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
+
+# Update state constants aligned with queries in Azure Local LENS workbook
+# States that indicate an update is installable (ready to apply)
+$script:ReadyStates = @('Ready', 'ReadyToInstall')
+# States that indicate an update is blocked by a prerequisite
+$script:PrereqStates = @('HasPrerequisite', 'AdditionalContentRequired')
+# States that indicate an update failed health validation
+$script:HealthCheckFailedStates = @('HealthCheckFailed')
+# States that indicate an update is in a transitional phase
+$script:TransitionalStates = @('Downloading', 'Preparing', 'HealthChecking')
 
 # Script-level variables for logging
 $script:LogFilePath = $null
@@ -137,6 +147,88 @@ $script:UpdateStartedLogPath = $null
 
 # Service Principal authentication state
 $script:ServicePrincipalAuthenticated = $false
+
+function Test-AzCliAvailable {
+    <#
+    .SYNOPSIS
+        Tests if Azure CLI (az) is installed and available. Offers to download and install if missing.
+    .DESCRIPTION
+        Checks if the 'az' command is available on the system PATH. If not found, prompts the user
+        to download and install the Azure CLI MSI (Windows x64). In non-interactive environments
+        (CI/CD pipelines), throws immediately with installation instructions.
+    .OUTPUTS
+        Returns $true if az CLI is available. Throws if not available and user declines installation.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
+    # Quick check - is az already available?
+    if (Get-Command 'az' -ErrorAction SilentlyContinue) {
+        return $true
+    }
+
+    # az not found - determine if we're running interactively
+    $isInteractive = [Environment]::UserInteractive -and -not $env:TF_BUILD -and -not $env:GITHUB_ACTIONS -and -not $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI
+
+    if (-not $isInteractive) {
+        throw "Azure CLI (az) is not installed. Install it from https://aka.ms/installazurecliwindowsx64 or run: winget install Microsoft.AzureCLI"
+    }
+
+    Write-Host ""
+    Write-Host "Azure CLI (az) is not installed on this system." -ForegroundColor Red
+    Write-Host "The Azure CLI is required for this module to communicate with Azure." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Download URL: https://aka.ms/installazurecliwindowsx64" -ForegroundColor Cyan
+    Write-Host ""
+
+    $response = Read-Host "Would you like to download and install the Azure CLI now? (y/n)"
+    if ($response -notin @('y', 'Y', 'yes', 'Yes')) {
+        throw "Azure CLI (az) is required but not installed. Install it from https://aka.ms/installazurecliwindowsx64 or run: winget install Microsoft.AzureCLI"
+    }
+
+    # Download and install
+    $msiPath = Join-Path $env:TEMP 'AzureCLI.msi'
+    try {
+        Write-Host "Downloading Azure CLI installer..." -ForegroundColor Yellow
+        Invoke-WebRequest -Uri 'https://aka.ms/installazurecliwindowsx64' -OutFile $msiPath -UseBasicParsing
+
+        Write-Host "Installing Azure CLI (this may take a few minutes)..." -ForegroundColor Yellow
+        $installProcess = Start-Process msiexec.exe -ArgumentList "/I `"$msiPath`" /quiet" -Wait -PassThru
+        if ($installProcess.ExitCode -ne 0) {
+            throw "MSI installer exited with code $($installProcess.ExitCode)"
+        }
+
+        # Refresh PATH so the current session can find az
+        $machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+        $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+        $env:PATH = "$machinePath;$userPath"
+
+        # Verify installation
+        if (Get-Command 'az' -ErrorAction SilentlyContinue) {
+            $azVersion = az version --query '\"azure-cli\"' -o tsv 2>$null
+            Write-Host "Azure CLI v$azVersion installed successfully." -ForegroundColor Green
+            Write-Host "Run 'az login' to authenticate before using this module." -ForegroundColor Yellow
+            return $true
+        }
+        else {
+            throw "Azure CLI was installed but 'az' command is not found in PATH. Please restart your PowerShell session."
+        }
+    }
+    catch {
+        $errorMsg = $_.Exception.Message
+        if ($errorMsg -notmatch 'not found in PATH|not installed') {
+            Write-Host "Failed to install Azure CLI: $errorMsg" -ForegroundColor Red
+        }
+        throw "Azure CLI installation failed. Please install manually from https://aka.ms/installazurecliwindowsx64 - Error: $errorMsg"
+    }
+    finally {
+        # Clean up MSI file
+        if (Test-Path $msiPath) {
+            Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 function Connect-AzureLocalServicePrincipal {
     <#
@@ -1226,6 +1318,7 @@ function Start-AzureLocalClusterUpdate {
         }
 
         # Verify Azure CLI is installed and logged in
+        Test-AzCliAvailable | Out-Null
         try {
             $null = az account show 2>$null
             if ($LASTEXITCODE -ne 0) {
@@ -1233,8 +1326,12 @@ function Start-AzureLocalClusterUpdate {
             }
             Write-Log -Message "Azure CLI authentication verified" -Level Success
         }
+        catch [System.Management.Automation.CommandNotFoundException] {
+            Write-Log -Message "Azure CLI (az) is not installed. Install from https://aka.ms/installazurecliwindowsx64" -Level Error
+            throw
+        }
         catch {
-            Write-Log -Message "Azure CLI is not installed or not logged in. Please install Azure CLI and run 'az login'." -Level Error
+            Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
             throw
         }
 
@@ -1321,7 +1418,7 @@ function Start-AzureLocalClusterUpdate {
 
                 # Step 3: Check if cluster is ready for updates
                 Write-Log -Message "Step 3: Validating cluster state for updates..." -Level Info
-                $validStates = @("UpdateAvailable", "Ready")
+                $validStates = @("UpdateAvailable") + $script:ReadyStates
                 if ($updateSummary.properties.state -notin $validStates) {
                     Write-Log -Message "Cluster '$clusterName' is not in a valid state for updates. Current state: $($updateSummary.properties.state)" -Level Warning
                     
@@ -1422,11 +1519,34 @@ function Start-AzureLocalClusterUpdate {
                     continue
                 }
 
-                # Filter updates that are in "Ready" state
-                $readyUpdates = $availableUpdates | Where-Object { $_.properties.state -eq "Ready" }
+                # Filter updates that are in a ready state (Ready or ReadyToInstall)
+                $readyUpdates = $availableUpdates | Where-Object { $_.properties.state -in $script:ReadyStates }
                 
                 if (-not $readyUpdates -or $readyUpdates.Count -eq 0) {
-                    Write-Log -Message "No updates in 'Ready' state for cluster '$clusterName'." -Level Warning
+                    Write-Log -Message "No updates in ready state for cluster '$clusterName'." -Level Warning
+
+                    # Check for HasPrerequisite/AdditionalContentRequired updates and surface SBE dependency info
+                    $prereqUpdates = @($availableUpdates | Where-Object { $_.properties.state -in @("HasPrerequisite", "AdditionalContentRequired") })
+                    if ($prereqUpdates.Count -gt 0) {
+                        Write-Log -Message "Updates blocked by SBE prerequisites:" -Level Warning
+                        foreach ($pu in $prereqUpdates) {
+                            $puProps = $pu.properties
+                            $puMsg = "  - $($pu.name): $($puProps.state)"
+                            if ($puProps.packageType -eq "SBE" -and $puProps.additionalProperties) {
+                                $addProps = if ($puProps.additionalProperties -is [string]) { $puProps.additionalProperties | ConvertFrom-Json -ErrorAction SilentlyContinue } else { $puProps.additionalProperties }
+                                if ($addProps) {
+                                    $sbeParts = @()
+                                    if ($addProps.SBEPublisher) { $sbeParts += "Publisher: $($addProps.SBEPublisher)" }
+                                    if ($addProps.SBEFamily) { $sbeParts += "Family: $($addProps.SBEFamily)" }
+                                    if ($addProps.SBEReleaseLink) { $sbeParts += "Release Notes: $($addProps.SBEReleaseLink)" }
+                                    if ($sbeParts.Count -gt 0) { $puMsg += " ($($sbeParts -join '; '))" }
+                                }
+                            }
+                            Write-Log -Message $puMsg -Level Warning
+                        }
+                        Write-Log -Message "Install the required SBE (Solution Builder Extension) update from your hardware vendor before this update can proceed." -Level Warning
+                    }
+
                     Write-Log -Message "Available updates and their states:" -Level Info
                     foreach ($update in $availableUpdates) {
                         Write-Log -Message "  - $($update.name): $($update.properties.state)" -Level Verbose
@@ -1770,6 +1890,9 @@ function Get-AzureLocalClusterInfo {
         [string]$ApiVersion = $script:DefaultApiVersion
     )
 
+    # Ensure Azure CLI is available
+    Test-AzCliAvailable | Out-Null
+
     if ($ResourceGroupName) {
         # Direct lookup if resource group is known
         $uri = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.AzureStackHCI/clusters/${ClusterName}?api-version=$ApiVersion"
@@ -1894,6 +2017,7 @@ function Get-AzureLocalUpdateSummary {
 
     # Original single-cluster behavior
     if ($PSCmdlet.ParameterSetName -eq 'SingleCluster') {
+        Test-AzCliAvailable | Out-Null
         $uri = "https://management.azure.com$ClusterResourceId/updateSummaries/default?api-version=$ApiVersion"
         
         Write-Verbose "Getting update summary from: $uri"
@@ -1912,6 +2036,7 @@ function Get-AzureLocalUpdateSummary {
     Write-Log -Message "========================================" -Level Header
 
     # Verify Azure CLI is installed and logged in
+    Test-AzCliAvailable | Out-Null
     try {
         $null = az account show 2>$null
         if ($LASTEXITCODE -ne 0) {
@@ -1920,7 +2045,7 @@ function Get-AzureLocalUpdateSummary {
         Write-Log -Message "Azure CLI authentication verified" -Level Success
     }
     catch {
-        Write-Log -Message "Azure CLI is not installed or not logged in. Please install Azure CLI and run 'az login'." -Level Error
+        Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
         return
     }
 
@@ -2113,7 +2238,7 @@ function Get-AzureLocalUpdateSummary {
     
     $totalClusters = $results.Count
     $upToDate = @($results | Where-Object { $_.UpdateState -in @("UpToDate", "AppliedSuccessfully") }).Count
-    $updateAvailable = @($results | Where-Object { $_.UpdateState -in @("UpdateAvailable", "Ready") }).Count
+    $updateAvailable = @($results | Where-Object { $_.UpdateState -in (@("UpdateAvailable") + $script:ReadyStates) }).Count
     $inProgress = @($results | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
     $healthFailures = @($results | Where-Object { $_.HealthState -eq "Failure" }).Count
 
@@ -2296,6 +2421,7 @@ function Get-AzureLocalAvailableUpdates {
 
     # Original single-cluster behavior
     if ($PSCmdlet.ParameterSetName -eq 'SingleCluster') {
+        Test-AzCliAvailable | Out-Null
         $uri = "https://management.azure.com$ClusterResourceId/updates?api-version=$ApiVersion"
         
         Write-Verbose "Getting available updates from: $uri"
@@ -2314,6 +2440,7 @@ function Get-AzureLocalAvailableUpdates {
     Write-Log -Message "========================================" -Level Header
 
     # Verify Azure CLI is installed and logged in
+    Test-AzCliAvailable | Out-Null
     try {
         $null = az account show 2>$null
         if ($LASTEXITCODE -ne 0) {
@@ -2322,7 +2449,7 @@ function Get-AzureLocalAvailableUpdates {
         Write-Log -Message "Azure CLI authentication verified" -Level Success
     }
     catch {
-        Write-Log -Message "Azure CLI is not installed or not logged in. Please install Azure CLI and run 'az login'." -Level Error
+        Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
         return
     }
 
@@ -2435,6 +2562,8 @@ function Get-AzureLocalAvailableUpdates {
                     UpdateName       = "N/A"
                     UpdateState      = "Cluster Not Found"
                     Version          = ""
+                    PackageType      = ""
+                    SBEDependency    = ""
                     Description      = ""
                 }
                 continue
@@ -2446,22 +2575,45 @@ function Get-AzureLocalAvailableUpdates {
 
             if ($LASTEXITCODE -eq 0 -and $response.value -and $response.value.Count -gt 0) {
                 $updates = $response.value
-                $readyCount = @($updates | Where-Object { $_.properties.state -eq "Ready" }).Count
+                $readyCount = @($updates | Where-Object { $_.properties.state -in $script:ReadyStates }).Count
+                $prereqCount = @($updates | Where-Object { $_.properties.state -in $script:PrereqStates }).Count
                 
-                Write-Host " $($updates.Count) update(s) ($readyCount ready)" -ForegroundColor $(if ($readyCount -gt 0) { "Green" } else { "Yellow" })
+                $statusParts = @("$readyCount ready")
+                if ($prereqCount -gt 0) { $statusParts += "$prereqCount has prerequisite" }
+                $statusText = $statusParts -join ', '
+                $statusColor = if ($readyCount -gt 0) { "Green" } elseif ($prereqCount -gt 0) { "Yellow" } else { "Yellow" }
+                Write-Host " $($updates.Count) update(s) ($statusText)" -ForegroundColor $statusColor
                 
                 foreach ($update in $updates) {
                     $props = $update.properties
                     $state = if ($props.state) { $props.state } else { "Unknown" }
                     
                     # Track update versions
-                    if ($state -eq "Ready") {
+                    if ($state -in $script:ReadyStates) {
                         if ($updateVersionCounts.ContainsKey($update.name)) {
                             $updateVersionCounts[$update.name]++
                         }
                         else {
                             $updateVersionCounts[$update.name] = 1
                         }
+                    }
+
+                    # Extract SBE dependency info for HasPrerequisite/AdditionalContentRequired updates
+                    $packageType = if ($props.packageType) { $props.packageType } else { "" }
+                    $sbeDependency = ""
+                    if ($state -in @("HasPrerequisite", "AdditionalContentRequired") -and $packageType -eq "SBE") {
+                        $additionalProps = $null
+                        if ($props.additionalProperties) {
+                            $additionalProps = if ($props.additionalProperties -is [string]) { $props.additionalProperties | ConvertFrom-Json -ErrorAction SilentlyContinue } else { $props.additionalProperties }
+                        }
+                        $sbePublisher = if ($additionalProps -and $additionalProps.SBEPublisher) { $additionalProps.SBEPublisher } else { "" }
+                        $sbeFamily = if ($additionalProps -and $additionalProps.SBEFamily) { $additionalProps.SBEFamily } else { "" }
+                        $sbeReleaseLink = if ($additionalProps -and $additionalProps.SBEReleaseLink) { $additionalProps.SBEReleaseLink } else { "" }
+                        $sbeParts = @()
+                        if ($sbePublisher) { $sbeParts += "Publisher: $sbePublisher" }
+                        if ($sbeFamily) { $sbeParts += "Family: $sbeFamily" }
+                        if ($sbeReleaseLink) { $sbeParts += "ReleaseNotes: $sbeReleaseLink" }
+                        if ($sbeParts.Count -gt 0) { $sbeDependency = $sbeParts -join '; ' }
                     }
                     
                     $results += [PSCustomObject]@{
@@ -2471,6 +2623,8 @@ function Get-AzureLocalAvailableUpdates {
                         UpdateName       = $update.name
                         UpdateState      = $state
                         Version          = if ($props.version) { $props.version } else { "" }
+                        PackageType      = $packageType
+                        SBEDependency    = $sbeDependency
                         Description      = if ($props.description) { $props.description.Substring(0, [Math]::Min(100, $props.description.Length)) } else { "" }
                     }
                 }
@@ -2484,6 +2638,8 @@ function Get-AzureLocalAvailableUpdates {
                     UpdateName       = "None"
                     UpdateState      = "No Updates"
                     Version          = ""
+                    PackageType      = ""
+                    SBEDependency    = ""
                     Description      = ""
                 }
             }
@@ -2497,6 +2653,8 @@ function Get-AzureLocalAvailableUpdates {
                 UpdateName       = "Error"
                 UpdateState      = "Error"
                 Version          = ""
+                PackageType      = ""
+                SBEDependency    = ""
                 Description      = $_.Exception.Message
             }
         }
@@ -2510,14 +2668,28 @@ function Get-AzureLocalAvailableUpdates {
     
     $totalClusters = $clustersToProcess.Count
     $clustersWithUpdates = @($results | Where-Object { $_.UpdateName -notin @("N/A", "None", "Error") } | Select-Object -ExpandProperty ClusterName -Unique).Count
-    $clustersWithReadyUpdates = @($results | Where-Object { $_.UpdateState -eq "Ready" } | Select-Object -ExpandProperty ClusterName -Unique).Count
+    $clustersWithReadyUpdates = @($results | Where-Object { $_.UpdateState -in $script:ReadyStates } | Select-Object -ExpandProperty ClusterName -Unique).Count
+    $clustersWithPrereqUpdates = @($results | Where-Object { $_.UpdateState -in $script:PrereqStates } | Select-Object -ExpandProperty ClusterName -Unique).Count
     $totalUpdates = @($results | Where-Object { $_.UpdateName -notin @("N/A", "None", "Error") }).Count
 
     Write-Log -Message "" -Level Info
     Write-Log -Message "Total Clusters:              $totalClusters" -Level Info
     Write-Log -Message "Clusters with Updates:       $clustersWithUpdates" -Level $(if ($clustersWithUpdates -gt 0) { "Warning" } else { "Info" })
     Write-Log -Message "Clusters with Ready Updates: $clustersWithReadyUpdates" -Level $(if ($clustersWithReadyUpdates -gt 0) { "Success" } else { "Info" })
+    if ($clustersWithPrereqUpdates -gt 0) {
+        Write-Log -Message "Clusters with Prerequisite:  $clustersWithPrereqUpdates (SBE update required first)" -Level Warning
+    }
     Write-Log -Message "Total Updates Found:         $totalUpdates" -Level Info
+
+    # Show SBE dependency details for HasPrerequisite/AdditionalContentRequired updates
+    $prereqUpdates = @($results | Where-Object { $_.UpdateState -in @("HasPrerequisite", "AdditionalContentRequired") -and $_.SBEDependency })
+    if ($prereqUpdates.Count -gt 0) {
+        Write-Log -Message "" -Level Info
+        Write-Log -Message "Updates Blocked by SBE Prerequisites:" -Level Warning
+        foreach ($pu in $prereqUpdates) {
+            Write-Log -Message "  $($pu.ClusterName) - $($pu.UpdateName): $($pu.SBEDependency)" -Level Warning
+        }
+    }
 
     # Show most common update versions
     if ($updateVersionCounts.Count -gt 0) {
@@ -2532,7 +2704,7 @@ function Get-AzureLocalAvailableUpdates {
     # Display results table
     Write-Log -Message "" -Level Info
     Write-Log -Message "Detailed Results:" -Level Header
-    $results | Format-Table ClusterName, UpdateName, UpdateState, Version -AutoSize
+    $results | Format-Table ClusterName, UpdateName, UpdateState, Version, PackageType -AutoSize
 
     # Export if path specified
     if ($ExportPath) {
@@ -2564,7 +2736,7 @@ function Get-AzureLocalAvailableUpdates {
                     $junitResults = $results | ForEach-Object {
                         [PSCustomObject]@{
                             ClusterName  = $_.ClusterName
-                            Status       = if ($_.UpdateState -eq "Ready") { "Ready" } elseif ($_.UpdateState -eq "Error") { "Failed" } else { "Skipped" }
+                            Status       = if ($_.UpdateState -in $script:ReadyStates) { "Ready" } elseif ($_.UpdateState -eq "Error") { "Failed" } else { "Skipped" }
                             Message      = "Update: $($_.UpdateName), State: $($_.UpdateState), Version: $($_.Version)"
                             UpdateName   = $_.UpdateName
                             CurrentState = $_.UpdateState
@@ -2600,6 +2772,9 @@ function Invoke-AzureLocalUpdateApply {
         [Parameter(Mandatory = $false)]
         [string]$ApiVersion = $script:DefaultApiVersion
     )
+
+    # Ensure Azure CLI is available
+    Test-AzCliAvailable | Out-Null
 
     $uri = "https://management.azure.com$ClusterResourceId/updates/$UpdateName/apply?api-version=$ApiVersion"
     
@@ -2862,6 +3037,7 @@ function Get-AzureLocalUpdateRuns {
 
     # Original single-cluster behavior
     if ($PSCmdlet.ParameterSetName -eq 'SingleCluster') {
+        Test-AzCliAvailable | Out-Null
         Write-Log -Message "" -Level Info
         Write-Log -Message "========================================" -Level Header
         Write-Log -Message "Azure Local Cluster Update Runs" -Level Header
@@ -2962,6 +3138,7 @@ function Get-AzureLocalUpdateRuns {
     Write-Log -Message "========================================" -Level Header
 
     # Verify Azure CLI is installed and logged in
+    Test-AzCliAvailable | Out-Null
     try {
         $null = az account show 2>$null
         if ($LASTEXITCODE -ne 0) {
@@ -2970,7 +3147,7 @@ function Get-AzureLocalUpdateRuns {
         Write-Log -Message "Azure CLI authentication verified" -Level Success
     }
     catch {
-        Write-Log -Message "Azure CLI is not installed or not logged in. Please install Azure CLI and run 'az login'." -Level Error
+        Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
         return
     }
 
@@ -3399,6 +3576,7 @@ function Get-AzureLocalClusterUpdateReadiness {
     Write-Log -Message "" -Level Info
 
     # Verify Azure CLI is installed and logged in
+    Test-AzCliAvailable | Out-Null
     try {
         $null = az account show 2>$null
         if ($LASTEXITCODE -ne 0) {
@@ -3407,7 +3585,7 @@ function Get-AzureLocalClusterUpdateReadiness {
         Write-Log -Message "Azure CLI authentication verified" -Level Success
     }
     catch {
-        Write-Log -Message "Azure CLI is not installed or not logged in. Please install Azure CLI and run 'az login'." -Level Error
+        Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
         return
     }
 
@@ -3518,17 +3696,19 @@ function Get-AzureLocalClusterUpdateReadiness {
             if (-not $clusterInfo) {
                 Write-Host " Not Found" -ForegroundColor Red
                 $results += [PSCustomObject]@{
-                    ClusterName         = $clusterName
-                    ResourceGroup       = $cluster.ResourceGroup
-                    SubscriptionId      = $cluster.SubscriptionId
-                    ClusterState        = "Not Found"
-                    UpdateState         = "N/A"
-                    HealthState         = "N/A"
-                    ReadyForUpdate      = $false
-                    AvailableUpdates    = ""
-                    ReadyUpdates        = ""
-                    RecommendedUpdate   = ""
-                    HealthCheckFailures = ""
+                    ClusterName              = $clusterName
+                    ResourceGroup            = $cluster.ResourceGroup
+                    SubscriptionId           = $cluster.SubscriptionId
+                    ClusterState             = "Not Found"
+                    UpdateState              = "N/A"
+                    HealthState              = "N/A"
+                    ReadyForUpdate           = $false
+                    AvailableUpdates         = ""
+                    ReadyUpdates             = ""
+                    HasPrerequisiteUpdates   = ""
+                    SBEDependency            = ""
+                    RecommendedUpdate        = ""
+                    HealthCheckFailures      = ""
                 }
                 continue
             }
@@ -3543,11 +3723,28 @@ function Get-AzureLocalClusterUpdateReadiness {
 
             # Get available updates
             $availableUpdates = @(Get-AzureLocalAvailableUpdates -ClusterResourceId $clusterInfo.id -ApiVersion $ApiVersion)
-            $readyUpdates = @($availableUpdates | Where-Object { $_.properties.state -eq "Ready" })
+            $readyUpdates = @($availableUpdates | Where-Object { $_.properties.state -in $script:ReadyStates })
+            $prereqUpdates = @($availableUpdates | Where-Object { $_.properties.state -in $script:PrereqStates })
             
             $availableUpdateNames = ($availableUpdates | ForEach-Object { $_.name }) -join "; "
             $readyUpdateNames = ($readyUpdates | ForEach-Object { $_.name }) -join "; "
+            $prereqUpdateNames = ($prereqUpdates | ForEach-Object { $_.name }) -join "; "
             
+            # Extract SBE dependency info for HasPrerequisite/AdditionalContentRequired updates
+            $sbeDependencyInfo = ""
+            foreach ($pu in $prereqUpdates) {
+                $puProps = $pu.properties
+                if ($puProps.packageType -eq "SBE" -and $puProps.additionalProperties) {
+                    $addProps = if ($puProps.additionalProperties -is [string]) { $puProps.additionalProperties | ConvertFrom-Json -ErrorAction SilentlyContinue } else { $puProps.additionalProperties }
+                    if ($addProps) {
+                        $sbeParts = @()
+                        if ($addProps.SBEPublisher) { $sbeParts += "Publisher: $($addProps.SBEPublisher)" }
+                        if ($addProps.SBEFamily) { $sbeParts += "Family: $($addProps.SBEFamily)" }
+                        if ($sbeParts.Count -gt 0) { $sbeDependencyInfo = "$($pu.name): $($sbeParts -join '; ')" }
+                    }
+                }
+            }
+
             # Determine recommended update (prefer ready updates, fallback to any available)
             # Sort by YYMM version (SolutionXX.YYMM.XXXX.XX) to select the latest
             # Don't show updates the cluster is already on (AppliedSuccessfully/UpToDate states)
@@ -3572,7 +3769,7 @@ function Get-AzureLocalClusterUpdateReadiness {
             }
 
             # Determine if ready for update
-            $isReady = ($updateState -in @("UpdateAvailable", "Ready")) -and ($readyUpdates.Count -gt 0)
+            $isReady = ($updateState -in (@("UpdateAvailable") + $script:ReadyStates)) -and ($readyUpdates.Count -gt 0)
             
             # Get health state and check failures
             $healthState = if ($updateSummary -and $updateSummary.properties.healthState) { $updateSummary.properties.healthState } else { "Unknown" }
@@ -3583,6 +3780,9 @@ function Get-AzureLocalClusterUpdateReadiness {
             
             if ($isReady) {
                 Write-Host " Ready ($recommendedUpdate)" -ForegroundColor Green
+            }
+            elseif ($prereqUpdates.Count -gt 0 -and $readyUpdates.Count -eq 0) {
+                Write-Host " Has Prerequisite (SBE update required)" -ForegroundColor Yellow
             }
             elseif ($updateState -eq "UpdateInProgress") {
                 Write-Host " Update In Progress" -ForegroundColor Yellow
@@ -3598,33 +3798,37 @@ function Get-AzureLocalClusterUpdateReadiness {
             }
 
             $results += [PSCustomObject]@{
-                ClusterName         = $clusterName
-                ResourceGroup       = $rgName
-                SubscriptionId      = $subId
-                ClusterState        = $clusterInfo.properties.status
-                UpdateState         = $updateState
-                HealthState         = $healthState
-                ReadyForUpdate      = $isReady
-                AvailableUpdates    = $availableUpdateNames
-                ReadyUpdates        = $readyUpdateNames
-                RecommendedUpdate   = $recommendedUpdate
-                HealthCheckFailures = $healthCheckFailures
+                ClusterName              = $clusterName
+                ResourceGroup            = $rgName
+                SubscriptionId           = $subId
+                ClusterState             = $clusterInfo.properties.status
+                UpdateState              = $updateState
+                HealthState              = $healthState
+                ReadyForUpdate           = $isReady
+                AvailableUpdates         = $availableUpdateNames
+                ReadyUpdates             = $readyUpdateNames
+                HasPrerequisiteUpdates   = $prereqUpdateNames
+                SBEDependency            = $sbeDependencyInfo
+                RecommendedUpdate        = $recommendedUpdate
+                HealthCheckFailures      = $healthCheckFailures
             }
         }
         catch {
             Write-Host " Error: $($_.Exception.Message)" -ForegroundColor Red
             $results += [PSCustomObject]@{
-                ClusterName         = $clusterName
-                ResourceGroup       = $cluster.ResourceGroup
-                SubscriptionId      = $cluster.SubscriptionId
-                ClusterState        = "Error"
-                UpdateState         = "Error"
-                HealthState         = "Error"
-                ReadyForUpdate      = $false
-                AvailableUpdates    = ""
-                ReadyUpdates        = ""
-                RecommendedUpdate   = ""
-                HealthCheckFailures = $_.Exception.Message
+                ClusterName              = $clusterName
+                ResourceGroup            = $cluster.ResourceGroup
+                SubscriptionId           = $cluster.SubscriptionId
+                ClusterState             = "Error"
+                UpdateState              = "Error"
+                HealthState              = "Error"
+                ReadyForUpdate           = $false
+                AvailableUpdates         = ""
+                ReadyUpdates             = ""
+                HasPrerequisiteUpdates   = ""
+                SBEDependency            = ""
+                RecommendedUpdate        = ""
+                HealthCheckFailures      = $_.Exception.Message
             }
         }
     }
@@ -3639,13 +3843,28 @@ function Get-AzureLocalClusterUpdateReadiness {
     $readyClusters = @($results | Where-Object { $_.ReadyForUpdate -eq $true }).Count
     $notReadyClusters = $totalClusters - $readyClusters
     $inProgressClusters = @($results | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
+    $prereqClusters = @($results | Where-Object { $_.HasPrerequisiteUpdates -ne "" }).Count
 
     Write-Log -Message "" -Level Info
     Write-Log -Message "Total Clusters Assessed:    $totalClusters" -Level Info
     Write-Log -Message "Ready for Update:           $readyClusters" -Level Success
     Write-Log -Message "Not Ready / Other State:    $notReadyClusters" -Level $(if ($notReadyClusters -gt 0) { "Warning" } else { "Info" })
     Write-Log -Message "Update In Progress:         $inProgressClusters" -Level $(if ($inProgressClusters -gt 0) { "Warning" } else { "Info" })
+    if ($prereqClusters -gt 0) {
+        Write-Log -Message "Blocked by SBE Prereq:     $prereqClusters" -Level Warning
+    }
     
+    # Show SBE dependency details for clusters with HasPrerequisite updates
+    $clustersWithSBEDeps = @($results | Where-Object { $_.SBEDependency -ne "" })
+    if ($clustersWithSBEDeps.Count -gt 0) {
+        Write-Log -Message "" -Level Info
+        Write-Log -Message "Clusters Blocked by SBE Prerequisites:" -Level Warning
+        Write-Log -Message "  These clusters have updates that require a Solution Builder Extension (SBE) update from the hardware vendor before they can proceed." -Level Warning
+        foreach ($dep in $clustersWithSBEDeps) {
+            Write-Log -Message "  $($dep.ClusterName): $($dep.SBEDependency)" -Level Warning
+        }
+    }
+
     # Show health state breakdown
     $healthFailures = @($results | Where-Object { $_.HealthState -eq "Failure" }).Count
     $healthWarnings = @($results | Where-Object { $_.HealthState -eq "Warning" }).Count
@@ -3754,19 +3973,42 @@ function Get-AzureLocalClusterUpdateReadiness {
 function Get-AzureLocalClusterInventory {
     <#
     .SYNOPSIS
-        Gets an inventory of all Azure Local clusters with their UpdateRing tag status.
+        Gets an inventory of Azure Local clusters with their UpdateRing tag status.
 
     .DESCRIPTION
-        Uses Azure Resource Graph to query all Azure Local (Azure Stack HCI) clusters
-        across all accessible subscriptions. Returns cluster details including the 
-        value of the 'UpdateRing' tag (or indicates if the tag doesn't exist).
+        Queries Azure Local (Azure Stack HCI) clusters and returns cluster details
+        including the value of the 'UpdateRing' tag (or indicates if the tag doesn't exist).
+        
+        Supports multiple input methods:
+        - All clusters via Azure Resource Graph (default)
+        - Specific clusters by Resource ID
+        - Specific clusters by name
+        - Clusters matching an UpdateRing tag value
         
         The output can be exported to CSV for use with Excel to plan and populate
         UpdateRing tag values, then used as input for Set-AzureLocalClusterUpdateRingTag.
 
+    .PARAMETER ClusterResourceIds
+        An array of full Azure Resource IDs for the clusters to inventory.
+        Example: "/subscriptions/xxx/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01"
+
+    .PARAMETER ClusterNames
+        An array of Azure Local cluster names to inventory.
+
+    .PARAMETER ScopeByUpdateRingTag
+        When specified, finds clusters by the 'UpdateRing' tag via Azure Resource Graph.
+        Must be used together with -UpdateRingValue.
+
+    .PARAMETER UpdateRingValue
+        The value of the 'UpdateRing' tag to match when using -ScopeByUpdateRingTag.
+
+    .PARAMETER ResourceGroupName
+        The resource group containing the clusters (only used with -ClusterNames).
+
     .PARAMETER SubscriptionId
         Optional. Limit the query to a specific Azure subscription ID.
-        If not specified, queries across all accessible subscriptions.
+        If not specified, queries across all accessible subscriptions (default mode)
+        or uses the current subscription (for -ClusterNames).
 
     .PARAMETER ExportPath
         Optional. Path to export the inventory. Supports CSV and JSON formats.
@@ -3776,6 +4018,18 @@ function Get-AzureLocalClusterInventory {
     .EXAMPLE
         # Get inventory of all clusters across all subscriptions
         Get-AzureLocalClusterInventory
+
+    .EXAMPLE
+        # Get inventory for specific clusters by Resource ID
+        Get-AzureLocalClusterInventory -ClusterResourceIds @("/subscriptions/xxx/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01")
+
+    .EXAMPLE
+        # Get inventory for clusters by name
+        Get-AzureLocalClusterInventory -ClusterNames @("Cluster01", "Cluster02") -ResourceGroupName "MyRG"
+
+    .EXAMPLE
+        # Get inventory for clusters in a specific UpdateRing
+        Get-AzureLocalClusterInventory -ScopeByUpdateRingTag -UpdateRingValue "Wave1"
 
     .EXAMPLE
         # Get inventory and export to CSV for editing in Excel
@@ -3804,10 +4058,26 @@ function Get-AzureLocalClusterInventory {
         Version: 0.5.7
         Author: Neil Bird, Microsoft.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'All')]
     [OutputType([PSCustomObject[]])]
     param(
-        [Parameter(Mandatory = $false)]
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByResourceId')]
+        [string[]]$ClusterResourceIds,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByName')]
+        [string[]]$ClusterNames,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [switch]$ScopeByUpdateRingTag,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [string]$UpdateRingValue,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'All')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
         [string]$SubscriptionId,
 
         [Parameter(Mandatory = $false)]
@@ -3824,6 +4094,7 @@ function Get-AzureLocalClusterInventory {
     Write-Log -Message "" -Level Info
 
     # Verify Azure CLI is installed and logged in
+    Test-AzCliAvailable | Out-Null
     try {
         $null = az account show 2>$null
         if ($LASTEXITCODE -ne 0) {
@@ -3832,49 +4103,153 @@ function Get-AzureLocalClusterInventory {
         Write-Log -Message "Azure CLI authentication verified" -Level Success
     }
     catch {
-        Write-Log -Message "Azure CLI is not installed or not logged in. Please install Azure CLI and run 'az login'." -Level Error
+        Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
         return
     }
 
-    # Ensure resource-graph extension is installed
-    if (-not (Install-AzGraphExtension)) {
-        Write-Log -Message "Failed to install Azure CLI 'resource-graph' extension. Please install manually: az extension add --name resource-graph" -Level Error
-        return
-    }
-
-    Write-Log -Message "Querying Azure Resource Graph for all Azure Local clusters..." -Level Info
-
-    # Build Azure Resource Graph query - use single line to avoid escaping issues with az CLI
-    $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | project id, name, resourceGroup, subscriptionId, tags | order by name asc"
-
-    try {
-        # Build the command with optional subscription filter
-        if ($SubscriptionId) {
-            Write-Log -Message "  Filtering to subscription: $SubscriptionId" -Level Verbose
-            $argResult = az graph query -q $argQuery --subscriptions $SubscriptionId --first 1000 2>&1
-        }
-        else {
-            Write-Log -Message "  Querying across all accessible subscriptions" -Level Verbose
-            $argResult = az graph query -q $argQuery --first 1000 2>&1
-        }
-
-        if ($LASTEXITCODE -ne 0) {
-            $errorMessage = $argResult | Out-String
-            Write-Log -Message "Azure Resource Graph query failed: $errorMessage" -Level Error
+    # Ensure resource-graph extension is installed (needed for All and ByTag modes)
+    if ($PSCmdlet.ParameterSetName -in @('All', 'ByTag')) {
+        if (-not (Install-AzGraphExtension)) {
+            Write-Log -Message "Failed to install Azure CLI 'resource-graph' extension. Please install manually: az extension add --name resource-graph" -Level Error
             return
         }
+    }
 
-        $clusters = $argResult | ConvertFrom-Json
+    # Build cluster data based on parameter set
+    $clusterData = @()
 
-        if (-not $clusters.data -or $clusters.data.Count -eq 0) {
-            Write-Log -Message "No Azure Local clusters found." -Level Warning
+    if ($PSCmdlet.ParameterSetName -eq 'ByResourceId') {
+        # Direct REST lookup for each Resource ID
+        Write-Log -Message "Looking up $($ClusterResourceIds.Count) cluster(s) by Resource ID..." -Level Info
+        $apiVer = $script:DefaultApiVersion
+        foreach ($resourceId in $ClusterResourceIds) {
+            $clusterName = ($resourceId -split '/')[-1]
+            Write-Host "  Checking: $clusterName..." -ForegroundColor Gray -NoNewline
+            try {
+                $uri = "https://management.azure.com${resourceId}?api-version=$apiVer"
+                $clusterInfo = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+                if ($LASTEXITCODE -eq 0 -and $clusterInfo) {
+                    $rgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                    $subId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                    $clusterData += [PSCustomObject]@{
+                        id             = $clusterInfo.id
+                        name           = $clusterInfo.name
+                        resourceGroup  = $rgName
+                        subscriptionId = $subId
+                        tags           = $clusterInfo.tags
+                    }
+                    Write-Host " Found" -ForegroundColor Green
+                }
+                else {
+                    Write-Host " Not Found" -ForegroundColor Red
+                    Write-Log -Message "Cluster not found: $resourceId" -Level Warning
+                }
+            }
+            catch {
+                Write-Host " Error" -ForegroundColor Red
+                Write-Log -Message "Error looking up '$resourceId': $($_.Exception.Message)" -Level Warning
+            }
+        }
+    }
+    elseif ($PSCmdlet.ParameterSetName -eq 'ByName') {
+        # Look up clusters by name
+        if (-not $SubscriptionId) {
+            $SubscriptionId = (az account show --query id -o tsv)
+        }
+        Write-Log -Message "Looking up $($ClusterNames.Count) cluster(s) by name..." -Level Info
+        foreach ($name in $ClusterNames) {
+            Write-Host "  Checking: $name..." -ForegroundColor Gray -NoNewline
+            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
+                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId
+            if ($clusterInfo) {
+                $rgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                $subId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                $clusterData += [PSCustomObject]@{
+                    id             = $clusterInfo.id
+                    name           = $clusterInfo.name
+                    resourceGroup  = $rgName
+                    subscriptionId = $subId
+                    tags           = $clusterInfo.tags
+                }
+                Write-Host " Found" -ForegroundColor Green
+            }
+            else {
+                Write-Host " Not Found" -ForegroundColor Red
+                Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
+            }
+        }
+    }
+    elseif ($PSCmdlet.ParameterSetName -eq 'ByTag') {
+        # Query by UpdateRing tag via ARG
+        Write-Log -Message "Querying Azure Resource Graph for clusters with tag 'UpdateRing' = '$UpdateRingValue'..." -Level Info
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id, name, resourceGroup, subscriptionId, tags | order by name asc"
+        try {
+            $argResult = az graph query -q $argQuery --first 1000 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log -Message "Azure Resource Graph query failed." -Level Error
+                return
+            }
+            $clusters = ($argResult | ConvertFrom-Json).data
+            if (-not $clusters -or $clusters.Count -eq 0) {
+                Write-Log -Message "No clusters found with tag 'UpdateRing' = '$UpdateRingValue'" -Level Warning
+                return @()
+            }
+            Write-Log -Message "Found $($clusters.Count) cluster(s) matching tag criteria" -Level Success
+            $clusterData = $clusters
+        }
+        catch {
+            Write-Log -Message "Error querying Azure Resource Graph: $_" -Level Error
+            return
+        }
+    }
+    else {
+        # Default: All clusters via ARG
+        Write-Log -Message "Querying Azure Resource Graph for all Azure Local clusters..." -Level Info
+
+        # Build Azure Resource Graph query - use single line to avoid escaping issues with az CLI
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | project id, name, resourceGroup, subscriptionId, tags | order by name asc"
+
+        try {
+            # Build the command with optional subscription filter
+            if ($SubscriptionId) {
+                Write-Log -Message "  Filtering to subscription: $SubscriptionId" -Level Verbose
+                $argResult = az graph query -q $argQuery --subscriptions $SubscriptionId --first 1000 2>&1
+            }
+            else {
+                Write-Log -Message "  Querying across all accessible subscriptions" -Level Verbose
+                $argResult = az graph query -q $argQuery --first 1000 2>&1
+            }
+
+            if ($LASTEXITCODE -ne 0) {
+                $errorMessage = $argResult | Out-String
+                Write-Log -Message "Azure Resource Graph query failed: $errorMessage" -Level Error
+                return
+            }
+
+            $clusters = $argResult | ConvertFrom-Json
+
+            if (-not $clusters.data -or $clusters.data.Count -eq 0) {
+                Write-Log -Message "No Azure Local clusters found." -Level Warning
+                return @()
+            }
+            $clusterData = $clusters.data
+        }
+        catch {
+            Write-Log -Message "Error querying Azure Resource Graph: $($_.Exception.Message)" -Level Error
             return @()
         }
+    }
 
+    if ($clusterData.Count -eq 0) {
+        Write-Log -Message "No clusters to inventory." -Level Warning
+        return @()
+    }
+
+    try {
         # Get subscription names for better readability
         Write-Log -Message "Retrieving subscription details..." -Level Info
         $subscriptionMap = @{}
-        $uniqueSubIds = $clusters.data | Select-Object -ExpandProperty subscriptionId -Unique
+        $uniqueSubIds = $clusterData | Select-Object -ExpandProperty subscriptionId -Unique
         
         foreach ($subId in $uniqueSubIds) {
             try {
@@ -3893,7 +4268,7 @@ function Get-AzureLocalClusterInventory {
 
         # Build inventory results
         $inventory = @()
-        foreach ($cluster in $clusters.data) {
+        foreach ($cluster in $clusterData) {
             # Get UpdateRing tag value
             $updateRingValue = $null
             if ($cluster.tags -and $cluster.tags.PSObject.Properties['UpdateRing']) {
@@ -3994,6 +4369,583 @@ function Get-AzureLocalClusterInventory {
         return @()
     }
 }
+
+#region Update Schedule Tag Helpers (v0.6.5)
+
+# Tag name constants for update scheduling
+$script:UpdateWindowTagName = 'UpdateWindow'
+$script:UpdateExclusionsTagName = 'UpdateExclusions'
+
+# Day abbreviation mapping (3-letter English, case-insensitive input)
+$script:DayMap = [ordered]@{
+    'Mon' = [DayOfWeek]::Monday
+    'Tue' = [DayOfWeek]::Tuesday
+    'Wed' = [DayOfWeek]::Wednesday
+    'Thu' = [DayOfWeek]::Thursday
+    'Fri' = [DayOfWeek]::Friday
+    'Sat' = [DayOfWeek]::Saturday
+    'Sun' = [DayOfWeek]::Sunday
+}
+$script:DayAbbreviations = @('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+
+function ConvertFrom-AzLocalUpdateWindow {
+    <#
+    .SYNOPSIS
+        Parses an UpdateWindow tag value into structured window objects.
+    .DESCRIPTION
+        Parses the compact maintenance window syntax used in the UpdateWindow Azure resource tag
+        into structured objects suitable for schedule evaluation and display.
+
+        Syntax: <days>:<HH:MM>-<HH:MM>[;<days>:<HH:MM>-<HH:MM>]
+        Days: Mon,Tue,Wed,Thu,Fri,Sat,Sun (ranges with -), * or Daily for all days
+        Times: 24-hour UTC. Overnight wraps supported (22:00-06:00 = wraps to next day).
+    .PARAMETER WindowString
+        The UpdateWindow tag value to parse.
+    .OUTPUTS
+        PSCustomObject[] with Days (DayOfWeek[]), StartTime (TimeSpan), EndTime (TimeSpan), Overnight (bool)
+    .EXAMPLE
+        ConvertFrom-AzLocalUpdateWindow -WindowString "Sat-Sun:02:00-06:00"
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WindowString
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WindowString)) {
+        throw "UpdateWindow value cannot be empty."
+    }
+
+    # Azure tag values max 256 chars
+    if ($WindowString.Length -gt 256) {
+        throw "UpdateWindow value exceeds Azure tag limit of 256 characters (length: $($WindowString.Length))."
+    }
+
+    $windows = @()
+    $segments = $WindowString -split ';'
+
+    foreach ($segment in $segments) {
+        $segment = $segment.Trim()
+        if ([string]::IsNullOrWhiteSpace($segment)) { continue }
+
+        # Parse <days>:<start>-<end>
+        if ($segment -notmatch '^([^:]+):(\d{2}:\d{2})-(\d{2}:\d{2})$') {
+            throw "Invalid window segment syntax: '$segment'. Expected format: <days>:<HH:MM>-<HH:MM>"
+        }
+
+        $daysPart = $matches[1]
+        $startStr = $matches[2]
+        $endStr = $matches[3]
+
+        # Parse time components (PS 5.1 compatible - avoid TryParse [ref] issues)
+        $startTime = $null
+        $endTime = $null
+        try { $startTime = [TimeSpan]::Parse($startStr) }
+        catch { throw "Invalid start time '$startStr' in segment '$segment'." }
+        try { $endTime = [TimeSpan]::Parse($endStr) }
+        catch { throw "Invalid end time '$endStr' in segment '$segment'." }
+
+        # Parse days
+        $resolvedDays = @()
+
+        if ($daysPart -eq '*' -or $daysPart -ieq 'Daily') {
+            $resolvedDays = @([DayOfWeek]::Monday, [DayOfWeek]::Tuesday, [DayOfWeek]::Wednesday,
+                              [DayOfWeek]::Thursday, [DayOfWeek]::Friday, [DayOfWeek]::Saturday,
+                              [DayOfWeek]::Sunday)
+        }
+        else {
+            $daySpecs = $daysPart -split ','
+            foreach ($spec in $daySpecs) {
+                $spec = $spec.Trim()
+                if ($spec -match '^(\w{3})-(\w{3})$') {
+                    # Day range (e.g., Mon-Fri, Sat-Sun)
+                    $rangeStart = $matches[1]
+                    $rangeEnd = $matches[2]
+
+                    # Find indices in ordered day list
+                    $startIdx = -1; $endIdx = -1
+                    for ($i = 0; $i -lt $script:DayAbbreviations.Count; $i++) {
+                        if ($script:DayAbbreviations[$i] -ieq $rangeStart) { $startIdx = $i }
+                        if ($script:DayAbbreviations[$i] -ieq $rangeEnd) { $endIdx = $i }
+                    }
+                    if ($startIdx -lt 0) { throw "Invalid day abbreviation '$rangeStart' in segment '$segment'. Valid: Mon,Tue,Wed,Thu,Fri,Sat,Sun" }
+                    if ($endIdx -lt 0) { throw "Invalid day abbreviation '$rangeEnd' in segment '$segment'. Valid: Mon,Tue,Wed,Thu,Fri,Sat,Sun" }
+
+                    # Handle wrap-around (e.g., Fri-Mon)
+                    if ($startIdx -le $endIdx) {
+                        for ($i = $startIdx; $i -le $endIdx; $i++) {
+                            $resolvedDays += $script:DayMap[$script:DayAbbreviations[$i]]
+                        }
+                    }
+                    else {
+                        # Wrap: Fri-Mon = Fri,Sat,Sun,Mon
+                        for ($i = $startIdx; $i -lt 7; $i++) {
+                            $resolvedDays += $script:DayMap[$script:DayAbbreviations[$i]]
+                        }
+                        for ($i = 0; $i -le $endIdx; $i++) {
+                            $resolvedDays += $script:DayMap[$script:DayAbbreviations[$i]]
+                        }
+                    }
+                }
+                elseif ($spec -match '^\w{3}$') {
+                    # Single day
+                    $matched = $false
+                    foreach ($abbr in $script:DayAbbreviations) {
+                        if ($abbr -ieq $spec) {
+                            $resolvedDays += $script:DayMap[$abbr]
+                            $matched = $true
+                            break
+                        }
+                    }
+                    if (-not $matched) { throw "Invalid day abbreviation '$spec' in segment '$segment'. Valid: Mon,Tue,Wed,Thu,Fri,Sat,Sun" }
+                }
+                else {
+                    throw "Invalid day specification '$spec' in segment '$segment'. Use 3-letter abbreviations (Mon-Sun), ranges (Mon-Fri), or * / Daily."
+                }
+            }
+        }
+
+        $overnight = ($endTime -le $startTime)
+
+        $windows += [PSCustomObject]@{
+            Days      = @($resolvedDays | Select-Object -Unique)
+            StartTime = $startTime
+            EndTime   = $endTime
+            Overnight = $overnight
+            Raw       = $segment
+        }
+    }
+
+    if ($windows.Count -eq 0) {
+        throw "No valid window segments found in '$WindowString'."
+    }
+
+    return $windows
+}
+
+function ConvertFrom-AzLocalUpdateExclusion {
+    <#
+    .SYNOPSIS
+        Parses an UpdateExclusions tag value into structured date range objects.
+    .DESCRIPTION
+        Parses the exclusion date range syntax used in the UpdateExclusions Azure resource tag.
+        Supports wildcards (*) for recurring annual patterns.
+
+        Syntax: <start_date>/<end_date>[,<start_date>/<end_date>]
+        Dates: YYYY-MM-DD format. * replaces a single digit for recurring patterns.
+    .PARAMETER ExclusionString
+        The UpdateExclusions tag value to parse.
+    .PARAMETER ReferenceDate
+        The date to use for resolving wildcards. Defaults to today (UTC).
+    .OUTPUTS
+        PSCustomObject[] with StartDate (datetime), EndDate (datetime), IsWildcard (bool), Raw (string)
+    .EXAMPLE
+        ConvertFrom-AzLocalUpdateExclusion -ExclusionString "2026-12-20/2027-01-03"
+    .EXAMPLE
+        ConvertFrom-AzLocalUpdateExclusion -ExclusionString "20**-12-20/20**-01-03"
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExclusionString,
+
+        [Parameter(Mandatory = $false)]
+        [datetime]$ReferenceDate = (Get-Date).ToUniversalTime().Date
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExclusionString)) {
+        throw "UpdateExclusions value cannot be empty."
+    }
+
+    if ($ExclusionString.Length -gt 256) {
+        throw "UpdateExclusions value exceeds Azure tag limit of 256 characters (length: $($ExclusionString.Length))."
+    }
+
+    $exclusions = @()
+    $ranges = $ExclusionString -split ','
+
+    foreach ($range in $ranges) {
+        $range = $range.Trim()
+        if ([string]::IsNullOrWhiteSpace($range)) { continue }
+
+        if ($range -notmatch '^([0-9*]{4}-[0-9*]{2}-[0-9*]{2})/([0-9*]{4}-[0-9*]{2}-[0-9*]{2})$') {
+            throw "Invalid exclusion range syntax: '$range'. Expected format: YYYY-MM-DD/YYYY-MM-DD (wildcards * allowed)."
+        }
+
+        $startPattern = $matches[1]
+        $endPattern = $matches[2]
+        $isWildcard = ($startPattern -match '\*') -or ($endPattern -match '\*')
+
+        if ($isWildcard) {
+            # Resolve wildcards against current year and adjacent years
+            $resolvedRanges = Resolve-WildcardDateRange -StartPattern $startPattern -EndPattern $endPattern -ReferenceDate $ReferenceDate
+            foreach ($resolved in $resolvedRanges) {
+                $exclusions += [PSCustomObject]@{
+                    StartDate  = $resolved.StartDate
+                    EndDate    = $resolved.EndDate
+                    IsWildcard = $true
+                    Raw        = $range
+                }
+            }
+        }
+        else {
+            # Fixed dates (PS 5.1 compatible - avoid TryParseExact [ref] issues)
+            $startDate = $null
+            $endDate = $null
+            try { $startDate = [datetime]::ParseExact($startPattern, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture) }
+            catch { throw "Invalid start date '$startPattern' in exclusion range '$range'." }
+            try { $endDate = [datetime]::ParseExact($endPattern, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture) }
+            catch { throw "Invalid end date '$endPattern' in exclusion range '$range'." }
+
+            if ($endDate -lt $startDate) {
+                throw "End date ($endPattern) is before start date ($startPattern) in exclusion range '$range'."
+            }
+
+            $exclusions += [PSCustomObject]@{
+                StartDate  = $startDate
+                EndDate    = $endDate
+                IsWildcard = $false
+                Raw        = $range
+            }
+        }
+    }
+
+    return $exclusions
+}
+
+function Resolve-WildcardDateRange {
+    <#
+    .SYNOPSIS
+        Resolves wildcard date patterns to concrete date ranges relative to a reference date.
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StartPattern,
+
+        [Parameter(Mandatory = $true)]
+        [string]$EndPattern,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$ReferenceDate
+    )
+
+    $results = @()
+    $refYear = $ReferenceDate.Year
+
+    # Try resolving for current year, previous year, and next year
+    foreach ($yearOffset in @(-1, 0, 1)) {
+        $tryYear = $refYear + $yearOffset
+        $yearStr = $tryYear.ToString('D4')
+
+        $resolvedStart = Resolve-WildcardDate -Pattern $StartPattern -YearDigits $yearStr
+        $resolvedEnd = Resolve-WildcardDate -Pattern $EndPattern -YearDigits $yearStr
+
+        if (-not $resolvedStart -or -not $resolvedEnd) { continue }
+
+        # Handle cross-year ranges (Dec start -> Jan end)
+        if ($resolvedEnd -lt $resolvedStart) {
+            # Try end date with next year
+            $nextYearStr = ($tryYear + 1).ToString('D4')
+            $resolvedEnd = Resolve-WildcardDate -Pattern $EndPattern -YearDigits $nextYearStr
+            if (-not $resolvedEnd) { continue }
+        }
+
+        if ($resolvedEnd -lt $resolvedStart) { continue }
+
+        # Only include ranges that overlap with a reasonable window around reference date
+        # (exclude ranges entirely more than 1 year in the past or future)
+        $windowStart = $ReferenceDate.AddYears(-1)
+        $windowEnd = $ReferenceDate.AddYears(1)
+        if ($resolvedEnd -ge $windowStart -and $resolvedStart -le $windowEnd) {
+            # Avoid duplicates
+            $isDuplicate = $false
+            foreach ($existing in $results) {
+                if ($existing.StartDate -eq $resolvedStart -and $existing.EndDate -eq $resolvedEnd) {
+                    $isDuplicate = $true
+                    break
+                }
+            }
+            if (-not $isDuplicate) {
+                $results += [PSCustomObject]@{
+                    StartDate = $resolvedStart
+                    EndDate   = $resolvedEnd
+                }
+            }
+        }
+    }
+
+    return $results
+}
+
+function Resolve-WildcardDate {
+    <#
+    .SYNOPSIS
+        Resolves a single date pattern with wildcards by substituting year digits.
+    #>
+    [CmdletBinding()]
+    [OutputType([datetime])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Pattern,
+
+        [Parameter(Mandatory = $true)]
+        [string]$YearDigits
+    )
+
+    # Replace * characters in the year portion with digits from YearDigits
+    $resolved = $Pattern.ToCharArray()
+    $yearChars = $YearDigits.ToCharArray()
+
+    # Pattern is YYYY-MM-DD (10 chars). Year is chars 0-3.
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($resolved[$i] -eq '*') {
+            $resolved[$i] = $yearChars[$i]
+        }
+    }
+    # Month/day wildcards: substitute with reference digits (less common, but support it)
+    # For month (chars 5-6) and day (chars 8-9), wildcards don't make semantic sense
+    # for date ranges, so we reject them
+    $resolvedStr = [string]::new($resolved)
+    if ($resolvedStr -match '\*') {
+        # Wildcards remain in month/day - this is not valid for date ranges
+        return $null
+    }
+
+    try {
+        return [datetime]::ParseExact($resolvedStr, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-AzLocalUpdateWindow {
+    <#
+    .SYNOPSIS
+        Tests whether a given time falls within a maintenance window.
+    .DESCRIPTION
+        Parses the UpdateWindow tag value and checks if the specified (or current) UTC time
+        falls within any of the defined maintenance windows.
+    .PARAMETER WindowString
+        The UpdateWindow tag value to evaluate.
+    .PARAMETER TestTime
+        The UTC time to test against. Defaults to current UTC time.
+    .OUTPUTS
+        PSCustomObject with Allowed (bool), Reason (string), MatchedWindow (string or $null)
+    .EXAMPLE
+        Test-AzLocalUpdateWindow -WindowString "Sat-Sun:02:00-06:00"
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WindowString,
+
+        [Parameter(Mandatory = $false)]
+        [datetime]$TestTime = (Get-Date).ToUniversalTime()
+    )
+
+    $windows = ConvertFrom-AzLocalUpdateWindow -WindowString $WindowString
+
+    $testDay = $TestTime.DayOfWeek
+    $testTimeOfDay = $TestTime.TimeOfDay
+
+    foreach ($window in $windows) {
+        if ($window.Overnight) {
+            # Overnight window: Check if we're in the evening portion (same day) or morning portion (next day)
+            # Evening: testDay is in Days AND time >= start
+            # Morning: previous day is in Days AND time < end
+            $inEvening = ($testDay -in $window.Days) -and ($testTimeOfDay -ge $window.StartTime)
+
+            # Calculate previous day
+            $prevDay = if ($testDay -eq [DayOfWeek]::Sunday) { [DayOfWeek]::Saturday }
+                       elseif ($testDay -eq [DayOfWeek]::Monday) { [DayOfWeek]::Sunday }
+                       elseif ($testDay -eq [DayOfWeek]::Tuesday) { [DayOfWeek]::Monday }
+                       elseif ($testDay -eq [DayOfWeek]::Wednesday) { [DayOfWeek]::Tuesday }
+                       elseif ($testDay -eq [DayOfWeek]::Thursday) { [DayOfWeek]::Wednesday }
+                       elseif ($testDay -eq [DayOfWeek]::Friday) { [DayOfWeek]::Thursday }
+                       else { [DayOfWeek]::Friday }
+            $inMorning = ($prevDay -in $window.Days) -and ($testTimeOfDay -lt $window.EndTime)
+
+            if ($inEvening -or $inMorning) {
+                return [PSCustomObject]@{
+                    Allowed       = $true
+                    Reason        = "Within maintenance window: $($window.Raw)"
+                    MatchedWindow = $window.Raw
+                }
+            }
+        }
+        else {
+            # Same-day window: testDay in Days AND time between start and end
+            if (($testDay -in $window.Days) -and ($testTimeOfDay -ge $window.StartTime) -and ($testTimeOfDay -lt $window.EndTime)) {
+                return [PSCustomObject]@{
+                    Allowed       = $true
+                    Reason        = "Within maintenance window: $($window.Raw)"
+                    MatchedWindow = $window.Raw
+                }
+            }
+        }
+    }
+
+    # No window matched
+    $dayNames = ($windows | ForEach-Object { $_.Raw }) -join '; '
+    return [PSCustomObject]@{
+        Allowed       = $false
+        Reason        = "Current time ($(($TestTime).ToString('yyyy-MM-dd HH:mm')) UTC, $testDay) is outside all maintenance windows: $dayNames"
+        MatchedWindow = $null
+    }
+}
+
+function Test-AzLocalUpdateExclusion {
+    <#
+    .SYNOPSIS
+        Tests whether a given date falls within any exclusion (blackout) period.
+    .DESCRIPTION
+        Parses the UpdateExclusions tag value and checks if the specified (or current) UTC date
+        falls within any of the defined blackout periods.
+    .PARAMETER ExclusionString
+        The UpdateExclusions tag value to evaluate.
+    .PARAMETER TestDate
+        The UTC date to test against. Defaults to current UTC date.
+    .OUTPUTS
+        PSCustomObject with Excluded (bool), Reason (string), MatchedExclusion (string or $null)
+    .EXAMPLE
+        Test-AzLocalUpdateExclusion -ExclusionString "2026-12-20/2027-01-03"
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExclusionString,
+
+        [Parameter(Mandatory = $false)]
+        [datetime]$TestDate = (Get-Date).ToUniversalTime().Date
+    )
+
+    $testDateOnly = $TestDate.Date
+    $exclusions = ConvertFrom-AzLocalUpdateExclusion -ExclusionString $ExclusionString -ReferenceDate $testDateOnly
+
+    foreach ($exclusion in $exclusions) {
+        if ($testDateOnly -ge $exclusion.StartDate -and $testDateOnly -le $exclusion.EndDate) {
+            return [PSCustomObject]@{
+                Excluded         = $true
+                Reason           = "Date $($testDateOnly.ToString('yyyy-MM-dd')) falls within exclusion period: $($exclusion.Raw) ($($exclusion.StartDate.ToString('yyyy-MM-dd')) to $($exclusion.EndDate.ToString('yyyy-MM-dd')))"
+                MatchedExclusion = $exclusion.Raw
+            }
+        }
+    }
+
+    return [PSCustomObject]@{
+        Excluded         = $false
+        Reason           = "Date $($testDateOnly.ToString('yyyy-MM-dd')) is not in any exclusion period"
+        MatchedExclusion = $null
+    }
+}
+
+function Test-AzLocalUpdateScheduleAllowed {
+    <#
+    .SYNOPSIS
+        Master gate that evaluates whether an update is allowed based on UpdateWindow and UpdateExclusions tags.
+    .DESCRIPTION
+        Combines maintenance window and exclusion period checks to determine if an update
+        should proceed. Exclusions take priority over windows (a blackout period blocks
+        updates even if they fall within a maintenance window).
+
+        If neither tag is present/provided, updates are allowed (no restrictions).
+    .PARAMETER UpdateWindow
+        The UpdateWindow tag value (maintenance schedule). If empty/null, no window restriction.
+    .PARAMETER UpdateExclusions
+        The UpdateExclusions tag value (blackout periods). If empty/null, no exclusion restriction.
+    .PARAMETER TestTime
+        The UTC time to test against. Defaults to current UTC time.
+    .OUTPUTS
+        PSCustomObject with Allowed (bool), Reason (string), WindowOpen (bool or $null),
+        ExclusionActive (bool or $null), Details (string)
+    .EXAMPLE
+        Test-AzLocalUpdateScheduleAllowed -UpdateWindow "Sat-Sun:02:00-06:00" -UpdateExclusions "2026-12-20/2027-01-03"
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$UpdateWindow,
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$UpdateExclusions,
+
+        [Parameter(Mandatory = $false)]
+        [datetime]$TestTime = (Get-Date).ToUniversalTime()
+    )
+
+    $windowOpen = $null
+    $exclusionActive = $null
+    $details = @()
+
+    # Check exclusions first (they take priority)
+    if (-not [string]::IsNullOrWhiteSpace($UpdateExclusions)) {
+        try {
+            $exclusionResult = Test-AzLocalUpdateExclusion -ExclusionString $UpdateExclusions -TestDate $TestTime.Date
+            $exclusionActive = $exclusionResult.Excluded
+            if ($exclusionActive) {
+                return [PSCustomObject]@{
+                    Allowed          = $false
+                    Reason           = "Blocked by exclusion period"
+                    WindowOpen       = $null
+                    ExclusionActive  = $true
+                    Details          = $exclusionResult.Reason
+                }
+            }
+            $details += "No active exclusion"
+        }
+        catch {
+            $details += "Exclusion parse error: $($_.Exception.Message)"
+        }
+    }
+
+    # Check maintenance window
+    if (-not [string]::IsNullOrWhiteSpace($UpdateWindow)) {
+        try {
+            $windowResult = Test-AzLocalUpdateWindow -WindowString $UpdateWindow -TestTime $TestTime
+            $windowOpen = $windowResult.Allowed
+            if (-not $windowOpen) {
+                return [PSCustomObject]@{
+                    Allowed          = $false
+                    Reason           = "Outside maintenance window"
+                    WindowOpen       = $false
+                    ExclusionActive  = $false
+                    Details          = $windowResult.Reason
+                }
+            }
+            $details += "Within window: $($windowResult.MatchedWindow)"
+        }
+        catch {
+            $details += "Window parse error: $($_.Exception.Message)"
+        }
+    }
+
+    # All checks passed (or no tags defined)
+    $reason = if ([string]::IsNullOrWhiteSpace($UpdateWindow) -and [string]::IsNullOrWhiteSpace($UpdateExclusions)) {
+        "No schedule restrictions defined"
+    } else {
+        "Update allowed by schedule"
+    }
+
+    return [PSCustomObject]@{
+        Allowed          = $true
+        Reason           = $reason
+        WindowOpen       = $windowOpen
+        ExclusionActive  = if ($null -eq $exclusionActive) { $null } else { $false }
+        Details          = $details -join '; '
+    }
+}
+
+#endregion Update Schedule Tag Helpers
 
 function Set-AzureLocalClusterUpdateRingTag {
     <#
@@ -4178,6 +5130,7 @@ function Set-AzureLocalClusterUpdateRingTag {
     Write-Log -Message "" -Level Info
 
     # Verify Azure CLI authentication
+    Test-AzCliAvailable | Out-Null
     try {
         $null = az account show 2>&1
         if ($LASTEXITCODE -ne 0) {
@@ -4187,7 +5140,7 @@ function Set-AzureLocalClusterUpdateRingTag {
         Write-Log -Message "Azure CLI authentication verified" -Level Success
     }
     catch {
-        Write-Log -Message "Failed to verify Azure CLI authentication: $_" -Level Error
+        Write-Log -Message "Azure CLI is not logged in. Please run 'az login' first." -Level Error
         return
     }
 
@@ -5677,6 +6630,7 @@ function Test-AzureLocalClusterHealth {
     Write-Log -Message "========================================" -Level Header
 
     # Verify Azure CLI
+    Test-AzCliAvailable | Out-Null
     try {
         $null = az account show 2>$null
         if ($LASTEXITCODE -ne 0) { throw "Not logged in" }
@@ -5751,7 +6705,7 @@ function Test-AzureLocalClusterHealth {
                 Write-Host " Not Found" -ForegroundColor Red
                 $results += [PSCustomObject]@{
                     ClusterName = $clusterName; HealthState = "Not Found"; Passed = $false
-                    CriticalCount = 0; WarningCount = 0; InfoCount = 0; Failures = @()
+                    CriticalCount = 0; WarningCount = 0; Failures = @()
                 }
                 $overallPassed = $false
                 continue
@@ -5770,7 +6724,7 @@ function Test-AzureLocalClusterHealth {
                 Write-Host " No Health Data" -ForegroundColor Yellow
                 $results += [PSCustomObject]@{
                     ClusterName = $clusterName; HealthState = "No Data"; Passed = $true
-                    CriticalCount = 0; WarningCount = 0; InfoCount = 0; Failures = @()
+                    CriticalCount = 0; WarningCount = 0; Failures = @()
                 }
                 continue
             }
@@ -5778,12 +6732,13 @@ function Test-AzureLocalClusterHealth {
             $healthState = if ($summary.properties.healthState) { $summary.properties.healthState } else { "Unknown" }
             $healthChecks = $summary.properties.healthCheckResult
 
-            # Extract failures
+            # Extract failures (Critical and Warning only; use -BlockingOnly for Critical only)
             $failures = @()
             foreach ($check in $healthChecks) {
                 if ($check.status -eq "Failed") {
                     $sev = if ($check.severity) { $check.severity } else { "Unknown" }
                     if ($BlockingOnly -and $sev -ne "Critical") { continue }
+                    if ($sev -eq "Informational") { continue }
                     $displayName = if ($check.displayName) { $check.displayName } elseif ($check.name) { ($check.name -split '/')[0] } else { "Unknown" }
                     $failures += [PSCustomObject]@{
                         ClusterName        = $clusterName
@@ -5799,7 +6754,6 @@ function Test-AzureLocalClusterHealth {
 
             $critCount = @($failures | Where-Object { $_.Severity -eq "Critical" }).Count
             $warnCount = @($failures | Where-Object { $_.Severity -eq "Warning" }).Count
-            $infoCount = @($failures | Where-Object { $_.Severity -eq "Informational" }).Count
             $passed = ($critCount -eq 0)
             if (-not $passed) { $overallPassed = $false }
 
@@ -5820,7 +6774,6 @@ function Test-AzureLocalClusterHealth {
                 Passed        = $passed
                 CriticalCount = $critCount
                 WarningCount  = $warnCount
-                InfoCount     = $infoCount
                 Failures      = $failures
             }
         }
@@ -5828,7 +6781,7 @@ function Test-AzureLocalClusterHealth {
             Write-Host " Error: $($_.Exception.Message)" -ForegroundColor Red
             $results += [PSCustomObject]@{
                 ClusterName = $clusterName; HealthState = "Error"; Passed = $false
-                CriticalCount = 0; WarningCount = 0; InfoCount = 0; Failures = @()
+                CriticalCount = 0; WarningCount = 0; Failures = @()
             }
             $overallPassed = $false
         }
@@ -6056,6 +7009,7 @@ function Get-AzureLocalFleetStatusData {
     )
 
     # Verify Azure CLI
+    Test-AzCliAvailable | Out-Null
     try {
         $null = az account show 2>$null
         if ($LASTEXITCODE -ne 0) { throw "Not logged in" }
@@ -6208,6 +7162,7 @@ function Get-AzureLocalFleetStatusData {
                         ClusterName = $clusterName; ResourceGroup = $rgName; SubscriptionId = $subId
                         ClusterState = "Not Found"; UpdateState = "N/A"; HealthState = "N/A"
                         ReadyForUpdate = $false; AvailableUpdates = ""; ReadyUpdates = ""
+                        HasPrerequisiteUpdates = ""; SBEDependency = ""
                         RecommendedUpdate = ""; HealthCheckFailures = ""
                     }
                     $clusterDetails += [PSCustomObject]@{
@@ -6237,10 +7192,28 @@ function Get-AzureLocalFleetStatusData {
                 $updatesResponse = az rest --method GET --uri $updatesUri 2>$null | ConvertFrom-Json
                 $hasUpdates = ($LASTEXITCODE -eq 0 -and $null -ne $updatesResponse -and $null -ne $updatesResponse.value)
                 $availableUpdates = if ($hasUpdates) { @($updatesResponse.value) } else { @() }
-                $readyUpdates = @($availableUpdates | Where-Object { $_.properties.state -eq "Ready" })
+                $readyUpdates = @($availableUpdates | Where-Object { $_.properties.state -in $script:ReadyStates })
+                $prereqUpdates = @($availableUpdates | Where-Object { $_.properties.state -in $script:PrereqStates })
 
                 $availableUpdateNames = ($availableUpdates | ForEach-Object { $_.name }) -join "; "
                 $readyUpdateNames = ($readyUpdates | ForEach-Object { $_.name }) -join "; "
+                $prereqUpdateNames = ($prereqUpdates | ForEach-Object { $_.name }) -join "; "
+
+                # Extract SBE dependency info for HasPrerequisite/AdditionalContentRequired updates
+                $sbeDependencyInfo = ""
+                foreach ($pu in $prereqUpdates) {
+                    $puProps = $pu.properties
+                    if ($puProps.packageType -eq "SBE" -and $puProps.additionalProperties) {
+                        $addProps = if ($puProps.additionalProperties -is [string]) { $puProps.additionalProperties | ConvertFrom-Json -ErrorAction SilentlyContinue } else { $puProps.additionalProperties }
+                        if ($addProps) {
+                            $sbeParts = @()
+                            if ($addProps.SBEPublisher) { $sbeParts += "Publisher: $($addProps.SBEPublisher)" }
+                            if ($addProps.SBEFamily) { $sbeParts += "Family: $($addProps.SBEFamily)" }
+                            if ($sbeParts.Count -gt 0) { $sbeDependencyInfo = "$($pu.name): $($sbeParts -join '; ')" }
+                        }
+                    }
+                }
+
                 $recommendedUpdate = ""
                 $isUpToDateState = $updateState -in @("UpToDate", "AppliedSuccessfully")
                 if ($readyUpdates.Count -gt 0) {
@@ -6251,7 +7224,7 @@ function Get-AzureLocalFleetStatusData {
                     $latestAvailable = Get-LatestUpdateByYYMM -Updates $availableUpdates
                     $recommendedUpdate = $latestAvailable.name
                 }
-                $isReady = ($updateState -in @("UpdateAvailable", "Ready")) -and ($readyUpdates.Count -gt 0)
+                $isReady = ($updateState -in (@("UpdateAvailable") + $script:ReadyStates)) -and ($readyUpdates.Count -gt 0)
 
                 $healthCheckFailures = ""
                 if ($hasSummary -and $healthState -notin @("Success", "Unknown")) {
@@ -6262,7 +7235,8 @@ function Get-AzureLocalFleetStatusData {
                     ClusterName = $clusterName; ResourceGroup = $rgName; SubscriptionId = $subId
                     ClusterState = $clusterState; UpdateState = $updateState; HealthState = $healthState
                     ReadyForUpdate = $isReady; AvailableUpdates = $availableUpdateNames
-                    ReadyUpdates = $readyUpdateNames; RecommendedUpdate = $recommendedUpdate
+                    ReadyUpdates = $readyUpdateNames; HasPrerequisiteUpdates = $prereqUpdateNames
+                    SBEDependency = $sbeDependencyInfo; RecommendedUpdate = $recommendedUpdate
                     HealthCheckFailures = $healthCheckFailures
                 }
                 $clusterDetails += [PSCustomObject]@{
@@ -6354,6 +7328,7 @@ function Get-AzureLocalFleetStatusData {
 
                 # Status output
                 if ($isReady) { Write-Host " Ready" -ForegroundColor Green }
+                elseif ($prereqUpdates.Count -gt 0 -and $readyUpdates.Count -eq 0) { Write-Host " Has Prerequisite" -ForegroundColor Yellow }
                 elseif ($updateState -eq "UpdateInProgress") { Write-Host " In Progress" -ForegroundColor Yellow }
                 elseif ($updateState -in @("UpToDate", "AppliedSuccessfully")) { Write-Host " Up to Date" -ForegroundColor Green }
                 elseif ($healthState -eq "Failure") { Write-Host " Health Failure" -ForegroundColor Red }
@@ -6365,6 +7340,7 @@ function Get-AzureLocalFleetStatusData {
                     ClusterName = $clusterName; ResourceGroup = $rgName; SubscriptionId = $subId
                     ClusterState = "Error"; UpdateState = "Error"; HealthState = "Error"
                     ReadyForUpdate = $false; AvailableUpdates = ""; ReadyUpdates = ""
+                    HasPrerequisiteUpdates = ""; SBEDependency = ""
                     RecommendedUpdate = ""; HealthCheckFailures = $_.Exception.Message
                 }
                 $clusterDetails += [PSCustomObject]@{
@@ -6555,6 +7531,7 @@ function New-AzureLocalFleetStatusHtmlReport {
     Add-Type -AssemblyName System.Web -ErrorAction SilentlyContinue
 
     # Verify Azure CLI
+    Test-AzCliAvailable | Out-Null
     try {
         $null = az account show 2>$null
         if ($LASTEXITCODE -ne 0) { throw "Not logged in" }

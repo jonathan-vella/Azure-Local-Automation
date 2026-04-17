@@ -77,6 +77,26 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.6.6 - HasPrerequisite & SBE Dependency Awareness
+- IMPROVED: `Get-AzureLocalAvailableUpdates` multi-cluster mode now shows HasPrerequisite/AdditionalContentRequired counts alongside Ready counts
+- IMPROVED: `Get-AzureLocalAvailableUpdates` result objects include new PackageType and SBEDependency properties for updates blocked by SBE prerequisites
+- IMPROVED: `Get-AzureLocalAvailableUpdates` summary section shows clusters blocked by SBE prerequisites with vendor dependency details (Publisher, Family, ReleaseNotes)
+- IMPROVED: `Start-AzureLocalClusterUpdate` now provides detailed SBE dependency info when updates are blocked by HasPrerequisite/AdditionalContentRequired state
+- IMPROVED: `Get-AzureLocalClusterUpdateReadiness` surfaces HasPrerequisiteUpdates and SBEDependency in result objects
+- IMPROVED: `Get-AzureLocalClusterUpdateReadiness` console output shows 'Has Prerequisite (SBE update required)' for clusters with only prerequisite-blocked updates
+- IMPROVED: `Get-AzureLocalClusterUpdateReadiness` summary section includes count of clusters blocked by SBE prerequisites with vendor-specific guidance
+- IMPROVED: `Get-AzureLocalFleetStatusData` sequential collection now extracts HasPrerequisite and SBE dependency info into readiness data
+- IMPROVED: `Get-AzureLocalFleetStatusData` status output shows 'Has Prerequisite' for clusters with only prerequisite-blocked updates
+- Aligned with Azure Local LENS workbook update state handling: Ready, ReadyToInstall, AdditionalContentRequired, HasPrerequisite, HealthCheckFailed, Downloading, Preparing, HealthChecking
+
+## Version 0.6.5 - Azure CLI Availability Check & Auto-Install
+- NEW: `Test-AzCliAvailable` internal helper function checks if Azure CLI (az) is installed
+- NEW: When az CLI is not found, interactively prompts to download and install from https://aka.ms/installazurecliwindowsx64
+- NEW: In non-interactive environments (CI/CD), throws immediately with clear install instructions
+- NEW: All exported functions and SingleCluster code paths now call Test-AzCliAvailable before any az CLI invocation
+- FIXED: `Get-AzureLocalClusterInfo`, `Invoke-AzureLocalUpdateApply`, and SingleCluster paths in `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns` previously had no az CLI availability check - would throw unhelpful CommandNotFoundException
+- IMPROVED: Existing auth check catch blocks now differentiate 'az not installed' from 'az not logged in' with distinct error messages
+
 ## Version 0.6.4 - HTML Report Performance Optimization & Fleet Status Data
 - NEW: `Get-AzureLocalFleetStatusData` function for efficient single-pass fleet data collection with parallel Start-Job support
 - NEW: -ThrottleLimit parameter (default: 4, max: 8) splits cluster list into parallel batches via Start-Job
