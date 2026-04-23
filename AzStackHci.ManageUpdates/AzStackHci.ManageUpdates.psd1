@@ -3,7 +3,7 @@
     RootModule = 'AzStackHci.ManageUpdates.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.6.4'
+    ModuleVersion = '0.6.5'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -79,38 +79,23 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.6.4 - Improved update readiness checks: HasPrerequisite, Az CLI Check & Fleet Status Data
+## Version 0.6.5 - Fix Set-AzureLocalClusterUpdateRingTag to actually set UpdateWindow / UpdateExclusions tags
 
-### Security & Code Quality (2026-04-17 revision)
-- SECURITY: Connect-AzureLocalServicePrincipal now accepts -ServicePrincipalSecret as [SecureString] (preferred) or [string] with a security warning. Plaintext secret memory is scrubbed after az login returns.
-- NEW: Invoke-AzRestJson internal helper centralises az rest invocation with safe LASTEXITCODE checks and ConvertFrom-Json error handling.
-- NEW: ConvertTo-AzLocalAdditionalProperties internal helper safely parses ARM additionalProperties (all 5 SBE-parse call sites now use it).
-- FIXED: Get-AzureLocalFleetStatusData parallel Start-Job path - module path validated, accumulators use List[object] instead of O(n squared) += pattern, and failed jobs surface affected clusters via new FailedClusters result property.
-- IMPROVED: Auth/Az CLI installer functions use Write-Log instead of Write-Host for CI-friendly logging.
-- IMPROVED: Test-AzCliAvailable MSI install uses 30-minute timeout to prevent indefinite hangs.
-- FIXED: Test-AzureLocalUpdateScheduleAllowed ExclusionActive return simplified (behaviour-preserving clarity fix).
+### Fixed
+- FIXED (HIGH): Set-AzureLocalClusterUpdateRingTag silently ignored the UpdateWindow and UpdateExclusions columns from a CSV produced by Get-AzureLocalClusterInventory. Inside the processing loop, four references used an undefined variable ($cluster) instead of the actual loop variable ($clusterEntry), so:
+  - Clusters with an existing UpdateRing tag were skipped even when the CSV changed UpdateWindow/UpdateExclusions (the "has new schedule tags" detection always evaluated to false).
+  - On new or forced writes the PATCH body only contained UpdateRing; UpdateWindow/UpdateExclusions columns from the CSV were never sent to Azure.
+  - Because Set-StrictMode is not enforced at module scope, the typo silently returned $null instead of throwing.
 
-### Inter-Function & Fleet-Scale Fixes (2026-04-17 revision)
-- FIXED: Test-AzureLocalUpdateScheduleAllowed and Test-AzLocalUpdateWindow normalise non-UTC -TestTime (Local/Unspecified DateTimeKind) to UTC with a Verbose note. Previously callers passing Get-Date (local time) could silently evaluate the wrong maintenance-window hour/day.
-- FIXED: Get-LatestUpdateByYYMM now emits a Verbose warning when no input name matches Solution<XX>.<YYMM>.<build>.<rev>. Previously, when every input failed to parse, all entries mapped to YYMM=0 and the arbitrary first element of a stable sort was returned.
-- IMPROVED: Get-AzureLocalAvailableUpdates -ClusterResourceId (SingleCluster) now prints banner + Summary + Format-Table, matching multi-cluster UX. Passing -Raw preserves the legacy silent behaviour for internal callers.
+### Added
+- NEW: -UpdateWindowValue and -UpdateExclusionsValue optional parameters on Set-AzureLocalClusterUpdateRingTag -ClusterResourceIds. Direct-invocation mode is now symmetrical with CSV mode and can set all three tags (UpdateRing, UpdateWindow, UpdateExclusions) in a single PATCH operation. Both parameters are also written into the CSV operations log.
+- NEW: Set-StrictMode -Version 1.0 is now enforced at module scope. Catches references to uninitialized variables (the class of bug above) at runtime instead of silently returning $null. All 239 Pester tests pass unchanged. Latest was deliberately not selected because ARM REST responses legitimately omit optional properties.
 
-### Original 0.6.4 content
-- NEW: Test-AzCliAvailable internal helper checks if Azure CLI (az) is installed before any az invocation
-- NEW: Get-AzureLocalFleetStatusData function for efficient single-pass fleet data collection with parallel Start-Job support
-- NEW: -ThrottleLimit parameter (default: 4, max: 8) splits cluster list into parallel batches via Start-Job
-- NEW: -ExportPath exports fleet data as JSON artifact for CI/CD pipeline job passing
-- NEW: -StatusData parameter on New-AzureLocalFleetStatusHtmlReport accepts pre-collected data to skip API calls
-- NEW: Stable JSON schema (v1.0) with SchemaVersion, Timestamp, ModuleVersion, Scope, Readiness, ClusterDetails, LatestRuns, HealthResults
-- IMPROVED: All per-update state filters now use module-level constants aligned with LENS workbook v0.8.6 states
-- IMPROVED: ReadyToInstall state recognized alongside Ready across all functions
-- IMPROVED: HasPrerequisite/SBE dependency awareness across Get-AzureLocalAvailableUpdates, Start-AzureLocalClusterUpdate, Get-AzureLocalClusterUpdateReadiness, Get-AzureLocalFleetStatusData
-- PERF: New-AzureLocalFleetStatusHtmlReport uses single-pass data collection (~63% API call reduction)
-- FIXED: Az CLI availability check prevents unhelpful CommandNotFoundException errors
-- FIXED: 'Up to Date' counter now recognizes 'AppliedSuccessfully' state from ARM API
-- FIXED: Recommended Update no longer shows the version a cluster is already on when state is AppliedSuccessfully/UpToDate
+### Notes
+- No API or JSON schema changes. No breaking changes.
+- Round-trip Get-AzureLocalClusterInventory -> edit CSV -> Set-AzureLocalClusterUpdateRingTag now correctly preserves all three tag columns.
 
-For release notes on previous versions (0.6.3 and earlier), see:
+For release notes on previous versions (0.6.4 and earlier), see:
 https://github.com/NeilBird/Azure-Local/blob/main/AzStackHci.ManageUpdates/CHANGELOG.md
 '@
 
