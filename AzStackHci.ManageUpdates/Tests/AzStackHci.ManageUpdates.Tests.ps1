@@ -2047,3 +2047,83 @@ Describe 'Get-AzureLocalFleetProgress (parallel dispatch via helpers)' {
 
 #endregion Integration: Get-AzureLocalFleetProgress parallel dispatch
 
+#region Integration: Get-AzureLocalUpdateSummary parallel dispatch
+
+Describe 'Get-AzureLocalUpdateSummary (multi-cluster parallel dispatch)' {
+
+    Context 'ThrottleLimit=1 inline fast-path' {
+
+        It 'Should return one row per input cluster and route through Invoke-AzRestJson with correct API version' {
+            InModuleScope AzStackHci.ManageUpdates {
+                # Shadow the native `az` exe so `az account show` succeeds without a real login
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                $script:seenUris = [System.Collections.Generic.List[string]]::new()
+                Mock Test-AzCliAvailable { return $true }
+                Mock Invoke-AzRestJson {
+                    param($Uri)
+                    [void]$script:seenUris.Add($Uri)
+                    $global:LASTEXITCODE = 0
+                    return [PSCustomObject]@{
+                        Ok = $true
+                        Data = [PSCustomObject]@{
+                            properties = [PSCustomObject]@{
+                                state       = if ($Uri -like '*cluster-a*') { 'UpToDate' } else { 'UpdateAvailable' }
+                                healthState = 'Success'
+                                currentVersion = '10.2506.0.28'
+                                lastUpdatedTime = '2025-10-01T10:00:00Z'
+                                lastCheckedTime = '2025-10-01T11:00:00Z'
+                                updateStateProperties = [PSCustomObject]@{ availableUpdates = 0 }
+                            }
+                        }
+                    }
+                }
+
+                $ids = @(
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-a'
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
+                )
+
+                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -ApiVersion '2025-10-01' -PassThru -ThrottleLimit 1
+
+                $results | Should -HaveCount 2
+                ($results | Where-Object ClusterName -eq 'cluster-a').UpdateState | Should -Be 'UpToDate'
+                ($results | Where-Object ClusterName -eq 'cluster-b').UpdateState | Should -Be 'UpdateAvailable'
+                $script:seenUris.Count | Should -Be 2
+                # Ensure the API version threaded through parallel dispatch matches caller's -ApiVersion
+                $script:seenUris | ForEach-Object { $_ | Should -Match 'api-version=2025-10-01' }
+                # Output rows should not contain the internal __DisplayTag field
+                foreach ($r in $results) {
+                    $r.PSObject.Properties.Name | Should -Not -Contain '__DisplayTag'
+                }
+            }
+        }
+
+        It 'Should produce a row with UpdateState=Error when Invoke-AzRestJson throws for a cluster' {
+            InModuleScope AzStackHci.ManageUpdates {
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                Mock Test-AzCliAvailable { return $true }
+                Mock Invoke-AzRestJson {
+                    param($Uri)
+                    if ($Uri -like '*cluster-bad*') { throw 'simulated REST error' }
+                    $global:LASTEXITCODE = 0
+                    return [PSCustomObject]@{
+                        Ok = $true
+                        Data = [PSCustomObject]@{
+                            properties = [PSCustomObject]@{ state = 'UpToDate'; healthState = 'Success' }
+                        }
+                    }
+                }
+                $ids = @(
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-good'
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-bad'
+                )
+                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                ($results | Where-Object ClusterName -eq 'cluster-good').UpdateState | Should -Be 'UpToDate'
+                ($results | Where-Object ClusterName -eq 'cluster-bad').UpdateState  | Should -Be 'Error'
+            }
+        }
+    }
+}
+
+#endregion Integration: Get-AzureLocalUpdateSummary parallel dispatch
+

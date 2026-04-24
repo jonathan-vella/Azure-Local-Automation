@@ -3055,6 +3055,12 @@ function Get-AzureLocalUpdateSummary {
         [ValidateSet('Auto', 'Csv', 'Json', 'JUnitXml')]
         [string]$ExportFormat = 'Auto',
 
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
+        [ValidateRange(1, 32)]
+        [int]$ThrottleLimit = 1,
+
         [Parameter(Mandatory = $false)]
         [switch]$PassThru
     )
@@ -3172,106 +3178,173 @@ function Get-AzureLocalUpdateSummary {
     Write-Log -Message "" -Level Info
     Write-Log -Message "Querying update summaries for $($clustersToProcess.Count) cluster(s)..." -Level Info
 
-    # Collect results
-    $results = @()
-
-    foreach ($cluster in $clustersToProcess) {
-        $clusterName = $cluster.Name
-        Write-Host "  Checking: $clusterName..." -ForegroundColor Gray -NoNewline
-
-        try {
-            # Get cluster info if we don't have ResourceId
-            $resourceId = $cluster.ResourceId
-            if (-not $resourceId) {
-                $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
-                    -ResourceGroupName $cluster.ResourceGroup `
-                    -SubscriptionId $cluster.SubscriptionId `
-                    -ApiVersion $ApiVersion
-                if ($clusterInfo) {
-                    $resourceId = $clusterInfo.id
+    # Per-cluster scriptblock - runs inline (ThrottleLimit=1) or inside
+    # Start-Job (ThrottleLimit>1). Returns an array of PSCustomObject rows.
+    # Note: Write-Host lives in the parent process after aggregation so
+    # coloured terminal output is deterministic regardless of job ordering.
+    $summaryJob = {
+        param(
+            [object[]]$Shard,
+            [string]$ApiVer,
+            [string]$ModulePath
+        )
+        if (-not (Get-Command -Name Invoke-AzRestJson -ErrorAction SilentlyContinue)) {
+            Import-Module $ModulePath -Force -ErrorAction Stop
+        }
+        $shardRows = foreach ($cluster in $Shard) {
+            $clusterName = $cluster.Name
+            try {
+                $resourceId = $cluster.ResourceId
+                if (-not $resourceId) {
+                    $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
+                        -ResourceGroupName $cluster.ResourceGroup `
+                        -SubscriptionId $cluster.SubscriptionId `
+                        -ApiVersion $ApiVer
+                    if ($clusterInfo) { $resourceId = $clusterInfo.id }
                 }
-            }
 
-            if (-not $resourceId) {
-                Write-Host " Not Found" -ForegroundColor Red
-                $results += [PSCustomObject]@{
-                    ClusterName          = $clusterName
-                    ResourceGroup        = $cluster.ResourceGroup
-                    SubscriptionId       = $cluster.SubscriptionId
-                    UpdateState          = "Not Found"
-                    HealthState          = "N/A"
-                    CurrentVersion       = ""
-                    LastUpdated          = ""
-                    LastChecked          = ""
-                    AvailableUpdatesCount = 0
+                if (-not $resourceId) {
+                    [PSCustomObject]@{
+                        ClusterName           = $clusterName
+                        ResourceGroup         = $cluster.ResourceGroup
+                        SubscriptionId        = $cluster.SubscriptionId
+                        UpdateState           = 'Not Found'
+                        HealthState           = 'N/A'
+                        CurrentVersion        = ''
+                        LastUpdated           = ''
+                        LastChecked           = ''
+                        AvailableUpdatesCount = 0
+                        __DisplayTag          = 'NotFound'
+                    }
+                    continue
                 }
-                continue
-            }
 
-            # Get update summary
-            $uri = "https://management.azure.com$resourceId/updateSummaries/default?api-version=$ApiVersion"
-            $summary = (Invoke-AzRestJson -Uri $uri).Data
+                $uri = "https://management.azure.com$resourceId/updateSummaries/default?api-version=$ApiVer"
+                $summary = (Invoke-AzRestJson -Uri $uri).Data
 
-            if ($LASTEXITCODE -eq 0 -and $summary) {
-                $props = $summary.properties
-                $state = if ($props.state) { $props.state } else { "Unknown" }
-                $healthState = if ($props.healthState) { $props.healthState } else { "Unknown" }
-                
-                # Color output based on state
-                if ($state -eq "UpdateAvailable" -or $state -eq "Ready") {
-                    Write-Host " $state" -ForegroundColor Green
-                }
-                elseif ($state -eq "UpdateInProgress") {
-                    Write-Host " $state" -ForegroundColor Yellow
-                }
-                elseif ($healthState -eq "Failure") {
-                    Write-Host " $state ($healthState)" -ForegroundColor Red
+                if ($LASTEXITCODE -eq 0 -and $summary) {
+                    $props = $summary.properties
+                    $state = if ($props.state) { $props.state } else { 'Unknown' }
+                    $healthState = if ($props.healthState) { $props.healthState } else { 'Unknown' }
+                    [PSCustomObject]@{
+                        ClusterName           = $clusterName
+                        ResourceGroup         = $cluster.ResourceGroup
+                        SubscriptionId        = $cluster.SubscriptionId
+                        UpdateState           = $state
+                        HealthState           = $healthState
+                        CurrentVersion        = if ($props.currentVersion) { $props.currentVersion } else { '' }
+                        LastUpdated           = if ($props.lastUpdatedTime) { ([datetime]$props.lastUpdatedTime).ToString('yyyy-MM-dd HH:mm') } else { '' }
+                        LastChecked           = if ($props.lastCheckedTime) { ([datetime]$props.lastCheckedTime).ToString('yyyy-MM-dd HH:mm') } else { '' }
+                        AvailableUpdatesCount = if ($props.updateStateProperties -and $props.updateStateProperties.availableUpdates) { $props.updateStateProperties.availableUpdates } else { 0 }
+                        __DisplayTag          = 'Summary'
+                    }
                 }
                 else {
-                    Write-Host " $state" -ForegroundColor Gray
-                }
-
-                $results += [PSCustomObject]@{
-                    ClusterName           = $clusterName
-                    ResourceGroup         = $cluster.ResourceGroup
-                    SubscriptionId        = $cluster.SubscriptionId
-                    UpdateState           = $state
-                    HealthState           = $healthState
-                    CurrentVersion        = if ($props.currentVersion) { $props.currentVersion } else { "" }
-                    LastUpdated           = if ($props.lastUpdatedTime) { ([datetime]$props.lastUpdatedTime).ToString("yyyy-MM-dd HH:mm") } else { "" }
-                    LastChecked           = if ($props.lastCheckedTime) { ([datetime]$props.lastCheckedTime).ToString("yyyy-MM-dd HH:mm") } else { "" }
-                    AvailableUpdatesCount = if ($props.updateStateProperties -and $props.updateStateProperties.availableUpdates) { $props.updateStateProperties.availableUpdates } else { 0 }
+                    [PSCustomObject]@{
+                        ClusterName           = $clusterName
+                        ResourceGroup         = $cluster.ResourceGroup
+                        SubscriptionId        = $cluster.SubscriptionId
+                        UpdateState           = 'No Summary'
+                        HealthState           = 'Unknown'
+                        CurrentVersion        = ''
+                        LastUpdated           = ''
+                        LastChecked           = ''
+                        AvailableUpdatesCount = 0
+                        __DisplayTag          = 'NoSummary'
+                    }
                 }
             }
-            else {
-                Write-Host " No Summary" -ForegroundColor Gray
-                $results += [PSCustomObject]@{
+            catch {
+                [PSCustomObject]@{
                     ClusterName           = $clusterName
                     ResourceGroup         = $cluster.ResourceGroup
                     SubscriptionId        = $cluster.SubscriptionId
-                    UpdateState           = "No Summary"
-                    HealthState           = "Unknown"
-                    CurrentVersion        = ""
-                    LastUpdated           = ""
-                    LastChecked           = ""
+                    UpdateState           = 'Error'
+                    HealthState           = 'Error'
+                    CurrentVersion        = ''
+                    LastUpdated           = ''
+                    LastChecked           = ''
                     AvailableUpdatesCount = 0
+                    __DisplayTag          = "Error:$($_.Exception.Message)"
                 }
             }
         }
-        catch {
-            Write-Host " Error: $($_.Exception.Message)" -ForegroundColor Red
-            $results += [PSCustomObject]@{
-                ClusterName           = $clusterName
-                ResourceGroup         = $cluster.ResourceGroup
-                SubscriptionId        = $cluster.SubscriptionId
-                UpdateState           = "Error"
-                HealthState           = "Error"
-                CurrentVersion        = ""
-                LastUpdated           = ""
-                LastChecked           = ""
-                AvailableUpdatesCount = 0
+        return , @($shardRows)
+    }
+
+    # Normalise cluster hashtables to PSCustomObjects so Start-Job
+    # serialisation preserves .ResourceId/.ResourceGroup/.SubscriptionId/.Name.
+    $shardInputs = @($clustersToProcess | ForEach-Object {
+        [PSCustomObject]@{
+            ResourceId     = $_.ResourceId
+            Name           = $_.Name
+            ResourceGroup  = $_.ResourceGroup
+            SubscriptionId = $_.SubscriptionId
+        }
+    })
+
+    $jobResults = Invoke-FleetJobsInParallel `
+        -InputItems $shardInputs `
+        -ScriptBlock $summaryJob `
+        -ThrottleLimit $ThrottleLimit `
+        -ArgumentList @($ApiVersion) `
+        -ActivityName 'UpdateSummary'
+
+    # Merge shard outputs; preserve input ordering for deterministic display.
+    $resultsByName = @{}
+    foreach ($jr in $jobResults) {
+        if ($jr.Failed) {
+            foreach ($item in @($jr.Items)) {
+                $resultsByName[$item.Name] = [PSCustomObject]@{
+                    ClusterName           = $item.Name
+                    ResourceGroup         = $item.ResourceGroup
+                    SubscriptionId        = $item.SubscriptionId
+                    UpdateState           = 'Error'
+                    HealthState           = 'Error'
+                    CurrentVersion        = ''
+                    LastUpdated           = ''
+                    LastChecked           = ''
+                    AvailableUpdatesCount = 0
+                    __DisplayTag          = "Error:Batch job failed: $($jr.Error)"
+                }
+            }
+            continue
+        }
+        foreach ($row in @($jr.Output)) {
+            if (-not $row -or -not $row.ClusterName) { continue }
+            $resultsByName[$row.ClusterName] = $row
+        }
+    }
+
+    # Emit the same colourised per-cluster output the pre-parallel code
+    # produced, now driven by structured tags so ordering matches input.
+    $results = @()
+    foreach ($cluster in $clustersToProcess) {
+        $row = $resultsByName[$cluster.Name]
+        if (-not $row) { continue }
+        Write-Host "  Checking: $($cluster.Name)..." -ForegroundColor Gray -NoNewline
+        $tag = if ($row.PSObject.Properties['__DisplayTag']) { $row.__DisplayTag } else { 'Summary' }
+        switch -Regex ($tag) {
+            '^NotFound$'  { Write-Host ' Not Found' -ForegroundColor Red }
+            '^NoSummary$' { Write-Host ' No Summary' -ForegroundColor Gray }
+            '^Error:(.*)' { Write-Host " Error: $($matches[1])" -ForegroundColor Red }
+            default {
+                if ($row.UpdateState -eq 'UpdateAvailable' -or $row.UpdateState -eq 'Ready') {
+                    Write-Host " $($row.UpdateState)" -ForegroundColor Green
+                }
+                elseif ($row.UpdateState -eq 'UpdateInProgress') {
+                    Write-Host " $($row.UpdateState)" -ForegroundColor Yellow
+                }
+                elseif ($row.HealthState -eq 'Failure') {
+                    Write-Host " $($row.UpdateState) ($($row.HealthState))" -ForegroundColor Red
+                }
+                else {
+                    Write-Host " $($row.UpdateState)" -ForegroundColor Gray
+                }
             }
         }
+        # Drop the internal __DisplayTag from the result we return to the caller.
+        $results += ($row | Select-Object -Property * -ExcludeProperty __DisplayTag)
     }
 
     # Display Summary
@@ -3296,7 +3369,7 @@ function Get-AzureLocalUpdateSummary {
     # Display results table
     Write-Log -Message "" -Level Info
     Write-Log -Message "Detailed Results:" -Level Header
-    $results | Format-Table ClusterName, ResourceGroup, UpdateState, HealthState, CurrentVersion, AvailableUpdatesCount -AutoSize
+    $results | Format-Table ClusterName, ResourceGroup, UpdateState, HealthState, CurrentVersion, AvailableUpdatesCount -AutoSize | Out-Host
 
     # Export if path specified
     if ($ExportPath) {
