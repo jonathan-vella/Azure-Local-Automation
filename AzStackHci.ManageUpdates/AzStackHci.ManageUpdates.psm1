@@ -6983,7 +6983,7 @@ function Stop-AzureLocalFleetUpdate {
         This function sets a flag to stop after the current batch.
         It does not immediately halt the operation.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
     param(
         [Parameter(Mandatory = $false)]
         [switch]$SaveState,
@@ -7000,7 +7000,11 @@ function Stop-AzureLocalFleetUpdate {
         Write-Warning "No active fleet operation to stop."
         return
     }
-    
+
+    if (-not $PSCmdlet.ShouldProcess("Fleet operation $($script:FleetOperationState.RunId)", 'Stop fleet update')) {
+        return
+    }
+
     # Save state if requested
     if ($SaveState) {
         $path = if ($StateFilePath) { $StateFilePath } else { $script:FleetOperationState.StateFilePath }
@@ -8029,7 +8033,7 @@ function New-AzureLocalFleetStatusHtmlReport {
         $html = New-AzureLocalFleetStatusHtmlReport -ScopeByUpdateRingTag -UpdateRingValue "Production" -OutputPath "C:\Reports\prod.html" -PassThru
         Generates the report and also captures the HTML string for further use (e.g., email body).
     #>
-    [CmdletBinding(DefaultParameterSetName = 'All')]
+    [CmdletBinding(DefaultParameterSetName = 'All', SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     [OutputType([string])]
     param(
         [Parameter(Mandatory = $true, ParameterSetName = 'ByResourceId')]
@@ -8877,6 +8881,9 @@ function New-AzureLocalFleetStatusHtmlReport {
     $htmlContent = $sb.ToString()
 
     #--- Write to file ---
+    if (-not $PSCmdlet.ShouldProcess($OutputPath, 'Write HTML fleet status report')) {
+        return $htmlContent
+    }
     $outputDir = Split-Path -Path $OutputPath -Parent
     if ($outputDir -and -not (Test-Path $outputDir)) {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null

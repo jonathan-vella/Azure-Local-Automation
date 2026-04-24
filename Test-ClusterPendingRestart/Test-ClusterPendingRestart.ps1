@@ -202,7 +202,15 @@ $runspacePool.Open()
 
 # Script block for runspace jobs
 $nodeCheckScript = {
-    param($NodeName, $ClusterName, $NodeState, $ModulePath, $Credential, $TimeoutSeconds, $Detailed)
+    param(
+        [string]$NodeName,
+        [string]$ClusterName,
+        [string]$NodeState,
+        [string]$ModulePath,
+        [System.Management.Automation.PSCredential]$Credential,
+        [int]$TimeoutSeconds,
+        [bool]$Detailed
+    )
     
     # Import module in runspace
     Import-Module $ModulePath -Force -ErrorAction Stop

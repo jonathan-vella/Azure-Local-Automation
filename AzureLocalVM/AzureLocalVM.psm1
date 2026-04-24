@@ -928,7 +928,7 @@ function Test-AzureLocalVMImage {
                                             $detailedStatus = $imageStatus.properties.status.provisioningStatus.status
                                             $progressPercent = $imageStatus.properties.status.progressPercentage
                                             
-                                            if ($progressPercent -ne $null) {
+                                            if ($null -ne $progressPercent) {
                                                 $downloadSizeMB = $imageStatus.properties.status.downloadStatus.downloadSizeInMB
                                                 
                                                 # Try to calculate total size from progress percentage
