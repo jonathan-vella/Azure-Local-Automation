@@ -45,7 +45,7 @@ on:
           - 'false'
 
 env:
-  MODULE_PATH: './AzureLocal-Manage-Updates-Using-AUM-APIs'
+  MODULE_PATH: './AzStackHci.ManageUpdates'
 
 jobs:
   manage-tags:

@@ -31,7 +31,7 @@ parameters:
 
 variables:
   - name: modulePath
-    value: '$(System.DefaultWorkingDirectory)/AzureLocal-Manage-Updates-Using-AUM-APIs'
+    value: '$(System.DefaultWorkingDirectory)/AzStackHci.ManageUpdates'
 
 pool:
   vmImage: 'windows-latest'

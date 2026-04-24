@@ -32,7 +32,7 @@ parameters:
 
 variables:
   - name: modulePath
-    value: '$(System.DefaultWorkingDirectory)/AzureLocal-Manage-Updates-Using-AUM-APIs'
+    value: '$(System.DefaultWorkingDirectory)/AzStackHci.ManageUpdates'
 
 pool:
   vmImage: 'windows-latest'
@@ -224,7 +224,16 @@ stages:
                 Write-Host "##vso[task.setvariable variable=ScheduleBlocked;isOutput=true]$scheduleBlocked"
                 
                 if ($failed -gt 0) {
-                    Write-Host "##vso[task.logissue type=error]$failed cluster(s) failed to start updates"
+                    # Per-cluster failures are expected in large fleets (day-to-day environmental
+                    # issues on a small subset of clusters). Log as a warning so the partial
+                    # success for the healthy clusters is not lost. Only promote to a hard error
+                    # when the entire batch failed AND nothing started - that indicates a systemic
+                    # issue (auth, module, subscription scope) worth failing the stage on.
+                    if ($succeeded -eq 0 -and $skipped -eq 0 -and $healthBlocked -eq 0 -and $scheduleBlocked -eq 0) {
+                        Write-Host "##vso[task.logissue type=error]All $failed cluster(s) in scope failed to start updates. Review the Azure Local portal, cluster health, and the published update-results.xml for per-cluster detail."
+                    } else {
+                        Write-Host "##vso[task.logissue type=warning]$failed cluster(s) failed to start updates. $succeeded succeeded, $skipped skipped, $healthBlocked health-blocked, $scheduleBlocked schedule-blocked. See update-results.xml for per-cluster detail."
+                    }
                 }
                 if ($healthBlocked -gt 0) {
                     Write-Host "##vso[task.logissue type=warning]$healthBlocked cluster(s) blocked by critical health check failures"

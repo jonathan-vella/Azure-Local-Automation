@@ -22,7 +22,7 @@ on:
     - cron: '0 6 * * 1'
 
 env:
-  MODULE_PATH: './AzureLocal-Manage-Updates-Using-AUM-APIs'
+  MODULE_PATH: './AzStackHci.ManageUpdates'
 
 jobs:
   inventory-clusters:
