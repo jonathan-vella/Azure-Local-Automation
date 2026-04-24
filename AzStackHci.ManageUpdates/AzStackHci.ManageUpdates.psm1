@@ -9210,7 +9210,10 @@ function New-AzureLocalFleetStatusHtmlReport {
     if ($outputDir -and -not (Test-Path $outputDir)) {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     }
-    $htmlContent | Out-File -FilePath $OutputPath -Encoding UTF8 -Force
+    # Write UTF-8 *without* BOM. PowerShell 5.1's Out-File -Encoding UTF8
+    # emits a BOM which breaks some browsers' rendering of the first bytes
+    # and confuses downstream tooling (grep/diff/CI log viewers).
+    [System.IO.File]::WriteAllText($OutputPath, $htmlContent, [System.Text.UTF8Encoding]::new($false))
 
     Write-Log -Message "" -Level Info
     Write-Log -Message "HTML fleet status report written to: $OutputPath" -Level Success
