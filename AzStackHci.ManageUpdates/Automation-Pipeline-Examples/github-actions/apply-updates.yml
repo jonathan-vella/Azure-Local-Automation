@@ -29,6 +29,10 @@ on:
         options:
           - 'false'
           - 'true'
+      throttle_limit:
+        description: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16. Raise for large fleets.'
+        required: false
+        default: '4'
 
 env:
   MODULE_PATH: './AzureLocal-Manage-Updates-Using-AUM-APIs'
@@ -75,12 +79,14 @@ jobs:
       id: readiness
       env:
         INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        INPUT_THROTTLE_LIMIT: ${{ github.event.inputs.throttle_limit }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzStackHci.ManageUpdates.psd1" -Force
         
         $updateRing = $env:INPUT_UPDATE_RING
+        $throttle = [int]($env:INPUT_THROTTLE_LIMIT); if ($throttle -lt 1) { $throttle = 4 }
         
-        Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing'"
+        Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing' (ThrottleLimit=$throttle)"
         
         # Create output directory
         $outputDir = "./artifacts"
@@ -92,6 +98,7 @@ jobs:
         $results = Get-AzureLocalClusterUpdateReadiness `
             -ScopeByUpdateRingTag `
             -UpdateRingValue $updateRing `
+            -ThrottleLimit $throttle `
             -ExportPath $csvPath `
             -PassThru
         
@@ -158,12 +165,14 @@ jobs:
         INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
         INPUT_UPDATE_NAME: ${{ github.event.inputs.update_name }}
         INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        INPUT_THROTTLE_LIMIT: ${{ github.event.inputs.throttle_limit }}
       run: |
         Import-Module "${{ env.MODULE_PATH }}/AzStackHci.ManageUpdates.psd1" -Force
         
         $updateRing = $env:INPUT_UPDATE_RING
         $updateName = $env:INPUT_UPDATE_NAME
         $dryRun = $env:INPUT_DRY_RUN -eq "true"
+        $throttle = [int]($env:INPUT_THROTTLE_LIMIT); if ($throttle -lt 1) { $throttle = 4 }
         
         # Create output directory
         $outputDir = "./artifacts"

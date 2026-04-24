@@ -25,6 +25,11 @@ parameters:
     type: boolean
     default: true
 
+  - name: throttleLimit
+    displayName: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
+    type: number
+    default: 4
+
 variables:
   - name: modulePath
     value: '$(System.DefaultWorkingDirectory)/AzureLocal-Manage-Updates-Using-AUM-APIs'
@@ -64,8 +69,9 @@ stages:
                 Import-Module "$(modulePath)/AzStackHci.ManageUpdates.psd1" -Force
                 
                 $updateRing = "${{ parameters.updateRing }}"
+                $throttle = [int]"${{ parameters.throttleLimit }}"; if ($throttle -lt 1) { $throttle = 4 }
                 
-                Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing'"
+                Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing' (ThrottleLimit=$throttle)"
                 
                 # Create output directory
                 $outputDir = "$(Build.ArtifactStagingDirectory)"
@@ -75,6 +81,7 @@ stages:
                 $results = Get-AzureLocalClusterUpdateReadiness `
                     -ScopeByUpdateRingTag `
                     -UpdateRingValue $updateRing `
+                    -ThrottleLimit $throttle `
                     -ExportPath $csvPath `
                     -PassThru
                 

@@ -2,11 +2,51 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.6.5
+**Latest Version:** v0.7.0
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
 Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
+
+## What's New in v0.7.0
+
+The jump from `0.6.5` to `0.7.0` is a large, fleet-scale release focused on correctness at 1500+ clusters, true parallel execution, HTML report performance, and a round of security hardening. No breaking public-surface changes.
+
+### Fixed - Correctness at scale
+- **HIGH**: Azure Resource Graph queries were hardcoded to `az graph query --first 1000`. At 1500 clusters, 500 were silently dropped - no error, no warning. New private `Invoke-AzResourceGraphQuery` helper loops on the `$skipToken` until exhausted.
+- **HIGH**: `Invoke-AzureLocalFleetOperation -ThrottleLimit` previously only affected retry-backoff math; the per-cluster loop was fully sequential. At 1500 clusters that meant 4+ hour runs. Extracted the parallel `Start-Job` pattern into a shared private helper `Invoke-FleetJobsInParallel` and rerouted all fleet operations through it. `-ThrottleLimit` now controls concurrent API calls (default 4, range 1-16). PowerShell 5.1 compatibility preserved.
+- **HIGH**: `Get-AzureLocalClusterInventory` threw `The variable cannot be validated because the value '' is not a valid value for the UpdateRingValue variable.` whenever a cluster in the fleet was missing the `UpdateRing` tag. Root cause: the function's `[ValidatePattern]` parameter `$UpdateRingValue` collided with a loop-local `$updateRingValue` (PowerShell variable names are case-insensitive). Locals renamed to `$ringTagValue` / `$windowTagValue` / `$exclusionsTagValue`. `-AllClusters` reports now complete against real-world mixed-tag fleets.
+
+### Changed - Performance (parallel by default)
+- These per-cluster functions now run in parallel batches via the shared helper: `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Set-AzureLocalClusterUpdateRingTag`, `Get-AzureLocalUpdateRuns`. Expected 5-10x speedup on 1500-cluster runs (readiness check from ~10 min to ~1-2 min).
+- `New-AzureLocalFleetStatusHtmlReport` renderer rewritten for O(n) scaling: pre-indexed `LatestRuns` and `ClusterDetails` hashtables, HTML encoding moved to collection time, per-cluster portal URLs precomputed once. ~60% faster HTML render at 1500 clusters.
+- HTML report output now written as UTF-8 **without BOM** via `[System.IO.File]::WriteAllText` + `UTF8Encoding($false)`.
+- New opt-in pass-through parameters (`-UpdateSummary`, `-AvailableUpdates`) so pre-fetched data can be reused across a pipeline, avoiding redundant ARM reads.
+
+### Changed - `-AllClusters` cap removed
+- `New-AzureLocalFleetStatusHtmlReport -AllClusters` and `Get-AzureLocalFleetStatusData -AllClusters` previously truncated at the first 100 clusters silently. **The default cap is removed - all discovered clusters are now included.** New `-MaxClusters <int>` parameter (default 0 = no cap, range 1-100000) lets callers optionally trim the slice for targeted runs or testing.
+
+### Fixed - Bugs and strict-mode hardening
+- All `| ConvertFrom-Json` call sites outside `Invoke-AzRestJson` audited - previously any non-JSON ARM response (HTTP 204, error HTML, stray stderr on stdout) would throw uncaught under Strict Mode.
+- Empty-pipeline guards added to health-failures and latest-run aggregation paths so they no longer silently return `$null`.
+- Update-name sort is now deterministic (secondary sort on `$_.name`); unparseable YYMM components log a `Warning` instead of silently grouping at position 0.
+- Parallel CSV log writes: each worker writes a per-job CSV; coordinator merges at the end. Eliminates line interleaving / header corruption that `Add-Content` cannot protect against.
+- Tag property access is now robust to both `Hashtable` and `PSCustomObject` tag shapes returned by different ARM endpoints.
+- Malformed `UpdateWindow` / `UpdateExclusions` tag values are now **blocking** by default (update skipped, `Error` logged) unless `-Force` is specified. Previously logged as a warning and the update proceeded.
+
+### Security
+- `-UpdateRingValue` is whitelist-validated against `^[a-zA-Z0-9._-]+$` before KQL interpolation in ARG queries.
+- New private helper `ConvertTo-SafeCsvField` prefixes formula-leader characters (`=`, `+`, `-`, `@`, tab) with a single quote and strips embedded CR/LF. Applied uniformly to every field written by the CSV loggers. Prevents Excel formula injection via attacker-controlled cluster name / error message.
+- User-supplied output paths (`-OutputPath`, `-ExportResultsPath`, `-LogFolderPath`, `-StateFilePath`) are resolved via `[IO.Path]::GetFullPath()`, length-capped at 248 chars, and rejected if they contain `..\` traversal sequences when a relative root was expected.
+- Az CLI error output is scrubbed before being written to logs: `--password <value>` / `--secret <value>` echoes masked; token-shaped substrings redacted.
+- `Invoke-AzRestJson` handles mid-run token expiry: on HTTP 401 it runs `az account get-access-token` once, refreshes, and retries. Long fleet operations crossing the 1-hour token boundary no longer fail partway through.
+- `Stop-AzureLocalFleetUpdate` and `New-AzureLocalFleetStatusHtmlReport` now support `ShouldProcess` (`-WhatIf` / `-Confirm`).
+
+### Notes
+- No breaking changes to exported functions or parameter sets. All new helpers are private.
+- Az CLI remains the ARM transport for v0.7.0; a native `Invoke-RestMethod` port is deferred.
+
+> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.6.5 and earlier changes.
 
 ## What's New in v0.6.5
 
@@ -112,7 +152,7 @@ Azure Stack HCI REST API specification (includes update management endpoints): h
 - Recent Update Run History with recursive Current Step traversal (up to 8+ levels deep)
 - Health Check Failures with severity filter (Critical/Warning/Informational) and collapsible per-cluster groups for multi-cluster reports
 - Azure Local purple gradient design with embedded Azure Local instance logo
-- `-AllClusters` switch discovers all clusters via ARG (limited to 100); auto-generates title from cluster name for single-cluster reports
+- `-AllClusters` switch discovers all clusters via ARG (v0.6.2 capped at 100; v0.7.0 removes the cap - use `-MaxClusters` to trim); auto-generates title from cluster name for single-cluster reports
 - Supports all input methods: `-ClusterResourceIds`, `-ClusterNames`, `-ScopeByUpdateRingTag`, `-AllClusters`
 - Use `-PassThru` to capture the HTML string for email body or further processing
 
@@ -121,7 +161,7 @@ Azure Stack HCI REST API specification (includes update management endpoints): h
 New-AzureLocalFleetStatusHtmlReport -ClusterNames Seattle `
     -OutputPath "C:\Reports\seattle.html" -IncludeHealthDetails -IncludeUpdateRuns
 
-# Generate report for all clusters across the subscription (up to 100)
+# Generate report for all clusters across the subscription (uncapped by default; use -MaxClusters to trim)
 New-AzureLocalFleetStatusHtmlReport -AllClusters `
     -OutputPath "C:\Reports\fleet-all.html" -IncludeHealthDetails -IncludeUpdateRuns
 
@@ -488,6 +528,77 @@ Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Production
 ```
 
 > 📝 **Note**: Tag operations require `Microsoft.Resources/tags/read` and `Microsoft.Resources/tags/write` permissions. Cluster inventory queries require `Microsoft.ResourceGraph/resources/read`. See [RBAC Requirements](#rbac-requirements) for the complete list.
+
+### 8. Assess Readiness and Health BEFORE Applying Updates (Recommended)
+
+Before rolling updates to a wave, confirm every cluster in that wave is actually ready - on the supported solution version, healthy, with an update in a `Ready` / `ReadyToInstall` state, and not blocked by an SBE prerequisite. `Start-AzureLocalClusterUpdate` will already skip unhealthy clusters automatically, but running the assessment as a separate **go / no-go gate** surfaces exactly what needs remediation before you burn a maintenance window.
+
+**Step 1: Run the readiness check for the target ring**
+
+```powershell
+# Returns one row per cluster with: ReadyForUpdate, HealthState, UpdateState,
+# HasPrerequisiteUpdates, SBEDependency, UpdateWindow, UpdateExclusions
+$readiness = Get-AzureLocalClusterUpdateReadiness `
+    -ScopeByUpdateRingTag -UpdateRingValue 'Wave1' `
+    -ExportPath 'C:\Reports\wave1-readiness.csv' -PassThru
+
+# Quick triage
+$readiness | Group-Object ReadyForUpdate | Select-Object Name, Count
+$readiness | Where-Object { -not $_.ReadyForUpdate } |
+    Select-Object ClusterName, HealthState, UpdateState, HasPrerequisiteUpdates, SBEDependency
+```
+
+**Step 2: Drill into the Critical health failures that will block updates**
+
+```powershell
+# -BlockingOnly returns only Critical/update-blocking failures, suitable for a CI/CD gate
+$health = Test-AzureLocalClusterHealth `
+    -ScopeByUpdateRingTag -UpdateRingValue 'Wave1' `
+    -BlockingOnly `
+    -ExportPath 'C:\Reports\wave1-health.csv' `
+    -ExportFormat Csv `
+    -PassThru
+
+$health | Where-Object Severity -eq 'Critical' |
+    Select-Object ClusterName, Title, Description, Remediation
+```
+
+**Step 3: Remediate Critical issues (outside this module's scope)**
+
+Critical health failures must be fixed at the cluster / infrastructure layer - this module only *detects* them. Typical failure classes and where to remediate them:
+
+| Failure class | Where to fix |
+|---------------|--------------|
+| Storage / drive / stamp health, ADDS/DC connectivity | Microsoft Learn: [Azure Local solution upgrades](https://learn.microsoft.com/en-us/azure-local/manage/update) and the cluster's own Windows Admin Center / Environment Checker output |
+| SBE (Solution Builder Extension) / firmware / driver prerequisite | Your **hardware vendor's** SBE package (Dell APEX, HPE, Lenovo, DataON, etc.). `SBEDependency` / `HasPrerequisiteUpdates` identify the publisher + family + release notes URL. |
+| Certificate, trust, or identity drift | Azure Local operations runbook for certificate rotation |
+| Workload / VM / cluster resource state | Windows Admin Center "Update" workload + cluster validation; evacuate affected nodes first |
+
+After remediation, **re-run Step 1 and Step 2** until `ReadyForUpdate = $true` and `Critical = 0` for every cluster in the wave. Do not move on until the gate is green.
+
+**Step 4: Only now, apply updates**
+
+```powershell
+# Updates only start if the maintenance window / exclusion tags allow it.
+# Start-AzureLocalClusterUpdate will *still* re-check health per cluster and
+# skip anything that has regressed since the assessment.
+Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue 'Wave1' -Force
+```
+
+**Step 5: Watch progress and capture a report**
+
+```powershell
+# Follow the run (PS 5.1 and Core safe)
+Get-AzureLocalUpdateRuns -ScopeByUpdateRingTag -UpdateRingValue 'Wave1'
+
+# Produce a self-contained HTML report for stakeholders (works for any scope)
+New-AzureLocalFleetStatusHtmlReport `
+    -ScopeByUpdateRingTag -UpdateRingValue 'Wave1' `
+    -OutputPath 'C:\Reports\wave1-status.html' `
+    -IncludeHealthDetails -IncludeUpdateRuns
+```
+
+> 💡 **CI/CD**: this same assess -> remediate -> apply flow is wired into the pipeline examples under `Automation-Pipeline-Examples/`: see the `assess-update-readiness.yml` pipeline (gate stage) and the `check-readiness` job inside `apply-updates.yml`.
 
 ## Available Functions
 

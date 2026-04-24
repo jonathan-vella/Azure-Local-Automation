@@ -6,16 +6,27 @@ This folder contains example CI/CD pipelines for automating Azure Local cluster 
 
 ## Overview
 
-Four pipelines are provided for each platform:
+Five pipelines are provided for each platform:
 
 | Pipeline | Description |
 |----------|-------------|
 | **Inventory Clusters** | Queries all Azure Local clusters and exports inventory to CSV with UpdateRing tag status |
-| **Manage UpdateRing Tags** | Creates or updates UpdateRing tags on clusters from a CSV file |
+| **Manage UpdateRing Tags** | Creates or updates UpdateRing / UpdateWindow / UpdateExclusions tags on clusters from a CSV file |
+| **Assess Update Readiness** | 🚦 Pre-flight go / no-go gate. Runs `Get-AzureLocalClusterUpdateReadiness` + `Test-AzureLocalClusterHealth -BlockingOnly` and publishes JUnit XML. Fails the build if any cluster in the target ring has a Critical health failure or is not ready for update. |
 | **Apply Updates** | Applies updates to clusters filtered by UpdateRing tag value |
-| **Fleet Update Status** | 📊 Monitors update status across entire fleet with JUnit XML reports for dashboards |
+| **Fleet Update Status** | 📊 Monitors update status across the entire fleet with JUnit XML reports for dashboards |
 
 > 📝 **Tip**: For ad-hoc reporting outside of CI/CD, you can also generate a standalone HTML report using `New-AzureLocalFleetStatusHtmlReport`. See [Standalone HTML Report](#standalone-html-report) below.
+
+### What's new for v0.7.0
+
+- **Parallel per-cluster operations**. `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns`, and `Set-AzureLocalClusterUpdateRingTag` now run per-cluster ARM calls in parallel `Start-Job` batches. `Invoke-AzureLocalFleetOperation -ThrottleLimit` is honored end-to-end (was previously retry-math only). Expected 5-10x speedup on 1500-cluster runs.
+- **`-ThrottleLimit` is a workflow input** on `apply-updates.yml` and `fleet-update-status.yml` (default 4, range 1-16). Raise it for large fleets; lower it on constrained runners or when you are being ARM-throttled.
+- **ARG queries paginate**. All scope-resolving queries (`-AllClusters`, `-ScopeByUpdateRingTag`) follow the `$skipToken` until exhausted. Previously capped silently at 1000.
+- **`-AllClusters` cap removed**. `New-AzureLocalFleetStatusHtmlReport -AllClusters` and `Get-AzureLocalFleetStatusData -AllClusters` no longer truncate at 100; use `-MaxClusters <n>` to trim explicitly.
+- **CSV sanitization**. Every CSV field is protected against Excel formula injection (`=`, `+`, `-`, `@`, tab leaders are neutralized, CR/LF stripped).
+- **Token refresh mid-run**. `Invoke-AzRestJson` refreshes on HTTP 401 so long-running apply jobs no longer die at the 1-hour token boundary.
+- **Schedule-tag parse errors are blocking by default** (unless `-Force`). A malformed `UpdateWindow` / `UpdateExclusions` no longer lets the update sneak through with just a warning.
 
 ## Prerequisites
 
@@ -612,7 +623,7 @@ This workflow shows how to use all four pipelines together for a staged update d
 
 #### Phase 2: Update Deployment (Recurring)
 
-4. **Wave1 Updates (Pilot clusters)**
+4. **Pre-flight: Assess Update Readiness (go / no-go gate)**\n   - Run the **Assess Update Readiness** pipeline with `UpdateRing = Wave1` (schedule it a day before the maintenance window, or trigger on-demand).\n   - Produces two JUnit XML files consumed by your CI/CD dashboard and two CSVs as artifacts:\n     - `readiness.xml` / `readiness.csv` from `Get-AzureLocalClusterUpdateReadiness` - one test per cluster; fails if `ReadyForUpdate = $false`.\n     - `health-blocking.xml` / `health-blocking.csv` from `Test-AzureLocalClusterHealth -BlockingOnly` - one test per cluster; fails if any Critical health failure exists.\n   - If the pipeline is **red**, do **not** run apply-updates. Common failure classes and where to fix them:\n     - **Storage / drive / stamp health, ADDS connectivity** -> Microsoft Learn Azure Local docs + Environment Checker.\n     - **SBE / firmware / driver prerequisite** -> hardware vendor SBE package (Dell, HPE, Lenovo, DataON, ...). `SBEDependency` + `HasPrerequisiteUpdates` identify the publisher + release notes URL.\n     - **Certificate / trust / identity drift** -> Azure Local cert rotation runbook.\n     - **Workload state** -> Windows Admin Center cluster validation.\n   - Critical health remediation is **outside the scope of this module** - this module only *detects* the blockers. Re-run the gate until it is green before proceeding.\n\n5. **Wave1 Updates (Pilot clusters)**
    - Schedule: Monday 10 PM or manual trigger
    - Run "Apply Updates" with `UpdateRing = Wave1`
    - Monitor progress in CI/CD dashboard
@@ -647,8 +658,7 @@ This workflow shows how to use all four pipelines together for a staged update d
 ├─────────────────────────────────────────────────────────────────┤
 │  "Fleet Update Status" runs daily at 6 AM UTC (scheduled)       │
 │                                                                  │
-│  📊 Outputs (using v0.5.6 fleet-wide queries):                  │
-│  ├── JUnit XML → CI/CD Dashboard (Tests tab)                    │
+│  📊 Outputs (v0.7.0: parallel data collection, `-ThrottleLimit` honored):\n│  ├── JUnit XML → CI/CD Dashboard (Tests tab)                    │
 │  ├── CSV → Download for spreadsheet analysis                    │
 │  │   • readiness-status.csv (cluster health)                    │
 │  │   • update-summaries.csv (update states)                     │
@@ -688,6 +698,27 @@ The Fleet Update Status pipeline generates JUnit XML that integrates with CI/CD 
 - Configure test trend widgets on dashboards
 - Set up alerts for test failures
 
+### Tuning throughput (`-ThrottleLimit`)
+
+v0.7.0 runs per-cluster ARM calls in parallel `Start-Job` batches. The `throttle_limit` workflow input on `apply-updates.yml` and `fleet-update-status.yml` is threaded into the functions that expose it:
+
+| Function | `-ThrottleLimit` exposed | Used by pipeline |
+|----------|--------------------------|------------------|
+| `Get-AzureLocalClusterUpdateReadiness` | Yes (default 4) | apply-updates (check-readiness), fleet-update-status, assess-update-readiness |
+| `Get-AzureLocalUpdateSummary`          | Yes (default 4) | fleet-update-status |
+| `Get-AzureLocalUpdateRuns`             | Yes             | fleet-update-status |
+| `Get-AzureLocalFleetStatusData`        | Yes (default 4, max 8) | fleet-update-status, New-AzureLocalFleetStatusHtmlReport |
+| `New-AzureLocalFleetStatusHtmlReport`  | Yes (default 4, max 8) | standalone report |
+| `Start-AzureLocalClusterUpdate` / apply-side fleet ops | Controlled internally via `Invoke-FleetJobsInParallel`; no user-facing `-ThrottleLimit` on the top-level cmdlet in v0.7.0 | apply-updates |
+
+| Fleet size | Suggested `throttle_limit` | Notes |
+|------------|----------------------------|-------|
+| 1 - 50 clusters | `4` (default) | No tuning needed. |
+| 50 - 500 clusters | `6` - `8` | Readiness / fleet-status pipelines complete measurably faster. |
+| 500 - 1500+ clusters | `8` - `16` | Required for the fleet-status pipeline to finish inside a 6-hour runner window. Watch for ARM throttling (`429 TooManyRequests`) and back off if you see it. |
+
+Lower values (`1` - `2`) are useful on constrained self-hosted runners, or when you need sequential deterministic logs for debugging.
+
 ### Standalone HTML Report
 
 For ad-hoc or offline reporting outside of CI/CD pipelines, use the `New-AzureLocalFleetStatusHtmlReport` function (v0.6.4) to generate a self-contained HTML report. This is useful for:
@@ -698,7 +729,7 @@ For ad-hoc or offline reporting outside of CI/CD pipelines, use the `New-AzureLo
 ```powershell
 Import-Module .\AzStackHci.ManageUpdates.psd1
 
-# Generate a report for all clusters (up to 100) - auto-discovers via ARG
+# Generate a report for all clusters - auto-discovers via ARG (v0.7.0: uncapped by default; use -MaxClusters to trim)
 New-AzureLocalFleetStatusHtmlReport -AllClusters `
     -OutputPath "C:\Reports\fleet-all.html" -IncludeHealthDetails -IncludeUpdateRuns
 
@@ -914,11 +945,13 @@ Automation-Pipeline-Examples/
 ├── github-actions/
 │   ├── inventory-clusters.yml          # GitHub Actions: Inventory pipeline
 │   ├── manage-updatering-tags.yml      # GitHub Actions: Tag management pipeline
+│   ├── assess-update-readiness.yml     # GitHub Actions: Pre-flight go/no-go gate (v0.7.0)
 │   ├── apply-updates.yml               # GitHub Actions: Update application pipeline
 │   └── fleet-update-status.yml         # GitHub Actions: Fleet status monitoring pipeline
 └── azure-devops/
     ├── inventory-clusters.yml          # Azure DevOps: Inventory pipeline
     ├── manage-updatering-tags.yml      # Azure DevOps: Tag management pipeline
+    ├── assess-update-readiness.yml     # Azure DevOps: Pre-flight go/no-go gate (v0.7.0)
     ├── apply-updates.yml               # Azure DevOps: Update application pipeline
     └── fleet-update-status.yml         # Azure DevOps: Fleet status monitoring pipeline
 ```

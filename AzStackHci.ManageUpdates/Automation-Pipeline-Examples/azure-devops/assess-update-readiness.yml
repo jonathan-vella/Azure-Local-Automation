@@ -1,0 +1,213 @@
+# Assess Update Readiness (Pre-flight go/no-go gate)
+# --------------------------------------------------
+# Runs Get-AzureLocalClusterUpdateReadiness and Test-AzureLocalClusterHealth -BlockingOnly
+# against a target UpdateRing (or the whole fleet) BEFORE apply-updates.yml runs.
+#
+# Publishes two JUnit XML results to the Azure DevOps Tests tab:
+#   - readiness.xml       (one test per cluster; fails if ReadyForUpdate = $false)
+#   - health-blocking.xml (one test per cluster; fails if any Critical health failure exists)
+#
+# CSV artifacts are also attached for spreadsheet triage.
+#
+# The pipeline fails if either check reports a failed cluster (unless failOnNotReady=false),
+# giving a hard go/no-go gate to chain in front of apply-updates.yml via a pipeline resource.
+#
+# Remediation of Critical health failures is out of scope for this module - see the module
+# README "Assess Readiness and Health BEFORE Applying Updates" section for pointers.
+
+trigger: none
+
+parameters:
+  - name: scope
+    displayName: 'Scope of clusters to check'
+    type: string
+    default: 'by-update-ring'
+    values:
+      - 'by-update-ring'
+      - 'all'
+
+  - name: updateRing
+    displayName: 'UpdateRing tag value (only used when scope=by-update-ring)'
+    type: string
+    default: 'Wave1'
+
+  - name: throttleLimit
+    displayName: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
+    type: number
+    default: 4
+
+  - name: failOnNotReady
+    displayName: 'Fail the pipeline if any cluster is not ready (gate behavior)'
+    type: boolean
+    default: true
+
+variables:
+  modulePath: '$(Build.SourcesDirectory)/AzStackHci.ManageUpdates'
+  artifactsPath: '$(Build.ArtifactStagingDirectory)/readiness-assessment'
+
+pool:
+  vmImage: 'windows-latest'
+
+stages:
+  - stage: Assess
+    displayName: 'Assess Update Readiness'
+    jobs:
+      - job: AssessReadiness
+        displayName: 'Readiness + blocking health gate'
+        steps:
+          - checkout: self
+            displayName: 'Checkout repository'
+
+          - task: AzureCLI@2
+            displayName: 'Run readiness + blocking health checks'
+            inputs:
+              # Replace with your service connection name
+              azureSubscription: 'YOUR-SERVICE-CONNECTION-NAME'
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az extension add --name resource-graph --yes
+
+                Import-Module "$(modulePath)/AzStackHci.ManageUpdates.psd1" -Force
+
+                $scope = "${{ parameters.scope }}"
+                $updateRing = "${{ parameters.updateRing }}"
+                $throttle = [int]"${{ parameters.throttleLimit }}"; if ($throttle -lt 1) { $throttle = 4 }
+
+                $outputDir = "$(artifactsPath)"
+                New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+                $readinessCsv = Join-Path $outputDir 'readiness.csv'
+                $readinessXml = Join-Path $outputDir 'readiness.xml'
+                $healthCsv    = Join-Path $outputDir 'health-blocking.csv'
+                $healthXml    = Join-Path $outputDir 'health-blocking.xml'
+
+                $scopeParams = @{}
+                if ($scope -eq 'by-update-ring' -and $updateRing) {
+                    $scopeParams['ScopeByUpdateRingTag'] = $true
+                    $scopeParams['UpdateRingValue']      = $updateRing
+                    Write-Host "Scope: UpdateRing = $updateRing"
+                } else {
+                    Write-Host "Scope: all clusters (via inventory)"
+                    $inventory = Get-AzureLocalClusterInventory -PassThru
+                    if (-not $inventory -or $inventory.Count -eq 0) {
+                        Write-Warning 'No clusters found in inventory.'
+                        Write-Host "##vso[task.setvariable variable=NOT_READY;isOutput=true]0"
+                        Write-Host "##vso[task.setvariable variable=CRITICAL_FAILURES;isOutput=true]0"
+                        exit 0
+                    }
+                    $scopeParams['ClusterResourceIds'] = @($inventory | Select-Object -ExpandProperty ResourceId)
+                }
+
+                Write-Host ''
+                Write-Host '========================================' -ForegroundColor Cyan
+                Write-Host 'Step 1: Readiness (Get-AzureLocalClusterUpdateReadiness)' -ForegroundColor Cyan
+                Write-Host '========================================' -ForegroundColor Cyan
+
+                $readiness = Get-AzureLocalClusterUpdateReadiness @scopeParams `
+                    -ThrottleLimit $throttle `
+                    -ExportPath $readinessCsv `
+                    -PassThru
+
+                $null = Get-AzureLocalClusterUpdateReadiness @scopeParams `
+                    -ThrottleLimit $throttle `
+                    -ExportPath $readinessXml
+
+                $notReady = @($readiness | Where-Object { $_.ReadyForUpdate -ne $true }).Count
+                $total = @($readiness).Count
+
+                Write-Host ''
+                Write-Host "Total clusters in scope: $total"
+                Write-Host "Not ready for update  : $notReady"
+
+                Write-Host ''
+                Write-Host '========================================' -ForegroundColor Cyan
+                Write-Host 'Step 2: Blocking health (Test-AzureLocalClusterHealth -BlockingOnly)' -ForegroundColor Cyan
+                Write-Host '========================================' -ForegroundColor Cyan
+
+                $health = Test-AzureLocalClusterHealth @scopeParams `
+                    -BlockingOnly `
+                    -ExportPath $healthCsv `
+                    -PassThru
+
+                $null = Test-AzureLocalClusterHealth @scopeParams `
+                    -BlockingOnly `
+                    -ExportPath $healthXml
+
+                $critical = @($health | Where-Object { $_.Severity -eq 'Critical' }).Count
+                $clustersWithCritical = @($health | Where-Object { $_.Severity -eq 'Critical' } |
+                    Select-Object -ExpandProperty ClusterName -Unique).Count
+
+                Write-Host ''
+                Write-Host "Critical findings      : $critical"
+                Write-Host "Clusters with Critical : $clustersWithCritical"
+
+                Write-Host "##vso[task.setvariable variable=NOT_READY;isOutput=true]$notReady"
+                Write-Host "##vso[task.setvariable variable=CRITICAL_FAILURES;isOutput=true]$clustersWithCritical"
+
+                # Azure DevOps summary markdown
+                $summaryPath = Join-Path $outputDir 'summary.md'
+                $summary = @"
+                # Update Readiness Assessment
+
+                | Metric | Count |
+                |--------|-------|
+                | Total clusters in scope | $total |
+                | Not ready for update | $notReady |
+                | Clusters with Critical health failures | $clustersWithCritical |
+                | Total Critical findings | $critical |
+
+                **Scope**: $scope$(if ($updateRing) { " (UpdateRing = $updateRing)" })  
+                **ThrottleLimit**: $throttle
+
+                $(if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
+                  "Gate status: **BLOCKED**. Remediate Critical health issues (hardware vendor SBE / firmware / cluster health) before running apply-updates."
+                } else {
+                  "Gate status: **READY**. Safe to proceed with apply-updates for this ring."
+                })
+                "@
+                $summary | Out-File -FilePath $summaryPath -Encoding utf8
+                Write-Host "##vso[task.uploadsummary]$summaryPath"
+            name: gate
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Readiness JUnit'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(artifactsPath)/readiness.xml'
+              testRunTitle: 'Readiness (one test per cluster)'
+              mergeTestResults: false
+              failTaskOnFailedTests: false
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Blocking-Health JUnit'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(artifactsPath)/health-blocking.xml'
+              testRunTitle: 'Blocking Health Checks (one test per cluster)'
+              mergeTestResults: false
+              failTaskOnFailedTests: false
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish readiness assessment artifacts'
+            condition: always()
+            inputs:
+              targetPath: '$(artifactsPath)'
+              artifact: 'readiness-assessment'
+
+          - task: PowerShell@2
+            displayName: 'Enforce gate'
+            condition: and(always(), eq('${{ parameters.failOnNotReady }}', true))
+            inputs:
+              targetType: 'inline'
+              pwsh: true
+              script: |
+                $notReady = [int]'$(gate.NOT_READY)'
+                $critical = [int]'$(gate.CRITICAL_FAILURES)'
+                if ($notReady -gt 0 -or $critical -gt 0) {
+                    Write-Host "##vso[task.logissue type=error]Gate failed: $notReady cluster(s) not ready, $critical cluster(s) with Critical health failures."
+                    exit 1
+                }
+                Write-Host "Gate passed: all clusters ready and free of Critical blocking health failures."
