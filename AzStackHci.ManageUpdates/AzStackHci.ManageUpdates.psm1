@@ -2472,8 +2472,43 @@ function Start-AzureLocalClusterUpdate {
                         Write-Log -Message "Maintenance schedule check passed: $($scheduleResult.Reason)" -Level Success
                     }
                     catch {
-                        Write-Log -Message "Warning: Failed to evaluate maintenance schedule tags: $($_.Exception.Message)" -Level Warning
-                        Write-Log -Message "Proceeding with update (schedule check failure is non-blocking)" -Level Warning
+                        # v0.7.0: malformed UpdateWindow / UpdateExclusions tags
+                        # now block the update (fail-closed) unless -Force is
+                        # specified. The previous behaviour (always proceed on
+                        # parse failure) could cause fleet-wide updates to bypass
+                        # the operator's configured maintenance windows when a
+                        # single tag had a typo.
+                        if ($Force) {
+                            Write-Log -Message "Warning: Failed to evaluate maintenance schedule tags: $($_.Exception.Message)" -Level Warning
+                            Write-Log -Message "  -Force is set; proceeding with update despite unparseable schedule tags." -Level Warning
+                        }
+                        else {
+                            Write-Log -Message "Failed to evaluate maintenance schedule tags for '$clusterName': $($_.Exception.Message)" -Level Error
+                            Write-Log -Message "  Update blocked because the schedule could not be evaluated. Re-run with -Force to override." -Level Error
+
+                            $clusterRgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                            $clusterSubId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                            $healthState = if ($updateSummary.properties.healthState) { $updateSummary.properties.healthState } else { "Unknown" }
+
+                            Write-UpdateCsvLog -LogType Skipped `
+                                -ClusterName $clusterName `
+                                -ResourceGroup $clusterRgName `
+                                -SubscriptionId $clusterSubId `
+                                -Message "Update blocked: unparseable maintenance schedule tags ($($_.Exception.Message)). Re-run with -Force to override." `
+                                -UpdateState $updateSummary.properties.state `
+                                -HealthState $healthState
+
+                            $results += [PSCustomObject]@{
+                                ClusterName   = $clusterName
+                                Status        = "ScheduleBlocked"
+                                Message       = "Unparseable schedule tags: $($_.Exception.Message). Re-run with -Force to override."
+                                UpdateName    = $null
+                                StartTime     = $clusterStartTime
+                                EndTime       = Get-Date
+                                Duration      = $null
+                            }
+                            continue
+                        }
                     }
                 }
                 else {
