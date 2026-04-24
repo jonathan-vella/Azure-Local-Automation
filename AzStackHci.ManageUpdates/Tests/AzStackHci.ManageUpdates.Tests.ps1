@@ -284,6 +284,60 @@ Describe 'Function: Get-AzureLocalClusterInventory' {
     }
 }
 
+Describe 'Regression: Get-AzureLocalClusterInventory ValidatePattern shadowing' {
+    # Repro for the bug where a local variable named $updateRingValue
+    # inside Get-AzureLocalClusterInventory aliased the function's
+    # [ValidatePattern(...)] $UpdateRingValue parameter (PowerShell is
+    # case-insensitive on variable names). Any cluster returned by ARG
+    # without an UpdateRing tag caused Get-TagValue to return $null/''
+    # and the assignment threw "The variable cannot be validated because
+    # the value is not a valid value for the UpdateRingValue variable."
+    # This bricked -AllClusters against any fleet missing the tag.
+
+    It 'Should not throw "cannot be validated" when a cluster has no UpdateRing tag (-AllClusters)' {
+        InModuleScope AzStackHci.ManageUpdates {
+            function global:az {
+                param()
+                $global:LASTEXITCODE = 0
+                if ($args -contains 'show') {
+                    return '{"id":"00000000-0000-0000-0000-000000000000","name":"sub"}'
+                }
+                return '{}'
+            }
+            Mock Test-AzCliAvailable { return $true }
+            Mock Install-AzGraphExtension { return $true }
+            # ARG returns two clusters - one with the tag, one without.
+            Mock Invoke-AzResourceGraphQuery {
+                return @(
+                    [PSCustomObject]@{
+                        id             = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/tagged'
+                        name           = 'tagged'
+                        resourceGroup  = 'r'
+                        subscriptionId = 's'
+                        tags           = @{ UpdateRing = 'Wave1' }
+                    },
+                    [PSCustomObject]@{
+                        id             = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/untagged'
+                        name           = 'untagged'
+                        resourceGroup  = 'r'
+                        subscriptionId = 's'
+                        tags           = $null
+                    }
+                )
+            }
+
+            $result = $null
+            { $script:inventoryResult = Get-AzureLocalClusterInventory -PassThru } | Should -Not -Throw
+            $result = $script:inventoryResult
+            $result | Should -HaveCount 2
+            ($result | Where-Object ClusterName -eq 'tagged').UpdateRing | Should -Be 'Wave1'
+            ($result | Where-Object ClusterName -eq 'tagged').HasUpdateRingTag | Should -Be 'Yes'
+            ($result | Where-Object ClusterName -eq 'untagged').UpdateRing | Should -Be ''
+            ($result | Where-Object ClusterName -eq 'untagged').HasUpdateRingTag | Should -Be 'No'
+        }
+    }
+}
+
 Describe 'Function: Set-AzureLocalClusterUpdateRingTag' {
     
     Context 'Parameter Validation' {

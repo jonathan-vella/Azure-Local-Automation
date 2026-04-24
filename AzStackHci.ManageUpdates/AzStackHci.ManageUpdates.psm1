@@ -5706,19 +5706,23 @@ function Get-AzureLocalClusterInventory {
         foreach ($cluster in $clusterData) {
             # Read tag values via container-shape-agnostic helper so both
             # [PSCustomObject] and [Hashtable] tag shapes are handled.
-            $updateRingValue = Get-TagValue -Tags $cluster.tags -Name 'UpdateRing'
-            $updateWindowValue = Get-TagValue -Tags $cluster.tags -Name $script:UpdateWindowTagName
-            $updateExclusionsValue = Get-TagValue -Tags $cluster.tags -Name $script:UpdateExclusionsTagName
+            # NOTE: Do NOT name this local 'updateRingValue' - PowerShell is
+            # case-insensitive on variable names, so that would alias the
+            # function's [ValidatePattern(...)] $UpdateRingValue parameter
+            # and throw a validation error for any cluster missing the tag.
+            $ringTagValue = Get-TagValue -Tags $cluster.tags -Name 'UpdateRing'
+            $windowTagValue = Get-TagValue -Tags $cluster.tags -Name $script:UpdateWindowTagName
+            $exclusionsTagValue = Get-TagValue -Tags $cluster.tags -Name $script:UpdateExclusionsTagName
 
             $inventoryItem = [PSCustomObject]@{
                 ClusterName      = $cluster.name
                 ResourceGroup    = $cluster.resourceGroup
                 SubscriptionId   = $cluster.subscriptionId
                 SubscriptionName = $subscriptionMap[$cluster.subscriptionId]
-                UpdateRing       = if ($updateRingValue) { $updateRingValue } else { "" }
-                HasUpdateRingTag = if ($updateRingValue) { "Yes" } else { "No" }
-                UpdateWindow     = if ($updateWindowValue) { $updateWindowValue } else { "" }
-                UpdateExclusions = if ($updateExclusionsValue) { $updateExclusionsValue } else { "" }
+                UpdateRing       = if ($ringTagValue) { $ringTagValue } else { "" }
+                HasUpdateRingTag = if ($ringTagValue) { "Yes" } else { "No" }
+                UpdateWindow     = if ($windowTagValue) { $windowTagValue } else { "" }
+                UpdateExclusions = if ($exclusionsTagValue) { $exclusionsTagValue } else { "" }
                 ResourceId       = $cluster.id
             }
             $inventory += $inventoryItem
