@@ -131,7 +131,7 @@
 Set-StrictMode -Version 1.0
 
 # Module constants
-$script:ModuleVersion = '0.6.5'
+$script:ModuleVersion = '0.7.0'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
 
@@ -479,8 +479,7 @@ function Connect-AzureLocalServicePrincipal {
             $clientSecretPlain = $ServicePrincipalSecret
         }
         elseif ($null -ne $ServicePrincipalSecret) {
-            Write-Error "-ServicePrincipalSecret must be a [string] or [SecureString]. Got: $($ServicePrincipalSecret.GetType().FullName)"
-            return $false
+            throw "-ServicePrincipalSecret must be a [string] or [SecureString]. Got: $($ServicePrincipalSecret.GetType().FullName)"
         }
         else {
             $clientSecretPlain = $env:AZURE_CLIENT_SECRET
@@ -490,16 +489,13 @@ function Connect-AzureLocalServicePrincipal {
 
         # Validate required credentials
         if (-not $clientId) {
-            Write-Error "Service Principal ID not provided. Set -ServicePrincipalId parameter or AZURE_CLIENT_ID environment variable."
-            return $false
+            throw "Service Principal ID not provided. Set -ServicePrincipalId parameter or AZURE_CLIENT_ID environment variable."
         }
         if (-not $clientSecretPlain) {
-            Write-Error "Service Principal Secret not provided. Set -ServicePrincipalSecret parameter or AZURE_CLIENT_SECRET environment variable."
-            return $false
+            throw "Service Principal Secret not provided. Set -ServicePrincipalSecret parameter or AZURE_CLIENT_SECRET environment variable."
         }
         if (-not $tenant) {
-            Write-Error "Tenant ID not provided. Set -TenantId parameter or AZURE_TENANT_ID environment variable."
-            return $false
+            throw "Tenant ID not provided. Set -TenantId parameter or AZURE_TENANT_ID environment variable."
         }
 
         Write-Log -Message "Authenticating with Service Principal..." -Level Warning
@@ -697,7 +693,7 @@ function Invoke-AzRestJson {
         $azArgs = @('rest', '--method', $Method, '--uri', $Uri)
         if ($PSBoundParameters.ContainsKey('Body') -and $Body) {
             $tempBodyFile = [System.IO.Path]::GetTempFileName()
-            $Body | Out-File -FilePath $tempBodyFile -Encoding utf8 -NoNewline
+            Write-Utf8NoBomFile -Path $tempBodyFile -Content $Body
             $azArgs += @('--body', "@$tempBodyFile")
             if (-not $Headers) { $Headers = @('Content-Type=application/json') }
         }
@@ -1416,6 +1412,56 @@ function ConvertTo-SafeCsvField {
     }
 }
 
+function Write-Utf8NoBomFile {
+    <#
+    .SYNOPSIS
+        Writes text content to a file using UTF-8 encoding WITHOUT a byte-order mark.
+    .DESCRIPTION
+        PowerShell 5.1's `Out-File -Encoding UTF8` emits a UTF-8 BOM (EF BB BF) which
+        corrupts the first column of CSVs opened with Import-Csv / Excel on non-Windows
+        systems, confuses JUnit-XML parsers (including dorny/test-reporter and Azure
+        DevOps PublishTestResults@2), and shows up as "\ufeff" prefixed strings in
+        downstream JSON consumers. This helper writes text with an explicit
+        `UTF8Encoding($false)` so the BOM is never emitted.
+
+        Used across the module for all CSV / JSON / XML exports that are consumed by
+        CI/CD pipelines, Excel, or cross-platform tooling. Use the native
+        `[System.IO.File]::WriteAllText` pattern directly only when you need different
+        encoding semantics.
+    .PARAMETER Path
+        Absolute or relative path of the output file. Parent directory must exist.
+    .PARAMETER Content
+        The text to write. `$null` is coerced to an empty string.
+    .PARAMETER Append
+        When specified, appends to an existing file instead of overwriting. The BOM
+        is still never emitted (appends raw UTF-8 bytes).
+    #>
+    [CmdletBinding()]
+    [OutputType([void])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Content,
+
+        [switch]$Append
+    )
+
+    process {
+        if ($null -eq $Content) { $Content = '' }
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        if ($Append) {
+            [System.IO.File]::AppendAllText($Path, $Content, $utf8NoBom)
+        }
+        else {
+            [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+        }
+    }
+}
+
 function ConvertTo-SafeCsvCollection {
     <#
     .SYNOPSIS
@@ -1878,7 +1924,7 @@ function Export-ResultsToJUnitXml {
     [void]$xmlBuilder.AppendLine("</testsuites>")
 
     # Write to file
-    $xmlBuilder.ToString() | Out-File -FilePath $OutputPath -Encoding UTF8 -Force
+    Write-Utf8NoBomFile -Path $OutputPath -Content $xmlBuilder.ToString()
 }
 
 function Get-ExportFormat {
@@ -2096,7 +2142,11 @@ function Start-AzureLocalClusterUpdate {
         [hashtable]$PrefetchedUpdateSummaries,
 
         [Parameter(Mandatory = $false)]
-        [hashtable]$PrefetchedAvailableUpdates
+        [hashtable]$PrefetchedAvailableUpdates,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 16)]
+        [int]$ThrottleLimit = 1
     )
 
     begin {
@@ -2166,8 +2216,8 @@ function Start-AzureLocalClusterUpdate {
         # Initialize CSV files with headers (extended headers for skipped to include diagnostic info)
         $csvHeadersSkipped = '"ClusterName","ResourceGroup","SubscriptionId","Message","UpdateState","HealthState","HealthCheckFailures","LastUpdateErrorStep","LastUpdateErrorMessage"'
         $csvHeadersStarted = '"ClusterName","ResourceGroup","SubscriptionId","Message"'
-        $csvHeadersSkipped | Out-File -FilePath $script:UpdateSkippedLogPath -Encoding UTF8 -Force
-        $csvHeadersStarted | Out-File -FilePath $script:UpdateStartedLogPath -Encoding UTF8 -Force
+        Write-Utf8NoBomFile -Path $script:UpdateSkippedLogPath -Content ($csvHeadersSkipped + [Environment]::NewLine)
+        Write-Utf8NoBomFile -Path $script:UpdateStartedLogPath -Content ($csvHeadersStarted + [Environment]::NewLine)
         
         # Build list of clusters to process
         $clustersToProcess = @()
@@ -2318,6 +2368,62 @@ function Start-AzureLocalClusterUpdate {
 
         # Results collection
         $results = @()
+
+        # Parallel prefetch (v0.7.0+): when -ThrottleLimit > 1 and caller did not already
+        # provide cached data, fan out the read-heavy Get-AzureLocalUpdateSummary +
+        # Get-AzureLocalAvailableUpdates calls across background jobs and populate the
+        # existing $PrefetchedUpdateSummaries / $PrefetchedAvailableUpdates hashtables
+        # (keyed by ResourceId). The main per-cluster foreach below then hits the cache
+        # and the apply path stays serial so CSV logs + health checks remain coherent.
+        if ($ThrottleLimit -gt 1 -and $clustersToProcess.Count -gt 1) {
+            $needSummary = -not $PrefetchedUpdateSummaries
+            $needAvailable = -not $PrefetchedAvailableUpdates
+            if ($needSummary -or $needAvailable) {
+                Write-Log -Message "Prefetching update data for $($clustersToProcess.Count) cluster(s) using $ThrottleLimit parallel worker(s)..." -Level Info
+                if ($needSummary) { $PrefetchedUpdateSummaries = @{} }
+                if ($needAvailable) { $PrefetchedAvailableUpdates = @{} }
+                $resourceIds = @($clustersToProcess | ForEach-Object { $_.ResourceId } | Where-Object { $_ })
+                $prefetchScript = {
+                    param([object[]]$Batch, [string]$ApiVersionArg, [bool]$WantSummary, [bool]$WantAvailable, [string]$ModulePath)
+                    Import-Module $ModulePath -Force
+                    $out = @()
+                    foreach ($rid in $Batch) {
+                        $row = @{ ResourceId = $rid; Summary = $null; Available = $null }
+                        if ($WantSummary) {
+                            try { $row.Summary = Get-AzureLocalUpdateSummary -ClusterResourceId $rid -ApiVersion $ApiVersionArg -ErrorAction Stop } catch { $row.Summary = $null }
+                        }
+                        if ($WantAvailable) {
+                            try { $row.Available = Get-AzureLocalAvailableUpdates -ClusterResourceId $rid -ApiVersion $ApiVersionArg -Raw -ErrorAction Stop } catch { $row.Available = @() }
+                        }
+                        $out += [PSCustomObject]$row
+                    }
+                    $out
+                }
+                try {
+                    $prefetchResults = Invoke-FleetJobsInParallel `
+                        -InputItems $resourceIds `
+                        -ScriptBlock $prefetchScript `
+                        -ThrottleLimit $ThrottleLimit `
+                        -ArgumentList @($ApiVersion, [bool]$needSummary, [bool]$needAvailable) `
+                        -ActivityName 'UpdatePrefetch'
+                    foreach ($br in $prefetchResults) {
+                        if ($br.Failed) {
+                            Write-Log -Message "  Prefetch batch $($br.BatchIndex) failed: $($br.Error). Per-cluster fetch will run serially." -Level Warning
+                            continue
+                        }
+                        foreach ($row in @($br.Output)) {
+                            if (-not $row -or -not $row.ResourceId) { continue }
+                            if ($needSummary -and $row.Summary) { $PrefetchedUpdateSummaries[$row.ResourceId] = $row.Summary }
+                            if ($needAvailable -and $null -ne $row.Available) { $PrefetchedAvailableUpdates[$row.ResourceId] = $row.Available }
+                        }
+                    }
+                    Write-Log -Message "Prefetch complete: $($PrefetchedUpdateSummaries.Count) summaries, $($PrefetchedAvailableUpdates.Count) available-update sets cached." -Level Success
+                }
+                catch {
+                    Write-Log -Message "Parallel prefetch failed: $($_.Exception.Message). Continuing with serial per-cluster fetch." -Level Warning
+                }
+            }
+        }
     }
 
     process {
@@ -2854,7 +2960,7 @@ function Start-AzureLocalClusterUpdate {
                             Skipped       = $skipped
                             Results       = $results
                         }
-                        $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $ExportResultsPath -Encoding UTF8
+                        Write-Utf8NoBomFile -Path $ExportResultsPath -Content ($exportData | ConvertTo-Json -Depth 10)
                         Write-Log -Message "Results exported to JSON: $ExportResultsPath" -Level Success
                     }
                     '.csv' {
@@ -2878,7 +2984,7 @@ function Start-AzureLocalClusterUpdate {
                             Skipped       = $skipped
                             Results       = $results
                         }
-                        $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding UTF8
+                        Write-Utf8NoBomFile -Path $jsonPath -Content ($exportData | ConvertTo-Json -Depth 10)
                         Write-Log -Message "Results exported to JSON: $jsonPath" -Level Success
                     }
                 }
@@ -3448,7 +3554,7 @@ function Get-AzureLocalUpdateSummary {
                         }
                         Results       = $results
                     }
-                    $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $ExportPath -Encoding UTF8
+                    Write-Utf8NoBomFile -Path $ExportPath -Content ($exportData | ConvertTo-Json -Depth 10)
                     Write-Log -Message "Results exported to JSON: $ExportPath" -Level Success
                 }
                 'JUnitXml' {
@@ -3587,7 +3693,13 @@ function Get-AzureLocalAvailableUpdates {
         [switch]$PassThru,
 
         [Parameter(Mandatory = $false, ParameterSetName = 'SingleCluster')]
-        [switch]$Raw
+        [switch]$Raw,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
+        [ValidateRange(1, 16)]
+        [int]$ThrottleLimit = 1
     )
 
     # Pre-flight: Validate export path is writable before expensive operations
@@ -3788,6 +3900,45 @@ function Get-AzureLocalAvailableUpdates {
     $results = @()
     $updateVersionCounts = @{}
 
+    # Parallel dispatch (v0.7.0+): when -ThrottleLimit > 1 and we have multiple clusters,
+    # shard them across background jobs. Each job re-imports the module and calls this
+    # function recursively with -ThrottleLimit 1 on its own subset, then returns the
+    # flattened per-cluster rows. This avoids parallelising shared state (Write-Host
+    # progress, $results accumulation, $updateVersionCounts hashtable) inside a single
+    # runspace while still giving an N-way speedup on large fleets.
+    if ($ThrottleLimit -gt 1 -and $clustersToProcess.Count -gt 1) {
+        Write-Log -Message "Dispatching to $ThrottleLimit parallel workers..." -Level Info
+        $jobScript = {
+            param([object[]]$Batch, [string]$ApiVersionArg, [string]$ModulePath)
+            Import-Module $ModulePath -Force
+            $resourceIds = @($Batch | ForEach-Object { $_.ResourceId } | Where-Object { $_ })
+            if ($resourceIds.Count -eq 0) { return @() }
+            Get-AzureLocalAvailableUpdates -ClusterResourceIds $resourceIds `
+                -ApiVersion $ApiVersionArg -ThrottleLimit 1 -PassThru
+        }
+        $batchResults = Invoke-FleetJobsInParallel `
+            -InputItems $clustersToProcess `
+            -ScriptBlock $jobScript `
+            -ThrottleLimit $ThrottleLimit `
+            -ArgumentList @($ApiVersion) `
+            -ActivityName 'AvailableUpdates'
+        foreach ($br in $batchResults) {
+            if ($br.Failed) {
+                Write-Log -Message "  Parallel batch $($br.BatchIndex) failed: $($br.Error)" -Level Error
+                continue
+            }
+            if ($br.Output) { $results += @($br.Output) }
+        }
+        # Re-build version counts from the merged results
+        foreach ($row in $results) {
+            if ($row.UpdateState -in $script:ReadyStates -and $row.UpdateName) {
+                if ($updateVersionCounts.ContainsKey($row.UpdateName)) { $updateVersionCounts[$row.UpdateName]++ }
+                else { $updateVersionCounts[$row.UpdateName] = 1 }
+            }
+        }
+    }
+    else {
+
     foreach ($cluster in $clustersToProcess) {
         $clusterName = $cluster.Name
         Write-Host "  Checking: $clusterName..." -ForegroundColor Gray -NoNewline
@@ -3908,6 +4059,7 @@ function Get-AzureLocalAvailableUpdates {
             }
         }
     }
+    } # end else (serial path)
 
     # Display Summary
     Write-Log -Message "" -Level Info
@@ -3979,7 +4131,7 @@ function Get-AzureLocalAvailableUpdates {
                         UpdateVersionSummary  = $updateVersionCounts
                         Results               = $results
                     }
-                    $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $ExportPath -Encoding UTF8
+                    Write-Utf8NoBomFile -Path $ExportPath -Content ($exportData | ConvertTo-Json -Depth 10)
                     Write-Log -Message "Results exported to JSON: $ExportPath" -Level Success
                 }
                 'JUnitXml' {
@@ -4780,7 +4932,7 @@ function Get-AzureLocalUpdateRuns {
                         StateSummary  = $stateCounts
                         Results       = $allFormattedRuns
                     }
-                    $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $ExportPath -Encoding UTF8
+                    Write-Utf8NoBomFile -Path $ExportPath -Content ($exportData | ConvertTo-Json -Depth 10)
                     Write-Log -Message "Results exported to JSON: $ExportPath" -Level Success
                 }
                 'JUnitXml' {
@@ -5393,7 +5545,7 @@ function Get-AzureLocalClusterUpdateReadiness {
                         ClustersNotReady = $notReadyClusters
                         Results         = $results
                     }
-                    $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $ExportPath -Encoding UTF8
+                    Write-Utf8NoBomFile -Path $ExportPath -Content ($exportData | ConvertTo-Json -Depth 10)
                     Write-Log -Message "Results exported to JSON: $ExportPath" -Level Success
                 }
                 'JUnitXml' {
@@ -5749,7 +5901,7 @@ function Get-AzureLocalClusterInventory {
                 
                 switch ($extension) {
                     '.json' {
-                        $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $ExportPath -Encoding UTF8 -Force
+                        Write-Utf8NoBomFile -Path $ExportPath -Content ($exportData | ConvertTo-Json -Depth 10)
                         Write-Log -Message "Inventory exported to JSON: $ExportPath" -Level Success
                     }
                     default {
@@ -5847,6 +5999,21 @@ function ConvertFrom-AzLocalUpdateWindow {
         PSCustomObject[] with Days (DayOfWeek[]), StartTime (TimeSpan), EndTime (TimeSpan), Overnight (bool)
     .EXAMPLE
         ConvertFrom-AzLocalUpdateWindow -WindowString "Sat-Sun:02:00-06:00"
+    .NOTES
+        Time zone / DST behaviour:
+        - Window times are compared against the current time of the host running the
+          automation (Get-Date), NOT against the cluster's local time zone. Run your
+          pipeline on a host configured for UTC (recommended for fleet automation)
+          so that tag values map unambiguously to wall-clock intervals.
+        - Daylight Saving Time (DST) transitions on the host where the automation runs
+          can cause a window to appear to shift by +/-1 hour on the transition day. A
+          22:00-06:00 window evaluated on a host that "springs forward" will have one
+          fewer hour of effective coverage that night, and "falls back" will have one
+          extra hour. If strict wall-clock coverage matters, (a) use UTC on the
+          automation host, and/or (b) set the window wide enough to absorb a 1-hour
+          shift on transition days.
+        - The parser does not interpret UTC offsets embedded in tag values; supply
+          times in the host's effective time zone.
     #>
     [CmdletBinding()]
     [OutputType([PSCustomObject[]])]
@@ -6542,7 +6709,7 @@ function Set-AzureLocalClusterUpdateRingTag {
 
     # Initialize CSV with headers
     $csvHeader = '"ClusterName","ResourceGroup","SubscriptionId","ResourceId","Action","PreviousTagValue","NewTagValue","Status","Message"'
-    $csvHeader | Out-File -FilePath $csvLogPath -Encoding UTF8
+    Write-Utf8NoBomFile -Path $csvLogPath -Content ($csvHeader + [Environment]::NewLine)
 
     Write-Log -Message "========================================" -Level Header
     Write-Log -Message "Azure Local Cluster UpdateRing Tag Management" -Level Header
@@ -6893,7 +7060,7 @@ function Set-AzureLocalClusterUpdateRingTag {
                 # Write body to temp file to avoid PowerShell/cmd JSON escaping issues
                 $tempFile = [System.IO.Path]::GetTempFileName()
                 try {
-                    $patchBody | Out-File -FilePath $tempFile -Encoding utf8 -NoNewline
+                    Write-Utf8NoBomFile -Path $tempFile -Content $patchBody
                     
                     # Use az rest with @file syntax to avoid escaping issues
                     $result = az rest --method PATCH --uri $uri --body "@$tempFile" --headers "Content-Type=application/json" 2>&1
@@ -7069,8 +7236,7 @@ function Export-AzureLocalFleetState {
     $stateToExport.StateFilePath = $Path
     
     # Export to JSON
-    $stateToExport | ConvertTo-Json -Depth 10 | Out-File -FilePath $Path -Encoding UTF8 -Force
-    
+    Write-Utf8NoBomFile -Path $Path -Content ($stateToExport | ConvertTo-Json -Depth 10)
     Write-Log -Message "Fleet state exported to: $Path" -Level Success
     return $Path
 }
@@ -8256,7 +8422,11 @@ function Test-AzureLocalClusterHealth {
         [object]$UpdateSummary,
 
         [Parameter(Mandatory = $false)]
-        [switch]$PassThru
+        [switch]$PassThru,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 16)]
+        [int]$ThrottleLimit = 1
     )
 
     # Pre-flight: Validate export path is writable before expensive operations
@@ -8330,6 +8500,41 @@ function Test-AzureLocalClusterHealth {
 
     $results = @()
     $overallPassed = $true
+
+    # Parallel dispatch (v0.7.0+): when -ThrottleLimit > 1, shard clusters across background
+    # jobs. Each job re-imports the module and calls this function recursively with
+    # -ThrottleLimit 1 on its own subset. Skipped when the caller supplied a pre-fetched
+    # $UpdateSummary (single-cluster fast-path) since batches need per-cluster fetches.
+    if ($ThrottleLimit -gt 1 -and $clustersToCheck.Count -gt 1 -and -not $UpdateSummary) {
+        Write-Log -Message "Dispatching to $ThrottleLimit parallel workers..." -Level Info
+        $resourceIds = @($clustersToCheck | ForEach-Object { $_.ResourceId } | Where-Object { $_ })
+        $jobScript = {
+            param([object[]]$Batch, [string]$ApiVersionArg, [bool]$BlockingOnlyArg, [string]$ModulePath)
+            Import-Module $ModulePath -Force
+            if ($Batch.Count -eq 0) { return @() }
+            $splat = @{ ClusterResourceIds = @($Batch); ApiVersion = $ApiVersionArg; ThrottleLimit = 1; PassThru = $true }
+            if ($BlockingOnlyArg) { $splat['BlockingOnly'] = $true }
+            Test-AzureLocalClusterHealth @splat
+        }
+        $batchResults = Invoke-FleetJobsInParallel `
+            -InputItems $resourceIds `
+            -ScriptBlock $jobScript `
+            -ThrottleLimit $ThrottleLimit `
+            -ArgumentList @($ApiVersion, [bool]$BlockingOnly) `
+            -ActivityName 'ClusterHealth'
+        foreach ($br in $batchResults) {
+            if ($br.Failed) {
+                Write-Log -Message "  Parallel batch $($br.BatchIndex) failed: $($br.Error)" -Level Error
+                $overallPassed = $false
+                continue
+            }
+            if ($br.Output) { $results += @($br.Output) }
+        }
+        if (-not (@($results | Where-Object { $_.Passed -eq $true }).Count -eq $results.Count)) {
+            $overallPassed = $false
+        }
+    }
+    else {
 
     foreach ($cluster in $clustersToCheck) {
         $clusterName = $cluster.Name
@@ -8428,6 +8633,7 @@ function Test-AzureLocalClusterHealth {
             $overallPassed = $false
         }
     }
+    } # end else (serial path)
 
     # Summary
     Write-Log -Message "" -Level Info
@@ -8502,7 +8708,7 @@ function Test-AzureLocalClusterHealth {
                         Blocked = $failedCount
                         Failures = $allFailures
                     }
-                    $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $ExportPath -Encoding UTF8
+                    Write-Utf8NoBomFile -Path $ExportPath -Content ($exportData | ConvertTo-Json -Depth 10)
                     Write-Log -Message "Results exported to JSON: $ExportPath" -Level Success
                 }
                 '.xml' {
@@ -9079,7 +9285,7 @@ function Get-AzureLocalFleetStatusData {
         if ($exportDir -and -not (Test-Path $exportDir)) {
             New-Item -ItemType Directory -Path $exportDir -Force | Out-Null
         }
-        $result | ConvertTo-Json -Depth 15 | Out-File -FilePath $ExportPath -Encoding UTF8 -Force
+        Write-Utf8NoBomFile -Path $ExportPath -Content ($result | ConvertTo-Json -Depth 15)
         Write-Log -Message "Fleet status data exported to: $ExportPath" -Level Success
     }
 
@@ -10065,7 +10271,7 @@ function New-AzureLocalFleetStatusHtmlReport {
     # Write UTF-8 *without* BOM. PowerShell 5.1's Out-File -Encoding UTF8
     # emits a BOM which breaks some browsers' rendering of the first bytes
     # and confuses downstream tooling (grep/diff/CI log viewers).
-    [System.IO.File]::WriteAllText($OutputPath, $htmlContent, [System.Text.UTF8Encoding]::new($false))
+    Write-Utf8NoBomFile -Path $OutputPath -Content $htmlContent
 
     Write-Log -Message "" -Level Info
     Write-Log -Message "HTML fleet status report written to: $OutputPath" -Level Success
