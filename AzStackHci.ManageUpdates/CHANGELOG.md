@@ -5,6 +5,47 @@ All notable changes to the AzStackHci.ManageUpdates module will be documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - Major version change
+
+The jump from `0.6.5` to `0.7.0` reflects the scope of this release: correctness fixes for large fleets (1500+ clusters), a shift to true parallel execution across all per-cluster read/write paths, HTML report performance improvements, and a round of bug and security hardening driven by a deep review of the module. No breaking public-surface changes; all new helpers are private. Az CLI is retained as the ARM transport; a native `Invoke-RestMethod` port is deliberately deferred to a future major release.
+
+### Fixed (Phase 1 - Critical correctness at scale)
+- **HIGH**: Azure Resource Graph queries used by `Get-AzureLocalClusterInventory` (and sibling functions that scope clusters by `-AllClusters` or `-ScopeByUpdateRingTag`) were hardcoded to `az graph query --first 1000`. At 1500 clusters, 500 clusters were silently dropped from the result set - no error, no warning. Introduced a private `Invoke-AzResourceGraphQuery` helper that loops on the ARG continuation `$skipToken` until exhausted, emitting a verbose line per page and an `Info` log whenever the total exceeds 1000.
+- **HIGH**: `Invoke-AzureLocalFleetOperation -ThrottleLimit` previously only affected retry-backoff math; the per-cluster loop was fully sequential. At 1500 clusters that meant 4+ hour runs and CI/CD pipeline timeouts. Extracted the parallel `Start-Job` batch pattern already proven in `Get-AzureLocalFleetStatusData` into a shared private helper `Invoke-FleetJobsInParallel` and rerouted `Invoke-AzureLocalFleetOperation`, `Get-AzureLocalFleetProgress`, and `Test-AzureLocalFleetHealthGate -WaitForCompletion` through it. `-ThrottleLimit` now controls concurrent API calls (default 4, range 1-16). PowerShell 5.1 compatibility preserved - `ForEach-Object -Parallel` is deliberately not used.
+
+### Changed (Phase 2 - Performance)
+- Per-cluster read and write functions now run in parallel batches via the shared helper: `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Set-AzureLocalClusterUpdateRingTag`. Expected 5-10x speedup for 1500-cluster runs (e.g. readiness check from 10 min to 1-2 min).
+- `New-AzureLocalFleetStatusHtmlReport` renderer rewritten for O(n) scaling:
+  - Pre-indexed `$latestRuns` and `$clusterDetails` hashtables replace two `Where-Object` filters inside the main cluster-row loop (was O(n^2): 2.25M scalar compares at 1500 clusters).
+  - HTML encoding moved to collection time in `Get-AzureLocalFleetStatusData`, eliminating ~20,000 `HttpUtility::HtmlEncode` calls at render time.
+  - Per-cluster Azure portal URLs precomputed once and reused across the status table and update-run table.
+  - Roughly 60% faster HTML render at 1500 clusters.
+- HTML report output now written with UTF-8 **without BOM** via `[System.IO.File]::WriteAllText` + `UTF8Encoding($false)`. Was previously writing with BOM via `Out-File -Encoding UTF8` on Windows PowerShell 5.1.
+- New opt-in pass-through parameters on state-changing functions (`-UpdateSummary`, `-AvailableUpdates`) so pre-fetched data can be reused across a pipeline, avoiding redundant ARM reads.
+
+### Fixed (Phase 3 - Bugs and strict-mode hardening)
+- All remaining `| ConvertFrom-Json` call sites outside `Invoke-AzRestJson` were audited and either rerouted through the helper or explicitly null-guarded. Previously, any ARM response that was not valid JSON (e.g. HTTP 204, error HTML, stray `az` CLI warning text on stdout) would throw uncaught under strict mode.
+- Empty-pipeline guards added to the health failures and latest-run aggregation paths to prevent silent `$null` results.
+- Update-name sort is now deterministic: secondary sort key on `$_.name` with a `Warning` logged whenever an update has an unparseable YYMM component, instead of silently grouping all unparseables at position 0.
+- Parallel CSV log writes: each `Start-Job` worker now writes to a per-job CSV; the coordinator merges fragments at the end of the run. Eliminates line interleaving and header corruption that `Add-Content` cannot protect against.
+- Tag property access is now robust to both `Hashtable` and `PSCustomObject` tag shapes returned by different ARM endpoints, replacing the fragile dynamic-property lookup `$tags.$TagName`.
+- `UpdateWindow` and `UpdateExclusions` tag values that fail to parse are now treated as blocking (update skipped with an `Error`-level log) unless `-Force` is specified. Was previously logged as a warning and the update proceeded.
+
+### Security (Phase 4)
+- `-UpdateRingValue` is whitelist-validated against `^[a-zA-Z0-9._-]+$` before KQL interpolation in Azure Resource Graph queries. The prior `-replace "'", "''"` escaping was fragile against KQL regex semantics.
+- New private helper `ConvertTo-SafeCsvField` prefixes formula-leader characters (`=`, `+`, `-`, `@`, tab) with a single quote and strips embedded CR/LF. Applied uniformly to every field written by the CSV loggers. Prevents formula injection when a CSV (e.g. containing an attacker-controlled cluster name or error message) is opened in Excel.
+- User-supplied output paths (`-OutputPath`, `-ExportResultsPath`, `-LogFolderPath`, `-StateFilePath`) are now resolved to absolute form via `[IO.Path]::GetFullPath()`, length-capped at 248 chars, and rejected if they contain `..\` traversal sequences when a relative root was expected.
+- Az CLI error output is scrubbed before being written to error logs: any accidental `--password <value>` or `--secret <value>` echo is masked, as are token-shaped substrings (36-char patterns, `accessToken:` prefixes).
+- `Invoke-AzRestJson` now handles mid-run token expiry: on HTTP 401 it runs `az account get-access-token` once, refreshes, and retries the original request. Logs an `Info` when a refresh happens. Previously, long fleet operations crossing the 1-hour token boundary would fail partway through.
+- `Stop-AzureLocalFleetUpdate` now supports `ShouldProcess`: `-WhatIf` and `-Confirm` are honored before the operation is marked for stop and before any state file is written. `ConfirmImpact = Medium`.
+- `New-AzureLocalFleetStatusHtmlReport` now supports `ShouldProcess`: `-WhatIf` and `-Confirm` are honored before the HTML report is written to disk. Under `-WhatIf`, the composed HTML string is still returned to the pipeline so it can be inspected or piped to email/log without touching the filesystem. `ConfirmImpact = Low`.
+
+### Notes
+- No breaking changes to exported functions or parameter sets. All new helpers are private.
+- Pester test suite target: >= 239 passing (the 0.6.5 baseline), plus new coverage for ARG pagination, parallel speedup ratios, CSV sanitization, and path validation.
+- Az CLI is retained as the ARM transport for v0.7.0. A native `Invoke-RestMethod` port (with its own token cache, MSAL/device-flow handling, and proxy/TLS surface) is deferred to a future major release where it can get dedicated test coverage.
+- Deliberate version jump: the volume of fixes and the behavior change from "sequential, silently truncated" to "parallel, paginated" warrants a minor-version bump rather than a patch.
+
 ## [0.6.5] - 2026-04-23
 
 ### Fixed
