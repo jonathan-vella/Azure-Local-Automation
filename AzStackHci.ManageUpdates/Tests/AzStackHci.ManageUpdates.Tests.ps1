@@ -2303,3 +2303,81 @@ Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)
 
 #endregion Integration: Get-AzureLocalClusterUpdateReadiness parallel dispatch
 
+#region Integration: Get-AzureLocalUpdateRuns parallel dispatch
+
+Describe 'Integration: Get-AzureLocalUpdateRuns parallel dispatch' {
+    Context 'ThrottleLimit=1 inline fast-path' {
+        It 'Should aggregate runs per cluster with state tally and strip internal fields' {
+            InModuleScope AzStackHci.ManageUpdates {
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                Mock Test-AzCliAvailable { return $true }
+
+                # cluster-a has a single Succeeded run; cluster-b has an InProgress run.
+                Mock Invoke-AzRestJson {
+                    param($Uri)
+                    $global:LASTEXITCODE = 0
+                    if ($Uri -match '/updateRuns\?api-version') {
+                        $clusterName = if ($Uri -match '/clusters/([^/]+)/updates/') { $matches[1] } else { 'unknown' }
+                        $state = if ($clusterName -eq 'cluster-a') { 'Succeeded' } else { 'InProgress' }
+                        return [PSCustomObject]@{
+                            Ok = $true
+                            Data = [PSCustomObject]@{
+                                value = @(
+                                    [PSCustomObject]@{
+                                        id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$clusterName/updates/10.2506.0.28/updateRuns/run-1"
+                                        name = "$clusterName/10.2506.0.28/run-1"
+                                        properties = [PSCustomObject]@{
+                                            state           = $state
+                                            timeStarted     = (Get-Date).AddHours(-2).ToString('o')
+                                            lastUpdatedTime = (Get-Date).AddHours(-1).ToString('o')
+                                            location        = 'eastus'
+                                            progress        = [PSCustomObject]@{
+                                                steps = @(
+                                                    [PSCustomObject]@{ name = 'Step1'; status = 'Success' }
+                                                )
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
+                        $name = $matches[1]
+                        return [PSCustomObject]@{
+                            Ok = $true
+                            Data = [PSCustomObject]@{
+                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$name"
+                                name = $name
+                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                                tags = $null
+                            }
+                        }
+                    }
+                    return [PSCustomObject]@{ Ok = $true; Data = $null }
+                }
+
+                $ids = @(
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-a'
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
+                )
+
+                $results = Get-AzureLocalUpdateRuns -ClusterResourceIds $ids -UpdateName '10.2506.0.28' -Latest -PassThru -ThrottleLimit 1
+
+                $results | Should -HaveCount 2
+                ($results | Where-Object ClusterName -eq 'cluster-a').State | Should -Be 'Succeeded'
+                ($results | Where-Object ClusterName -eq 'cluster-b').State | Should -Be 'InProgress'
+                ($results | Where-Object ClusterName -eq 'cluster-a').RunId | Should -Be 'run-1'
+
+                foreach ($r in $results) {
+                    $r.PSObject.Properties.Name | Should -Not -Contain '__DisplayTag'
+                    $r.PSObject.Properties.Name | Should -Not -Contain '__CountedState'
+                    $r.PSObject.Properties.Name | Should -Not -Contain 'DisplayTag'
+                }
+            }
+        }
+    }
+}
+
+#endregion Integration: Get-AzureLocalUpdateRuns parallel dispatch
+

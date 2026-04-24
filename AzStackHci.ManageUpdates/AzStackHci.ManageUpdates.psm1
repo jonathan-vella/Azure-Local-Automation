@@ -4046,6 +4046,127 @@ function Invoke-AzureLocalUpdateApply {
     return $false
 }
 
+# Module-private helper: format a single update run object.
+# Promoted from a nested function inside Get-AzureLocalUpdateRuns so the
+# multi-cluster parallel path can re-use it from Start-Job child processes
+# after Import-Module. Single-cluster and multi-cluster code both call it.
+function Format-AzLocalUpdateRun {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param($run, $clusterName = "")
+
+    $props = $run.properties
+
+    $duration = ""
+    if ($props.timeStarted) {
+        $startTime = [datetime]$props.timeStarted
+        if ($props.lastUpdatedTime) {
+            $endTime = [datetime]$props.lastUpdatedTime
+            $durationSpan = $endTime - $startTime
+            if ($durationSpan.TotalHours -ge 1) {
+                $duration = "{0:N1} hours" -f $durationSpan.TotalHours
+            }
+            else {
+                $duration = "{0:N0} minutes" -f $durationSpan.TotalMinutes
+            }
+        }
+        elseif ($props.state -eq "InProgress") {
+            $durationSpan = (Get-Date) - $startTime
+            $duration = "{0:N1} hours (running)" -f $durationSpan.TotalHours
+        }
+    }
+
+    $currentStep = ""
+    $currentStepDetail = ""
+    $progress = ""
+    if ($props.progress -and $props.progress.steps) {
+        $steps = $props.progress.steps
+        $completedSteps = ($steps | Where-Object { $_.status -eq "Success" }).Count
+        $totalSteps = $steps.Count
+        $progress = "$completedSteps/$totalSteps steps"
+
+        $inProgressStep = $steps | Where-Object { $_.status -eq "InProgress" } | Select-Object -First 1
+        $failedStep = $steps | Where-Object { $_.status -in @("Error", "Failed") } | Select-Object -First 1
+
+        if ($inProgressStep) {
+            $currentStep = $inProgressStep.name
+        }
+        elseif ($failedStep) {
+            $currentStep = "$($failedStep.name) (FAILED)"
+        }
+
+        $currentStepDetail = Get-CurrentStepPath -Steps $steps -IncludeErrorMessage
+        if ([string]::IsNullOrWhiteSpace($currentStepDetail)) {
+            $currentStepDetail = $currentStep
+        }
+        if ($currentStepDetail -match 'health check' -and $props.state -eq 'Failed') {
+            if ($currentStepDetail -notmatch 'Critical health issues') {
+                $currentStepDetail = "$currentStepDetail - Critical health issues must be resolved before updates can proceed"
+            }
+        }
+    }
+
+    $updateNameExtracted = ""
+    $runId = ""
+    if ($run.id -match '/updates/([^/]+)/updateRuns/([^/]+)$') {
+        $updateNameExtracted = $matches[1]
+        $runId = $matches[2]
+    }
+    elseif ($run.name -match '/([^/]+)$') {
+        $runId = $matches[1]
+    }
+    else {
+        $runId = $run.name
+    }
+
+    $result = [PSCustomObject]@{
+        UpdateName        = $updateNameExtracted
+        RunId             = $runId
+        State             = $props.state
+        StartTime         = if ($props.timeStarted) { ([datetime]$props.timeStarted).ToString("yyyy-MM-dd HH:mm") } else { "" }
+        Duration          = $duration
+        Progress          = $progress
+        CurrentStep       = $currentStep
+        CurrentStepDetail = $currentStepDetail
+        Location          = $props.location
+    }
+
+    if ($clusterName) {
+        $result | Add-Member -NotePropertyName "ClusterName" -NotePropertyValue $clusterName -Force
+    }
+
+    return $result
+}
+
+# Module-private helper: list update runs for a single cluster.
+function Get-AzLocalClusterUpdateRuns {
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param($resourceId, $updateNameFilter, $apiVer)
+
+    $allRuns = @()
+
+    if ($updateNameFilter) {
+        $uri = "https://management.azure.com$resourceId/updates/$updateNameFilter/updateRuns?api-version=$apiVer"
+        $result = (Invoke-AzRestJson -Uri $uri).Data
+        if ($LASTEXITCODE -eq 0 -and $result.value) {
+            $allRuns = $result.value
+        }
+    }
+    else {
+        $updates = @(Get-AzureLocalAvailableUpdates -ClusterResourceId $resourceId -ApiVersion $apiVer -Raw)
+        foreach ($update in $updates) {
+            $uri = "https://management.azure.com$resourceId/updates/$($update.name)/updateRuns?api-version=$apiVer"
+            $runs = (Invoke-AzRestJson -Uri $uri).Data
+            if ($runs.value) {
+                $allRuns += $runs.value
+            }
+        }
+    }
+
+    return $allRuns
+}
+
 function Get-AzureLocalUpdateRuns {
     <#
     .SYNOPSIS
@@ -4160,137 +4281,19 @@ function Get-AzureLocalUpdateRuns {
         [string]$ExportFormat = 'Auto',
 
         [Parameter(Mandatory = $false)]
-        [switch]$PassThru
+        [switch]$PassThru,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
+        [ValidateRange(1, 32)]
+        [int]$ThrottleLimit = 1
     )
 
     # Pre-flight: Validate export path is writable before expensive operations
     if ($ExportPath) {
         try { Test-ExportPathWritable -Path $ExportPath | Out-Null }
         catch { Write-Warning $_.Exception.Message; return }
-    }
-
-    # Helper function to format update runs
-    function Format-UpdateRun {
-        param($run, $clusterName = "")
-        
-        $props = $run.properties
-        
-        # Calculate duration
-        $duration = ""
-        if ($props.timeStarted) {
-            $startTime = [datetime]$props.timeStarted
-            if ($props.lastUpdatedTime) {
-                $endTime = [datetime]$props.lastUpdatedTime
-                $durationSpan = $endTime - $startTime
-                if ($durationSpan.TotalHours -ge 1) {
-                    $duration = "{0:N1} hours" -f $durationSpan.TotalHours
-                }
-                else {
-                    $duration = "{0:N0} minutes" -f $durationSpan.TotalMinutes
-                }
-            }
-            elseif ($props.state -eq "InProgress") {
-                $durationSpan = (Get-Date) - $startTime
-                $duration = "{0:N1} hours (running)" -f $durationSpan.TotalHours
-            }
-        }
-
-        # Get current step info (with recursive nested step traversal)
-        $currentStep = ""
-        $currentStepDetail = ""
-        $progress = ""
-        if ($props.progress -and $props.progress.steps) {
-            $steps = $props.progress.steps
-            $completedSteps = ($steps | Where-Object { $_.status -eq "Success" }).Count
-            $totalSteps = $steps.Count
-            $progress = "$completedSteps/$totalSteps steps"
-            
-            # Get top-level step name
-            $inProgressStep = $steps | Where-Object { $_.status -eq "InProgress" } | Select-Object -First 1
-            $failedStep = $steps | Where-Object { $_.status -in @("Error", "Failed") } | Select-Object -First 1
-            
-            if ($inProgressStep) {
-                $currentStep = $inProgressStep.name
-            }
-            elseif ($failedStep) {
-                $currentStep = "$($failedStep.name) (FAILED)"
-            }
-
-            # Get deepest step path (recursive traversal up to 8+ levels)
-            # Include error message for failed steps to show health validation details
-            $currentStepDetail = Get-CurrentStepPath -Steps $steps -IncludeErrorMessage
-            if ([string]::IsNullOrWhiteSpace($currentStepDetail)) {
-                $currentStepDetail = $currentStep
-            }
-            # For health-check-blocked updates, ensure the message is clear
-            if ($currentStepDetail -match 'health check' -and $props.state -eq 'Failed') {
-                if ($currentStepDetail -notmatch 'Critical health issues') {
-                    $currentStepDetail = "$currentStepDetail - Critical health issues must be resolved before updates can proceed"
-                }
-            }
-        }
-
-        # Extract update name and run ID from the resource ID
-        $updateNameExtracted = ""
-        $runId = ""
-        if ($run.id -match '/updates/([^/]+)/updateRuns/([^/]+)$') {
-            $updateNameExtracted = $matches[1]
-            $runId = $matches[2]
-        }
-        elseif ($run.name -match '/([^/]+)$') {
-            $runId = $matches[1]
-        }
-        else {
-            $runId = $run.name
-        }
-
-        $result = [PSCustomObject]@{
-            UpdateName       = $updateNameExtracted
-            RunId            = $runId
-            State            = $props.state
-            StartTime        = if ($props.timeStarted) { ([datetime]$props.timeStarted).ToString("yyyy-MM-dd HH:mm") } else { "" }
-            Duration         = $duration
-            Progress         = $progress
-            CurrentStep      = $currentStep
-            CurrentStepDetail = $currentStepDetail
-            Location         = $props.location
-        }
-        
-        # Add ClusterName property for multi-cluster mode
-        if ($clusterName) {
-            $result | Add-Member -NotePropertyName "ClusterName" -NotePropertyValue $clusterName -Force
-        }
-        
-        return $result
-    }
-
-    # Helper function to get runs for a single cluster
-    function Get-ClusterUpdateRuns {
-        param($resourceId, $updateNameFilter, $apiVer)
-        
-        $allRuns = @()
-        
-        if ($updateNameFilter) {
-            $uri = "https://management.azure.com$resourceId/updates/$updateNameFilter/updateRuns?api-version=$apiVer"
-            $result = (Invoke-AzRestJson -Uri $uri).Data
-            if ($LASTEXITCODE -eq 0 -and $result.value) {
-                $allRuns = $result.value
-            }
-        }
-        else {
-            # Get all updates first, then get runs for each
-            $updates = @(Get-AzureLocalAvailableUpdates -ClusterResourceId $resourceId -ApiVersion $apiVer -Raw)
-            
-            foreach ($update in $updates) {
-                $uri = "https://management.azure.com$resourceId/updates/$($update.name)/updateRuns?api-version=$apiVer"
-                $runs = (Invoke-AzRestJson -Uri $uri).Data
-                if ($runs.value) {
-                    $allRuns += $runs.value
-                }
-            }
-        }
-        
-        return $allRuns
     }
 
     # Original single-cluster behavior
@@ -4320,7 +4323,7 @@ function Get-AzureLocalUpdateRuns {
         Write-Log -Message "Found cluster: $($clusterInfo.id)" -Level Success
 
         Write-Log -Message "Querying update runs..." -Level Info
-        $allRuns = Get-ClusterUpdateRuns -resourceId $clusterInfo.id -updateNameFilter $UpdateName -apiVer $ApiVersion
+        $allRuns = Get-AzLocalClusterUpdateRuns -resourceId $clusterInfo.id -updateNameFilter $UpdateName -apiVer $ApiVersion
         Write-Log -Message "Found $($allRuns.Count) update run(s)" -Level $(if ($allRuns.Count -gt 0) { "Success" } else { "Warning" })
 
         if ($Raw) {
@@ -4333,7 +4336,7 @@ function Get-AzureLocalUpdateRuns {
         # Format runs
         $formattedRuns = @()
         foreach ($run in $allRuns) {
-            $formattedRuns += Format-UpdateRun -run $run
+            $formattedRuns += Format-AzLocalUpdateRun -run $run
         }
 
         $formattedRuns = @($formattedRuns | Sort-Object StartTime -Descending)
@@ -4486,113 +4489,215 @@ function Get-AzureLocalUpdateRuns {
     $allFormattedRuns = @()
     $stateCounts = @{}
 
-    foreach ($cluster in $clustersToProcess) {
-        $clusterName = $cluster.Name
-        Write-Host "  Checking: $clusterName..." -ForegroundColor Gray -NoNewline
-
-        try {
-            # Get cluster info if we don't have ResourceId
-            $resourceId = $cluster.ResourceId
-            if (-not $resourceId) {
-                $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
-                    -ResourceGroupName $cluster.ResourceGroup `
-                    -SubscriptionId $cluster.SubscriptionId `
-                    -ApiVersion $ApiVersion
-                if ($clusterInfo) {
-                    $resourceId = $clusterInfo.id
+    # Per-cluster update-runs scriptblock. Runs inline (ThrottleLimit=1)
+    # or inside Start-Job (ThrottleLimit>1). Emits a structured shape the
+    # parent replays deterministically: Rows (formatted run rows already
+    # flattened) plus LatestState for tally + coloured display. Format-
+    # AzLocalUpdateRun and Get-AzLocalClusterUpdateRuns are module-private
+    # so they are available after Import-Module inside child jobs.
+    $runsJob = {
+        param(
+            [object[]]$Shard,
+            [string]$ApiVer,
+            [string]$UpdateNameFilter,
+            [bool]$LatestOnly,
+            [string]$ModulePath
+        )
+        if (-not (Get-Command -Name Invoke-AzRestJson -ErrorAction SilentlyContinue)) {
+            Import-Module $ModulePath -Force -ErrorAction Stop
+        }
+        $out = foreach ($cluster in $Shard) {
+            $clusterName = $cluster.Name
+            try {
+                $resourceId = $cluster.ResourceId
+                if (-not $resourceId) {
+                    $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
+                        -ResourceGroupName $cluster.ResourceGroup `
+                        -SubscriptionId $cluster.SubscriptionId `
+                        -ApiVersion $ApiVer
+                    if ($clusterInfo) { $resourceId = $clusterInfo.id }
                 }
-            }
 
-            if (-not $resourceId) {
-                Write-Host " Not Found" -ForegroundColor Red
-                $allFormattedRuns += [PSCustomObject]@{
-                    ClusterName       = $clusterName
-                    UpdateName        = "N/A"
-                    RunId             = ""
-                    State             = "Cluster Not Found"
-                    StartTime         = ""
-                    Duration          = ""
-                    Progress          = ""
-                    CurrentStep       = ""
-                    CurrentStepDetail = ""
-                    Location          = ""
+                if (-not $resourceId) {
+                    [PSCustomObject]@{
+                        ClusterName  = $clusterName
+                        DisplayTag   = 'NotFound'
+                        LatestState  = $null
+                        RunCount     = 0
+                        Rows         = @([PSCustomObject]@{
+                                ClusterName       = $clusterName
+                                UpdateName        = 'N/A'
+                                RunId             = ''
+                                State             = 'Cluster Not Found'
+                                StartTime         = ''
+                                Duration          = ''
+                                Progress          = ''
+                                CurrentStep       = ''
+                                CurrentStepDetail = ''
+                                Location          = ''
+                            })
+                    }
+                    continue
                 }
-                continue
-            }
 
-            # Get update runs
-            $runs = Get-ClusterUpdateRuns -resourceId $resourceId -updateNameFilter $UpdateName -apiVer $ApiVersion
+                $runs = @(Get-AzLocalClusterUpdateRuns -resourceId $resourceId -updateNameFilter $UpdateNameFilter -apiVer $ApiVer)
 
-            if ($runs.Count -gt 0) {
-                # Get latest run for display
-                $latestRun = $runs | Sort-Object { $_.properties.timeStarted } -Descending | Select-Object -First 1
-                $latestState = $latestRun.properties.state
-                
-                # Track state counts
-                if ($stateCounts.ContainsKey($latestState)) {
-                    $stateCounts[$latestState]++
+                if ($runs.Count -gt 0) {
+                    $latestRun = $runs | Sort-Object { $_.properties.timeStarted } -Descending | Select-Object -First 1
+                    $latestState = $latestRun.properties.state
+                    $runsToFormat = if ($LatestOnly) { @($latestRun) } else { $runs }
+
+                    $rows = foreach ($run in $runsToFormat) {
+                        $formatted = Format-AzLocalUpdateRun -run $run -clusterName $clusterName
+                        [PSCustomObject]@{
+                            ClusterName       = $clusterName
+                            UpdateName        = $formatted.UpdateName
+                            RunId             = $formatted.RunId
+                            State             = $formatted.State
+                            StartTime         = $formatted.StartTime
+                            Duration          = $formatted.Duration
+                            Progress          = $formatted.Progress
+                            CurrentStep       = $formatted.CurrentStep
+                            CurrentStepDetail = $formatted.CurrentStepDetail
+                            Location          = $formatted.Location
+                        }
+                    }
+
+                    [PSCustomObject]@{
+                        ClusterName = $clusterName
+                        DisplayTag  = 'Runs'
+                        LatestState = $latestState
+                        RunCount    = $runs.Count
+                        Rows        = @($rows)
+                    }
                 }
                 else {
-                    $stateCounts[$latestState] = 1
-                }
-                
-                $stateColor = switch ($latestState) {
-                    "Succeeded" { "Green" }
-                    "InProgress" { "Yellow" }
-                    "Failed" { "Red" }
-                    default { "Gray" }
-                }
-                Write-Host " $($runs.Count) run(s), latest: $latestState" -ForegroundColor $stateColor
-
-                # Format runs
-                $runsToFormat = if ($Latest) { @($latestRun) } else { $runs }
-                foreach ($run in $runsToFormat) {
-                    $formatted = Format-UpdateRun -run $run -clusterName $clusterName
-                    # Reorder properties to have ClusterName first
-                    $allFormattedRuns += [PSCustomObject]@{
-                        ClusterName       = $clusterName
-                        UpdateName        = $formatted.UpdateName
-                        RunId             = $formatted.RunId
-                        State             = $formatted.State
-                        StartTime         = $formatted.StartTime
-                        Duration          = $formatted.Duration
-                        Progress          = $formatted.Progress
-                        CurrentStep       = $formatted.CurrentStep
-                        CurrentStepDetail = $formatted.CurrentStepDetail
-                        Location          = $formatted.Location
+                    [PSCustomObject]@{
+                        ClusterName = $clusterName
+                        DisplayTag  = 'NoRuns'
+                        LatestState = $null
+                        RunCount    = 0
+                        Rows        = @([PSCustomObject]@{
+                                ClusterName       = $clusterName
+                                UpdateName        = 'None'
+                                RunId             = ''
+                                State             = 'No Runs'
+                                StartTime         = ''
+                                Duration          = ''
+                                Progress          = ''
+                                CurrentStep       = ''
+                                CurrentStepDetail = ''
+                                Location          = ''
+                            })
                     }
                 }
             }
-            else {
-                Write-Host " No runs" -ForegroundColor Gray
-                $allFormattedRuns += [PSCustomObject]@{
-                    ClusterName       = $clusterName
-                    UpdateName        = "None"
-                    RunId             = ""
-                    State             = "No Runs"
-                    StartTime         = ""
-                    Duration          = ""
-                    Progress          = ""
-                    CurrentStep       = ""
-                    CurrentStepDetail = ""
-                    Location          = ""
+            catch {
+                $msg = $_.Exception.Message
+                [PSCustomObject]@{
+                    ClusterName = $clusterName
+                    DisplayTag  = "Error:$msg"
+                    LatestState = $null
+                    RunCount    = 0
+                    Rows        = @([PSCustomObject]@{
+                            ClusterName       = $clusterName
+                            UpdateName        = 'Error'
+                            RunId             = ''
+                            State             = 'Error'
+                            StartTime         = ''
+                            Duration          = ''
+                            Progress          = ''
+                            CurrentStep       = $msg
+                            CurrentStepDetail = $msg
+                            Location          = ''
+                        })
                 }
             }
         }
-        catch {
-            Write-Host " Error: $($_.Exception.Message)" -ForegroundColor Red
-            $allFormattedRuns += [PSCustomObject]@{
-                ClusterName       = $clusterName
-                UpdateName        = "Error"
-                RunId             = ""
-                State             = "Error"
-                StartTime         = ""
-                Duration          = ""
-                Progress          = ""
-                CurrentStep       = $_.Exception.Message
-                CurrentStepDetail = $_.Exception.Message
-                Location          = ""
+        return , @($out)
+    }
+
+    $shardInputs = @($clustersToProcess | ForEach-Object {
+            [PSCustomObject]@{
+                ResourceId     = $_.ResourceId
+                Name           = $_.Name
+                ResourceGroup  = $_.ResourceGroup
+                SubscriptionId = $_.SubscriptionId
             }
+        })
+
+    $latestOnly = [bool]$Latest
+    $jobResults = Invoke-FleetJobsInParallel `
+        -InputItems $shardInputs `
+        -ScriptBlock $runsJob `
+        -ThrottleLimit $ThrottleLimit `
+        -ArgumentList @($ApiVersion, [string]$UpdateName, $latestOnly) `
+        -ActivityName 'UpdateRuns'
+
+    # Merge shard outputs into a hash keyed by ClusterName for ordered replay.
+    $perCluster = @{}
+    foreach ($jr in $jobResults) {
+        if ($jr.Failed) {
+            foreach ($item in @($jr.Items)) {
+                $perCluster[$item.Name] = [PSCustomObject]@{
+                    ClusterName = $item.Name
+                    DisplayTag  = "Error:Batch job failed: $($jr.Error)"
+                    LatestState = $null
+                    RunCount    = 0
+                    Rows        = @([PSCustomObject]@{
+                            ClusterName       = $item.Name
+                            UpdateName        = 'Error'
+                            RunId             = ''
+                            State             = 'Error'
+                            StartTime         = ''
+                            Duration          = ''
+                            Progress          = ''
+                            CurrentStep       = "Batch job failed: $($jr.Error)"
+                            CurrentStepDetail = "Batch job failed: $($jr.Error)"
+                            Location          = ''
+                        })
+                }
+            }
+            continue
+        }
+        foreach ($entry in @($jr.Output)) {
+            if (-not $entry -or -not $entry.ClusterName) { continue }
+            $perCluster[$entry.ClusterName] = $entry
+        }
+    }
+
+    foreach ($cluster in $clustersToProcess) {
+        $entry = $perCluster[$cluster.Name]
+        if (-not $entry) { continue }
+
+        Write-Host "  Checking: $($cluster.Name)..." -ForegroundColor Gray -NoNewline
+        switch -Regex ($entry.DisplayTag) {
+            '^NotFound$' { Write-Host ' Not Found' -ForegroundColor Red }
+            '^NoRuns$'   { Write-Host ' No runs' -ForegroundColor Gray }
+            '^Error:(.*)' { Write-Host " Error: $($matches[1])" -ForegroundColor Red }
+            '^Runs$' {
+                $stateColor = switch ($entry.LatestState) {
+                    'Succeeded'  { 'Green' }
+                    'InProgress' { 'Yellow' }
+                    'Failed'     { 'Red' }
+                    default      { 'Gray' }
+                }
+                Write-Host " $($entry.RunCount) run(s), latest: $($entry.LatestState)" -ForegroundColor $stateColor
+
+                if ($entry.LatestState) {
+                    if ($stateCounts.ContainsKey($entry.LatestState)) {
+                        $stateCounts[$entry.LatestState]++
+                    }
+                    else {
+                        $stateCounts[$entry.LatestState] = 1
+                    }
+                }
+            }
+            default { Write-Host '' -ForegroundColor Gray }
+        }
+
+        foreach ($row in @($entry.Rows)) {
+            $allFormattedRuns += $row
         }
     }
 
@@ -4622,7 +4727,7 @@ function Get-AzureLocalUpdateRuns {
     # Display results table
     Write-Log -Message "" -Level Info
     Write-Log -Message "Update Runs:" -Level Header
-    $allFormattedRuns | Format-Table ClusterName, UpdateName, State, StartTime, Duration, Progress -AutoSize
+    $allFormattedRuns | Format-Table ClusterName, UpdateName, State, StartTime, Duration, Progress -AutoSize | Out-Host
 
     # Check for health-check-blocked failures and show diagnostics
     $healthBlockedRuns = @($allFormattedRuns | Where-Object { $_.State -eq "Failed" -and $_.CurrentStep -match "health check" })
