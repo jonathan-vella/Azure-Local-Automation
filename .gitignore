@@ -24,3 +24,7 @@ Thumbs.db
 *.tmp
 *.temp
 ~$*
+
+# Agent scratch files (never commit)
+_tmp_*
+
