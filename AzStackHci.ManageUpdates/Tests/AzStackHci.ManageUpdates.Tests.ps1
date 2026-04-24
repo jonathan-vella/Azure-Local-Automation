@@ -1031,7 +1031,7 @@ Describe 'Helper Function: ConvertFrom-AzLocalUpdateWindow (Internal)' {
 
     Context 'Valid Window Syntax' {
         It 'Parses single day with time range' {
-            $result = @(& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Sat:02:00-06:00' })
+            $result = @(& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Sat_02:00-06:00' })
             $result | Should -Not -BeNullOrEmpty
             $result.Count | Should -Be 1
             $result[0].Days | Should -Contain ([DayOfWeek]::Saturday)
@@ -1041,14 +1041,14 @@ Describe 'Helper Function: ConvertFrom-AzLocalUpdateWindow (Internal)' {
         }
 
         It 'Parses day range (Sat-Sun)' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Sat-Sun:02:00-06:00' }
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Sat-Sun_02:00-06:00' }
             $result[0].Days.Count | Should -Be 2
             $result[0].Days | Should -Contain ([DayOfWeek]::Saturday)
             $result[0].Days | Should -Contain ([DayOfWeek]::Sunday)
         }
 
         It 'Parses weekday range (Mon-Fri)' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Mon-Fri:00:00-06:00' }
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Mon-Fri_00:00-06:00' }
             $result[0].Days.Count | Should -Be 5
             $result[0].Days | Should -Contain ([DayOfWeek]::Monday)
             $result[0].Days | Should -Contain ([DayOfWeek]::Friday)
@@ -1056,7 +1056,7 @@ Describe 'Helper Function: ConvertFrom-AzLocalUpdateWindow (Internal)' {
         }
 
         It 'Parses wrap-around day range (Fri-Mon)' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Fri-Mon:02:00-06:00' }
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Fri-Mon_02:00-06:00' }
             $result[0].Days.Count | Should -Be 4
             $result[0].Days | Should -Contain ([DayOfWeek]::Friday)
             $result[0].Days | Should -Contain ([DayOfWeek]::Saturday)
@@ -1065,46 +1065,46 @@ Describe 'Helper Function: ConvertFrom-AzLocalUpdateWindow (Internal)' {
         }
 
         It 'Parses comma-separated days (Tue,Thu)' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Tue,Thu:02:00-06:00' }
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Tue,Thu_02:00-06:00' }
             $result[0].Days.Count | Should -Be 2
             $result[0].Days | Should -Contain ([DayOfWeek]::Tuesday)
             $result[0].Days | Should -Contain ([DayOfWeek]::Thursday)
         }
 
         It 'Parses * (wildcard) as all days' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString '*:00:00-06:00' }
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString '*_00:00-06:00' }
             $result[0].Days.Count | Should -Be 7
         }
 
         It 'Parses Daily as all days' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Daily:22:00-06:00' }
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Daily_22:00-06:00' }
             $result[0].Days.Count | Should -Be 7
             $result[0].Overnight | Should -Be $true
         }
 
         It 'Parses overnight window (22:00-06:00) and marks Overnight flag' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Sat:22:00-06:00' }
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Sat_22:00-06:00' }
             $result[0].Overnight | Should -Be $true
             $result[0].StartTime | Should -Be ([TimeSpan]::Parse('22:00'))
             $result[0].EndTime | Should -Be ([TimeSpan]::Parse('06:00'))
         }
 
         It 'Parses multiple semicolon-separated windows' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Sat:20:00-23:59;Sun:00:00-08:00' }
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Sat_20:00-23:59;Sun_00:00-08:00' }
             $result.Count | Should -Be 2
             $result[0].Days | Should -Contain ([DayOfWeek]::Saturday)
             $result[1].Days | Should -Contain ([DayOfWeek]::Sunday)
         }
 
         It 'Is case-insensitive for day names' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'sat-SUN:02:00-06:00' }
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'sat-SUN_02:00-06:00' }
             $result[0].Days | Should -Contain ([DayOfWeek]::Saturday)
             $result[0].Days | Should -Contain ([DayOfWeek]::Sunday)
         }
 
         It 'Stores raw segment string' {
-            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Mon:08:00-17:00' }
-            $result[0].Raw | Should -Be 'Mon:08:00-17:00'
+            $result = & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Mon_08:00-17:00' }
+            $result[0].Raw | Should -Be 'Mon_08:00-17:00'
         }
     }
 
@@ -1118,15 +1118,15 @@ Describe 'Helper Function: ConvertFrom-AzLocalUpdateWindow (Internal)' {
         }
 
         It 'Throws on invalid day abbreviation' {
-            { & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Xyz:02:00-06:00' } } | Should -Throw '*Invalid day*'
+            { & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Xyz_02:00-06:00' } } | Should -Throw '*Invalid day*'
         }
 
         It 'Throws on invalid time format' {
-            { & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Mon:25:00-06:00' } } | Should -Throw
+            { & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateWindow -WindowString 'Mon_25:00-06:00' } } | Should -Throw
         }
 
         It 'Throws when value exceeds 256 chars' {
-            $longValue = ('Mon:00:00-01:00;' * 20)
+            $longValue = ('Mon_00:00-01:00;' * 20)
             { & (Get-Module $moduleName) { param($val) ConvertFrom-AzLocalUpdateWindow -WindowString $val } $longValue } | Should -Throw '*256 characters*'
         }
     }
@@ -1193,46 +1193,46 @@ Describe 'Helper Function: Test-AzLocalUpdateWindow (Internal)' {
 
     Context 'Same-day windows' {
         It 'Returns Allowed=true when time is within a same-day window' {
-            # Saturday 03:00 UTC should be within Sat:02:00-06:00
+            # Saturday 03:00 UTC should be within Sat_02:00-06:00
             $testTime = [datetime]::ParseExact('2026-04-18 03:00', 'yyyy-MM-dd HH:mm', $null)  # Saturday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_02:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $true
         }
 
         It 'Returns Allowed=false when time is outside the window' {
-            # Saturday 10:00 UTC should be outside Sat:02:00-06:00
+            # Saturday 10:00 UTC should be outside Sat_02:00-06:00
             $testTime = [datetime]::ParseExact('2026-04-18 10:00', 'yyyy-MM-dd HH:mm', $null)  # Saturday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_02:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $false
         }
 
         It 'Returns Allowed=false when day does not match' {
-            # Wednesday 03:00 UTC should not match Sat:02:00-06:00
+            # Wednesday 03:00 UTC should not match Sat_02:00-06:00
             $testTime = [datetime]::ParseExact('2026-04-15 03:00', 'yyyy-MM-dd HH:mm', $null)  # Wednesday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_02:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $false
         }
     }
 
     Context 'Overnight windows' {
         It 'Returns Allowed=true for evening portion of overnight window' {
-            # Saturday 23:00 UTC should be in Sat:22:00-06:00 (evening portion)
+            # Saturday 23:00 UTC should be in Sat_22:00-06:00 (evening portion)
             $testTime = [datetime]::ParseExact('2026-04-18 23:00', 'yyyy-MM-dd HH:mm', $null)  # Saturday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:22:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_22:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $true
         }
 
         It 'Returns Allowed=true for morning portion of overnight window' {
-            # Sunday 03:00 UTC should be in Sat:22:00-06:00 (morning portion, previous day was Sat)
+            # Sunday 03:00 UTC should be in Sat_22:00-06:00 (morning portion, previous day was Sat)
             $testTime = [datetime]::ParseExact('2026-04-19 03:00', 'yyyy-MM-dd HH:mm', $null)  # Sunday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:22:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_22:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $true
         }
 
         It 'Returns Allowed=false for midday after overnight window ends' {
-            # Sunday 10:00 UTC should not be in Sat:22:00-06:00
+            # Sunday 10:00 UTC should not be in Sat_22:00-06:00
             $testTime = [datetime]::ParseExact('2026-04-19 10:00', 'yyyy-MM-dd HH:mm', $null)  # Sunday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:22:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_22:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $false
         }
     }
@@ -1241,7 +1241,7 @@ Describe 'Helper Function: Test-AzLocalUpdateWindow (Internal)' {
         It 'Returns Allowed=true when matching any of multiple windows' {
             # Sunday 04:00 should match second window
             $testTime = [datetime]::ParseExact('2026-04-19 04:00', 'yyyy-MM-dd HH:mm', $null)  # Sunday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:20:00-23:59;Sun:00:00-08:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_20:00-23:59;Sun_00:00-08:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $true
         }
     }
@@ -1249,13 +1249,13 @@ Describe 'Helper Function: Test-AzLocalUpdateWindow (Internal)' {
     Context 'Daily/wildcard windows' {
         It 'Returns Allowed=true for any day with * wildcard' {
             $testTime = [datetime]::ParseExact('2026-04-15 03:00', 'yyyy-MM-dd HH:mm', $null)  # Wednesday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString '*:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString '*_02:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $true
         }
 
         It 'Returns Allowed=true for any day with Daily keyword' {
             $testTime = [datetime]::ParseExact('2026-04-16 03:00', 'yyyy-MM-dd HH:mm', $null)  # Thursday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Daily:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Daily_02:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $true
         }
     }
@@ -1263,19 +1263,19 @@ Describe 'Helper Function: Test-AzLocalUpdateWindow (Internal)' {
     Context 'Output properties' {
         It 'Returns MatchedWindow when allowed' {
             $testTime = [datetime]::ParseExact('2026-04-18 03:00', 'yyyy-MM-dd HH:mm', $null)
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_02:00-06:00' -TestTime $tt } $testTime
             $result.MatchedWindow | Should -Not -BeNullOrEmpty
         }
 
         It 'Returns null MatchedWindow when not allowed' {
             $testTime = [datetime]::ParseExact('2026-04-18 10:00', 'yyyy-MM-dd HH:mm', $null)
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_02:00-06:00' -TestTime $tt } $testTime
             $result.MatchedWindow | Should -BeNullOrEmpty
         }
 
         It 'Returns Reason string in all cases' {
             $testTime = [datetime]::ParseExact('2026-04-18 03:00', 'yyyy-MM-dd HH:mm', $null)
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzLocalUpdateWindow -WindowString 'Sat_02:00-06:00' -TestTime $tt } $testTime
             $result.Reason | Should -Not -BeNullOrEmpty
         }
     }
@@ -1382,14 +1382,14 @@ Describe 'Helper Function: Test-AzureLocalUpdateScheduleAllowed (Internal)' {
     Context 'Window only' {
         It 'Returns Allowed=true when within maintenance window' {
             $testTime = [datetime]::ParseExact('2026-04-18 03:00', 'yyyy-MM-dd HH:mm', $null)  # Saturday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat_02:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $true
             $result.WindowOpen | Should -Be $true
         }
 
         It 'Returns Allowed=false when outside maintenance window' {
             $testTime = [datetime]::ParseExact('2026-04-18 10:00', 'yyyy-MM-dd HH:mm', $null)  # Saturday
-            $result = & (Get-Module $moduleName) { param($tt) Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat:02:00-06:00' -TestTime $tt } $testTime
+            $result = & (Get-Module $moduleName) { param($tt) Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat_02:00-06:00' -TestTime $tt } $testTime
             $result.Allowed | Should -Be $false
             $result.WindowOpen | Should -Be $false
             $result.Reason | Should -BeLike '*Outside maintenance window*'
@@ -1417,7 +1417,7 @@ Describe 'Helper Function: Test-AzureLocalUpdateScheduleAllowed (Internal)' {
             # Saturday Dec 26 at 03:00 - within Sat window but also in exclusion
             $testTime = [datetime]::ParseExact('2026-12-26 03:00', 'yyyy-MM-dd HH:mm', $null)  # Saturday
             $result = & (Get-Module $moduleName) { param($tt)
-                Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat:02:00-06:00' -UpdateExclusions '2026-12-20/2027-01-03' -TestTime $tt
+                Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat_02:00-06:00' -UpdateExclusions '2026-12-20/2027-01-03' -TestTime $tt
             } $testTime
             $result.Allowed | Should -Be $false
             $result.ExclusionActive | Should -Be $true
@@ -1429,7 +1429,7 @@ Describe 'Helper Function: Test-AzureLocalUpdateScheduleAllowed (Internal)' {
             # Saturday Apr 18 at 03:00 - within Sat window, no exclusion active
             $testTime = [datetime]::ParseExact('2026-04-18 03:00', 'yyyy-MM-dd HH:mm', $null)  # Saturday
             $result = & (Get-Module $moduleName) { param($tt)
-                Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat:02:00-06:00' -UpdateExclusions '2026-12-20/2027-01-03' -TestTime $tt
+                Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat_02:00-06:00' -UpdateExclusions '2026-12-20/2027-01-03' -TestTime $tt
             } $testTime
             $result.Allowed | Should -Be $true
             $result.WindowOpen | Should -Be $true
@@ -1440,7 +1440,7 @@ Describe 'Helper Function: Test-AzureLocalUpdateScheduleAllowed (Internal)' {
             # Saturday Apr 18 at 10:00 - outside Sat window, no exclusion active
             $testTime = [datetime]::ParseExact('2026-04-18 10:00', 'yyyy-MM-dd HH:mm', $null)  # Saturday
             $result = & (Get-Module $moduleName) { param($tt)
-                Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat:02:00-06:00' -UpdateExclusions '2026-12-20/2027-01-03' -TestTime $tt
+                Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat_02:00-06:00' -UpdateExclusions '2026-12-20/2027-01-03' -TestTime $tt
             } $testTime
             $result.Allowed | Should -Be $false
             $result.WindowOpen | Should -Be $false
@@ -1451,7 +1451,7 @@ Describe 'Helper Function: Test-AzureLocalUpdateScheduleAllowed (Internal)' {
         It 'Returns all expected properties' {
             $testTime = [datetime]::ParseExact('2026-04-18 03:00', 'yyyy-MM-dd HH:mm', $null)
             $result = & (Get-Module $moduleName) { param($tt)
-                Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat:02:00-06:00' -UpdateExclusions '2026-12-20/2027-01-03' -TestTime $tt
+                Test-AzureLocalUpdateScheduleAllowed -UpdateWindow 'Sat_02:00-06:00' -UpdateExclusions '2026-12-20/2027-01-03' -TestTime $tt
             } $testTime
             $result.PSObject.Properties.Name | Should -Contain 'Allowed'
             $result.PSObject.Properties.Name | Should -Contain 'Reason'
@@ -1501,7 +1501,7 @@ Describe 'Integration: Start-AzureLocalClusterUpdate Schedule Status' {
             $testResult = [PSCustomObject]@{
                 ClusterName = 'test-cluster'
                 Status      = 'ScheduleBlocked'
-                Message     = 'Outside maintenance window: Sat:02:00-06:00'
+                Message     = 'Outside maintenance window: Sat_02:00-06:00'
                 UpdateName  = $null
                 StartTime   = Get-Date
                 EndTime     = Get-Date

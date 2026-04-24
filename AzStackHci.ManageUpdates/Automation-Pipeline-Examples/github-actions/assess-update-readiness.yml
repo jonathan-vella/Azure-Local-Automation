@@ -189,6 +189,22 @@ jobs:
           } else {
               $lines.Add('> **All clear**: every cluster in scope is ready for update. Safe to proceed with apply-updates.yml for this ring.')
           }
+
+          # Per-cluster detail table (installed version is useful for operators even
+          # for clusters that ARE ready, so always include it when we have rows).
+          if ($total -gt 0) {
+              $lines.Add('')
+              $lines.Add('### Cluster detail')
+              $lines.Add('')
+              $lines.Add('| Cluster | Current version | Current SBE version | Update state | Health | Ready | Recommended update |')
+              $lines.Add('|---------|-----------------|---------------------|--------------|--------|-------|--------------------|')
+              foreach ($r in $readiness) {
+                  $cv  = if ($r.CurrentVersion) { $r.CurrentVersion } else { '-' }
+                  $csv = if ($r.PSObject.Properties['CurrentSbeVersion'] -and $r.CurrentSbeVersion) { $r.CurrentSbeVersion } else { '-' }
+                  $ru  = if ($r.RecommendedUpdate) { $r.RecommendedUpdate } else { '-' }
+                  $lines.Add("| $($r.ClusterName) | $cv | $csv | $($r.UpdateState) | $($r.HealthState) | $($r.ReadyForUpdate) | $ru |")
+              }
+          }
           ($lines -join [Environment]::NewLine) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
       - name: Upload artifacts

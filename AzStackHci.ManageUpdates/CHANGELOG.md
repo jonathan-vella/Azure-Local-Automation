@@ -114,7 +114,7 @@ The jump from `0.6.5` to `0.7.0` reflects the scope of this release: correctness
 
 ### Added - Maintenance Schedule Tag Support
 - **New exported function `Test-AzureLocalUpdateScheduleAllowed`**: Master gate evaluating `UpdateWindow` and `UpdateExclusions` Azure resource tags
-- **New internal function `ConvertFrom-AzLocalUpdateWindow`**: Parses maintenance window tag syntax (`<days>:<HH:MM>-<HH:MM>`) with day ranges, wildcards, and overnight windows
+- **New internal function `ConvertFrom-AzLocalUpdateWindow`**: Parses maintenance window tag syntax (`<days>_<HH:MM>-<HH:MM>`) with day ranges, wildcards, and overnight windows
 - **New internal function `ConvertFrom-AzLocalUpdateExclusion`**: Parses exclusion/blackout period tag syntax (`YYYY-MM-DD/YYYY-MM-DD`) with wildcard year support
 - `Start-AzureLocalClusterUpdate` checks schedule tags before applying updates; returns `ScheduleBlocked` status when outside maintenance windows or during exclusion periods
 - Exclusion periods take priority over maintenance windows

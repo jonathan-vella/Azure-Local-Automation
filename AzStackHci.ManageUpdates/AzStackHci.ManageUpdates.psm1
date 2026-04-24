@@ -626,7 +626,9 @@ function Write-Log {
     # Write to log file if path is set
     if ($script:LogFilePath) {
         try {
-            Add-Content -Path $script:LogFilePath -Value $logEntry -ErrorAction SilentlyContinue
+            # -WhatIf:$false -- log writes are internal side effects, must run
+            # even when the caller invokes a cmdlet with -WhatIf.
+            Add-Content -Path $script:LogFilePath -Value $logEntry -ErrorAction SilentlyContinue -WhatIf:$false
         }
         catch {
             # Log file write failure is non-critical - continue silently to not disrupt main operation
@@ -637,7 +639,7 @@ function Write-Log {
     # Write errors to separate error log
     if ($Level -eq 'Error' -and $script:ErrorLogPath) {
         try {
-            Add-Content -Path $script:ErrorLogPath -Value $logEntry -ErrorAction SilentlyContinue
+            Add-Content -Path $script:ErrorLogPath -Value $logEntry -ErrorAction SilentlyContinue -WhatIf:$false
         }
         catch {
             # Error log write failure is non-critical - continue silently
@@ -775,11 +777,11 @@ function Invoke-AzRestJson {
     }
     finally {
         if ($tempBodyFile -and (Test-Path -LiteralPath $tempBodyFile)) {
-            Remove-Item -LiteralPath $tempBodyFile -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $tempBodyFile -Force -ErrorAction SilentlyContinue -WhatIf:$false
         }
         # Restore caller's prior PYTHONIOENCODING (may have been $null/unset).
         if ($null -eq $prevPyEncoding) {
-            Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue
+            Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue -WhatIf:$false
         }
         else {
             $env:PYTHONIOENCODING = $prevPyEncoding
@@ -1891,6 +1893,25 @@ function Export-ResultsToJUnitXml {
             $testTime = [double]($result.Duration -replace '[^\d.]', '')
         }
 
+        # Human-friendly duration string (portal-style), for inclusion
+        # in failure/system-out bodies. The JUnit `time` attribute stays
+        # in seconds (CI tooling expects numeric seconds).
+        $durationHuman = ""
+        if ($result.Duration -is [TimeSpan]) {
+            $durationHuman = Format-AzLocalDurationHuman -Value $result.Duration
+        }
+        elseif ($result.Duration -is [string] -and -not [string]::IsNullOrWhiteSpace($result.Duration)) {
+            # If the producer already formatted it (e.g. Format-AzLocalUpdateRun
+            # returns "1 hour 24 minutes 31 seconds" or "running"), reuse it;
+            # otherwise attempt to normalise hh:mm:ss / seconds.
+            if ($result.Duration -match '\b(hour|minute|second|day)s?\b') {
+                $durationHuman = $result.Duration
+            }
+            else {
+                $durationHuman = Format-AzLocalDurationHuman -Value $result.Duration
+            }
+        }
+
         [void]$xmlBuilder.AppendLine("    <testcase name=`"$(ConvertTo-XmlSafeString $testName)`" classname=`"$TestSuiteName.$OperationType`" time=`"$testTime`">")
 
         switch ($result.Status) {
@@ -1909,6 +1930,9 @@ function Export-ResultsToJUnitXml {
                 }
                 if ($result.Progress) {
                     [void]$xmlBuilder.AppendLine("Progress: $($result.Progress)")
+                }
+                if ($durationHuman) {
+                    [void]$xmlBuilder.AppendLine("Duration: $durationHuman")
                 }
                 [void]$xmlBuilder.AppendLine("      </failure>")
             }
@@ -1939,6 +1963,9 @@ function Export-ResultsToJUnitXml {
                 }
                 if ($result.Progress) {
                     [void]$xmlBuilder.AppendLine("Progress: $($result.Progress)")
+                }
+                if ($durationHuman) {
+                    [void]$xmlBuilder.AppendLine("Duration: $durationHuman")
                 }
                 [void]$xmlBuilder.AppendLine("      </system-out>")
             }
@@ -2053,7 +2080,7 @@ function Write-UpdateCsvLog {
     
     if ($logPath) {
         try {
-            Add-Content -Path $logPath -Value $csvLine -Encoding UTF8 -ErrorAction SilentlyContinue
+            Add-Content -Path $logPath -Value $csvLine -Encoding UTF8 -ErrorAction SilentlyContinue -WhatIf:$false
         }
         catch {
             # CSV log write failure is non-critical - continue silently
@@ -2193,7 +2220,7 @@ function Start-AzureLocalClusterUpdate {
         # Ensure log directory exists
         if (-not (Test-Path $logDir)) {
             try {
-                New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+                New-Item -ItemType Directory -Path $logDir -Force -WhatIf:$false | Out-Null
             }
             catch {
                 # Fall back to current directory if we can't create the log folder
@@ -2215,7 +2242,7 @@ function Start-AzureLocalClusterUpdate {
 
         # Ensure log directory exists
         if ($logDir -and -not (Test-Path $logDir)) {
-            New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $logDir -Force -WhatIf:$false | Out-Null
         }
 
         # Start transcript if enabled
@@ -2915,6 +2942,22 @@ function Start-AzureLocalClusterUpdate {
                         }
                     }
                 }
+                elseif ($WhatIfPreference) {
+                    # Under -WhatIf: ShouldProcess returned $false. Emit a WouldUpdate row
+                    # so the end-of-run Summary lists which clusters would have had an
+                    # update started. Matches the normal 'UpdateStarted' shape.
+                    $clusterRgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                    Write-Log -Message "[WhatIf] Would start update '$($selectedUpdate.name)' on cluster '$clusterName' (RG: $clusterRgName)" -Level Info
+                    $results += [PSCustomObject]@{
+                        ClusterName = $clusterName
+                        Status      = "WouldUpdate"
+                        Message     = "WhatIf: would start update '$($selectedUpdate.name)'"
+                        UpdateName  = $selectedUpdate.name
+                        StartTime   = $clusterStartTime
+                        EndTime     = Get-Date
+                        Duration    = $null
+                    }
+                }
             }
             catch {
                 $endTime = Get-Date
@@ -2943,11 +2986,17 @@ function Start-AzureLocalClusterUpdate {
         # Display summary statistics
         $totalClusters = $results.Count
         $succeeded = @($results | Where-Object { $_.Status -eq "UpdateStarted" }).Count
+        $wouldUpdate = @($results | Where-Object { $_.Status -eq "WouldUpdate" }).Count
         $failed = @($results | Where-Object { $_.Status -in @("Failed", "Error") }).Count
         $skipped = @($results | Where-Object { $_.Status -in @("Skipped", "NotReady", "NoUpdatesAvailable", "NoReadyUpdates", "NotFound", "UpdateNotFound", "HealthCheckBlocked", "ScheduleBlocked") }).Count
 
         Write-Log -Message "Total clusters processed: $totalClusters" -Level Info
-        Write-Log -Message "Updates started: $succeeded" -Level Success
+        if ($WhatIfPreference) {
+            Write-Log -Message "Would start updates on: $wouldUpdate cluster(s) (WhatIf mode - no changes made)" -Level Success
+        }
+        else {
+            Write-Log -Message "Updates started: $succeeded" -Level Success
+        }
         if ($failed -gt 0) {
             Write-Log -Message "Failed: $failed" -Level Error
         } else {
@@ -4224,6 +4273,61 @@ function Invoke-AzureLocalUpdateApply {
     return $false
 }
 
+# Module-private helper: format a TimeSpan / second count / duration string
+# as a human-readable duration matching the Azure portal's "Update History"
+# column - e.g. "1 hour 24 minutes 31 seconds", "5 minutes 53 seconds",
+# "27 minutes 48 seconds". Zero-valued leading components are omitted and
+# singular/plural units are honored. Returns "" when input cannot be
+# interpreted as a positive duration.
+function Format-AzLocalDurationHuman {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        $Value
+    )
+
+    if ($null -eq $Value) { return "" }
+
+    $ts = $null
+    if ($Value -is [TimeSpan]) {
+        $ts = $Value
+    }
+    elseif ($Value -is [double] -or $Value -is [int] -or $Value -is [long] -or $Value -is [decimal]) {
+        try { $ts = [TimeSpan]::FromSeconds([double]$Value) } catch { return "" }
+    }
+    elseif ($Value -is [string]) {
+        $s = $Value.Trim()
+        if ([string]::IsNullOrEmpty($s)) { return "" }
+        [TimeSpan]$parsed = [TimeSpan]::Zero
+        if ([TimeSpan]::TryParse($s, [ref]$parsed)) {
+            $ts = $parsed
+        }
+        else {
+            return $s
+        }
+    }
+    else {
+        return ""
+    }
+
+    if (-not $ts -or $ts.TotalSeconds -lt 1) { return "0 seconds" }
+
+    $days    = [int][Math]::Floor($ts.TotalDays)
+    $hours   = $ts.Hours
+    $minutes = $ts.Minutes
+    $seconds = $ts.Seconds
+
+    $parts = @()
+    if ($days -gt 0)    { $parts += "$days day$(if ($days -ne 1) { 's' } else { '' })" }
+    if ($hours -gt 0)   { $parts += "$hours hour$(if ($hours -ne 1) { 's' } else { '' })" }
+    if ($minutes -gt 0) { $parts += "$minutes minute$(if ($minutes -ne 1) { 's' } else { '' })" }
+    if ($seconds -gt 0) { $parts += "$seconds second$(if ($seconds -ne 1) { 's' } else { '' })" }
+
+    if ($parts.Count -eq 0) { return "0 seconds" }
+    return ($parts -join ' ')
+}
+
 # Module-private helper: format a single update run object.
 # Promoted from a nested function inside Get-AzureLocalUpdateRuns so the
 # multi-cluster parallel path can re-use it from Start-Job child processes
@@ -4241,16 +4345,12 @@ function Format-AzLocalUpdateRun {
         if ($props.lastUpdatedTime) {
             $endTime = [datetime]$props.lastUpdatedTime
             $durationSpan = $endTime - $startTime
-            if ($durationSpan.TotalHours -ge 1) {
-                $duration = "{0:N1} hours" -f $durationSpan.TotalHours
-            }
-            else {
-                $duration = "{0:N0} minutes" -f $durationSpan.TotalMinutes
-            }
+            $duration = Format-AzLocalDurationHuman -Value $durationSpan
         }
         elseif ($props.state -eq "InProgress") {
             $durationSpan = (Get-Date) - $startTime
-            $duration = "{0:N1} hours (running)" -f $durationSpan.TotalHours
+            $human = Format-AzLocalDurationHuman -Value $durationSpan
+            if ($human) { $duration = "$human (running)" }
         }
     }
 
@@ -5246,6 +5346,8 @@ function Get-AzureLocalClusterUpdateReadiness {
                         ClusterState                 = 'Not Found'
                         UpdateState                  = 'N/A'
                         HealthState                  = 'N/A'
+                        CurrentVersion               = ''
+                        CurrentSbeVersion            = ''
                         ReadyForUpdate               = $false
                         AvailableUpdates             = ''
                         ReadyUpdates                 = ''
@@ -5323,6 +5425,42 @@ function Get-AzureLocalClusterUpdateReadiness {
                     $healthCheckFailures = Get-HealthCheckFailureSummary -UpdateSummary $updateSummary
                 }
 
+                # Installed solution/SBE versions are already present in $updateSummary;
+                # surface them on the readiness row so operators can triage without a
+                # separate Get-AzureLocalUpdateSummary call.
+                # Solution version lives at properties.currentVersion (ARM maintains
+                # this as the latest-installed Solution). SBE version is inside
+                # properties.packageVersions[] where packageType == 'SBE'; pick the
+                # newest by lastUpdated (fallback: highest parseable [version]).
+                $currentVersion = ''
+                $currentSbeVersion = ''
+                if ($updateSummary -and $updateSummary.properties) {
+                    if ($updateSummary.properties.PSObject.Properties['currentVersion']) {
+                        $currentVersion = [string]$updateSummary.properties.currentVersion
+                    }
+                    if ($updateSummary.properties.PSObject.Properties['packageVersions'] -and $updateSummary.properties.packageVersions) {
+                        $sbePkgs = @($updateSummary.properties.packageVersions | Where-Object { $_.packageType -eq 'SBE' -and $_.version })
+                        if ($sbePkgs.Count -gt 0) {
+                            $latestSbe = $sbePkgs |
+                                Sort-Object -Property @{
+                                    Expression = {
+                                        if ($_.PSObject.Properties['lastUpdated'] -and $_.lastUpdated) {
+                                            try { [datetime]$_.lastUpdated } catch { [datetime]::MinValue }
+                                        } else { [datetime]::MinValue }
+                                    }
+                                }, @{
+                                    Expression = {
+                                        try { [version]($_.version -replace '[^0-9.]', '') } catch { [version]'0.0.0.0' }
+                                    }
+                                } -Descending |
+                                Select-Object -First 1
+                            if ($latestSbe -and $latestSbe.version) {
+                                $currentSbeVersion = [string]$latestSbe.version
+                            }
+                        }
+                    }
+                }
+
                 # Choose a display tag; actual Write-Host runs in the parent.
                 $tag =
                     if ($isReady) { "Ready:$recommendedUpdate" }
@@ -5343,6 +5481,8 @@ function Get-AzureLocalClusterUpdateReadiness {
                     ClusterState                 = $clusterInfo.properties.status
                     UpdateState                  = $updateState
                     HealthState                  = $healthState
+                    CurrentVersion               = $currentVersion
+                    CurrentSbeVersion            = $currentSbeVersion
                     ReadyForUpdate               = $isReady
                     AvailableUpdates             = $availableUpdateNames
                     ReadyUpdates                 = $readyUpdateNames
@@ -5364,6 +5504,8 @@ function Get-AzureLocalClusterUpdateReadiness {
                     ClusterState                 = 'Error'
                     UpdateState                  = 'Error'
                     HealthState                  = 'Error'
+                    CurrentVersion               = ''
+                    CurrentSbeVersion            = ''
                     ReadyForUpdate               = $false
                     AvailableUpdates             = ''
                     ReadyUpdates                 = ''
@@ -5411,6 +5553,8 @@ function Get-AzureLocalClusterUpdateReadiness {
                     ClusterState                 = 'Error'
                     UpdateState                  = 'Error'
                     HealthState                  = 'Error'
+                    CurrentVersion               = ''
+                    CurrentSbeVersion            = ''
                     ReadyForUpdate               = $false
                     AvailableUpdates             = ''
                     ReadyUpdates                 = ''
@@ -5537,7 +5681,7 @@ function Get-AzureLocalClusterUpdateReadiness {
     # Display results table
     Write-Log -Message "" -Level Info
     Write-Log -Message "Detailed Results:" -Level Header
-    $results | Format-Table ClusterName, ResourceGroup, UpdateState, HealthState, ReadyForUpdate, RecommendedUpdate -AutoSize | Out-Host
+    $results | Format-Table ClusterName, ResourceGroup, CurrentVersion, UpdateState, HealthState, ReadyForUpdate, RecommendedUpdate -AutoSize | Out-Host
     
     # Show clusters with health check failures
     $clustersWithHealthIssues = @($results | Where-Object { $_.HealthCheckFailures -ne "" })
@@ -5566,7 +5710,7 @@ function Get-AzureLocalClusterUpdateReadiness {
                 [PSCustomObject]@{
                     ClusterName  = $_.ClusterName
                     Status       = if ($_.ReadyForUpdate -eq "Yes") { "Ready" } elseif ($_.HealthState -eq "Failure") { "Failed" } else { "Skipped" }
-                    Message      = "UpdateState: $($_.UpdateState), HealthState: $($_.HealthState), RecommendedUpdate: $($_.RecommendedUpdate)"
+                    Message      = "CurrentVersion: $($_.CurrentVersion), CurrentSbeVersion: $($_.CurrentSbeVersion), UpdateState: $($_.UpdateState), HealthState: $($_.HealthState), RecommendedUpdate: $($_.RecommendedUpdate)"
                     UpdateName   = $_.RecommendedUpdate
                     CurrentState = $_.UpdateState
                 }
@@ -6030,7 +6174,7 @@ function ConvertFrom-AzLocalUpdateWindow {
         Parses the compact maintenance window syntax used in the UpdateWindow Azure resource tag
         into structured objects suitable for schedule evaluation and display.
 
-        Syntax: <days>:<HH:MM>-<HH:MM>[;<days>:<HH:MM>-<HH:MM>]
+        Syntax: <days>_<HH:MM>-<HH:MM>[;<days>_<HH:MM>-<HH:MM>]
         Days: Mon,Tue,Wed,Thu,Fri,Sat,Sun (ranges with -), * or Daily for all days
         Times: 24-hour UTC. Overnight wraps supported (22:00-06:00 = wraps to next day).
     .PARAMETER WindowString
@@ -6038,7 +6182,7 @@ function ConvertFrom-AzLocalUpdateWindow {
     .OUTPUTS
         PSCustomObject[] with Days (DayOfWeek[]), StartTime (TimeSpan), EndTime (TimeSpan), Overnight (bool)
     .EXAMPLE
-        ConvertFrom-AzLocalUpdateWindow -WindowString "Sat-Sun:02:00-06:00"
+        ConvertFrom-AzLocalUpdateWindow -WindowString "Sat-Sun_02:00-06:00"
     .NOTES
         Time zone / DST behaviour:
         - Window times are compared against the current time of the host running the
@@ -6079,9 +6223,9 @@ function ConvertFrom-AzLocalUpdateWindow {
         $segment = $segment.Trim()
         if ([string]::IsNullOrWhiteSpace($segment)) { continue }
 
-        # Parse <days>:<start>-<end>
-        if ($segment -notmatch '^([^:]+):(\d{2}:\d{2})-(\d{2}:\d{2})$') {
-            throw "Invalid window segment syntax: '$segment'. Expected format: <days>:<HH:MM>-<HH:MM>"
+        # Parse <days>_<start>-<end>
+        if ($segment -notmatch '^([^_]+)_(\d{2}:\d{2})-(\d{2}:\d{2})$') {
+            throw "Invalid window segment syntax: '$segment'. Expected format: <days>_<HH:MM>-<HH:MM>"
         }
 
         $daysPart = $matches[1]
@@ -6388,7 +6532,7 @@ function Test-AzLocalUpdateWindow {
     .OUTPUTS
         PSCustomObject with Allowed (bool), Reason (string), MatchedWindow (string or $null)
     .EXAMPLE
-        Test-AzLocalUpdateWindow -WindowString "Sat-Sun:02:00-06:00"
+        Test-AzLocalUpdateWindow -WindowString "Sat-Sun_02:00-06:00"
     #>
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
@@ -6525,7 +6669,7 @@ function Test-AzureLocalUpdateScheduleAllowed {
         PSCustomObject with Allowed (bool), Reason (string), WindowOpen (bool or $null),
         ExclusionActive (bool or $null), Details (string)
     .EXAMPLE
-        Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat-Sun:02:00-06:00" -UpdateExclusions "2026-12-20/2027-01-03"
+        Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat-Sun_02:00-06:00" -UpdateExclusions "2026-12-20/2027-01-03"
     #>
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
@@ -6570,7 +6714,11 @@ function Test-AzureLocalUpdateScheduleAllowed {
             $details += "No active exclusion"
         }
         catch {
-            $details += "Exclusion parse error: $($_.Exception.Message)"
+            # Fail-closed: re-throw so the caller (Start-AzureLocalClusterUpdate)
+            # can block the update unless -Force is specified. Swallowing this
+            # would allow a malformed UpdateExclusions tag to silently bypass
+            # blackout periods.
+            throw "Failed to parse UpdateExclusions tag value '$UpdateExclusions': $($_.Exception.Message)"
         }
     }
 
@@ -6591,7 +6739,11 @@ function Test-AzureLocalUpdateScheduleAllowed {
             $details += "Within window: $($windowResult.MatchedWindow)"
         }
         catch {
-            $details += "Window parse error: $($_.Exception.Message)"
+            # Fail-closed: re-throw so the caller (Start-AzureLocalClusterUpdate)
+            # can block the update unless -Force is specified. Swallowing this
+            # would allow a malformed UpdateWindow tag to silently bypass the
+            # operator's configured maintenance window.
+            throw "Failed to parse UpdateWindow tag value '$UpdateWindow': $($_.Exception.Message)"
         }
     }
 
@@ -6650,7 +6802,7 @@ function Set-AzureLocalClusterUpdateRingTag {
     
     .PARAMETER UpdateWindowValue
         Optional. Value to assign to the "UpdateWindow" tag when using -ClusterResourceIds.
-        Format: "<days>:<HH:MM>-<HH:MM>" (e.g. "Mon-Fri:22:00-02:00"). See Test-AzureLocalUpdateScheduleAllowed
+        Format: "<days>_<HH:MM>-<HH:MM>" (e.g. "Mon-Fri_22:00-02:00"). See Test-AzureLocalUpdateScheduleAllowed
         for syntax details. Not used with -InputCsvPath (values come from the UpdateWindow column).
     
     .PARAMETER UpdateExclusionsValue
@@ -6685,7 +6837,7 @@ function Set-AzureLocalClusterUpdateRingTag {
         # Set UpdateRing, UpdateWindow, and UpdateExclusions on clusters in one call
         Set-AzureLocalClusterUpdateRingTag -ClusterResourceIds $resourceIds `
             -UpdateRingValue "Wave1" `
-            -UpdateWindowValue "Mon-Fri:22:00-02:00" `
+            -UpdateWindowValue "Mon-Fri_22:00-02:00" `
             -UpdateExclusionsValue "2026-12-20/2026-01-05" -Force
     
     .EXAMPLE
@@ -6739,7 +6891,7 @@ function Set-AzureLocalClusterUpdateRingTag {
 
     # Create log folder if it doesn't exist
     if (-not (Test-Path $LogFolderPath)) {
-        New-Item -ItemType Directory -Path $LogFolderPath -Force | Out-Null
+        New-Item -ItemType Directory -Path $LogFolderPath -Force -WhatIf:$false | Out-Null
     }
 
     # Create timestamped log file paths
@@ -6907,7 +7059,7 @@ function Set-AzureLocalClusterUpdateRingTag {
                     
                     # Write to CSV
                     $csvLine = "`"$clusterName`",`"$resourceGroup`",`"$subscriptionId`",`"$resourceId`",`"$action`",`"$previousTagValue`",`"$currentUpdateRingValue`",`"$status`",`"$message`""
-                    Add-Content -Path $csvLogPath -Value $csvLine
+                    Add-Content -Path $csvLogPath -Value $csvLine -WhatIf:$false
                     
                     $results += [PSCustomObject]@{
                         ClusterName      = $clusterName
@@ -6931,7 +7083,7 @@ function Set-AzureLocalClusterUpdateRingTag {
                 
                 # Write to CSV
                 $csvLine = "`"$clusterName`",`"$resourceGroup`",`"$subscriptionId`",`"$resourceId`",`"$action`",`"$previousTagValue`",`"$currentUpdateRingValue`",`"$status`",`"$message`""
-                Add-Content -Path $csvLogPath -Value $csvLine
+                Add-Content -Path $csvLogPath -Value $csvLine -WhatIf:$false
                 
                 $results += [PSCustomObject]@{
                     ClusterName      = $clusterName
@@ -6964,7 +7116,7 @@ function Set-AzureLocalClusterUpdateRingTag {
                 
                 # Write to CSV
                 $csvLine = "`"$clusterName`",`"$resourceGroup`",`"$subscriptionId`",`"$resourceId`",`"$action`",`"$previousTagValue`",`"$currentUpdateRingValue`",`"$status`",`"$message`""
-                Add-Content -Path $csvLogPath -Value $csvLine
+                Add-Content -Path $csvLogPath -Value $csvLine -WhatIf:$false
                 
                 $results += [PSCustomObject]@{
                     ClusterName      = $clusterName
@@ -6989,7 +7141,7 @@ function Set-AzureLocalClusterUpdateRingTag {
                 
                 # Write to CSV
                 $csvLine = "`"$clusterName`",`"$resourceGroup`",`"$subscriptionId`",`"$resourceId`",`"$action`",`"$previousTagValue`",`"$currentUpdateRingValue`",`"$status`",`"$message`""
-                Add-Content -Path $csvLogPath -Value $csvLine
+                Add-Content -Path $csvLogPath -Value $csvLine -WhatIf:$false
                 
                 $results += [PSCustomObject]@{
                     ClusterName      = $clusterName
@@ -7034,7 +7186,7 @@ function Set-AzureLocalClusterUpdateRingTag {
                     
                     # Write to CSV
                     $csvLine = "`"$clusterName`",`"$resourceGroup`",`"$subscriptionId`",`"$resourceId`",`"$action`",`"$previousTagValue`",`"$currentUpdateRingValue`",`"$status`",`"$message`""
-                    Add-Content -Path $csvLogPath -Value $csvLine
+                    Add-Content -Path $csvLogPath -Value $csvLine -WhatIf:$false
                     
                     $results += [PSCustomObject]@{
                         ClusterName      = $clusterName
@@ -7119,7 +7271,7 @@ function Set-AzureLocalClusterUpdateRingTag {
                 finally {
                     # Clean up temp file
                     if (Test-Path $tempFile) {
-                        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+                        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue -WhatIf:$false
                     }
                 }
             }
@@ -7131,7 +7283,7 @@ function Set-AzureLocalClusterUpdateRingTag {
             # Write to CSV
             $escapedMessage = $message -replace '"', '""'
             $csvLine = "`"$clusterName`",`"$resourceGroup`",`"$subscriptionId`",`"$resourceId`",`"$action`",`"$previousTagValue`",`"$currentUpdateRingValue`",`"$status`",`"$escapedMessage`""
-            Add-Content -Path $csvLogPath -Value $csvLine
+            Add-Content -Path $csvLogPath -Value $csvLine -WhatIf:$false
 
             $results += [PSCustomObject]@{
                 ClusterName      = $clusterName
@@ -7152,7 +7304,7 @@ function Set-AzureLocalClusterUpdateRingTag {
             
             # Write to CSV
             $csvLine = "`"$clusterName`",`"$resourceGroup`",`"$subscriptionId`",`"$resourceId`",`"Error`",`"$previousTagValue`",`"$currentUpdateRingValue`",`"$status`",`"$message`""
-            Add-Content -Path $csvLogPath -Value $csvLine
+            Add-Content -Path $csvLogPath -Value $csvLine -WhatIf:$false
             
             $results += [PSCustomObject]@{
                 ClusterName      = $clusterName
@@ -9135,7 +9287,7 @@ function Get-AzureLocalFleetStatusData {
                     }) | Out-Null
                     $clusterDetails.Add([PSCustomObject]@{
                         ClusterName = $clusterName; ResourceGroup = $rgName
-                        CurrentVersion = "N/A"; NodeCount = "N/A"; ResourceId = $rid
+                        CurrentVersion = "N/A"; CurrentSbeVersion = "N/A"; NodeCount = "N/A"; ResourceId = $rid
                     }) | Out-Null
                     continue
                 }
@@ -9154,6 +9306,29 @@ function Get-AzureLocalFleetStatusData {
                 $updateState = if ($hasSummary -and $updateSummary.properties.state) { $updateSummary.properties.state } else { "Unknown" }
                 $healthState = if ($hasSummary -and $updateSummary.properties.healthState) { $updateSummary.properties.healthState } else { "Unknown" }
                 $currentVersion = if ($hasSummary -and $updateSummary.properties.currentVersion) { $updateSummary.properties.currentVersion } else { "N/A" }
+
+                # SBE version lives inside properties.packageVersions[] where
+                # packageType == 'SBE'; pick the newest by lastUpdated then [version].
+                $currentSbeVersion = "N/A"
+                if ($hasSummary -and $updateSummary.properties.PSObject.Properties['packageVersions'] -and $updateSummary.properties.packageVersions) {
+                    $sbePkgs = @($updateSummary.properties.packageVersions | Where-Object { $_.packageType -eq 'SBE' -and $_.version })
+                    if ($sbePkgs.Count -gt 0) {
+                        $latestSbe = $sbePkgs |
+                            Sort-Object -Property @{
+                                Expression = {
+                                    if ($_.PSObject.Properties['lastUpdated'] -and $_.lastUpdated) {
+                                        try { [datetime]$_.lastUpdated } catch { [datetime]::MinValue }
+                                    } else { [datetime]::MinValue }
+                                }
+                            }, @{
+                                Expression = {
+                                    try { [version]($_.version -replace '[^0-9.]', '') } catch { [version]'0.0.0.0' }
+                                }
+                            } -Descending |
+                            Select-Object -First 1
+                        if ($latestSbe -and $latestSbe.version) { $currentSbeVersion = [string]$latestSbe.version }
+                    }
+                }
 
                 # API Call 3/3: GET available updates
                 $updatesUri = "https://management.azure.com${rid}/updates?api-version=$apiVer"
@@ -9211,60 +9386,99 @@ function Get-AzureLocalFleetStatusData {
                 }) | Out-Null
                 $clusterDetails.Add([PSCustomObject]@{
                     ClusterName = $clusterName; ResourceGroup = $rgName
-                    CurrentVersion = $currentVersion; NodeCount = $nodeCount; ResourceId = $rid
+                    CurrentVersion = $currentVersion; CurrentSbeVersion = $currentSbeVersion
+                    NodeCount = $nodeCount; ResourceId = $rid
                 }) | Out-Null
 
-                # Update runs (reuse already-fetched update list)
+                # Update runs (reuse already-fetched update list).
+                # Collect ALL runs across all available updates and group them by UpdateName so the
+                # reporting row for each update version reflects the TOTAL elapsed time across all
+                # attempts (re-runs after failures), not just the most recent attempt.
                 if ($IncludeUpdateRuns) {
-                    $clusterBestRun = $null
-                    $clusterBestRunTime = ""
+                    $allRunsForCluster = [System.Collections.Generic.List[object]]::new()
                     foreach ($update in $availableUpdates) {
                         $runsUri = "https://management.azure.com${rid}/updates/$($update.name)/updateRuns?api-version=$apiVer"
                         $runsResult = (Invoke-AzRestJson -Uri $runsUri).Data
                         if ($LASTEXITCODE -eq 0 -and $runsResult.value) {
-                            foreach ($run in $runsResult.value) {
-                                $runTime = $run.properties.timeStarted
-                                if (-not $clusterBestRun -or ($runTime -and $runTime -gt $clusterBestRunTime)) {
-                                    $clusterBestRun = $run
-                                    $clusterBestRunTime = $runTime
+                            foreach ($run in $runsResult.value) { [void]$allRunsForCluster.Add($run) }
+                        }
+                    }
+                    if ($allRunsForCluster.Count -gt 0) {
+                        # Group by update name extracted from run.id
+                        $runsByUpdate = @{}
+                        foreach ($r in $allRunsForCluster) {
+                            $uName = ''
+                            if ($r.id -match '/updates/([^/]+)/updateRuns/([^/]+)$') { $uName = $matches[1] }
+                            elseif ($r.name) { $uName = $r.name }
+                            if (-not $runsByUpdate.ContainsKey($uName)) { $runsByUpdate[$uName] = [System.Collections.Generic.List[object]]::new() }
+                            [void]$runsByUpdate[$uName].Add($r)
+                        }
+                        # Pick ONLY the most-recently-started update (one row per cluster) so the
+                        # report isn't cluttered with historical update versions. Attempts within
+                        # that latest update version are still aggregated below.
+                        $latestUpdateName = $null
+                        $latestUpdateStart = [datetime]::MinValue
+                        foreach ($k in $runsByUpdate.Keys) {
+                            foreach ($r in $runsByUpdate[$k]) {
+                                if ($r.properties.timeStarted) {
+                                    $ts = [datetime]$r.properties.timeStarted
+                                    if ($ts -gt $latestUpdateStart) { $latestUpdateStart = $ts; $latestUpdateName = $k }
                                 }
                             }
                         }
-                    }
-                    if ($clusterBestRun) {
-                        $runProps = $clusterBestRun.properties
-                        $runDuration = ""
-                        if ($runProps.timeStarted) {
-                            $runStartTime = [datetime]$runProps.timeStarted
-                            if ($runProps.lastUpdatedTime) {
-                                $durationSpan = ([datetime]$runProps.lastUpdatedTime) - $runStartTime
-                                $runDuration = if ($durationSpan.TotalHours -ge 1) { "{0:N1} hours" -f $durationSpan.TotalHours } else { "{0:N0} minutes" -f $durationSpan.TotalMinutes }
+                        if ($latestUpdateName) {
+                            $uName = $latestUpdateName
+                            $attempts = @($runsByUpdate[$uName])
+                            # Sort attempts by timeStarted descending; [0] = latest, [-1] = earliest
+                            $sorted = @($attempts | Sort-Object { if ($_.properties.timeStarted) { [datetime]$_.properties.timeStarted } else { [datetime]::MinValue } } -Descending)
+                            $latestRun = $sorted[0]
+                            $earliestRun = $sorted[-1]
+                            $latestProps = $latestRun.properties
+                            # Sum durations across all attempts. For InProgress attempts, use "now" as end.
+                            $totalSpan = [TimeSpan]::Zero
+                            $hasInProgress = $false
+                            foreach ($a in $attempts) {
+                                $ap = $a.properties
+                                if (-not $ap.timeStarted) { continue }
+                                $aStart = [datetime]$ap.timeStarted
+                                if ($ap.lastUpdatedTime) {
+                                    $totalSpan = $totalSpan.Add(([datetime]$ap.lastUpdatedTime) - $aStart)
+                                }
+                                elseif ($ap.state -eq 'InProgress') {
+                                    $totalSpan = $totalSpan.Add((Get-Date) - $aStart)
+                                    $hasInProgress = $true
+                                }
                             }
-                            elseif ($runProps.state -eq "InProgress") {
-                                $runDuration = "{0:N1} hours (running)" -f ((Get-Date) - $runStartTime).TotalHours
+                            $runDuration = ''
+                            if ($totalSpan.TotalSeconds -ge 1) {
+                                # HH:MM:SS (total hours as left component so 25h+ stays readable)
+                                $fmt = '{0:00}:{1:00}:{2:00}' -f [int][Math]::Floor($totalSpan.TotalHours), $totalSpan.Minutes, $totalSpan.Seconds
+                                $runDuration = if ($hasInProgress) { "$fmt (running)" } else { $fmt }
                             }
+                            $currentStep = ''; $currentStepDetail = ''; $runProgress = ''
+                            if ($latestProps.progress -and $latestProps.progress.steps) {
+                                $steps = $latestProps.progress.steps
+                                $runProgress = "$(($steps | Where-Object { $_.status -eq 'Success' }).Count)/$($steps.Count) steps"
+                                $ipStep = $steps | Where-Object { $_.status -eq 'InProgress' } | Select-Object -First 1
+                                $fStep  = $steps | Where-Object { $_.status -in @('Error','Failed') } | Select-Object -First 1
+                                if ($ipStep) { $currentStep = $ipStep.name } elseif ($fStep) { $currentStep = "$($fStep.name) (FAILED)" }
+                                $currentStepDetail = Get-CurrentStepPath -Steps $steps -IncludeErrorMessage
+                                if ([string]::IsNullOrWhiteSpace($currentStepDetail)) { $currentStepDetail = $currentStep }
+                            }
+                            $runId = ''
+                            if ($latestRun.id -match '/updates/([^/]+)/updateRuns/([^/]+)$') { $runId = $matches[2] } else { $runId = $latestRun.name }
+                            # StartTime reflects when work FIRST began on this update (earliest attempt)
+                            $firstStartDisplay = if ($earliestRun.properties.timeStarted) { ([datetime]$earliestRun.properties.timeStarted).ToString('yyyy-MM-dd HH:mm') } else { '' }
+                            $latestRuns.Add([PSCustomObject]@{
+                                ClusterName = $clusterName; UpdateName = $uName; RunId = $runId
+                                State = $latestProps.state
+                                StartTime = $firstStartDisplay
+                                Duration = $runDuration; Progress = $runProgress
+                                CurrentStep = $currentStep; CurrentStepDetail = $currentStepDetail
+                                Location = $latestProps.location
+                                Attempts = $attempts.Count
+                            }) | Out-Null
                         }
-                        $currentStep = ""; $currentStepDetail = ""; $runProgress = ""
-                        if ($runProps.progress -and $runProps.progress.steps) {
-                            $steps = $runProps.progress.steps
-                            $runProgress = "$(($steps | Where-Object { $_.status -eq 'Success' }).Count)/$($steps.Count) steps"
-                            $ipStep = $steps | Where-Object { $_.status -eq "InProgress" } | Select-Object -First 1
-                            $fStep = $steps | Where-Object { $_.status -in @("Error", "Failed") } | Select-Object -First 1
-                            if ($ipStep) { $currentStep = $ipStep.name } elseif ($fStep) { $currentStep = "$($fStep.name) (FAILED)" }
-                            $currentStepDetail = Get-CurrentStepPath -Steps $steps -IncludeErrorMessage
-                            if ([string]::IsNullOrWhiteSpace($currentStepDetail)) { $currentStepDetail = $currentStep }
-                        }
-                        $updateNameExtracted = ""; $runId = ""
-                        if ($clusterBestRun.id -match '/updates/([^/]+)/updateRuns/([^/]+)$') { $updateNameExtracted = $matches[1]; $runId = $matches[2] }
-                        else { $runId = $clusterBestRun.name }
-                        $latestRuns.Add([PSCustomObject]@{
-                            ClusterName = $clusterName; UpdateName = $updateNameExtracted; RunId = $runId
-                            State = $runProps.state
-                            StartTime = if ($runProps.timeStarted) { ([datetime]$runProps.timeStarted).ToString("yyyy-MM-dd HH:mm") } else { "" }
-                            Duration = $runDuration; Progress = $runProgress
-                            CurrentStep = $currentStep; CurrentStepDetail = $currentStepDetail
-                            Location = $runProps.location
-                        }) | Out-Null
                     }
                 }
 
@@ -9619,6 +9833,7 @@ function New-AzureLocalFleetStatusHtmlReport {
                 <tr>
                     <th>Cluster Name</th>
                     <th>Current Version</th>
+                    <th>Current SBE Version</th>
                     <th>Node Count</th>
                     <th>Resource Group</th>
                     <th>Resource ID</th>
@@ -9629,6 +9844,8 @@ function New-AzureLocalFleetStatusHtmlReport {
     foreach ($detail in $clusterDetails) {
         $encDetailName    = [System.Web.HttpUtility]::HtmlEncode($detail.ClusterName)
         $encDetailVersion = [System.Web.HttpUtility]::HtmlEncode($detail.CurrentVersion)
+        $sbeValue         = if ($detail.PSObject.Properties['CurrentSbeVersion'] -and $detail.CurrentSbeVersion) { $detail.CurrentSbeVersion } else { 'N/A' }
+        $encDetailSbe     = [System.Web.HttpUtility]::HtmlEncode($sbeValue)
         $encDetailNodes   = [System.Web.HttpUtility]::HtmlEncode($detail.NodeCount)
         $encDetailRG      = [System.Web.HttpUtility]::HtmlEncode($detail.ResourceGroup)
         $encDetailRID     = [System.Web.HttpUtility]::HtmlEncode($detail.ResourceId)
@@ -9643,6 +9860,7 @@ function New-AzureLocalFleetStatusHtmlReport {
                 <tr>
                     <td>$detailNameCell</td>
                     <td>$encDetailVersion</td>
+                    <td>$encDetailSbe</td>
                     <td>$encDetailNodes</td>
                     <td>$encDetailRG</td>
                     <td class="resource-id-cell">$encDetailRID</td>
@@ -10047,6 +10265,9 @@ function New-AzureLocalFleetStatusHtmlReport {
 
     #--- Update Run History section (optional) ---
     if ($IncludeUpdateRuns -and $updateRuns.Count -gt 0) {
+        # Only show the Attempts column if at least one update had multiple attempts,
+        # so the common case (all successes on first try) stays visually clean.
+        $showAttempts = @($updateRuns | Where-Object { $_.PSObject.Properties['Attempts'] -and [int]$_.Attempts -gt 1 }).Count -gt 0
         [void]$sb.Append(@"
 
     <div class="section">
@@ -10059,7 +10280,7 @@ function New-AzureLocalFleetStatusHtmlReport {
                     <th>State</th>
                     <th>Progress</th>
                     <th>Current Step</th>
-                    <th>Duration</th>
+$(if ($showAttempts) { "                    <th>Update Attempts</th>`n" })                    <th>Duration</th>
                     <th>Start Time</th>
                 </tr>
             </thead>
@@ -10084,6 +10305,8 @@ function New-AzureLocalFleetStatusHtmlReport {
             $encRunStep     = [System.Web.HttpUtility]::HtmlEncode($run.CurrentStepDetail)
             $encRunDuration = [System.Web.HttpUtility]::HtmlEncode($run.Duration)
             $encRunStart    = [System.Web.HttpUtility]::HtmlEncode($run.StartTime)
+            $runAttempts    = if ($run.PSObject.Properties['Attempts'] -and $run.Attempts) { [int]$run.Attempts } else { 1 }
+            $encRunAttempts = [System.Web.HttpUtility]::HtmlEncode([string]$runAttempts)
 
             $runClusterCell = if ($runClusterUrl) {
                 "<a href=`"$runClusterUrl`" class=`"portal-link`" target=`"_blank`"><strong>$encRunCluster</strong></a>"
@@ -10101,7 +10324,7 @@ function New-AzureLocalFleetStatusHtmlReport {
                     <td><span class="status-badge $runBadge">$encRunState</span></td>
                     <td>$encRunProgress</td>
                     <td class="message-cell" title="$encRunStep">$encRunStep</td>
-                    <td>$encRunDuration</td>
+$(if ($showAttempts) { "                    <td>$encRunAttempts</td>`n" })                    <td>$encRunDuration</td>
                     <td>$encRunStart</td>
                 </tr>
 "@)

@@ -151,26 +151,43 @@ stages:
 
                 # Azure DevOps summary markdown
                 $summaryPath = Join-Path $outputDir 'summary.md'
-                $summary = @"
-                # Update Readiness Assessment
-
-                | Metric | Count |
-                |--------|-------|
-                | Total clusters in scope | $total |
-                | Not ready for update | $notReady |
-                | Clusters with Critical health failures | $clustersWithCritical |
-                | Total Critical findings | $critical |
-
-                **Scope**: $scope$(if ($updateRing) { " (UpdateRing = $updateRing)" })  
-                **ThrottleLimit**: $throttle
-
-                $(if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
-                  "**Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. The healthy clusters are safe to proceed - apply-updates.yml is per-cluster scoped."
+                $summaryLines = New-Object 'System.Collections.Generic.List[string]'
+                $summaryLines.Add('# Update Readiness Assessment')
+                $summaryLines.Add('')
+                $summaryLines.Add('| Metric | Count |')
+                $summaryLines.Add('|--------|-------|')
+                $summaryLines.Add("| Total clusters in scope | $total |")
+                $summaryLines.Add("| Not ready for update | $notReady |")
+                $summaryLines.Add("| Clusters with Critical health failures | $clustersWithCritical |")
+                $summaryLines.Add("| Total Critical findings | $critical |")
+                $summaryLines.Add('')
+                $scopeLabel = $scope
+                if ($updateRing) { $scopeLabel = "$scope (UpdateRing = $updateRing)" }
+                $summaryLines.Add("**Scope**: $scopeLabel")
+                $summaryLines.Add("**ThrottleLimit**: $throttle")
+                $summaryLines.Add('')
+                if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
+                    $summaryLines.Add("**Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. The healthy clusters are safe to proceed - apply-updates.yml is per-cluster scoped.")
                 } else {
-                  "**All clear**: every cluster in scope is ready for update. Safe to proceed with apply-updates for this ring."
-                })
-                "@
-                $summary | Out-File -FilePath $summaryPath -Encoding utf8
+                    $summaryLines.Add('**All clear**: every cluster in scope is ready for update. Safe to proceed with apply-updates for this ring.')
+                }
+
+                # Per-cluster detail table
+                if ($total -gt 0) {
+                    $summaryLines.Add('')
+                    $summaryLines.Add('## Cluster detail')
+                    $summaryLines.Add('')
+                    $summaryLines.Add('| Cluster | Current version | Current SBE version | Update state | Health | Ready | Recommended update |')
+                    $summaryLines.Add('|---------|-----------------|---------------------|--------------|--------|-------|--------------------|')
+                    foreach ($r in $readiness) {
+                        $cv  = if ($r.CurrentVersion) { $r.CurrentVersion } else { '-' }
+                        $csv = if ($r.PSObject.Properties['CurrentSbeVersion'] -and $r.CurrentSbeVersion) { $r.CurrentSbeVersion } else { '-' }
+                        $ru  = if ($r.RecommendedUpdate) { $r.RecommendedUpdate } else { '-' }
+                        $summaryLines.Add("| $($r.ClusterName) | $cv | $csv | $($r.UpdateState) | $($r.HealthState) | $($r.ReadyForUpdate) | $ru |")
+                    }
+                }
+
+                ($summaryLines -join [Environment]::NewLine) | Out-File -FilePath $summaryPath -Encoding utf8
                 Write-Host "##vso[task.uploadsummary]$summaryPath"
             name: gate
 

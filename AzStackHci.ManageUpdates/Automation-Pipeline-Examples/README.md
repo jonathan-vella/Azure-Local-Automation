@@ -594,8 +594,8 @@ This workflow shows how to use all four pipelines together for a staged update d
      |-------------|------------|--------------|------------------|
      | HCI-Pilot01 | Wave1 | | |
      | HCI-Pilot02 | Wave1 | | |
-     | HCI-Prod01  | Wave2 | Sat-Sun:02:00-06:00 | 20**-12-20/20**-01-03 |
-     | HCI-Critical| Production | Sat:02:00-06:00 | 20**-12-20/20**-01-03 |
+     | HCI-Prod01  | Wave2 | Sat-Sun_02:00-06:00 | 20**-12-20/20**-01-03 |
+     | HCI-Critical| Production | Sat_02:00-06:00 | 20**-12-20/20**-01-03 |
    
    - **UpdateRing** (required): The deployment wave for staged rollouts
    - **UpdateWindow** (optional): UTC maintenance window when updates are allowed. If omitted, updates proceed with no time restrictions.
@@ -772,7 +772,7 @@ Azure resource tags on each cluster control when the Apply Updates pipeline is a
 
 | Tag | Format | Example | Purpose |
 |-----|--------|---------|---------|
-| `UpdateWindow` | `<days>:<HH:MM>-<HH:MM>` | `Sat-Sun:02:00-06:00` | Maintenance window (UTC). Updates only start within this window. |
+| `UpdateWindow` | `<days>_<HH:MM>-<HH:MM>` | `Sat-Sun_02:00-06:00` | Maintenance window (UTC). Updates only start within this window. |
 | `UpdateExclusions` | `YYYY-MM-DD/YYYY-MM-DD` | `2026-12-20/2027-01-03` | Blackout periods. No updates during these dates. Supports wildcards (`20**-12-20/20**-01-03` for recurring annual freeze). |
 
 **Behavior:**
@@ -782,20 +782,20 @@ Azure resource tags on each cluster control when the Apply Updates pipeline is a
 - The pipeline returns `ScheduleBlocked` status for clusters outside their window, with the reason in the log output
 - Schedule check failures (e.g., malformed tag values) are **non-blocking** — the update proceeds with a warning
 
-**Multiple windows** can be separated with `;`: `Mon-Fri:22:00-06:00;Sat-Sun:02:00-10:00`
+**Multiple windows** can be separated with `;`: `Mon-Fri_22:00-06:00;Sat-Sun_02:00-10:00`
 
-**Day ranges** support wrap-around: `Fri-Mon:22:00-06:00` covers Friday through Monday
+**Day ranges** support wrap-around: `Fri-Mon_22:00-06:00` covers Friday through Monday
 
-**Overnight windows** are supported: `Sat:22:00-06:00` means Saturday 10 PM to Sunday 6 AM UTC
+**Overnight windows** are supported: `Sat_22:00-06:00` means Saturday 10 PM to Sunday 6 AM UTC
 
 You can test schedule logic interactively before configuring pipelines:
 
 ```powershell
 # Test if current UTC time is within a maintenance window
-Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat-Sun:02:00-06:00" -UpdateExclusions "2026-12-20/2027-01-03"
+Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat-Sun_02:00-06:00" -UpdateExclusions "2026-12-20/2027-01-03"
 
 # Test a specific time
-Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat:02:00-06:00" -TestTime ([datetime]"2026-04-19 03:00:00")
+Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat_02:00-06:00" -TestTime ([datetime]"2026-04-19 03:00:00")
 ```
 
 The `readiness-status.csv` from the Fleet Update Status pipeline includes `UpdateWindow` and `UpdateExclusions` columns so ops teams can see which clusters have schedule restrictions defined.
