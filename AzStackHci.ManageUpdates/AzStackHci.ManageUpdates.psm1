@@ -9233,6 +9233,22 @@ function New-AzureLocalFleetStatusHtmlReport {
             <tbody>
 "@)
 
+    # Pre-build hash indexes for O(1) lookups inside the per-cluster/per-run loops below.
+    # Replaces repeated O(N) "Where-Object ClusterName -eq $x" scans that caused
+    # quadratic time on large fleets (e.g. 500 clusters x 500 runs).
+    $latestRunsByCluster = @{}
+    foreach ($__r in $latestRuns) {
+        if ($__r -and $__r.ClusterName -and -not $latestRunsByCluster.ContainsKey($__r.ClusterName)) {
+            $latestRunsByCluster[$__r.ClusterName] = $__r
+        }
+    }
+    $clusterDetailsByName = @{}
+    foreach ($__d in $clusterDetails) {
+        if ($__d -and $__d.ClusterName -and -not $clusterDetailsByName.ContainsKey($__d.ClusterName)) {
+            $clusterDetailsByName[$__d.ClusterName] = $__d
+        }
+    }
+
     foreach ($cluster in $readiness) {
         $updateBadge = switch ($cluster.UpdateState) {
             'UpToDate'              { 'status-uptodate' }
@@ -9257,7 +9273,7 @@ function New-AzureLocalFleetStatusHtmlReport {
         $activeUpdateBadge = ""
         $activeUpdateName = ""
         $recommendedDisplay = $cluster.RecommendedUpdate
-        $clusterLatestRun = $latestRuns | Where-Object { $_.ClusterName -eq $cluster.ClusterName } | Select-Object -First 1
+        $clusterLatestRun = if ($cluster.ClusterName -and $latestRunsByCluster.ContainsKey($cluster.ClusterName)) { $latestRunsByCluster[$cluster.ClusterName] } else { $null }
         if ($clusterLatestRun -and $clusterLatestRun.State -in @("InProgress", "Failed")) {
             $activeUpdate = "$($clusterLatestRun.UpdateName) ($($clusterLatestRun.State))"
             $activeUpdateName = $clusterLatestRun.UpdateName
@@ -9267,7 +9283,7 @@ function New-AzureLocalFleetStatusHtmlReport {
         }
 
         # Build portal URLs
-        $clusterResourceId = ($clusterDetails | Where-Object { $_.ClusterName -eq $cluster.ClusterName } | Select-Object -First 1).ResourceId
+        $clusterResourceId = if ($cluster.ClusterName -and $clusterDetailsByName.ContainsKey($cluster.ClusterName)) { $clusterDetailsByName[$cluster.ClusterName].ResourceId } else { $null }
         $clusterPortalUrl = if ($clusterResourceId) { [System.Web.HttpUtility]::HtmlEncode("https://portal.azure.com/#@/resource$clusterResourceId") } else { "" }
         $updatePortalUrl = if ($clusterResourceId -and $activeUpdateName) { [System.Web.HttpUtility]::HtmlEncode("https://portal.azure.com/#@/resource$clusterResourceId/updates") } else { "" }
 
@@ -9338,8 +9354,8 @@ function New-AzureLocalFleetStatusHtmlReport {
                 'InProgress' { 'status-inprogress' }
                 default      { 'status-unknown' }
             }
-            # Build portal links for cluster and update
-            $runClusterRid = ($clusterDetails | Where-Object { $_.ClusterName -eq $run.ClusterName } | Select-Object -First 1).ResourceId
+            # Build portal links for cluster and update (uses $clusterDetailsByName pre-built above)
+            $runClusterRid = if ($run.ClusterName -and $clusterDetailsByName.ContainsKey($run.ClusterName)) { $clusterDetailsByName[$run.ClusterName].ResourceId } else { $null }
             $runClusterUrl = if ($runClusterRid) { [System.Web.HttpUtility]::HtmlEncode("https://portal.azure.com/#@/resource$runClusterRid") } else { "" }
             $runUpdateUrl  = if ($runClusterRid) { [System.Web.HttpUtility]::HtmlEncode("https://portal.azure.com/#@/resource$runClusterRid/updates") } else { "" }
 
@@ -9386,6 +9402,16 @@ function New-AzureLocalFleetStatusHtmlReport {
         $allFailures = @($healthResults | ForEach-Object { $_.Failures } | Where-Object { $_ })
         if ($allFailures.Count -gt 0) {
             $uniqueFailureClusters = @($allFailures | Select-Object -ExpandProperty ClusterName -Unique)
+
+            # Pre-group failures by ClusterName for O(1) lookups in the per-cluster loop below.
+            $failuresByCluster = @{}
+            foreach ($__f in $allFailures) {
+                if (-not $__f -or -not $__f.ClusterName) { continue }
+                if (-not $failuresByCluster.ContainsKey($__f.ClusterName)) {
+                    $failuresByCluster[$__f.ClusterName] = [System.Collections.Generic.List[object]]::new()
+                }
+                [void]$failuresByCluster[$__f.ClusterName].Add($__f)
+            }
 
             if ($uniqueFailureClusters.Count -le 1) {
                 # Single cluster: flat table (no collapsing)
@@ -9462,7 +9488,7 @@ function New-AzureLocalFleetStatusHtmlReport {
         </div>
 "@)
                 foreach ($clusterGroup in $uniqueFailureClusters) {
-                    $clusterFailures = @($allFailures | Where-Object { $_.ClusterName -eq $clusterGroup })
+                    $clusterFailures = if ($failuresByCluster.ContainsKey($clusterGroup)) { @($failuresByCluster[$clusterGroup]) } else { @() }
                     $critCount = @($clusterFailures | Where-Object { $_.Severity -eq 'Critical' }).Count
                     $warnCount = @($clusterFailures | Where-Object { $_.Severity -eq 'Warning' }).Count
                     $infoCount = @($clusterFailures | Where-Object { $_.Severity -eq 'Informational' }).Count
