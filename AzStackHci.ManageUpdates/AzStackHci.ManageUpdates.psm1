@@ -1103,6 +1103,83 @@ function Invoke-FleetOpClusterAction {
     $ClusterState.Status = if ($succeeded) { 'Succeeded' } else { 'Failed' }
 }
 
+function ConvertTo-SafeCsvField {
+    <#
+    .SYNOPSIS
+        Neutralises a single string value so it cannot trigger formula
+        evaluation when the containing CSV is opened in Excel / Calc.
+    .DESCRIPTION
+        Implements the OWASP CSV-injection guidance:
+        - If the value begins with one of the spreadsheet formula leaders
+          ('=', '+', '-', '@') or a CR/LF/TAB, prepend a single quote so the
+          cell is interpreted as literal text.
+        - Replace embedded CR and LF characters with spaces so they cannot
+          terminate the logical record early.
+        Non-string values are returned unchanged. Null / empty values are
+        returned unchanged.
+    .PARAMETER Value
+        The value to sanitise. Only [string] values are mutated.
+    .OUTPUTS
+        Same type as input; sanitised when input was a non-empty string.
+    #>
+    [CmdletBinding()]
+    [OutputType([object])]
+    param(
+        [Parameter(Mandatory = $false, ValueFromPipeline = $true)]
+        [AllowNull()]
+        $Value
+    )
+
+    process {
+        if ($null -eq $Value) { return $null }
+        if ($Value -isnot [string]) { return $Value }
+        if ($Value.Length -eq 0) { return $Value }
+
+        # Strip embedded CR/LF first so leader-check sees the real first visible char.
+        $s = $Value -replace "`r?`n", ' '
+
+        $first = $s[0]
+        if ($first -eq '=' -or $first -eq '+' -or $first -eq '-' -or $first -eq '@' -or $first -eq "`t") {
+            return "'" + $s
+        }
+        return $s
+    }
+}
+
+function ConvertTo-SafeCsvCollection {
+    <#
+    .SYNOPSIS
+        Projects a collection of objects into new PSCustomObjects whose string
+        properties have been sanitised via ConvertTo-SafeCsvField.
+    .DESCRIPTION
+        Wrap pipelines as '$rows | ConvertTo-SafeCsvCollection | Export-Csv ...'
+        to neutralise CSV formula injection without mutating the caller's
+        original objects. Property order is preserved. Non-string property
+        values (int, datetime, bool, nested objects) are passed through
+        unchanged so downstream tooling retains type information.
+    .PARAMETER InputObject
+        The object(s) to sanitise. Accepts pipeline input.
+    .OUTPUTS
+        [PSCustomObject] per input row.
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowNull()]
+        $InputObject
+    )
+
+    process {
+        if ($null -eq $InputObject) { return }
+        $ordered = [ordered]@{}
+        foreach ($p in $InputObject.PSObject.Properties) {
+            $ordered[$p.Name] = ConvertTo-SafeCsvField -Value $p.Value
+        }
+        [PSCustomObject]$ordered
+    }
+}
+
 function ConvertTo-AzLocalAdditionalProperties {
     <#
     .SYNOPSIS
@@ -2425,7 +2502,7 @@ function Start-AzureLocalClusterUpdate {
                         Write-Log -Message "Results exported to JSON: $ExportResultsPath" -Level Success
                     }
                     '.csv' {
-                        $results | Export-Csv -Path $ExportResultsPath -NoTypeInformation -Encoding UTF8
+                        $results | ConvertTo-SafeCsvCollection | Export-Csv -Path $ExportResultsPath -NoTypeInformation -Encoding UTF8
                         Write-Log -Message "Results exported to CSV: $ExportResultsPath" -Level Success
                     }
                     '.xml' {
@@ -2926,7 +3003,7 @@ function Get-AzureLocalUpdateSummary {
             
             switch ($format) {
                 'Csv' {
-                    $results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
+                    $results | ConvertTo-SafeCsvCollection | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
                     Write-Log -Message "Results exported to CSV: $ExportPath" -Level Success
                 }
                 'Json' {
@@ -3460,7 +3537,7 @@ function Get-AzureLocalAvailableUpdates {
             
             switch ($format) {
                 'Csv' {
-                    $results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
+                    $results | ConvertTo-SafeCsvCollection | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
                     Write-Log -Message "Results exported to CSV: $ExportPath" -Level Success
                 }
                 'Json' {
@@ -4156,7 +4233,7 @@ function Get-AzureLocalUpdateRuns {
             
             switch ($format) {
                 'Csv' {
-                    $allFormattedRuns | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
+                    $allFormattedRuns | ConvertTo-SafeCsvCollection | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
                     Write-Log -Message "Results exported to CSV: $ExportPath" -Level Success
                 }
                 'Json' {
@@ -4686,7 +4763,7 @@ function Get-AzureLocalClusterUpdateReadiness {
             
             switch ($format) {
                 'Csv' {
-                    $results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
+                    $results | ConvertTo-SafeCsvCollection | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
                     Write-Log -Message "Results exported to CSV: $ExportPath" -Level Success
                 }
                 'Json' {
@@ -5064,7 +5141,7 @@ function Get-AzureLocalClusterInventory {
                     }
                     default {
                         # Default to CSV for .csv or any other extension
-                        $exportData | Export-Csv -Path $ExportPath -NoTypeInformation -Force
+                        $exportData | ConvertTo-SafeCsvCollection | Export-Csv -Path $ExportPath -NoTypeInformation -Force
                         Write-Log -Message "Inventory exported to CSV: $ExportPath" -Level Success
                     }
                 }
@@ -7706,7 +7783,7 @@ function Test-AzureLocalClusterHealth {
             $extension = [System.IO.Path]::GetExtension($ExportPath).ToLower()
             switch ($extension) {
                 '.csv' {
-                    $allFailures | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
+                    $allFailures | ConvertTo-SafeCsvCollection | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
                     Write-Log -Message "Results exported to CSV: $ExportPath" -Level Success
                 }
                 '.json' {
