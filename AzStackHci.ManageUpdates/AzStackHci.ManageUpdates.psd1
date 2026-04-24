@@ -79,7 +79,7 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.0 - Fleet-scale correctness, parallelism, and hardening (IN DEVELOPMENT)
+## Version 0.7.0 - Fleet-scale correctness, parallelism, and hardening
 
 The jump from 0.6.5 to 0.7.0 reflects the scope of this release: correctness fixes for large
 fleets (1500+ clusters), a shift to true parallel execution across all per-cluster read/write
@@ -87,8 +87,6 @@ paths, HTML report performance improvements, and a round of bug and security har
 by a deep review of the module. No breaking public-surface changes; all new helpers are
 private. Az CLI is retained as the ARM transport; a native Invoke-RestMethod port is
 deliberately deferred to a future major release.
-
-Release note placeholders by phase (detail will be filled in as items land):
 
 ### Phase 1 - Critical correctness at scale
 - Azure Resource Graph pagination: ARG queries now follow the continuation skip-token
@@ -133,10 +131,29 @@ Release note placeholders by phase (detail will be filled in as items land):
 - Invoke-AzRestJson now handles mid-run token expiry: on 401 it refreshes the access token
   once and retries.
 
+### Phase 5 - UX and schema refinements
+- UpdateWindow tag separator changed from ':' to '_' between the day-spec and time range
+  (e.g. "Mon-Fri_22:00-02:00" replaces "Mon-Fri:22:00-02:00"). Breaking for pre-release
+  consumers only. Any cluster still on the old tag value will have its updates blocked
+  until re-tagged; use Set-AzureLocalClusterUpdateRingTag -UpdateWindowValue to migrate.
+- Test-AzureLocalUpdateScheduleAllowed now re-throws parser errors instead of swallowing
+  them, so malformed schedule tags correctly reach the caller's fail-closed path.
+- Fleet HTML report "Recent Update Run History": one row per cluster (the most recently
+  started update), attempts aggregated within that update. New "Update Attempts" column
+  (shown only when >1 attempt exists). Duration now uses HH:MM:SS format (survives summed
+  multi-day totals) instead of fractional N.N hours.
+- Fleet HTML report "Cluster Information" now includes a "Current SBE Version" column,
+  propagated through Get-AzureLocalFleetStatusData and both GitHub Actions / Azure DevOps
+  fleet-status pipeline YAMLs.
+- Start-AzureLocalClusterUpdate -WhatIf output no longer polluted by internal Write-Log /
+  CSV / log-folder side effects; only the ARM apply/action call is previewed. -WhatIf runs
+  now count as "WouldUpdate" in the final summary.
+- New private helper Format-AzLocalDurationHuman (central duration renderer, emits
+  "1 hour 23 minutes" style for per-run outputs).
+
 ### Notes
 - No breaking changes to exported functions or parameter sets.
-- Pester suite target: >= 239 passing tests (the 0.6.5 baseline), plus new coverage for
-  pagination, parallel speedup, CSV sanitization, and path validation.
+- Pester suite: 261/261 passing.
 - Az CLI remains the ARM transport. Native Invoke-RestMethod migration is explicitly
   out of scope for 0.7.0.
 
