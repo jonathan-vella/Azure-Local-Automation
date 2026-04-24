@@ -4359,8 +4359,10 @@ function Format-AzLocalUpdateRun {
     $progress = ""
     if ($props.progress -and $props.progress.steps) {
         $steps = $props.progress.steps
-        $completedSteps = ($steps | Where-Object { $_.status -eq "Success" }).Count
-        $totalSteps = $steps.Count
+        # Wrap in @() so .Count returns 0 (not $null) when no step matches — previously the
+        # "completed" numerator rendered blank for runs that failed before any step succeeded.
+        $completedSteps = @($steps | Where-Object { $_.status -eq "Success" }).Count
+        $totalSteps = @($steps).Count
         $progress = "$completedSteps/$totalSteps steps"
 
         $inProgressStep = $steps | Where-Object { $_.status -eq "InProgress" } | Select-Object -First 1
@@ -9458,7 +9460,7 @@ function Get-AzureLocalFleetStatusData {
                             $currentStep = ''; $currentStepDetail = ''; $runProgress = ''
                             if ($latestProps.progress -and $latestProps.progress.steps) {
                                 $steps = $latestProps.progress.steps
-                                $runProgress = "$(($steps | Where-Object { $_.status -eq 'Success' }).Count)/$($steps.Count) steps"
+                                $runProgress = "$(@($steps | Where-Object { $_.status -eq 'Success' }).Count)/$(@($steps).Count) steps"
                                 $ipStep = $steps | Where-Object { $_.status -eq 'InProgress' } | Select-Object -First 1
                                 $fStep  = $steps | Where-Object { $_.status -in @('Error','Failed') } | Select-Object -First 1
                                 if ($ipStep) { $currentStep = $ipStep.name } elseif ($fStep) { $currentStep = "$($fStep.name) (FAILED)" }
