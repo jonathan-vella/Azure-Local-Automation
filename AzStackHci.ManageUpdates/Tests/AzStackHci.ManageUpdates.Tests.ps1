@@ -34,8 +34,8 @@ Describe 'Module: AzStackHci.ManageUpdates' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.6.5' {
-            $script:ModuleInfo.Version | Should -Be '0.6.5'
+        It 'Should have version 0.7.0' {
+            $script:ModuleInfo.Version | Should -Be '0.7.0'
         }
 
         It 'Should export exactly 19 functions' {
@@ -1689,3 +1689,171 @@ Describe 'Function: Test-AzureLocalClusterHealth' {
 }
 
 #endregion Pre-Update Health Validation Tests
+
+#region Internal Helper: Invoke-AzResourceGraphQuery
+
+Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
+
+    Context 'Pagination behaviour' {
+
+        It 'Should merge rows across multiple pages by following skip_token' {
+            InModuleScope AzStackHci.ManageUpdates {
+                # Override the external 'az' executable with an in-scope function so
+                # we can feed canned ARG responses without touching the network.
+                $script:TestCallIndex = 0
+                function az {
+                    $script:TestCallIndex++
+                    switch ($script:TestCallIndex) {
+                        1 {
+                            # First page returns 2 rows + continuation token
+                            return '{"count":2,"data":[{"id":"a"},{"id":"b"}],"skip_token":"tok1","total_records":3}'
+                        }
+                        2 {
+                            # Second page returns final row and no token
+                            return '{"count":1,"data":[{"id":"c"}],"total_records":3}'
+                        }
+                        default {
+                            throw "Unexpected extra page call index $($script:TestCallIndex)"
+                        }
+                    }
+                }
+                $global:LASTEXITCODE = 0
+
+                $rows = Invoke-AzResourceGraphQuery -Query 'resources | project id'
+
+                $rows | Should -HaveCount 3
+                $rows[0].id | Should -Be 'a'
+                $rows[1].id | Should -Be 'b'
+                $rows[2].id | Should -Be 'c'
+                $script:TestCallIndex | Should -Be 2
+            }
+        }
+
+        It 'Should return an empty array when the single-page response has no data' {
+            InModuleScope AzStackHci.ManageUpdates {
+                function az { return '{"count":0,"data":[],"total_records":0}' }
+                $global:LASTEXITCODE = 0
+
+                $rows = Invoke-AzResourceGraphQuery -Query 'resources | where 1==0'
+                ,$rows | Should -BeOfType ([object[]])
+                $rows.Count | Should -Be 0
+            }
+        }
+
+        It 'Should throw when the CLI reports a non-zero exit code' {
+            InModuleScope AzStackHci.ManageUpdates {
+                function az { return 'FATAL: query syntax error' }
+                $global:LASTEXITCODE = 1
+
+                { Invoke-AzResourceGraphQuery -Query 'bad query' } | Should -Throw -ExpectedMessage '*Azure Resource Graph query failed*'
+            }
+        }
+
+        It 'Should stop at the MaxPages safety cap and emit a warning' {
+            InModuleScope AzStackHci.ManageUpdates {
+                # Always return a continuation token to simulate an infinite loop.
+                function az { return '{"count":1,"data":[{"id":"x"}],"skip_token":"never-ends"}' }
+                $global:LASTEXITCODE = 0
+
+                $warnings = @()
+                $rows = Invoke-AzResourceGraphQuery -Query 'resources' -MaxPages 3 -WarningVariable warnings -WarningAction SilentlyContinue
+                $rows | Should -HaveCount 3
+                ($warnings -join ' ') | Should -Match 'safety cap'
+            }
+        }
+    }
+}
+
+#endregion Internal Helper: Invoke-AzResourceGraphQuery
+
+#region Internal Helper: Invoke-FleetJobsInParallel
+
+Describe 'Internal Helper: Invoke-FleetJobsInParallel' {
+
+    Context 'Fast-path (ThrottleLimit=1)' {
+
+        It 'Should execute scriptblock inline without Start-Job when ThrottleLimit is 1' {
+            InModuleScope AzStackHci.ManageUpdates {
+                $sb = {
+                    param([object[]]$Batch, [string]$Arg1, [string]$ModPath)
+                    [PSCustomObject]@{ Count = $Batch.Count; Arg = $Arg1 }
+                }
+                $result = Invoke-FleetJobsInParallel -InputItems @(1, 2, 3) -ScriptBlock $sb `
+                    -ThrottleLimit 1 -ArgumentList @('hello')
+
+                $result | Should -HaveCount 1
+                $result[0].Failed | Should -Be $false
+                $result[0].Output.Count | Should -Be 3
+                $result[0].Output.Arg | Should -Be 'hello'
+            }
+        }
+
+        It 'Should return an empty array when InputItems is empty' {
+            InModuleScope AzStackHci.ManageUpdates {
+                $sb = { param([object[]]$Batch, [string]$ModPath) 'unused' }
+                $result = Invoke-FleetJobsInParallel -InputItems @() -ScriptBlock $sb -ThrottleLimit 4
+                ,$result | Should -BeOfType ([object[]])
+                $result.Count | Should -Be 0
+            }
+        }
+
+        It 'Should capture errors from the inline scriptblock as Failed=$true' {
+            InModuleScope AzStackHci.ManageUpdates {
+                $sb = { param([object[]]$Batch, [string]$ModPath) throw 'boom' }
+                $result = Invoke-FleetJobsInParallel -InputItems @('a') -ScriptBlock $sb -ThrottleLimit 1
+                $result | Should -HaveCount 1
+                $result[0].Failed | Should -Be $true
+                $result[0].Error | Should -Match 'boom'
+            }
+        }
+    }
+}
+
+#endregion Internal Helper: Invoke-FleetJobsInParallel
+
+#region Internal Helper: Invoke-FleetOpClusterAction
+
+Describe 'Internal Helper: Invoke-FleetOpClusterAction' {
+
+    Context 'Success path' {
+
+        It 'Should mark state as Succeeded and record attempts for GetStatus' {
+            InModuleScope AzStackHci.ManageUpdates {
+                Mock Get-AzureLocalUpdateSummary { return [PSCustomObject]@{ State = 'UpToDate' } }
+                $cs = [PSCustomObject]@{
+                    ClusterName = 'c1'; ResourceId = '/subscriptions/s/resourceGroups/r/providers/microsoft.azurestackhci/clusters/c1'
+                    Status = 'Pending'; Attempts = 0; LastAttempt = $null; LastError = $null; Result = $null
+                }
+                Invoke-FleetOpClusterAction -ClusterState $cs -Operation 'GetStatus' -MaxRetries 0 -RetryDelaySeconds 0
+
+                $cs.Status | Should -Be 'Succeeded'
+                $cs.Attempts | Should -Be 1
+                $cs.LastError | Should -BeNullOrEmpty
+                $cs.Result.State | Should -Be 'UpToDate'
+            }
+        }
+    }
+
+    Context 'Retry + failure path' {
+
+        It 'Should retry MaxRetries+1 times and mark Failed with LastError on persistent failure' {
+            InModuleScope AzStackHci.ManageUpdates {
+                Mock Get-AzureLocalUpdateSummary { throw 'transient api error' }
+                Mock Start-Sleep { }
+                $cs = [PSCustomObject]@{
+                    ClusterName = 'c2'; ResourceId = '/subscriptions/s/resourceGroups/r/providers/microsoft.azurestackhci/clusters/c2'
+                    Status = 'Pending'; Attempts = 0; LastAttempt = $null; LastError = $null; Result = $null
+                }
+                Invoke-FleetOpClusterAction -ClusterState $cs -Operation 'GetStatus' -MaxRetries 2 -RetryDelaySeconds 0
+
+                $cs.Status | Should -Be 'Failed'
+                $cs.Attempts | Should -Be 3
+                $cs.LastError | Should -Match 'transient api error'
+                Assert-MockCalled Get-AzureLocalUpdateSummary -Times 3 -Exactly
+            }
+        }
+    }
+}
+
+#endregion Internal Helper: Invoke-FleetOpClusterAction
+
