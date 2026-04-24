@@ -9,8 +9,17 @@
 #
 # CSV artifacts are also attached for spreadsheet triage.
 #
-# The pipeline fails if either check reports a failed cluster (unless failOnNotReady=false),
-# giving a hard go/no-go gate to chain in front of apply-updates.yml via a pipeline resource.
+# This pipeline is REPORT-ONLY and always succeeds. It surfaces not-ready / unhealthy
+# clusters via the Tests tab (JUnit), the CSV artifacts, and the job summary - but it
+# does NOT block downstream runs. In large fleets, day-to-day environmental issues
+# (transient storage noise, a single node out, etc.) routinely affect a small subset of
+# clusters; blocking the entire wave for one unhealthy cluster is rarely the desired
+# behavior. apply-updates.yml is itself per-cluster scoped, so clusters that are not
+# ready will simply no-op there too.
+#
+# If you want a hard pass/fail signal for a chained gate, read the output variables
+# (NOT_READY, CRITICAL_FAILURES) from a downstream pipeline via a pipeline resource and
+# apply your own tolerance threshold there.
 #
 # Remediation of Critical health failures is out of scope for this module - see the module
 # README "Assess Readiness and Health BEFORE Applying Updates" section for pointers.
@@ -35,11 +44,6 @@ parameters:
     displayName: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
     type: number
     default: 4
-
-  - name: failOnNotReady
-    displayName: 'Fail the pipeline if any cluster is not ready (gate behavior)'
-    type: boolean
-    default: true
 
 variables:
   modulePath: '$(Build.SourcesDirectory)/AzStackHci.ManageUpdates'
@@ -161,9 +165,9 @@ stages:
                 **ThrottleLimit**: $throttle
 
                 $(if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
-                  "Gate status: **BLOCKED**. Remediate Critical health issues (hardware vendor SBE / firmware / cluster health) before running apply-updates."
+                  "**Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. The healthy clusters are safe to proceed - apply-updates.yml is per-cluster scoped."
                 } else {
-                  "Gate status: **READY**. Safe to proceed with apply-updates for this ring."
+                  "**All clear**: every cluster in scope is ready for update. Safe to proceed with apply-updates for this ring."
                 })
                 "@
                 $summary | Out-File -FilePath $summaryPath -Encoding utf8
@@ -196,18 +200,3 @@ stages:
             inputs:
               targetPath: '$(artifactsPath)'
               artifact: 'readiness-assessment'
-
-          - task: PowerShell@2
-            displayName: 'Enforce gate'
-            condition: and(always(), eq('${{ parameters.failOnNotReady }}', true))
-            inputs:
-              targetType: 'inline'
-              pwsh: true
-              script: |
-                $notReady = [int]'$(gate.NOT_READY)'
-                $critical = [int]'$(gate.CRITICAL_FAILURES)'
-                if ($notReady -gt 0 -or $critical -gt 0) {
-                    Write-Host "##vso[task.logissue type=error]Gate failed: $notReady cluster(s) not ready, $critical cluster(s) with Critical health failures."
-                    exit 1
-                }
-                Write-Host "Gate passed: all clusters ready and free of Critical blocking health failures."

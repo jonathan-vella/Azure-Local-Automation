@@ -12,7 +12,7 @@ Five pipelines are provided for each platform:
 |----------|-------------|
 | **Inventory Clusters** | Queries all Azure Local clusters and exports inventory to CSV with UpdateRing tag status |
 | **Manage UpdateRing Tags** | Creates or updates UpdateRing / UpdateWindow / UpdateExclusions tags on clusters from a CSV file |
-| **Assess Update Readiness** | 🚦 Pre-flight go / no-go gate. Runs `Get-AzureLocalClusterUpdateReadiness` + `Test-AzureLocalClusterHealth -BlockingOnly` and publishes JUnit XML. Fails the build if any cluster in the target ring has a Critical health failure or is not ready for update. |
+| **Assess Update Readiness** | Pre-flight **report-only** readiness + blocking-health snapshot. Runs `Get-AzureLocalClusterUpdateReadiness` + `Test-AzureLocalClusterHealth -BlockingOnly` and publishes JUnit XML + CSV. Per-cluster pass/fail surfaces in the Checks / Tests tab; the workflow itself always succeeds so a few unhealthy clusters don't block the rest of the wave. |
 | **Apply Updates** | Applies updates to clusters filtered by UpdateRing tag value |
 | **Fleet Update Status** | 📊 Monitors update status across the entire fleet with JUnit XML reports for dashboards |
 
@@ -623,7 +623,21 @@ This workflow shows how to use all four pipelines together for a staged update d
 
 #### Phase 2: Update Deployment (Recurring)
 
-4. **Pre-flight: Assess Update Readiness (go / no-go gate)**\n   - Run the **Assess Update Readiness** pipeline with `UpdateRing = Wave1` (schedule it a day before the maintenance window, or trigger on-demand).\n   - Produces two JUnit XML files consumed by your CI/CD dashboard and two CSVs as artifacts:\n     - `readiness.xml` / `readiness.csv` from `Get-AzureLocalClusterUpdateReadiness` - one test per cluster; fails if `ReadyForUpdate = $false`.\n     - `health-blocking.xml` / `health-blocking.csv` from `Test-AzureLocalClusterHealth -BlockingOnly` - one test per cluster; fails if any Critical health failure exists.\n   - If the pipeline is **red**, do **not** run apply-updates. Common failure classes and where to fix them:\n     - **Storage / drive / stamp health, ADDS connectivity** -> Microsoft Learn Azure Local docs + Environment Checker.\n     - **SBE / firmware / driver prerequisite** -> hardware vendor SBE package (Dell, HPE, Lenovo, DataON, ...). `SBEDependency` + `HasPrerequisiteUpdates` identify the publisher + release notes URL.\n     - **Certificate / trust / identity drift** -> Azure Local cert rotation runbook.\n     - **Workload state** -> Windows Admin Center cluster validation.\n   - Critical health remediation is **outside the scope of this module** - this module only *detects* the blockers. Re-run the gate until it is green before proceeding.\n\n5. **Wave1 Updates (Pilot clusters)**
+4. **Pre-flight: Assess Update Readiness (report-only)**
+   - Run the **Assess Update Readiness** pipeline with `UpdateRing = Wave1` (schedule it a day before the maintenance window, or trigger on-demand).
+   - Produces two JUnit XML files consumed by your CI/CD dashboard and two CSVs as artifacts:
+     - `readiness.xml` / `readiness.csv` from `Get-AzureLocalClusterUpdateReadiness` - one test per cluster; fails if `ReadyForUpdate = $false`.
+     - `health-blocking.xml` / `health-blocking.csv` from `Test-AzureLocalClusterHealth -BlockingOnly` - one test per cluster; fails if any Critical health failure exists.
+   - The pipeline itself is **report-only and always succeeds** - per-cluster failures show up as red tests in the Checks / Tests tab and in the CSVs. In a large fleet, day-to-day environmental issues (transient storage noise, a single node out, etc.) will routinely flag a small subset of clusters; blocking the entire wave for one unhealthy cluster is rarely the desired behavior.
+   - `Start-AzureLocalClusterUpdate` is itself per-cluster scoped - not-ready / unhealthy clusters will no-op there too, so the healthy clusters in the ring are safe to proceed even when a few are flagged. Use the readiness report to open remediation tickets in parallel with the rollout.
+   - Common failure classes and where to fix them (remediation is **outside the scope of this module** - this module only *detects* the blockers):
+     - **Storage / drive / stamp health, ADDS connectivity** -> Microsoft Learn Azure Local docs + Environment Checker.
+     - **SBE / firmware / driver prerequisite** -> hardware vendor SBE package (Dell, HPE, Lenovo, DataON, ...). `SBEDependency` + `HasPrerequisiteUpdates` identify the publisher + release notes URL.
+     - **Certificate / trust / identity drift** -> Azure Local cert rotation runbook.
+     - **Workload state** -> Windows Admin Center cluster validation.
+   - If you *do* want a hard go/no-go gate (e.g. for the first production wave), read the job outputs `not_ready` / `critical_failures` from a downstream workflow / pipeline resource and apply your own tolerance threshold there.
+
+5. **Wave1 Updates (Pilot clusters)**
    - Schedule: Monday 10 PM or manual trigger
    - Run "Apply Updates" with `UpdateRing = Wave1`
    - Monitor progress in CI/CD dashboard
@@ -945,13 +959,13 @@ Automation-Pipeline-Examples/
 ├── github-actions/
 │   ├── inventory-clusters.yml          # GitHub Actions: Inventory pipeline
 │   ├── manage-updatering-tags.yml      # GitHub Actions: Tag management pipeline
-│   ├── assess-update-readiness.yml     # GitHub Actions: Pre-flight go/no-go gate (v0.7.0)
+│   ├── assess-update-readiness.yml     # GitHub Actions: Pre-flight readiness report (v0.7.0)
 │   ├── apply-updates.yml               # GitHub Actions: Update application pipeline
 │   └── fleet-update-status.yml         # GitHub Actions: Fleet status monitoring pipeline
 └── azure-devops/
     ├── inventory-clusters.yml          # Azure DevOps: Inventory pipeline
     ├── manage-updatering-tags.yml      # Azure DevOps: Tag management pipeline
-    ├── assess-update-readiness.yml     # Azure DevOps: Pre-flight go/no-go gate (v0.7.0)
+    ├── assess-update-readiness.yml     # Azure DevOps: Pre-flight readiness report (v0.7.0)
     ├── apply-updates.yml               # Azure DevOps: Update application pipeline
     └── fleet-update-status.yml         # Azure DevOps: Fleet status monitoring pipeline
 ```

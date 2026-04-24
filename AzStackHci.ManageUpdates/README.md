@@ -531,7 +531,7 @@ Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Production
 
 ### 8. Assess Readiness and Health BEFORE Applying Updates (Recommended)
 
-Before rolling updates to a wave, confirm every cluster in that wave is actually ready - on the supported solution version, healthy, with an update in a `Ready` / `ReadyToInstall` state, and not blocked by an SBE prerequisite. `Start-AzureLocalClusterUpdate` will already skip unhealthy clusters automatically, but running the assessment as a separate **go / no-go gate** surfaces exactly what needs remediation before you burn a maintenance window.
+Before rolling updates to a wave, confirm every cluster in that wave is actually ready - on the supported solution version, healthy, with an update in a `Ready` / `ReadyToInstall` state, and not blocked by an SBE prerequisite. `Start-AzureLocalClusterUpdate` will already skip unhealthy clusters automatically, but running the assessment as a separate **readiness report** surfaces exactly what needs remediation so you can open tickets in parallel with the rollout - you do not need to block the entire wave for one or two unhealthy clusters.
 
 **Step 1: Run the readiness check for the target ring**
 
@@ -551,7 +551,7 @@ $readiness | Where-Object { -not $_.ReadyForUpdate } |
 **Step 2: Drill into the Critical health failures that will block updates**
 
 ```powershell
-# -BlockingOnly returns only Critical/update-blocking failures, suitable for a CI/CD gate
+# -BlockingOnly returns only Critical/update-blocking failures, suitable for CI/CD reporting
 $health = Test-AzureLocalClusterHealth `
     -ScopeByUpdateRingTag -UpdateRingValue 'Wave1' `
     -BlockingOnly `
@@ -574,7 +574,7 @@ Critical health failures must be fixed at the cluster / infrastructure layer - t
 | Certificate, trust, or identity drift | Azure Local operations runbook for certificate rotation |
 | Workload / VM / cluster resource state | Windows Admin Center "Update" workload + cluster validation; evacuate affected nodes first |
 
-After remediation, **re-run Step 1 and Step 2** until `ReadyForUpdate = $true` and `Critical = 0` for every cluster in the wave. Do not move on until the gate is green.
+After remediation, re-run Step 1 and Step 2 to confirm `ReadyForUpdate = $true` and `Critical = 0` for the clusters you've fixed. Clusters that are still red can stay in the ring - `Start-AzureLocalClusterUpdate` will skip them - but track them as follow-ups so the fleet converges over time.
 
 **Step 4: Only now, apply updates**
 
@@ -598,7 +598,7 @@ New-AzureLocalFleetStatusHtmlReport `
     -IncludeHealthDetails -IncludeUpdateRuns
 ```
 
-> 💡 **CI/CD**: this same assess -> remediate -> apply flow is wired into the pipeline examples under `Automation-Pipeline-Examples/`: see the `assess-update-readiness.yml` pipeline (gate stage) and the `check-readiness` job inside `apply-updates.yml`.
+> 💡 **CI/CD**: this same assess -> remediate -> apply flow is wired into the pipeline examples under `Automation-Pipeline-Examples/`: see the `assess-update-readiness.yml` pipeline (report-only) and the `check-readiness` job inside `apply-updates.yml`.
 
 ## Available Functions
 

@@ -11,8 +11,17 @@
 #   - readiness.csv
 #   - health-blocking.csv
 #
-# The workflow fails (exit 1) if either check reports a failed cluster, giving you a hard
-# go/no-go gate to chain in front of apply-updates.yml (e.g. via `workflow_run` / `needs`).
+# This workflow is REPORT-ONLY and always succeeds. It surfaces not-ready / unhealthy
+# clusters via the JUnit test reporter (Checks tab), the CSV artifacts, and the step
+# summary - but it does NOT block downstream runs. In large fleets, day-to-day
+# environmental issues (transient storage noise, a single node out, etc.) routinely affect
+# a small subset of clusters; blocking the entire wave for one unhealthy cluster is rarely
+# the desired behavior. apply-updates.yml is itself per-cluster scoped, so clusters that
+# are not ready will simply no-op there too.
+#
+# If you want a hard pass/fail signal for a chained gate, read the job outputs
+# (not_ready, critical_failures) from a downstream workflow via `workflow_run` and apply
+# your own tolerance threshold there.
 #
 # Remediation of Critical health failures is out of scope for this module - see the module
 # README "Assess Readiness and Health BEFORE Applying Updates" section for pointers.
@@ -38,14 +47,6 @@ on:
         description: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
         required: false
         default: '4'
-      fail_on_not_ready:
-        description: 'Fail the workflow if any cluster is not ready (gate behavior)'
-        required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
 
 env:
   MODULE_PATH: './AzStackHci.ManageUpdates'
@@ -184,9 +185,9 @@ jobs:
           $lines.Add("**ThrottleLimit**: $throttle")
           $lines.Add('')
           if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
-              $lines.Add('> Gate status: **BLOCKED**. Review the JUnit results in the Checks tab and the CSV artifacts. Remediate Critical health issues (hardware vendor SBE / firmware / cluster health) before running apply-updates.yml.')
+              $lines.Add("> **Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Review the JUnit results in the Checks tab and the CSV artifacts; remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. **The healthy clusters are safe to proceed** - apply-updates.yml is per-cluster scoped.")
           } else {
-              $lines.Add('> Gate status: **READY**. Safe to proceed with apply-updates.yml for this ring.')
+              $lines.Add('> **All clear**: every cluster in scope is ready for update. Safe to proceed with apply-updates.yml for this ring.')
           }
           ($lines -join [Environment]::NewLine) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
@@ -215,18 +216,3 @@ jobs:
           path: ./artifacts/health-blocking.xml
           reporter: java-junit
         continue-on-error: true
-
-      - name: Enforce gate
-        if: ${{ github.event.inputs.fail_on_not_ready == 'true' }}
-        shell: pwsh
-        env:
-          NOT_READY: ${{ steps.gate.outputs.NOT_READY }}
-          CRITICAL_FAILURES: ${{ steps.gate.outputs.CRITICAL_FAILURES }}
-        run: |
-          $notReady = [int]($env:NOT_READY)
-          $critical = [int]($env:CRITICAL_FAILURES)
-          if ($notReady -gt 0 -or $critical -gt 0) {
-              Write-Error "Gate failed: $notReady cluster(s) not ready, $critical cluster(s) with Critical health failures."
-              exit 1
-          }
-          Write-Host "Gate passed: all clusters ready and free of Critical blocking health failures."
