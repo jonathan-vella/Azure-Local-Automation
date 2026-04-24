@@ -118,7 +118,6 @@
     Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
 
 .NOTES
-    Version: 0.6.5
     Author: Neil Bird, Microsoft.
     Requires: Azure CLI (az) installed and authenticated
     API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
@@ -5500,7 +5499,6 @@ function Get-AzureLocalClusterInventory {
         Write-Host "Found $($inventory.Count) clusters"
 
     .NOTES
-        Version: 0.5.7
         Author: Neil Bird, Microsoft.
     #>
     [CmdletBinding(DefaultParameterSetName = 'All')]
