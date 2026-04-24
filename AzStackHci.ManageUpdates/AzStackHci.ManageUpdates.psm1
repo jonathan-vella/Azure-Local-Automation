@@ -8648,6 +8648,13 @@ function Get-AzureLocalFleetStatusData {
         [ValidateRange(1, 8)]
         [int]$ThrottleLimit = 4,
 
+        # Optional cap on clusters returned by -AllClusters discovery.
+        # Default: 0 (no cap, returns all discovered clusters). Set to a positive integer
+        # to limit the number of clusters included (e.g. for testing or targeted runs).
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(0, 100000)]
+        [int]$MaxClusters = 0,
+
         [Parameter(Mandatory = $false)]
         [string]$ExportPath
     )
@@ -8709,7 +8716,10 @@ function Get-AzureLocalFleetStatusData {
         'All' {
             $inventory = @(Get-AzureLocalClusterInventory -PassThru)
             if (-not $inventory -or $inventory.Count -eq 0) { Write-Log -Message "No clusters found." -Level Warning; return $null }
-            if ($inventory.Count -gt 100) { $inventory = $inventory | Select-Object -First 100 }
+            if ($MaxClusters -gt 0 -and $inventory.Count -gt $MaxClusters) {
+                Write-Log -Message "Discovered $($inventory.Count) clusters; trimming to first $MaxClusters (-MaxClusters)." -Level Warning
+                $inventory = $inventory | Select-Object -First $MaxClusters
+            }
             $allResourceIds = @($inventory | Select-Object -ExpandProperty ResourceId)
             $scopeDescription = "All clusters ($($allResourceIds.Count))"
         }
@@ -9119,8 +9129,14 @@ function New-AzureLocalFleetStatusHtmlReport {
     
     .PARAMETER AllClusters
         Discovers all Azure Local clusters via Azure Resource Graph and includes them
-        in the report. Limited to the first 100 clusters to prevent excessive API calls.
-        Uses the current Azure CLI subscription context.
+        in the report. By default, no cap is applied - every discovered cluster is included.
+        Use -MaxClusters to limit the number of clusters returned (e.g. for targeted runs
+        or to avoid large fan-out). Uses the current Azure CLI subscription context.
+
+    .PARAMETER MaxClusters
+        Optional cap on clusters included when -AllClusters is used. Default 0 (no cap).
+        Set to a positive integer (1-100000) to limit the fleet slice. Has no effect for
+        other parameter sets.
     
     .PARAMETER OutputPath
         File path for the HTML report output. Required.
@@ -9216,6 +9232,11 @@ function New-AzureLocalFleetStatusHtmlReport {
         [ValidateRange(1, 8)]
         [int]$ThrottleLimit = 4,
 
+        # Optional cap on clusters returned by -AllClusters discovery. Default 0 (no cap).
+        [Parameter(Mandatory = $false, ParameterSetName = 'All')]
+        [ValidateRange(0, 100000)]
+        [int]$MaxClusters = 0,
+
         [Parameter(Mandatory = $false)]
         [switch]$PassThru
     )
@@ -9264,7 +9285,7 @@ function New-AzureLocalFleetStatusHtmlReport {
                 if ($ResourceGroupName) { $collectParams['ResourceGroupName'] = $ResourceGroupName }
                 if ($SubscriptionId) { $collectParams['SubscriptionId'] = $SubscriptionId }
             }
-            'All'          { $collectParams['AllClusters'] = $true }
+            'All'          { $collectParams['AllClusters'] = $true; $collectParams['MaxClusters'] = $MaxClusters }
         }
 
         $StatusData = Get-AzureLocalFleetStatusData @collectParams
