@@ -709,6 +709,30 @@ function Invoke-AzRestJson {
         $raw = & az @azArgs 2>&1
         $exit = $LASTEXITCODE
 
+        # Mid-run token expiry: detect 401 / ExpiredAuthenticationToken in the
+        # CLI error text, force a token refresh, and retry the original call
+        # exactly once. This avoids breaking long-running fleet operations when
+        # the cached access token crosses its expiry during the run.
+        if ($exit -ne 0) {
+            $errText = ($raw | Out-String)
+            $is401 = ($errText -match '\b401\b' -or
+                      $errText -match 'ExpiredAuthenticationToken' -or
+                      $errText -match 'InvalidAuthenticationToken' -or
+                      $errText -match 'AuthenticationFailed')
+            if ($is401) {
+                Write-Verbose "Invoke-AzRestJson: detected 401 / token-expiry on $Method $Uri; refreshing access token and retrying once."
+                try {
+                    # Forces the CLI to refresh the cached bearer token.
+                    $null = & az account get-access-token --resource 'https://management.azure.com/' --output none 2>&1
+                }
+                catch {
+                    Write-Verbose "Invoke-AzRestJson: token refresh failed: $($_.Exception.Message)"
+                }
+                $raw = & az @azArgs 2>&1
+                $exit = $LASTEXITCODE
+            }
+        }
+
         if ($exit -ne 0) {
             return [PSCustomObject]@{
                 Ok    = $false
