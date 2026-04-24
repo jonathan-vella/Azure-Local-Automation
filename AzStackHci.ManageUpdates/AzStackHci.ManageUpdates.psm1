@@ -5265,15 +5265,27 @@ function Get-AzureLocalClusterUpdateReadiness {
                 $recommendedUpdate = ''
                 $counted = $null
                 $isUpToDateState = $updateState -in @('UpToDate', 'AppliedSuccessfully')
+                # If every entry in /updates is in a terminal 'Installed' state, treat the
+                # cluster as effectively up-to-date even when updateSummary.state is stale
+                # (seen in the wild: ARM reports 'UpdateAvailable' for hours after the last
+                # update completes until the cluster heartbeat refreshes).
+                $allInstalled = ($availableUpdates.Count -gt 0) -and `
+                    -not ($availableUpdates | Where-Object { $_.properties.state -ne 'Installed' })
                 if ($readyUpdates.Count -gt 0) {
                     $latestReady = Get-LatestUpdateByYYMM -Updates $readyUpdates
                     $recommendedUpdate = $latestReady.name
                     # Only ready updates contribute to the parent-side tally.
                     $counted = $recommendedUpdate
                 }
-                elseif (-not $isUpToDateState -and $availableUpdates.Count -gt 0) {
-                    $latestAvailable = Get-LatestUpdateByYYMM -Updates $availableUpdates
-                    $recommendedUpdate = $latestAvailable.name
+                elseif (-not $isUpToDateState -and -not $allInstalled -and $availableUpdates.Count -gt 0) {
+                    # Fallback: pick the newest non-Installed entry (HasPrerequisite,
+                    # AdditionalContentRequired, Downloading, NotReady, etc.). Already-
+                    # installed entries must never be surfaced as the "next" update.
+                    $nonInstalled = @($availableUpdates | Where-Object { $_.properties.state -ne 'Installed' })
+                    if ($nonInstalled.Count -gt 0) {
+                        $latestAvailable = Get-LatestUpdateByYYMM -Updates $nonInstalled
+                        $recommendedUpdate = $latestAvailable.name
+                    }
                 }
 
                 $isReady = ($updateState -in (@('UpdateAvailable') + $ReadyStatesArg)) -and ($readyUpdates.Count -gt 0)
@@ -5287,6 +5299,7 @@ function Get-AzureLocalClusterUpdateReadiness {
                 # Choose a display tag; actual Write-Host runs in the parent.
                 $tag =
                     if ($isReady) { "Ready:$recommendedUpdate" }
+                    elseif ($allInstalled) { 'UpToDate' }
                     elseif ($prereqUpdates.Count -gt 0 -and $readyUpdates.Count -eq 0) { 'HasPrerequisite' }
                     elseif ($updateState -eq 'UpdateInProgress') { 'UpdateInProgress' }
                     elseif ($readyUpdates.Count -eq 0 -and $availableUpdates.Count -gt 0) { 'Downloading' }
@@ -6740,10 +6753,10 @@ function Set-AzureLocalClusterUpdateRingTag {
             }
             
             # Filter rows that have both ResourceId and UpdateRing values
-            $validRows = $csvData | Where-Object { 
+            $validRows = @($csvData | Where-Object { 
                 $_.ResourceId -and $_.ResourceId.Trim() -ne '' -and 
                 $_.UpdateRing -and $_.UpdateRing.Trim() -ne '' 
-            }
+            })
             
             if ($validRows.Count -eq 0) {
                 Write-Log -Message "No valid rows found in CSV (rows must have both ResourceId and UpdateRing values)" -Level Warning
@@ -8367,6 +8380,11 @@ function Test-AzureLocalClusterHealth {
     .PARAMETER ExportPath
         Export results to CSV (.csv), JSON (.json), or JUnit XML (.xml) file.
     
+    .PARAMETER ExportFormat
+        Explicit format to use when writing -ExportPath. One of: Auto, Csv, Json, JUnitXml.
+        Default: Auto (resolved from the file extension of -ExportPath; unknown extensions fall back to Csv).
+        Use this to write a specific format regardless of extension (e.g. a JUnit XML file with a .xml name but CI-picked parser).
+    
     .PARAMETER UpdateSummary
         Pre-fetched update summary object from Get-AzureLocalUpdateSummary.
         When provided, skips the internal summary fetch to avoid redundant API calls.
@@ -8417,6 +8435,10 @@ function Test-AzureLocalClusterHealth {
 
         [Parameter(Mandatory = $false)]
         [string]$ExportPath,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Auto', 'Csv', 'Json', 'JUnitXml')]
+        [string]$ExportFormat = 'Auto',
 
         [Parameter(Mandatory = $false)]
         [object]$UpdateSummary,
@@ -8693,13 +8715,24 @@ function Test-AzureLocalClusterHealth {
             if ($exportDir -and -not (Test-Path $exportDir)) {
                 New-Item -ItemType Directory -Path $exportDir -Force | Out-Null
             }
-            $extension = [System.IO.Path]::GetExtension($ExportPath).ToLower()
-            switch ($extension) {
-                '.csv' {
+            # Resolve effective format: explicit -ExportFormat wins; 'Auto' falls back
+            # to file-extension detection for backward compatibility.
+            $effectiveFormat = $ExportFormat
+            if ($effectiveFormat -eq 'Auto') {
+                $extension = [System.IO.Path]::GetExtension($ExportPath).ToLower()
+                $effectiveFormat = switch ($extension) {
+                    '.csv'  { 'Csv' }
+                    '.json' { 'Json' }
+                    '.xml'  { 'JUnitXml' }
+                    default { 'Csv' }
+                }
+            }
+            switch ($effectiveFormat) {
+                'Csv' {
                     $allFailures | ConvertTo-SafeCsvCollection | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
                     Write-Log -Message "Results exported to CSV: $ExportPath" -Level Success
                 }
-                '.json' {
+                'Json' {
                     $exportData = @{
                         Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                         OverallPassed = $overallPassed
@@ -8711,7 +8744,7 @@ function Test-AzureLocalClusterHealth {
                     Write-Utf8NoBomFile -Path $ExportPath -Content ($exportData | ConvertTo-Json -Depth 10)
                     Write-Log -Message "Results exported to JSON: $ExportPath" -Level Success
                 }
-                '.xml' {
+                'JUnitXml' {
                     $junitResults = $allFailures | ForEach-Object {
                         $junitNodeInfo = if ($_.TargetResourceName) { " (Node: $($_.TargetResourceName))" } else { "" }
                         [PSCustomObject]@{
