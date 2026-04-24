@@ -1537,7 +1537,7 @@ function Get-LastUpdateRunErrorSummary {
     try {
         # First, get all updates for this cluster
         $updatesUri = "https://management.azure.com$ClusterResourceId/updates?api-version=$ApiVersion"
-        $updatesResult = az rest --method GET --uri $updatesUri 2>$null | ConvertFrom-Json
+        $updatesResult = (Invoke-AzRestJson -Uri $updatesUri).Data
         
         if ($LASTEXITCODE -ne 0 -or -not $updatesResult.value) {
             return @{ ErrorStep = ""; ErrorMessage = "" }
@@ -1549,7 +1549,7 @@ function Get-LastUpdateRunErrorSummary {
         foreach ($update in $updatesResult.value) {
             $updateName = $update.name
             $runsUri = "https://management.azure.com$ClusterResourceId/updates/$updateName/updateRuns?api-version=$ApiVersion"
-            $runsResult = az rest --method GET --uri $runsUri 2>$null | ConvertFrom-Json
+            $runsResult = (Invoke-AzRestJson -Uri $runsUri).Data
             
             if ($LASTEXITCODE -eq 0 -and $runsResult.value) {
                 $failedRuns = $runsResult.value | Where-Object { $_.properties.state -eq "Failed" }
@@ -2290,7 +2290,7 @@ function Start-AzureLocalClusterUpdate {
                     # ResourceId was provided directly - fetch cluster info using the ResourceId
                     $uri = "https://management.azure.com$clusterResourceId`?api-version=$ApiVersion"
                     Write-Verbose "Getting cluster info from: $uri"
-                    $clusterInfo = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+                    $clusterInfo = (Invoke-AzRestJson -Uri $uri).Data
                     if ($LASTEXITCODE -ne 0) {
                         $clusterInfo = $null
                     }
@@ -2915,7 +2915,7 @@ function Get-AzureLocalClusterInfo {
         
         Write-Verbose "Getting cluster info from: $uri"
         
-        $result = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+        $result = (Invoke-AzRestJson -Uri $uri).Data
         if ($LASTEXITCODE -eq 0) {
             return $result
         }
@@ -2926,7 +2926,7 @@ function Get-AzureLocalClusterInfo {
         
         Write-Verbose "Searching for cluster across subscription: $uri"
         
-        $allClusters = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+        $allClusters = (Invoke-AzRestJson -Uri $uri).Data
         if ($LASTEXITCODE -eq 0 -and $allClusters.value) {
             $cluster = $allClusters.value | Where-Object { $_.name -eq $ClusterName }
             if ($cluster) {
@@ -3045,7 +3045,7 @@ function Get-AzureLocalUpdateSummary {
         
         Write-Verbose "Getting update summary from: $uri"
         
-        $result = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+        $result = (Invoke-AzRestJson -Uri $uri).Data
         if ($LASTEXITCODE -eq 0) {
             return $result
         }
@@ -3183,7 +3183,7 @@ function Get-AzureLocalUpdateSummary {
 
             # Get update summary
             $uri = "https://management.azure.com$resourceId/updateSummaries/default?api-version=$ApiVersion"
-            $summary = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+            $summary = (Invoke-AzRestJson -Uri $uri).Data
 
             if ($LASTEXITCODE -eq 0 -and $summary) {
                 $props = $summary.properties
@@ -3454,7 +3454,7 @@ function Get-AzureLocalAvailableUpdates {
         
         Write-Verbose "Getting available updates from: $uri"
         
-        $result = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+        $result = (Invoke-AzRestJson -Uri $uri).Data
         if ($LASTEXITCODE -ne 0 -or -not $result.value) {
             if (-not $Raw) {
                 Write-Log -Message "No updates returned for cluster '$(($ClusterResourceId -split '/')[-1])'." -Level Warning
@@ -3674,7 +3674,7 @@ function Get-AzureLocalAvailableUpdates {
 
             # Get available updates
             $uri = "https://management.azure.com$resourceId/updates?api-version=$ApiVersion"
-            $response = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+            $response = (Invoke-AzRestJson -Uri $uri).Data
 
             if ($LASTEXITCODE -eq 0 -and $response.value -and $response.value.Count -gt 0) {
                 $updates = $response.value
@@ -4122,7 +4122,7 @@ function Get-AzureLocalUpdateRuns {
         
         if ($updateNameFilter) {
             $uri = "https://management.azure.com$resourceId/updates/$updateNameFilter/updateRuns?api-version=$apiVer"
-            $result = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+            $result = (Invoke-AzRestJson -Uri $uri).Data
             if ($LASTEXITCODE -eq 0 -and $result.value) {
                 $allRuns = $result.value
             }
@@ -4133,7 +4133,7 @@ function Get-AzureLocalUpdateRuns {
             
             foreach ($update in $updates) {
                 $uri = "https://management.azure.com$resourceId/updates/$($update.name)/updateRuns?api-version=$apiVer"
-                $runs = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+                $runs = (Invoke-AzRestJson -Uri $uri).Data
                 if ($runs.value) {
                     $allRuns += $runs.value
                 }
@@ -4788,7 +4788,7 @@ function Get-AzureLocalClusterUpdateReadiness {
             # Get cluster info
             if ($cluster.ResourceId) {
                 $uri = "https://management.azure.com$($cluster.ResourceId)?api-version=$ApiVersion"
-                $clusterInfo = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+                $clusterInfo = (Invoke-AzRestJson -Uri $uri).Data
             }
             else {
                 $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
@@ -5243,7 +5243,7 @@ function Get-AzureLocalClusterInventory {
             Write-Host "  Checking: $clusterName..." -ForegroundColor Gray -NoNewline
             try {
                 $uri = "https://management.azure.com${resourceId}?api-version=$apiVer"
-                $clusterInfo = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+                $clusterInfo = (Invoke-AzRestJson -Uri $uri).Data
                 if ($LASTEXITCODE -eq 0 -and $clusterInfo) {
                     $rgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
                     $subId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
@@ -6409,7 +6409,7 @@ function Set-AzureLocalClusterUpdateRingTag {
             # Get current resource to verify it exists and get current tags
             Write-Log -Message "Verifying cluster exists and retrieving current tags..." -Level Info
             $uri = "https://management.azure.com$resourceId`?api-version=2025-10-01"
-            $clusterInfo = az rest --method GET --uri $uri 2>$null | ConvertFrom-Json
+            $clusterInfo = (Invoke-AzRestJson -Uri $uri).Data
 
             if ($LASTEXITCODE -ne 0 -or -not $clusterInfo) {
                 Write-Log -Message "Failed to retrieve cluster. It may not exist or you don't have access." -Level Error
@@ -8415,7 +8415,7 @@ function Get-AzureLocalFleetStatusData {
             try {
                 # API Call 1/3: GET cluster info
                 $clusterInfoUri = "https://management.azure.com${rid}?api-version=$apiVer"
-                $clusterInfo = az rest --method GET --uri $clusterInfoUri 2>$null | ConvertFrom-Json
+                $clusterInfo = (Invoke-AzRestJson -Uri $clusterInfoUri).Data
                 if ($LASTEXITCODE -ne 0 -or $null -eq $clusterInfo) {
                     Write-Host " Not Found" -ForegroundColor Red
                     $readiness.Add([PSCustomObject]@{
@@ -8441,7 +8441,7 @@ function Get-AzureLocalFleetStatusData {
 
                 # API Call 2/3: GET update summary
                 $summaryUri = "https://management.azure.com${rid}/updateSummaries/default?api-version=$apiVer"
-                $updateSummary = az rest --method GET --uri $summaryUri 2>$null | ConvertFrom-Json
+                $updateSummary = (Invoke-AzRestJson -Uri $summaryUri).Data
                 $hasSummary = ($LASTEXITCODE -eq 0 -and $null -ne $updateSummary -and $null -ne $updateSummary.properties)
 
                 $updateState = if ($hasSummary -and $updateSummary.properties.state) { $updateSummary.properties.state } else { "Unknown" }
@@ -8450,7 +8450,7 @@ function Get-AzureLocalFleetStatusData {
 
                 # API Call 3/3: GET available updates
                 $updatesUri = "https://management.azure.com${rid}/updates?api-version=$apiVer"
-                $updatesResponse = az rest --method GET --uri $updatesUri 2>$null | ConvertFrom-Json
+                $updatesResponse = (Invoke-AzRestJson -Uri $updatesUri).Data
                 $hasUpdates = ($LASTEXITCODE -eq 0 -and $null -ne $updatesResponse -and $null -ne $updatesResponse.value)
                 $availableUpdates = if ($hasUpdates) { @($updatesResponse.value) } else { @() }
                 $readyUpdates = @($availableUpdates | Where-Object { $_.properties.state -in $script:ReadyStates })
@@ -8513,7 +8513,7 @@ function Get-AzureLocalFleetStatusData {
                     $clusterBestRunTime = ""
                     foreach ($update in $availableUpdates) {
                         $runsUri = "https://management.azure.com${rid}/updates/$($update.name)/updateRuns?api-version=$apiVer"
-                        $runsResult = az rest --method GET --uri $runsUri 2>$null | ConvertFrom-Json
+                        $runsResult = (Invoke-AzRestJson -Uri $runsUri).Data
                         if ($LASTEXITCODE -eq 0 -and $runsResult.value) {
                             foreach ($run in $runsResult.value) {
                                 $runTime = $run.properties.timeStarted
