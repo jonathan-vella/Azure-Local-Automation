@@ -689,7 +689,18 @@ function Invoke-AzRestJson {
     )
 
     $tempBodyFile = $null
+    $prevPyEncoding = $env:PYTHONIOENCODING
     try {
+        # Force Azure CLI (Python) to write UTF-8 to stdout/stderr regardless of the
+        # host console code page. Without this, any non-cp1252 character in the ARM
+        # response (seen in updateRuns error text, localised health messages, etc.)
+        # causes the CLI to emit a stderr warning line like
+        #   "WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded."
+        # which, when captured via 2>&1, gets prepended to the JSON and breaks
+        # ConvertFrom-Json. That previously manifested as silently-dropped update
+        # runs / available updates for affected clusters.
+        $env:PYTHONIOENCODING = 'utf-8'
+
         $azArgs = @('rest', '--method', $Method, '--uri', $Uri)
         if ($PSBoundParameters.ContainsKey('Body') -and $Body) {
             $tempBodyFile = [System.IO.Path]::GetTempFileName()
@@ -704,12 +715,19 @@ function Invoke-AzRestJson {
         $raw = & az @azArgs 2>&1
         $exit = $LASTEXITCODE
 
+        # Split merged stdout+stderr by stream type. Stderr lines (Python warnings,
+        # deprecation notices) surface as ErrorRecord objects when using 2>&1;
+        # stdout lines surface as strings. We only pass the string stream to
+        # ConvertFrom-Json so a stray stderr warning can never corrupt JSON.
+        $stderrLines = @($raw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+        $stdoutLines = @($raw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+
         # Mid-run token expiry: detect 401 / ExpiredAuthenticationToken in the
         # CLI error text, force a token refresh, and retry the original call
         # exactly once. This avoids breaking long-running fleet operations when
         # the cached access token crosses its expiry during the run.
         if ($exit -ne 0) {
-            $errText = ($raw | Out-String)
+            $errText = (($stderrLines + $stdoutLines) | Out-String)
             $is401 = ($errText -match '\b401\b' -or
                       $errText -match 'ExpiredAuthenticationToken' -or
                       $errText -match 'InvalidAuthenticationToken' -or
@@ -725,6 +743,8 @@ function Invoke-AzRestJson {
                 }
                 $raw = & az @azArgs 2>&1
                 $exit = $LASTEXITCODE
+                $stderrLines = @($raw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+                $stdoutLines = @($raw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
             }
         }
 
@@ -732,12 +752,12 @@ function Invoke-AzRestJson {
             return [PSCustomObject]@{
                 Ok    = $false
                 Data  = $null
-                Error = (ConvertTo-ScrubbedCliOutput -Text (($raw | Out-String).Trim()))
+                Error = (ConvertTo-ScrubbedCliOutput -Text ((($stderrLines + $stdoutLines) | Out-String).Trim()))
             }
         }
 
-        # Success path: parse JSON (empty body is OK for PATCH/DELETE)
-        $rawText = ($raw | Out-String).Trim()
+        # Success path: parse JSON from stdout only (empty body is OK for PATCH/DELETE)
+        $rawText = ($stdoutLines | Out-String).Trim()
         if ([string]::IsNullOrWhiteSpace($rawText)) {
             return [PSCustomObject]@{ Ok = $true; Data = $null; Error = $null }
         }
@@ -756,6 +776,13 @@ function Invoke-AzRestJson {
     finally {
         if ($tempBodyFile -and (Test-Path -LiteralPath $tempBodyFile)) {
             Remove-Item -LiteralPath $tempBodyFile -Force -ErrorAction SilentlyContinue
+        }
+        # Restore caller's prior PYTHONIOENCODING (may have been $null/unset).
+        if ($null -eq $prevPyEncoding) {
+            Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:PYTHONIOENCODING = $prevPyEncoding
         }
     }
 }
