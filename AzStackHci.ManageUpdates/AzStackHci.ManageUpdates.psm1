@@ -1103,10 +1103,37 @@ function Invoke-FleetOpClusterAction {
                     $result = Get-AzureLocalUpdateSummary -ClusterResourceId $ClusterState.ResourceId @OperationParameters
                 }
                 'CheckReadiness' {
-                    $result = Get-AzureLocalClusterUpdateReadiness -ClusterResourceId $ClusterState.ResourceId @OperationParameters
+                    # Note: Get-AzureLocalClusterUpdateReadiness only exposes the plural
+                    # -ClusterResourceIds parameter, so wrap the single ID in an array.
+                    $result = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds @($ClusterState.ResourceId) @OperationParameters
                 }
                 'ApplyUpdate' {
-                    $result = Start-AzureLocalClusterUpdate -ClusterResourceId $ClusterState.ResourceId @OperationParameters
+                    # Start-AzureLocalClusterUpdate also only exposes -ClusterResourceIds.
+                    # It returns PSCustomObject[] (may be single item for one cluster);
+                    # treat Status != 'UpdateStarted' as a retryable failure so callers
+                    # get consistent 'Succeeded'/'Failed' semantics via this helper.
+                    $applyParams = @{
+                        ClusterResourceIds = @($ClusterState.ResourceId)
+                    }
+                    if (-not $OperationParameters.ContainsKey('Force')) {
+                        $applyParams['Force'] = $true
+                    }
+                    foreach ($k in $OperationParameters.Keys) {
+                        $applyParams[$k] = $OperationParameters[$k]
+                    }
+                    $applyResult = Start-AzureLocalClusterUpdate @applyParams
+                    # Normalize to the first (and usually only) result for a single cluster
+                    $primary = if ($applyResult -is [System.Collections.IEnumerable] -and -not ($applyResult -is [string])) {
+                        @($applyResult) | Select-Object -First 1
+                    } else { $applyResult }
+                    if (-not $primary) {
+                        throw "Start-AzureLocalClusterUpdate returned no result for cluster '$($ClusterState.ResourceId)'"
+                    }
+                    if ($primary.PSObject.Properties['Status'] -and $primary.Status -ne 'UpdateStarted') {
+                        $msg = if ($primary.PSObject.Properties['Message']) { $primary.Message } else { 'no details' }
+                        throw "Update not started (Status=$($primary.Status)): $msg"
+                    }
+                    $result = $primary
                 }
             }
             $succeeded = $true
@@ -6802,34 +6829,45 @@ function Get-AzureLocalFleetProgress {
     
     .PARAMETER Detailed
         Include detailed per-cluster status in output.
-    
+
+    .PARAMETER ThrottleLimit
+        Maximum number of parallel background jobs used to query cluster status.
+        Default is 1 (inline, sequential - identical to previous behaviour).
+        Set >1 to fan out per-cluster Get-AzureLocalUpdateSummary calls across
+        background jobs via Invoke-FleetJobsInParallel. Recommended values for
+        large fleets: 4-8.
+
     .EXAMPLE
         Get-AzureLocalFleetProgress -State $fleetState
         Gets progress for clusters in the specified fleet operation.
-    
+
     .EXAMPLE
         Get-AzureLocalFleetProgress -ScopeByUpdateRingTag -UpdateRingValue "Production"
         Gets progress for all Production ring clusters.
-    
+
     .EXAMPLE
-        Get-AzureLocalFleetProgress -ScopeByUpdateRingTag -UpdateRingValue "Wave1" -Detailed
-        Gets detailed progress including per-cluster status.
+        Get-AzureLocalFleetProgress -ScopeByUpdateRingTag -UpdateRingValue "Wave1" -Detailed -ThrottleLimit 8
+        Gets detailed progress using 8 parallel jobs for large fleets.
     #>
     [CmdletBinding(DefaultParameterSetName = 'ByState')]
     [OutputType([PSCustomObject])]
     param(
         [Parameter(Mandatory = $false, ParameterSetName = 'ByState')]
         [PSCustomObject]$State,
-        
+
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [switch]$ScopeByUpdateRingTag,
-        
+
         [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [string]$UpdateRingValue,
-        
+
         [Parameter(Mandatory = $false)]
-        [switch]$Detailed
+        [switch]$Detailed,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 32)]
+        [int]$ThrottleLimit = 1
     )
     
     Write-Log -Message "========================================" -Level Header
@@ -6868,45 +6906,89 @@ function Get-AzureLocalFleetProgress {
     
     Write-Log -Message "Checking status of $($clustersToCheck.Count) cluster(s)..." -Level Info
     
-    # Get current status for each cluster
+    # Get current status for each cluster.
+    # ThrottleLimit=1 uses the inline fast-path in Invoke-FleetJobsInParallel
+    # (no Start-Job cost) so behaviour is identical to the pre-parallel code.
     $clusterStatuses = @()
     $succeeded = 0
     $inProgress = 0
     $failed = 0
     $notStarted = 0
     $upToDate = 0
-    
-    foreach ($cluster in $clustersToCheck) {
-        try {
-            $summary = Get-AzureLocalUpdateSummary -ClusterResourceId $cluster.ResourceId -ErrorAction SilentlyContinue
-            
-            $status = [PSCustomObject]@{
-                ClusterName = $cluster.ClusterName
-                ResourceGroup = $cluster.ResourceGroup
-                UpdateState = $summary.State
-                HealthState = $summary.HealthState
-                LastUpdated = $summary.LastUpdatedTime
-            }
-            
-            switch ($summary.State) {
-                "Succeeded" { $succeeded++ }
-                "UpdateInProgress" { $inProgress++ }
-                "Failed" { $failed++ }
-                "UpToDate" { $upToDate++ }
-                default { $notStarted++ }
-            }
-            
-            $clusterStatuses += $status
+
+    # Normalise inputs for the job scriptblock: only the fields it reads.
+    $checkInputs = @($clustersToCheck | ForEach-Object {
+        [PSCustomObject]@{
+            ClusterName   = $_.ClusterName
+            ResourceId    = $_.ResourceId
+            ResourceGroup = $_.ResourceGroup
         }
-        catch {
-            $clusterStatuses += [PSCustomObject]@{
-                ClusterName = $cluster.ClusterName
-                ResourceGroup = $cluster.ResourceGroup
-                UpdateState = "Unknown"
-                HealthState = "Unknown"
-                LastUpdated = $null
+    })
+
+    $progressJob = {
+        param(
+            [object[]]$Shard,
+            [string]$ModulePath
+        )
+        # Only import when not already loaded (see note in perBatchJob above).
+        if (-not (Get-Command -Name Get-AzureLocalUpdateSummary -ErrorAction SilentlyContinue)) {
+            Import-Module $ModulePath -Force -ErrorAction Stop
+        }
+        $shardOut = foreach ($c in $Shard) {
+            try {
+                $summary = Get-AzureLocalUpdateSummary -ClusterResourceId $c.ResourceId -ErrorAction SilentlyContinue
+                [PSCustomObject]@{
+                    ClusterName   = $c.ClusterName
+                    ResourceGroup = $c.ResourceGroup
+                    UpdateState   = $summary.State
+                    HealthState   = $summary.HealthState
+                    LastUpdated   = $summary.LastUpdatedTime
+                }
             }
-            $notStarted++
+            catch {
+                [PSCustomObject]@{
+                    ClusterName   = $c.ClusterName
+                    ResourceGroup = $c.ResourceGroup
+                    UpdateState   = 'Unknown'
+                    HealthState   = 'Unknown'
+                    LastUpdated   = $null
+                }
+            }
+        }
+        return , @($shardOut)
+    }
+
+    $jobResults = Invoke-FleetJobsInParallel `
+        -InputItems $checkInputs `
+        -ScriptBlock $progressJob `
+        -ThrottleLimit $ThrottleLimit `
+        -ActivityName 'FleetProgress'
+
+    foreach ($jr in $jobResults) {
+        if ($jr.Failed) {
+            # Treat the whole shard as Unknown so counters are still produced.
+            foreach ($item in @($jr.Items)) {
+                $clusterStatuses += [PSCustomObject]@{
+                    ClusterName   = $item.ClusterName
+                    ResourceGroup = $item.ResourceGroup
+                    UpdateState   = 'Unknown'
+                    HealthState   = 'Unknown'
+                    LastUpdated   = $null
+                }
+                $notStarted++
+            }
+            continue
+        }
+        foreach ($status in @($jr.Output)) {
+            if (-not $status) { continue }
+            $clusterStatuses += $status
+            switch ($status.UpdateState) {
+                'Succeeded'         { $succeeded++;  break }
+                'UpdateInProgress'  { $inProgress++; break }
+                'Failed'            { $failed++;     break }
+                'UpToDate'          { $upToDate++;   break }
+                default             { $notStarted++ }
+            }
         }
     }
     
@@ -7361,108 +7443,146 @@ function Invoke-AzureLocalFleetOperation {
     
     # Store state script-level for progress tracking
     $script:FleetOperationState = $state
-    
+
+    # Build a hashtable keyed by ResourceId for O(1) merge-back of per-job
+    # cluster states. Parallel jobs receive deserialized copies of cluster
+    # state objects; we merge their mutations back into the canonical
+    # $state.Clusters list via this index.
+    $clusterStateByRid = @{}
+    foreach ($__cs in $state.Clusters) {
+        if ($__cs -and $__cs.ResourceId) {
+            $clusterStateByRid[$__cs.ResourceId] = $__cs
+        }
+    }
+
+    # Shared operation parameters forwarded to Invoke-FleetOpClusterAction
+    # inside each parallel job. Start-AzureLocalClusterUpdate / ...Readiness /
+    # GetStatus each accept a different subset; Invoke-FleetOpClusterAction
+    # splats -OperationParameters into the underlying cmdlet.
+    $opParams = @{}
+    if ($Operation -eq 'ApplyUpdate') {
+        $opParams['Force'] = $true
+        if ($UpdateName) { $opParams['UpdateName'] = $UpdateName }
+    }
+
+    # Per-batch job scriptblock. Runs either inline (ThrottleLimit=1, fast path)
+    # or inside Start-Job (ThrottleLimit>1). Imports the module by path so
+    # exported helpers are available, then iterates the shard and mutates
+    # each cluster state via Invoke-FleetOpClusterAction.
+    $perBatchJob = {
+        param(
+            [object[]]$ShardItems,
+            [string]$JobOperation,
+            [hashtable]$JobOpParams,
+            [int]$JobMaxRetries,
+            [int]$JobRetryDelaySeconds,
+            [string]$ModulePath
+        )
+        # Only import when not already loaded. In the inline fast-path (ThrottleLimit=1)
+        # we are already running inside the module; a -Force reimport here would
+        # remove the in-flight module and break callers above us on the stack that
+        # rely on private functions such as Write-Log.
+        if (-not (Get-Command -Name Invoke-FleetOpClusterAction -ErrorAction SilentlyContinue)) {
+            Import-Module $ModulePath -Force -ErrorAction Stop
+        }
+        foreach ($cs in $ShardItems) {
+            if ($cs.Status -eq 'Succeeded') { continue }
+            Invoke-FleetOpClusterAction -ClusterState $cs -Operation $JobOperation `
+                -MaxRetries $JobMaxRetries -RetryDelaySeconds $JobRetryDelaySeconds `
+                -OperationParameters $JobOpParams
+        }
+        return , $ShardItems
+    }
+
     # Process in batches
     $batchNumber = 0
     $totalBatches = $state.TotalBatches
-    
+
     for ($i = 0; $i -lt $totalClusters; $i += $BatchSize) {
         $batchNumber++
         $state.CurrentBatch = $batchNumber
         $batchClusters = $state.Clusters[$i..[math]::Min($i + $BatchSize - 1, $totalClusters - 1)]
-        
+
+        # Filter out already-succeeded clusters (resume scenarios)
+        $pendingInBatch = @($batchClusters | Where-Object { $_.Status -ne 'Succeeded' })
+
         Write-Log -Message "" -Level Info
         Write-Log -Message "========================================" -Level Header
-        Write-Log -Message "Batch $batchNumber of $totalBatches ($($batchClusters.Count) clusters)" -Level Header
+        Write-Log -Message "Batch $batchNumber of $totalBatches ($($batchClusters.Count) clusters; $($pendingInBatch.Count) to process)" -Level Header
         Write-Log -Message "========================================" -Level Header
-        
-        # Process batch with throttling (using runspaces for parallelism)
-        # Note: Using ForEach-Object -Parallel requires PS7+, so we use sequential with simulated throttle
-        foreach ($clusterState in $batchClusters) {
-            if ($clusterState.Status -eq "Succeeded") {
-                continue  # Skip already succeeded (for resume scenarios)
-            }
-            
-            Write-Log -Message "Processing: $($clusterState.ClusterName)" -Level Info
-            
-            $success = $false
-            $lastError = $null
-            
-            for ($attempt = 1; $attempt -le ($MaxRetries + 1); $attempt++) {
-                $clusterState.Attempts = $attempt
-                $clusterState.LastAttempt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-                
-                try {
-                    switch ($Operation) {
-                        'ApplyUpdate' {
-                            $updateParams = @{
-                                ClusterResourceIds = @($clusterState.ResourceId)
-                                Force = $true
-                            }
-                            if ($UpdateName) {
-                                $updateParams['UpdateName'] = $UpdateName
-                            }
-                            
-                            $result = Start-AzureLocalClusterUpdate @updateParams
-                            
-                            if ($result.Status -eq "UpdateStarted") {
-                                $success = $true
-                                $clusterState.Result = $result
-                            }
-                            else {
-                                throw "Update not started: $($result.Message)"
-                            }
-                        }
-                        'CheckReadiness' {
-                            $readiness = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds @($clusterState.ResourceId)
-                            $clusterState.Result = $readiness
-                            $success = $true
-                        }
-                        'GetStatus' {
-                            $summary = Get-AzureLocalUpdateSummary -ClusterResourceId $clusterState.ResourceId
-                            $clusterState.Result = $summary
-                            $success = $true
+
+        if ($pendingInBatch.Count -eq 0) {
+            Write-Log -Message "  All clusters in this batch already succeeded - skipping." -Level Info
+        }
+        else {
+            # Dispatch the batch across parallel jobs (or inline when ThrottleLimit=1).
+            # Invoke-FleetJobsInParallel handles sharding, timeouts, Receive-Job, and
+            # cleanup; each returned result contains .Output (mutated shard) or .Error.
+            $jobResults = Invoke-FleetJobsInParallel `
+                -InputItems $pendingInBatch `
+                -ScriptBlock $perBatchJob `
+                -ThrottleLimit $ThrottleLimit `
+                -ArgumentList @($Operation, $opParams, $MaxRetries, $RetryDelaySeconds) `
+                -ActivityName "FleetOp-B$batchNumber"
+
+            foreach ($jr in $jobResults) {
+                if ($jr.Failed) {
+                    # The whole shard failed before any per-cluster work completed.
+                    # Mark every cluster in that shard as Failed with the batch error
+                    # so progress stays accurate and retry counters are non-zero.
+                    foreach ($item in @($jr.Items)) {
+                        if (-not $item -or -not $item.ResourceId) { continue }
+                        $orig = $clusterStateByRid[$item.ResourceId]
+                        if ($orig) {
+                            $orig.Status = 'Failed'
+                            $orig.LastError = "Batch job failed: $($jr.Error)"
+                            if (-not $orig.Attempts -or $orig.Attempts -lt 1) { $orig.Attempts = 1 }
+                            $orig.LastAttempt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
                         }
                     }
-                    
-                    break  # Success, exit retry loop
                 }
-                catch {
-                    $lastError = $_.Exception.Message
-                    $clusterState.LastError = $lastError
-                    
-                    if ($attempt -le $MaxRetries) {
-                        $delay = $RetryDelaySeconds * [math]::Pow(2, $attempt - 1)  # Exponential backoff
-                        Write-Log -Message "  Attempt $attempt failed: $lastError. Retrying in $delay seconds..." -Level Warning
-                        Start-Sleep -Seconds $delay
-                    }
-                    else {
-                        Write-Log -Message "  All $($MaxRetries + 1) attempts failed: $lastError" -Level Error
+                else {
+                    # Merge each deserialized/returned ClusterState back into the
+                    # canonical object in $state.Clusters via the hash index.
+                    foreach ($updated in @($jr.Output)) {
+                        if (-not $updated -or -not $updated.ResourceId) { continue }
+                        $orig = $clusterStateByRid[$updated.ResourceId]
+                        if (-not $orig) { continue }
+                        # Same object identity in the inline fast-path (ThrottleLimit=1);
+                        # distinct deserialized copy under Start-Job. Assignments are
+                        # idempotent either way.
+                        $orig.Status = $updated.Status
+                        $orig.Attempts = $updated.Attempts
+                        $orig.LastAttempt = $updated.LastAttempt
+                        $orig.LastError = $updated.LastError
+                        $orig.Result = $updated.Result
                     }
                 }
             }
-            
-            # Update status
-            if ($success) {
-                $clusterState.Status = "Succeeded"
-                $state.SucceededCount++
-                Write-Log -Message "  [OK] $($clusterState.ClusterName) - Succeeded" -Level Success
+
+            # Recompute counters and emit per-cluster status after merge.
+            foreach ($cs in $pendingInBatch) {
+                $orig = $clusterStateByRid[$cs.ResourceId]
+                if (-not $orig) { continue }
+                if ($orig.Status -eq 'Succeeded') {
+                    $state.SucceededCount++
+                    Write-Log -Message "  [OK] $($orig.ClusterName) - Succeeded" -Level Success
+                }
+                else {
+                    if ($orig.Status -ne 'Failed') { $orig.Status = 'Failed' }
+                    $state.FailedCount++
+                    Write-Log -Message "  [FAILED] $($orig.ClusterName) - Failed: $($orig.LastError)" -Level Error
+                }
+                $state.CompletedCount++
             }
-            else {
-                $clusterState.Status = "Failed"
-                $state.FailedCount++
-                Write-Log -Message "  [FAILED] $($clusterState.ClusterName) - Failed: $lastError" -Level Error
-            }
-            
-            $state.CompletedCount++
             $state.PendingCount = $totalClusters - $state.CompletedCount
         }
-        
+
         # Save checkpoint after each batch
         if ($StateFilePath) {
             Export-AzureLocalFleetState -State $state -Path $StateFilePath | Out-Null
         }
-        
+
         # Delay between batches (if not the last batch)
         if ($batchNumber -lt $totalBatches -and $DelayBetweenBatchesSeconds -gt 0) {
             Write-Log -Message "Batch $batchNumber complete. Waiting $DelayBetweenBatchesSeconds seconds before next batch..." -Level Info
