@@ -2127,3 +2127,97 @@ Describe 'Get-AzureLocalUpdateSummary (multi-cluster parallel dispatch)' {
 
 #endregion Integration: Get-AzureLocalUpdateSummary parallel dispatch
 
+#region Integration: Start-AzureLocalClusterUpdate prefetched pass-through
+
+Describe 'Start-AzureLocalClusterUpdate (prefetched pass-through)' {
+
+    Context 'PrefetchedUpdateSummaries skips the internal summary fetch' {
+        It 'Should use the pre-fetched summary object and not call Get-AzureLocalUpdateSummary' {
+            InModuleScope AzStackHci.ManageUpdates {
+                $resourceId = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/prefetched-a'
+                $prefetched = [PSCustomObject]@{
+                    properties = [PSCustomObject]@{
+                        state = 'NotApplicableBecausePrefetched'
+                        healthState = 'Success'
+                    }
+                }
+
+                Mock Test-ExportPathWritable { return $true }
+                Mock Test-AzCliAvailable { return $true }
+                Mock Get-AzureLocalClusterInfo {
+                    return [PSCustomObject]@{
+                        id = $resourceId
+                        name = 'prefetched-a'
+                        properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                    }
+                }
+                Mock Get-AzureLocalUpdateSummary { throw 'should not be called when prefetched summary is supplied' }
+                # Stop the pipeline early - cluster state is not in valid updates list,
+                # so the function emits a Skipped record and continues without needing
+                # further mocks. That is enough to prove the prefetched path was taken.
+
+                $cache = @{ $resourceId = $prefetched }
+                $results = Start-AzureLocalClusterUpdate `
+                    -ClusterResourceIds @($resourceId) `
+                    -PrefetchedUpdateSummaries $cache `
+                    -Force `
+                    -PassThru 4>$null 6>$null
+
+                $results | Should -Not -BeNullOrEmpty
+                Assert-MockCalled Get-AzureLocalUpdateSummary -Times 0 -Exactly
+            }
+        }
+    }
+
+    Context 'PrefetchedAvailableUpdates skips the internal available-updates fetch' {
+        It 'Should use the pre-fetched available-updates array and not call Get-AzureLocalAvailableUpdates' {
+            InModuleScope AzStackHci.ManageUpdates {
+                $resourceId = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/prefetched-b'
+
+                # Summary shows an updateable state so the function reaches the
+                # available-updates step; we then assert that Get-AzureLocalAvailableUpdates
+                # is NOT called because the pre-fetched cache hit short-circuits it.
+                $summary = [PSCustomObject]@{
+                    properties = [PSCustomObject]@{
+                        state = 'UpdateAvailable'
+                        healthState = 'Success'
+                    }
+                }
+                $prefetchedUpdates = @(
+                    [PSCustomObject]@{
+                        name = '10.2506.0.28'
+                        properties = [PSCustomObject]@{ state = 'NotReady'; packageType = 'Solution' }
+                    }
+                )
+
+                Mock Test-ExportPathWritable { return $true }
+                Mock Test-AzCliAvailable { return $true }
+                Mock Get-AzureLocalClusterInfo {
+                    return [PSCustomObject]@{
+                        id = $resourceId
+                        name = 'prefetched-b'
+                        properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                    }
+                }
+                Mock Get-AzureLocalUpdateSummary { return $summary }
+                Mock Test-AzureLocalClusterHealth { return @([PSCustomObject]@{ IsBlocking = $false; ClusterName = 'prefetched-b' }) }
+                Mock Get-AzureLocalAvailableUpdates { throw 'should not be called when prefetched available updates are supplied' }
+                Mock Get-LastUpdateRunErrorSummary { return [PSCustomObject]@{ ErrorStep = ''; ErrorMessage = '' } }
+                Mock Get-HealthCheckFailureSummary { return '' }
+
+                $cache = @{ $resourceId = $prefetchedUpdates }
+                $results = Start-AzureLocalClusterUpdate `
+                    -ClusterResourceIds @($resourceId) `
+                    -PrefetchedAvailableUpdates $cache `
+                    -Force `
+                    -PassThru 4>$null 6>$null
+
+                $results | Should -Not -BeNullOrEmpty
+                Assert-MockCalled Get-AzureLocalAvailableUpdates -Times 0 -Exactly
+            }
+        }
+    }
+}
+
+#endregion Integration: Start-AzureLocalClusterUpdate prefetched pass-through
+

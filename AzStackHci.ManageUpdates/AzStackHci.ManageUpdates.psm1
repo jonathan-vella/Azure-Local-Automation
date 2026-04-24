@@ -2023,6 +2023,17 @@ function Start-AzureLocalClusterUpdate {
         Enable PowerShell transcript recording.
     .PARAMETER ExportResultsPath
         Export results to JSON (.json), CSV (.csv), or JUnit XML (.xml) file.
+    .PARAMETER PrefetchedUpdateSummaries
+        Optional hashtable of pre-fetched update summary objects keyed by cluster
+        Resource ID (case-insensitive). When a matching key is present the internal
+        Get-AzureLocalUpdateSummary call for that cluster is skipped. Intended for
+        fleet callers that have already fetched summaries in a parallel pass.
+        No freshness (TTL) check is performed; callers are responsible for ensuring
+        cached data is recent enough for their scenario.
+    .PARAMETER PrefetchedAvailableUpdates
+        Optional hashtable of pre-fetched available-updates arrays keyed by cluster
+        Resource ID (case-insensitive). When a matching key is present the internal
+        Get-AzureLocalAvailableUpdates call for that cluster is skipped.
     .OUTPUTS
         PSCustomObject[] - Array of result objects with cluster name, status, and message.
     .EXAMPLE
@@ -2073,7 +2084,20 @@ function Start-AzureLocalClusterUpdate {
         [string]$ExportResultsPath,
 
         [Parameter(Mandatory = $false)]
-        [switch]$PassThru
+        [switch]$PassThru,
+
+        # Opt-in pass-through caches keyed by cluster ResourceId (case-insensitive).
+        # When a key is present for the current cluster, the corresponding internal
+        # ARM fetch is skipped. Intended for callers who have already obtained the
+        # data via Get-AzureLocalUpdateSummary / Get-AzureLocalAvailableUpdates so
+        # large fleet pipelines do not re-read the same records per cluster.
+        # Callers must ensure the cached data is fresh enough for their scenario;
+        # no TTL is applied.
+        [Parameter(Mandatory = $false)]
+        [hashtable]$PrefetchedUpdateSummaries,
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$PrefetchedAvailableUpdates
     )
 
     begin {
@@ -2349,8 +2373,22 @@ function Start-AzureLocalClusterUpdate {
 
                 # Step 2: Get update summaries to check if updates are available
                 Write-Log -Message "Step 2: Retrieving update summary..." -Level Info
-                $updateSummary = Get-AzureLocalUpdateSummary -ClusterResourceId $clusterInfo.id `
-                    -ApiVersion $ApiVersion
+                $updateSummary = $null
+                if ($PrefetchedUpdateSummaries -and $clusterInfo.id) {
+                    # Hashtable lookup is case-insensitive by default when keys were
+                    # added with their native casing; normalise on lookup regardless.
+                    foreach ($k in $PrefetchedUpdateSummaries.Keys) {
+                        if ($k -and ([string]$k).Equals([string]$clusterInfo.id, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $updateSummary = $PrefetchedUpdateSummaries[$k]
+                            Write-Log -Message "  Using pre-fetched update summary (PrefetchedUpdateSummaries cache hit)" -Level Verbose
+                            break
+                        }
+                    }
+                }
+                if (-not $updateSummary) {
+                    $updateSummary = Get-AzureLocalUpdateSummary -ClusterResourceId $clusterInfo.id `
+                        -ApiVersion $ApiVersion
+                }
 
                 if (-not $updateSummary) {
                     Write-Log -Message "Unable to retrieve update summary for cluster '$clusterName'." -Level Warning
@@ -2544,8 +2582,20 @@ function Start-AzureLocalClusterUpdate {
 
                 # Step 4: List available updates
                 Write-Log -Message "Step 4: Listing available updates..." -Level Info
-                $availableUpdates = Get-AzureLocalAvailableUpdates -ClusterResourceId $clusterInfo.id `
-                    -ApiVersion $ApiVersion -Raw
+                $availableUpdates = $null
+                if ($PrefetchedAvailableUpdates -and $clusterInfo.id) {
+                    foreach ($k in $PrefetchedAvailableUpdates.Keys) {
+                        if ($k -and ([string]$k).Equals([string]$clusterInfo.id, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $availableUpdates = $PrefetchedAvailableUpdates[$k]
+                            Write-Log -Message "  Using pre-fetched available updates (PrefetchedAvailableUpdates cache hit)" -Level Verbose
+                            break
+                        }
+                    }
+                }
+                if (-not $availableUpdates) {
+                    $availableUpdates = Get-AzureLocalAvailableUpdates -ClusterResourceId $clusterInfo.id `
+                        -ApiVersion $ApiVersion -Raw
+                }
 
                 if (-not $availableUpdates -or $availableUpdates.Count -eq 0) {
                     Write-Log -Message "No updates available for cluster '$clusterName'." -Level Warning
