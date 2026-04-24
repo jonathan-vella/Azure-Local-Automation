@@ -2221,3 +2221,85 @@ Describe 'Start-AzureLocalClusterUpdate (prefetched pass-through)' {
 
 #endregion Integration: Start-AzureLocalClusterUpdate prefetched pass-through
 
+#region Integration: Get-AzureLocalClusterUpdateReadiness parallel dispatch
+
+Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)' {
+
+    Context 'ThrottleLimit=1 inline fast-path' {
+        It 'Should aggregate one row per cluster and tally recommended update versions only for ready clusters' {
+            InModuleScope AzStackHci.ManageUpdates {
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                Mock Test-AzCliAvailable { return $true }
+
+                # cluster-a is ready with 10.2506.0.28; cluster-b is Downloading
+                # (updates exist but none ready); cluster-c is already UpToDate.
+                Mock Invoke-AzRestJson {
+                    param($Uri)
+                    $global:LASTEXITCODE = 0
+                    # Cluster GET (no /updateSummaries, no /updates)
+                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
+                        $name = $matches[1]
+                        return [PSCustomObject]@{
+                            Ok = $true
+                            Data = [PSCustomObject]@{
+                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$name"
+                                name = $name
+                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                                tags = $null
+                            }
+                        }
+                    }
+                    return [PSCustomObject]@{ Ok = $true; Data = $null }
+                }
+                Mock Get-AzureLocalUpdateSummary {
+                    param($ClusterResourceId)
+                    if ($ClusterResourceId -like '*/cluster-c') {
+                        return [PSCustomObject]@{
+                            properties = [PSCustomObject]@{ state = 'UpToDate'; healthState = 'Success' }
+                        }
+                    }
+                    return [PSCustomObject]@{
+                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
+                    }
+                }
+                Mock Get-AzureLocalAvailableUpdates {
+                    param($ClusterResourceId)
+                    if ($ClusterResourceId -like '*/cluster-a') {
+                        return @([PSCustomObject]@{
+                            name = '10.2506.0.28'
+                            properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                        })
+                    }
+                    if ($ClusterResourceId -like '*/cluster-b') {
+                        return @([PSCustomObject]@{
+                            name = '10.2506.0.28'
+                            properties = [PSCustomObject]@{ state = 'Downloading'; packageType = 'Solution' }
+                        })
+                    }
+                    return @()
+                }
+
+                $ids = @(
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-a'
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-c'
+                )
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+
+                $results | Should -HaveCount 3
+                ($results | Where-Object ClusterName -eq 'cluster-a').ReadyForUpdate | Should -BeTrue
+                ($results | Where-Object ClusterName -eq 'cluster-a').RecommendedUpdate | Should -Be '10.2506.0.28'
+                ($results | Where-Object ClusterName -eq 'cluster-b').ReadyForUpdate | Should -BeFalse
+                ($results | Where-Object ClusterName -eq 'cluster-c').ReadyForUpdate | Should -BeFalse
+                # Internal tally fields must not leak to caller output
+                foreach ($r in $results) {
+                    $r.PSObject.Properties.Name | Should -Not -Contain '__DisplayTag'
+                    $r.PSObject.Properties.Name | Should -Not -Contain '__CountedRecommendedUpdate'
+                }
+            }
+        }
+    }
+}
+
+#endregion Integration: Get-AzureLocalClusterUpdateReadiness parallel dispatch
+

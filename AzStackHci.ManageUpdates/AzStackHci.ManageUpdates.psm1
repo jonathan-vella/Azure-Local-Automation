@@ -4784,7 +4784,6 @@ function Get-AzureLocalClusterUpdateReadiness {
         Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds @("/subscriptions/xxx/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01")
 
     .NOTES
-        Version: 0.4.0
         Author: Neil Bird, Microsoft.
     #>
     [CmdletBinding(DefaultParameterSetName = 'ByName')]
@@ -4820,19 +4819,14 @@ function Get-AzureLocalClusterUpdateReadiness {
         [string]$ExportFormat = 'Auto',
 
         [Parameter(Mandatory = $false)]
-        [switch]$PassThru
+        [switch]$PassThru,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 32)]
+        [int]$ThrottleLimit = 1
     )
 
     # Pre-flight: Validate export path is writable before expensive operations
-    if ($ExportPath) {
-        try { Test-ExportPathWritable -Path $ExportPath | Out-Null }
-        catch { Write-Warning $_.Exception.Message; return }
-    }
-
-    Write-Log -Message "" -Level Info
-    Write-Log -Message "========================================" -Level Header
-    Write-Log -Message "Azure Local Cluster Update Readiness Assessment" -Level Header
-    Write-Log -Message "========================================" -Level Header
     Write-Log -Message "" -Level Info
 
     # Verify Azure CLI is installed and logged in
@@ -4929,166 +4923,253 @@ function Get-AzureLocalClusterUpdateReadiness {
     $results = @()
     $updateVersionCounts = @{}
 
-    foreach ($cluster in $clustersToProcess) {
-        $clusterName = $cluster.Name
-        Write-Host "  Checking: $clusterName..." -ForegroundColor Gray -NoNewline
-        Write-Verbose "Processing cluster: $clusterName"
-
-        try {
-            # Get cluster info
-            if ($cluster.ResourceId) {
-                $uri = "https://management.azure.com$($cluster.ResourceId)?api-version=$ApiVersion"
-                $clusterInfo = (Invoke-AzRestJson -Uri $uri).Data
-            }
-            else {
-                $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
-                    -ResourceGroupName $cluster.ResourceGroup `
-                    -SubscriptionId $cluster.SubscriptionId `
-                    -ApiVersion $ApiVersion
-            }
-
-            if (-not $clusterInfo) {
-                Write-Host " Not Found" -ForegroundColor Red
-                $results += [PSCustomObject]@{
-                    ClusterName              = $clusterName
-                    ResourceGroup            = $cluster.ResourceGroup
-                    SubscriptionId           = $cluster.SubscriptionId
-                    ClusterState             = "Not Found"
-                    UpdateState              = "N/A"
-                    HealthState              = "N/A"
-                    ReadyForUpdate           = $false
-                    AvailableUpdates         = ""
-                    ReadyUpdates             = ""
-                    HasPrerequisiteUpdates   = ""
-                    SBEDependency            = ""
-                    RecommendedUpdate        = ""
-                    HealthCheckFailures      = ""
-                    UpdateWindow             = ""
-                    UpdateExclusions         = ""
-                }
-                continue
-            }
-
-            # Parse RG and Sub from cluster info if not already set
-            $rgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
-            $subId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
-
-            # Get update summary
-            $updateSummary = Get-AzureLocalUpdateSummary -ClusterResourceId $clusterInfo.id -ApiVersion $ApiVersion
-            $updateState = if ($updateSummary) { $updateSummary.properties.state } else { "Unknown" }
-
-            # Get available updates
-            $availableUpdates = @(Get-AzureLocalAvailableUpdates -ClusterResourceId $clusterInfo.id -ApiVersion $ApiVersion -Raw)
-            $readyUpdates = @($availableUpdates | Where-Object { $_.properties.state -in $script:ReadyStates })
-            $prereqUpdates = @($availableUpdates | Where-Object { $_.properties.state -in $script:PrereqStates })
-            
-            $availableUpdateNames = ($availableUpdates | ForEach-Object { $_.name }) -join "; "
-            $readyUpdateNames = ($readyUpdates | ForEach-Object { $_.name }) -join "; "
-            $prereqUpdateNames = ($prereqUpdates | ForEach-Object { $_.name }) -join "; "
-            
-            # Extract SBE dependency info for HasPrerequisite/AdditionalContentRequired updates
-            $sbeDependencyInfo = ""
-            foreach ($pu in $prereqUpdates) {
-                $puProps = $pu.properties
-                if ($puProps.packageType -eq "SBE" -and $puProps.additionalProperties) {
-                    $addProps = ConvertTo-AzLocalAdditionalProperties -InputObject $puProps.additionalProperties
-                    if ($addProps) {
-                        $sbeParts = @()
-                        if ($addProps.SBEPublisher) { $sbeParts += "Publisher: $($addProps.SBEPublisher)" }
-                        if ($addProps.SBEFamily) { $sbeParts += "Family: $($addProps.SBEFamily)" }
-                        if ($sbeParts.Count -gt 0) { $sbeDependencyInfo = "$($pu.name): $($sbeParts -join '; ')" }
-                    }
-                }
-            }
-
-            # Determine recommended update (prefer ready updates, fallback to any available)
-            # Sort by YYMM version (SolutionXX.YYMM.XXXX.XX) to select the latest
-            # Don't show updates the cluster is already on (AppliedSuccessfully/UpToDate states)
-            $recommendedUpdate = ""
-            $isUpToDateState = $updateState -in @("UpToDate", "AppliedSuccessfully")
-            if ($readyUpdates.Count -gt 0) {
-                $latestReady = Get-LatestUpdateByYYMM -Updates $readyUpdates
-                $recommendedUpdate = $latestReady.name
-                
-                # Track update version counts (only for ready updates)
-                if ($updateVersionCounts.ContainsKey($recommendedUpdate)) {
-                    $updateVersionCounts[$recommendedUpdate]++
+    # Per-cluster readiness scriptblock. Runs inline (ThrottleLimit=1) or
+    # inside Start-Job (ThrottleLimit>1). Emits one PSCustomObject per input
+    # cluster augmented with internal __DisplayTag / __CountedRecommendedUpdate
+    # fields that the parent uses to render coloured console output and tally
+    # the shared $updateVersionCounts hashtable deterministically.
+    $readinessJob = {
+        param(
+            [object[]]$Shard,
+            [string]$ApiVer,
+            [string[]]$ReadyStatesArg,
+            [string[]]$PrereqStatesArg,
+            [string]$UpdateWindowTagNameArg,
+            [string]$UpdateExclusionsTagNameArg,
+            [string]$ModulePath
+        )
+        if (-not (Get-Command -Name Invoke-AzRestJson -ErrorAction SilentlyContinue)) {
+            Import-Module $ModulePath -Force -ErrorAction Stop
+        }
+        $shardRows = foreach ($cluster in $Shard) {
+            $clusterName = $cluster.Name
+            try {
+                if ($cluster.ResourceId) {
+                    $uri = "https://management.azure.com$($cluster.ResourceId)?api-version=$ApiVer"
+                    $clusterInfo = (Invoke-AzRestJson -Uri $uri).Data
                 }
                 else {
-                    $updateVersionCounts[$recommendedUpdate] = 1
+                    $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
+                        -ResourceGroupName $cluster.ResourceGroup `
+                        -SubscriptionId $cluster.SubscriptionId `
+                        -ApiVersion $ApiVer
+                }
+
+                if (-not $clusterInfo) {
+                    [PSCustomObject]@{
+                        ClusterName                  = $clusterName
+                        ResourceGroup                = $cluster.ResourceGroup
+                        SubscriptionId               = $cluster.SubscriptionId
+                        ClusterState                 = 'Not Found'
+                        UpdateState                  = 'N/A'
+                        HealthState                  = 'N/A'
+                        ReadyForUpdate               = $false
+                        AvailableUpdates             = ''
+                        ReadyUpdates                 = ''
+                        HasPrerequisiteUpdates       = ''
+                        SBEDependency                = ''
+                        RecommendedUpdate            = ''
+                        HealthCheckFailures          = ''
+                        UpdateWindow                 = ''
+                        UpdateExclusions             = ''
+                        __DisplayTag                 = 'NotFound'
+                        __CountedRecommendedUpdate   = $null
+                    }
+                    continue
+                }
+
+                $rgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                $subId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+
+                $updateSummary = Get-AzureLocalUpdateSummary -ClusterResourceId $clusterInfo.id -ApiVersion $ApiVer
+                $updateState = if ($updateSummary) { $updateSummary.properties.state } else { 'Unknown' }
+
+                $availableUpdates = @(Get-AzureLocalAvailableUpdates -ClusterResourceId $clusterInfo.id -ApiVersion $ApiVer -Raw)
+                $readyUpdates = @($availableUpdates | Where-Object { $_.properties.state -in $ReadyStatesArg })
+                $prereqUpdates = @($availableUpdates | Where-Object { $_.properties.state -in $PrereqStatesArg })
+
+                $availableUpdateNames = ($availableUpdates | ForEach-Object { $_.name }) -join '; '
+                $readyUpdateNames = ($readyUpdates | ForEach-Object { $_.name }) -join '; '
+                $prereqUpdateNames = ($prereqUpdates | ForEach-Object { $_.name }) -join '; '
+
+                $sbeDependencyInfo = ''
+                foreach ($pu in $prereqUpdates) {
+                    $puProps = $pu.properties
+                    if ($puProps.packageType -eq 'SBE' -and $puProps.additionalProperties) {
+                        $addProps = ConvertTo-AzLocalAdditionalProperties -InputObject $puProps.additionalProperties
+                        if ($addProps) {
+                            $sbeParts = @()
+                            if ($addProps.SBEPublisher) { $sbeParts += "Publisher: $($addProps.SBEPublisher)" }
+                            if ($addProps.SBEFamily) { $sbeParts += "Family: $($addProps.SBEFamily)" }
+                            if ($sbeParts.Count -gt 0) { $sbeDependencyInfo = "$($pu.name): $($sbeParts -join '; ')" }
+                        }
+                    }
+                }
+
+                $recommendedUpdate = ''
+                $counted = $null
+                $isUpToDateState = $updateState -in @('UpToDate', 'AppliedSuccessfully')
+                if ($readyUpdates.Count -gt 0) {
+                    $latestReady = Get-LatestUpdateByYYMM -Updates $readyUpdates
+                    $recommendedUpdate = $latestReady.name
+                    # Only ready updates contribute to the parent-side tally.
+                    $counted = $recommendedUpdate
+                }
+                elseif (-not $isUpToDateState -and $availableUpdates.Count -gt 0) {
+                    $latestAvailable = Get-LatestUpdateByYYMM -Updates $availableUpdates
+                    $recommendedUpdate = $latestAvailable.name
+                }
+
+                $isReady = ($updateState -in (@('UpdateAvailable') + $ReadyStatesArg)) -and ($readyUpdates.Count -gt 0)
+
+                $healthState = if ($updateSummary -and $updateSummary.properties.healthState) { $updateSummary.properties.healthState } else { 'Unknown' }
+                $healthCheckFailures = ''
+                if ($updateSummary -and $healthState -notin @('Success', 'Unknown')) {
+                    $healthCheckFailures = Get-HealthCheckFailureSummary -UpdateSummary $updateSummary
+                }
+
+                # Choose a display tag; actual Write-Host runs in the parent.
+                $tag =
+                    if ($isReady) { "Ready:$recommendedUpdate" }
+                    elseif ($prereqUpdates.Count -gt 0 -and $readyUpdates.Count -eq 0) { 'HasPrerequisite' }
+                    elseif ($updateState -eq 'UpdateInProgress') { 'UpdateInProgress' }
+                    elseif ($readyUpdates.Count -eq 0 -and $availableUpdates.Count -gt 0) { 'Downloading' }
+                    elseif ($healthState -in @('Failure', 'Warning')) { "HealthIssue:$updateState`:$healthState" }
+                    else { "State:$updateState" }
+
+                $uw = if ($clusterInfo.tags) { Get-TagValue -Tags $clusterInfo.tags -Name $UpdateWindowTagNameArg } else { $null }
+                $ue = if ($clusterInfo.tags) { Get-TagValue -Tags $clusterInfo.tags -Name $UpdateExclusionsTagNameArg } else { $null }
+
+                [PSCustomObject]@{
+                    ClusterName                  = $clusterName
+                    ResourceGroup                = $rgName
+                    SubscriptionId               = $subId
+                    ClusterState                 = $clusterInfo.properties.status
+                    UpdateState                  = $updateState
+                    HealthState                  = $healthState
+                    ReadyForUpdate               = $isReady
+                    AvailableUpdates             = $availableUpdateNames
+                    ReadyUpdates                 = $readyUpdateNames
+                    HasPrerequisiteUpdates       = $prereqUpdateNames
+                    SBEDependency                = $sbeDependencyInfo
+                    RecommendedUpdate            = $recommendedUpdate
+                    HealthCheckFailures          = $healthCheckFailures
+                    UpdateWindow                 = if ($uw) { $uw } else { '' }
+                    UpdateExclusions             = if ($ue) { $ue } else { '' }
+                    __DisplayTag                 = $tag
+                    __CountedRecommendedUpdate   = $counted
                 }
             }
-            elseif (-not $isUpToDateState -and $availableUpdates.Count -gt 0) {
-                # Fallback: show latest available update even if not ready (e.g., downloading)
-                $latestAvailable = Get-LatestUpdateByYYMM -Updates $availableUpdates
-                $recommendedUpdate = $latestAvailable.name
+            catch {
+                [PSCustomObject]@{
+                    ClusterName                  = $clusterName
+                    ResourceGroup                = $cluster.ResourceGroup
+                    SubscriptionId               = $cluster.SubscriptionId
+                    ClusterState                 = 'Error'
+                    UpdateState                  = 'Error'
+                    HealthState                  = 'Error'
+                    ReadyForUpdate               = $false
+                    AvailableUpdates             = ''
+                    ReadyUpdates                 = ''
+                    HasPrerequisiteUpdates       = ''
+                    SBEDependency                = ''
+                    RecommendedUpdate            = ''
+                    HealthCheckFailures          = $_.Exception.Message
+                    UpdateWindow                 = ''
+                    UpdateExclusions             = ''
+                    __DisplayTag                 = "Error:$($_.Exception.Message)"
+                    __CountedRecommendedUpdate   = $null
+                }
             }
+        }
+        return , @($shardRows)
+    }
 
-            # Determine if ready for update
-            $isReady = ($updateState -in (@("UpdateAvailable") + $script:ReadyStates)) -and ($readyUpdates.Count -gt 0)
-            
-            # Get health state and check failures
-            $healthState = if ($updateSummary -and $updateSummary.properties.healthState) { $updateSummary.properties.healthState } else { "Unknown" }
-            $healthCheckFailures = ""
-            if ($updateSummary -and $healthState -notin @("Success", "Unknown")) {
-                $healthCheckFailures = Get-HealthCheckFailureSummary -UpdateSummary $updateSummary
+    # Normalise input cluster entries to PSCustomObjects so Start-Job
+    # serialisation preserves the property shape used by the scriptblock.
+    $shardInputs = @($clustersToProcess | ForEach-Object {
+            [PSCustomObject]@{
+                ResourceId     = $_.ResourceId
+                Name           = $_.Name
+                ResourceGroup  = $_.ResourceGroup
+                SubscriptionId = $_.SubscriptionId
             }
-            
-            if ($isReady) {
-                Write-Host " Ready ($recommendedUpdate)" -ForegroundColor Green
+        })
+
+    $jobResults = Invoke-FleetJobsInParallel `
+        -InputItems $shardInputs `
+        -ScriptBlock $readinessJob `
+        -ThrottleLimit $ThrottleLimit `
+        -ArgumentList @($ApiVersion, $script:ReadyStates, $script:PrereqStates, $script:UpdateWindowTagName, $script:UpdateExclusionsTagName) `
+        -ActivityName 'Readiness'
+
+    # Merge shard outputs into a ResourceId-keyed hash for input-ordered replay.
+    $rowsByName = @{}
+    foreach ($jr in $jobResults) {
+        if ($jr.Failed) {
+            foreach ($item in @($jr.Items)) {
+                $rowsByName[$item.Name] = [PSCustomObject]@{
+                    ClusterName                  = $item.Name
+                    ResourceGroup                = $item.ResourceGroup
+                    SubscriptionId               = $item.SubscriptionId
+                    ClusterState                 = 'Error'
+                    UpdateState                  = 'Error'
+                    HealthState                  = 'Error'
+                    ReadyForUpdate               = $false
+                    AvailableUpdates             = ''
+                    ReadyUpdates                 = ''
+                    HasPrerequisiteUpdates       = ''
+                    SBEDependency                = ''
+                    RecommendedUpdate            = ''
+                    HealthCheckFailures          = "Batch job failed: $($jr.Error)"
+                    UpdateWindow                 = ''
+                    UpdateExclusions             = ''
+                    __DisplayTag                 = "Error:Batch job failed: $($jr.Error)"
+                    __CountedRecommendedUpdate   = $null
+                }
             }
-            elseif ($prereqUpdates.Count -gt 0 -and $readyUpdates.Count -eq 0) {
-                Write-Host " Has Prerequisite (SBE update required)" -ForegroundColor Yellow
+            continue
+        }
+        foreach ($row in @($jr.Output)) {
+            if (-not $row -or -not $row.ClusterName) { continue }
+            $rowsByName[$row.ClusterName] = $row
+        }
+    }
+
+    foreach ($cluster in $clustersToProcess) {
+        $row = $rowsByName[$cluster.Name]
+        if (-not $row) { continue }
+
+        Write-Host "  Checking: $($cluster.Name)..." -ForegroundColor Gray -NoNewline
+        $tag = if ($row.PSObject.Properties['__DisplayTag']) { $row.__DisplayTag } else { '' }
+        switch -Regex ($tag) {
+            '^NotFound$'           { Write-Host ' Not Found' -ForegroundColor Red }
+            '^Ready:(.*)'          { Write-Host " Ready ($($matches[1]))" -ForegroundColor Green }
+            '^HasPrerequisite$'    { Write-Host ' Has Prerequisite (SBE update required)' -ForegroundColor Yellow }
+            '^UpdateInProgress$'   { Write-Host ' Update In Progress' -ForegroundColor Yellow }
+            '^Downloading$'        { Write-Host ' Updates Downloading' -ForegroundColor Yellow }
+            '^HealthIssue:([^:]*):(.*)' {
+                $c = if ($matches[2] -eq 'Failure') { 'Red' } else { 'Yellow' }
+                Write-Host " $($matches[1]) ($($matches[2]))" -ForegroundColor $c
             }
-            elseif ($updateState -eq "UpdateInProgress") {
-                Write-Host " Update In Progress" -ForegroundColor Yellow
-            }
-            elseif ($readyUpdates.Count -eq 0 -and $availableUpdates.Count -gt 0) {
-                Write-Host " Updates Downloading" -ForegroundColor Yellow
-            }
-            elseif ($healthState -in @("Failure", "Warning")) {
-                Write-Host " $updateState ($healthState)" -ForegroundColor $(if ($healthState -eq "Failure") { "Red" } else { "Yellow" })
+            '^State:(.*)'          { Write-Host " $($matches[1])" -ForegroundColor Gray }
+            '^Error:(.*)'          { Write-Host " Error: $($matches[1])" -ForegroundColor Red }
+            default                { Write-Host " $($row.UpdateState)" -ForegroundColor Gray }
+        }
+
+        # Tally only rows that the scriptblock marked as ready (mirrors
+        # the original in-loop $updateVersionCounts mutation semantics).
+        $counted = if ($row.PSObject.Properties['__CountedRecommendedUpdate']) { $row.__CountedRecommendedUpdate } else { $null }
+        if ($counted) {
+            if ($updateVersionCounts.ContainsKey($counted)) {
+                $updateVersionCounts[$counted]++
             }
             else {
-                Write-Host " $updateState" -ForegroundColor Gray
+                $updateVersionCounts[$counted] = 1
             }
+        }
 
-            $results += [PSCustomObject]@{
-                ClusterName              = $clusterName
-                ResourceGroup            = $rgName
-                SubscriptionId           = $subId
-                ClusterState             = $clusterInfo.properties.status
-                UpdateState              = $updateState
-                HealthState              = $healthState
-                ReadyForUpdate           = $isReady
-                AvailableUpdates         = $availableUpdateNames
-                ReadyUpdates             = $readyUpdateNames
-                HasPrerequisiteUpdates   = $prereqUpdateNames
-                SBEDependency            = $sbeDependencyInfo
-                RecommendedUpdate        = $recommendedUpdate
-                HealthCheckFailures      = $healthCheckFailures
-                UpdateWindow             = if ($clusterInfo.tags -and $clusterInfo.tags.$($script:UpdateWindowTagName)) { $clusterInfo.tags.$($script:UpdateWindowTagName) } else { "" }
-                UpdateExclusions         = if ($clusterInfo.tags -and $clusterInfo.tags.$($script:UpdateExclusionsTagName)) { $clusterInfo.tags.$($script:UpdateExclusionsTagName) } else { "" }
-            }
-        }
-        catch {
-            Write-Host " Error: $($_.Exception.Message)" -ForegroundColor Red
-            $results += [PSCustomObject]@{
-                ClusterName              = $clusterName
-                ResourceGroup            = $cluster.ResourceGroup
-                SubscriptionId           = $cluster.SubscriptionId
-                ClusterState             = "Error"
-                UpdateState              = "Error"
-                HealthState              = "Error"
-                ReadyForUpdate           = $false
-                AvailableUpdates         = ""
-                ReadyUpdates             = ""
-                HasPrerequisiteUpdates   = ""
-                SBEDependency            = ""
-                RecommendedUpdate        = ""
-                HealthCheckFailures      = $_.Exception.Message
-            }
-        }
+        $results += ($row | Select-Object -Property * -ExcludeProperty __DisplayTag, __CountedRecommendedUpdate)
     }
 
     # Display Summary
@@ -5160,7 +5241,7 @@ function Get-AzureLocalClusterUpdateReadiness {
     # Display results table
     Write-Log -Message "" -Level Info
     Write-Log -Message "Detailed Results:" -Level Header
-    $results | Format-Table ClusterName, ResourceGroup, UpdateState, HealthState, ReadyForUpdate, RecommendedUpdate -AutoSize
+    $results | Format-Table ClusterName, ResourceGroup, UpdateState, HealthState, ReadyForUpdate, RecommendedUpdate -AutoSize | Out-Host
     
     # Show clusters with health check failures
     $clustersWithHealthIssues = @($results | Where-Object { $_.HealthCheckFailures -ne "" })
