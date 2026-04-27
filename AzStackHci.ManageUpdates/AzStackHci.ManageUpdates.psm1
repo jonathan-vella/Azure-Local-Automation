@@ -2068,16 +2068,32 @@ function Write-UpdateCsvLog {
         [string]$LastUpdateErrorMessage = ""
     )
 
+    # Defence in depth: route every string field through ConvertTo-SafeCsvField first
+    # so that hostile cluster names / error messages from ARM (e.g. starting with '=',
+    # '+', '-', '@', or containing CR/LF) cannot trigger formula evaluation when an
+    # operator opens this interim CSV in Excel. The exported (final) results path
+    # already does this via ConvertTo-SafeCsvCollection; this aligns the diagnostic
+    # log path with the same posture.
+    $safeClusterName            = ConvertTo-SafeCsvField -Value $ClusterName
+    $safeResourceGroup          = ConvertTo-SafeCsvField -Value $ResourceGroup
+    $safeSubscriptionId         = ConvertTo-SafeCsvField -Value $SubscriptionId
+    $safeMessage                = ConvertTo-SafeCsvField -Value $Message
+    $safeUpdateState            = ConvertTo-SafeCsvField -Value $UpdateState
+    $safeHealthState            = ConvertTo-SafeCsvField -Value $HealthState
+    $safeHealthCheckFailures    = ConvertTo-SafeCsvField -Value $HealthCheckFailures
+    $safeLastUpdateErrorStep    = ConvertTo-SafeCsvField -Value $LastUpdateErrorStep
+    $safeLastUpdateErrorMessage = ConvertTo-SafeCsvField -Value $LastUpdateErrorMessage
+
     # Escape quotes in values for CSV
-    $escapedClusterName = $ClusterName -replace '"', '""'
-    $escapedResourceGroup = $ResourceGroup -replace '"', '""'
-    $escapedSubscriptionId = $SubscriptionId -replace '"', '""'
-    $escapedMessage = $Message -replace '"', '""'
-    $escapedUpdateState = $UpdateState -replace '"', '""'
-    $escapedHealthState = $HealthState -replace '"', '""'
-    $escapedHealthCheckFailures = $HealthCheckFailures -replace '"', '""'
-    $escapedLastUpdateErrorStep = $LastUpdateErrorStep -replace '"', '""'
-    $escapedLastUpdateErrorMessage = $LastUpdateErrorMessage -replace '"', '""'
+    $escapedClusterName = $safeClusterName -replace '"', '""'
+    $escapedResourceGroup = $safeResourceGroup -replace '"', '""'
+    $escapedSubscriptionId = $safeSubscriptionId -replace '"', '""'
+    $escapedMessage = $safeMessage -replace '"', '""'
+    $escapedUpdateState = $safeUpdateState -replace '"', '""'
+    $escapedHealthState = $safeHealthState -replace '"', '""'
+    $escapedHealthCheckFailures = $safeHealthCheckFailures -replace '"', '""'
+    $escapedLastUpdateErrorStep = $safeLastUpdateErrorStep -replace '"', '""'
+    $escapedLastUpdateErrorMessage = $safeLastUpdateErrorMessage -replace '"', '""'
 
     if ($LogType -eq 'Skipped') {
         # Extended format for skipped clusters with diagnostic columns
@@ -3664,7 +3680,8 @@ function Get-AzureLocalUpdateSummary {
 
     # Emit the same colourised per-cluster output the pre-parallel code
     # produced, now driven by structured tags so ordering matches input.
-    $results = @()
+    # Use Generic.List to avoid the O(n^2) cost of += array growth at fleet scale.
+    $results = [System.Collections.Generic.List[object]]::new()
     foreach ($cluster in $clustersToProcess) {
         $row = $resultsByName[$cluster.Name]
         if (-not $row) { continue }
@@ -3690,7 +3707,7 @@ function Get-AzureLocalUpdateSummary {
             }
         }
         # Drop the internal __DisplayTag from the result we return to the caller.
-        $results += ($row | Select-Object -Property * -ExcludeProperty __DisplayTag)
+        $results.Add(($row | Select-Object -Property * -ExcludeProperty __DisplayTag)) | Out-Null
     }
 
     # Display Summary
@@ -5503,7 +5520,8 @@ function Get-AzureLocalClusterUpdateReadiness {
     Write-Log -Message "" -Level Info
 
     # Collect results
-    $results = @()
+    # Use Generic.List to avoid the O(n^2) cost of += array growth at fleet scale.
+    $results = [System.Collections.Generic.List[object]]::new()
     $updateVersionCounts = @{}
 
     # Per-cluster readiness scriptblock. Runs inline (ThrottleLimit=1) or
@@ -5809,7 +5827,7 @@ function Get-AzureLocalClusterUpdateReadiness {
             }
         }
 
-        $results += ($row | Select-Object -Property * -ExcludeProperty __DisplayTag, __CountedRecommendedUpdate)
+        $results.Add(($row | Select-Object -Property * -ExcludeProperty __DisplayTag, __CountedRecommendedUpdate)) | Out-Null
     }
 
     # Display Summary
@@ -10151,14 +10169,18 @@ function Get-AzureLocalFleetStatusData {
 
         foreach ($job in $jobs) {
             $batchForJob = $jobClusterMap[$job.Id]
-            if ($job.State -eq 'Failed') {
+            # Treat any non-Completed terminal state as a job failure. PowerShell jobs
+            # can also enter Stopped (Stop-Job / Ctrl-C) and Disconnected (PSSession
+            # disconnect) states; previously only 'Failed' was caught, leaving these
+            # cases to fall through into Receive-Job and be misdiagnosed as 'no output'.
+            if ($job.State -in @('Failed', 'Stopped', 'Disconnected')) {
                 $reason = if ($job.ChildJobs -and $job.ChildJobs[0]) { $job.ChildJobs[0].JobStateInfo.Reason } else { 'Unknown' }
-                Write-Log -Message "  Job $($job.Id) failed: $reason" -Level Error
+                Write-Log -Message "  Job $($job.Id) terminated in state '$($job.State)': $reason" -Level Error
                 foreach ($rid in $batchForJob) {
                     $failedClusters.Add([PSCustomObject]@{
                         ResourceId = $rid
                         ClusterName = ($rid -split '/')[-1]
-                        Reason = "Job failed: $reason"
+                        Reason = "Job $($job.State): $reason"
                     }) | Out-Null
                 }
                 continue
