@@ -131,7 +131,7 @@
 Set-StrictMode -Version 1.0
 
 # Module constants
-$script:ModuleVersion = '0.7.0'
+$script:ModuleVersion = '0.7.1'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
 
@@ -1931,6 +1931,12 @@ function Export-ResultsToJUnitXml {
                 if ($result.Progress) {
                     [void]$xmlBuilder.AppendLine("Progress: $($result.Progress)")
                 }
+                if ($result.PSObject.Properties['StartTime'] -and $result.StartTime) {
+                    [void]$xmlBuilder.AppendLine("Start Time: $(ConvertTo-XmlSafeString $result.StartTime)")
+                }
+                if ($result.PSObject.Properties['EndTime'] -and $result.EndTime) {
+                    [void]$xmlBuilder.AppendLine("End Time: $(ConvertTo-XmlSafeString $result.EndTime)")
+                }
                 if ($durationHuman) {
                     [void]$xmlBuilder.AppendLine("Duration: $durationHuman")
                 }
@@ -1963,6 +1969,12 @@ function Export-ResultsToJUnitXml {
                 }
                 if ($result.Progress) {
                     [void]$xmlBuilder.AppendLine("Progress: $($result.Progress)")
+                }
+                if ($result.PSObject.Properties['StartTime'] -and $result.StartTime) {
+                    [void]$xmlBuilder.AppendLine("Start Time: $(ConvertTo-XmlSafeString $result.StartTime)")
+                }
+                if ($result.PSObject.Properties['EndTime'] -and $result.EndTime) {
+                    [void]$xmlBuilder.AppendLine("End Time: $(ConvertTo-XmlSafeString $result.EndTime)")
                 }
                 if ($durationHuman) {
                     [void]$xmlBuilder.AppendLine("Duration: $durationHuman")
@@ -4328,6 +4340,35 @@ function Format-AzLocalDurationHuman {
     return ($parts -join ' ')
 }
 
+# Module-private helper: resolve the authoritative EndTime for a single update run.
+# Source priority:
+#   1. properties.progress.endTimeUtc  (most accurate "work finished" timestamp;
+#                                       only populated for terminal states)
+#   2. properties.lastUpdatedTime      (fallback for older runs / missing progress
+#                                       block; only used for terminal states)
+#   3. $null                           (InProgress / never-started runs)
+# Returns a [datetime] (UTC-as-local) or $null. Caller formats for display.
+function Get-AzLocalRunEndTime {
+    [CmdletBinding()]
+    [OutputType([Nullable[datetime]])]
+    param($props)
+
+    if (-not $props) { return $null }
+
+    if ($props.PSObject.Properties['progress'] -and $props.progress -and
+        $props.progress.PSObject.Properties['endTimeUtc'] -and $props.progress.endTimeUtc) {
+        try { return [datetime]$props.progress.endTimeUtc } catch {}
+    }
+
+    $state = if ($props.PSObject.Properties['state']) { $props.state } else { $null }
+    if ($state -in @('Succeeded', 'Failed') -and
+        $props.PSObject.Properties['lastUpdatedTime'] -and $props.lastUpdatedTime) {
+        try { return [datetime]$props.lastUpdatedTime } catch {}
+    }
+
+    return $null
+}
+
 # Module-private helper: format a single update run object.
 # Promoted from a nested function inside Get-AzureLocalUpdateRuns so the
 # multi-cluster parallel path can re-use it from Start-Job child processes
@@ -4339,19 +4380,30 @@ function Format-AzLocalUpdateRun {
 
     $props = $run.properties
 
+    # Resolve EndTime once via the central helper (used for both display and Duration fallback).
+    $endTimeDt = Get-AzLocalRunEndTime -props $props
+    $endTimeDisplay = if ($endTimeDt) { $endTimeDt.ToString("yyyy-MM-dd HH:mm") } else { "" }
+
+    # Duration: prefer ARM-reported properties.duration (ISO-8601, e.g. "PT8H37M58S")
+    # because it's authoritative and immune to clock skew. Fall back to
+    # EndTime - StartTime, then to "running" for in-flight runs.
     $duration = ""
-    if ($props.timeStarted) {
-        $startTime = [datetime]$props.timeStarted
-        if ($props.lastUpdatedTime) {
-            $endTime = [datetime]$props.lastUpdatedTime
-            $durationSpan = $endTime - $startTime
-            $duration = Format-AzLocalDurationHuman -Value $durationSpan
-        }
-        elseif ($props.state -eq "InProgress") {
-            $durationSpan = (Get-Date) - $startTime
-            $human = Format-AzLocalDurationHuman -Value $durationSpan
+    $durationSpan = $null
+    if ($props.PSObject.Properties['duration'] -and $props.duration) {
+        try { $durationSpan = [System.Xml.XmlConvert]::ToTimeSpan([string]$props.duration) } catch {}
+    }
+    if (-not $durationSpan -and $props.timeStarted -and $endTimeDt) {
+        try { $durationSpan = $endTimeDt - [datetime]$props.timeStarted } catch {}
+    }
+    if ($durationSpan) {
+        $duration = Format-AzLocalDurationHuman -Value $durationSpan
+    }
+    elseif ($props.timeStarted -and $props.state -eq "InProgress") {
+        try {
+            $runningSpan = (Get-Date) - [datetime]$props.timeStarted
+            $human = Format-AzLocalDurationHuman -Value $runningSpan
             if ($human) { $duration = "$human (running)" }
-        }
+        } catch {}
     }
 
     $currentStep = ""
@@ -4404,6 +4456,7 @@ function Format-AzLocalUpdateRun {
         RunId             = $runId
         State             = $props.state
         StartTime         = if ($props.timeStarted) { ([datetime]$props.timeStarted).ToString("yyyy-MM-dd HH:mm") } else { "" }
+        EndTime           = $endTimeDisplay
         Duration          = $duration
         Progress          = $progress
         CurrentStep       = $currentStep
@@ -4810,6 +4863,7 @@ function Get-AzureLocalUpdateRuns {
                                 RunId             = ''
                                 State             = 'Cluster Not Found'
                                 StartTime         = ''
+                                EndTime           = ''
                                 Duration          = ''
                                 Progress          = ''
                                 CurrentStep       = ''
@@ -4835,6 +4889,7 @@ function Get-AzureLocalUpdateRuns {
                             RunId             = $formatted.RunId
                             State             = $formatted.State
                             StartTime         = $formatted.StartTime
+                            EndTime           = $formatted.EndTime
                             Duration          = $formatted.Duration
                             Progress          = $formatted.Progress
                             CurrentStep       = $formatted.CurrentStep
@@ -4863,6 +4918,7 @@ function Get-AzureLocalUpdateRuns {
                                 RunId             = ''
                                 State             = 'No Runs'
                                 StartTime         = ''
+                                EndTime           = ''
                                 Duration          = ''
                                 Progress          = ''
                                 CurrentStep       = ''
@@ -4885,6 +4941,7 @@ function Get-AzureLocalUpdateRuns {
                             RunId             = ''
                             State             = 'Error'
                             StartTime         = ''
+                            EndTime           = ''
                             Duration          = ''
                             Progress          = ''
                             CurrentStep       = $msg
@@ -4930,6 +4987,7 @@ function Get-AzureLocalUpdateRuns {
                             RunId             = ''
                             State             = 'Error'
                             StartTime         = ''
+                            EndTime           = ''
                             Duration          = ''
                             Progress          = ''
                             CurrentStep       = "Batch job failed: $($jr.Error)"
@@ -5007,7 +5065,7 @@ function Get-AzureLocalUpdateRuns {
     # Display results table
     Write-Log -Message "" -Level Info
     Write-Log -Message "Update Runs:" -Level Header
-    $allFormattedRuns | Format-Table ClusterName, UpdateName, State, StartTime, Duration, Progress -AutoSize | Out-Host
+    $allFormattedRuns | Format-Table ClusterName, UpdateName, State, StartTime, EndTime, Duration, Progress -AutoSize | Out-Host
 
     # Check for health-check-blocked failures and show diagnostics
     $healthBlockedRuns = @($allFormattedRuns | Where-Object { $_.State -eq "Failed" -and $_.CurrentStep -match "health check" })
@@ -5072,6 +5130,10 @@ function Get-AzureLocalUpdateRuns {
                             Message      = "Update: $($_.UpdateName), State: $($_.State), Duration: $($_.Duration), Progress: $($_.Progress)"
                             UpdateName   = $_.UpdateName
                             CurrentState = $_.State
+                            StartTime    = $_.StartTime
+                            EndTime      = $_.EndTime
+                            Duration     = $_.Duration
+                            Progress     = $_.Progress
                         }
                     }
                     Export-ResultsToJUnitXml -Results $junitResults -OutputPath $ExportPath `
@@ -9471,10 +9533,16 @@ function Get-AzureLocalFleetStatusData {
                             if ($latestRun.id -match '/updates/([^/]+)/updateRuns/([^/]+)$') { $runId = $matches[2] } else { $runId = $latestRun.name }
                             # StartTime reflects when work FIRST began on this update (earliest attempt)
                             $firstStartDisplay = if ($earliestRun.properties.timeStarted) { ([datetime]$earliestRun.properties.timeStarted).ToString('yyyy-MM-dd HH:mm') } else { '' }
+                            # EndTime reflects when the LATEST attempt finished (or blank if still running).
+                            # Uses the central Get-AzLocalRunEndTime helper so this path can't drift from
+                            # the per-run formatter.
+                            $latestEndDt = Get-AzLocalRunEndTime -props $latestProps
+                            $latestEndDisplay = if ($latestEndDt) { $latestEndDt.ToString('yyyy-MM-dd HH:mm') } else { '' }
                             $latestRuns.Add([PSCustomObject]@{
                                 ClusterName = $clusterName; UpdateName = $uName; RunId = $runId
                                 State = $latestProps.state
                                 StartTime = $firstStartDisplay
+                                EndTime = $latestEndDisplay
                                 Duration = $runDuration; Progress = $runProgress
                                 CurrentStep = $currentStep; CurrentStepDetail = $currentStepDetail
                                 Location = $latestProps.location
@@ -10284,6 +10352,7 @@ function New-AzureLocalFleetStatusHtmlReport {
                     <th>Current Step</th>
 $(if ($showAttempts) { "                    <th>Update Attempts</th>`n" })                    <th>Duration</th>
                     <th>Start Time</th>
+                    <th>End Time</th>
                 </tr>
             </thead>
             <tbody>
@@ -10307,6 +10376,7 @@ $(if ($showAttempts) { "                    <th>Update Attempts</th>`n" })      
             $encRunStep     = [System.Web.HttpUtility]::HtmlEncode($run.CurrentStepDetail)
             $encRunDuration = [System.Web.HttpUtility]::HtmlEncode($run.Duration)
             $encRunStart    = [System.Web.HttpUtility]::HtmlEncode($run.StartTime)
+            $encRunEnd      = if ($run.PSObject.Properties['EndTime']) { [System.Web.HttpUtility]::HtmlEncode($run.EndTime) } else { '' }
             $runAttempts    = if ($run.PSObject.Properties['Attempts'] -and $run.Attempts) { [int]$run.Attempts } else { 1 }
             $encRunAttempts = [System.Web.HttpUtility]::HtmlEncode([string]$runAttempts)
 
@@ -10328,6 +10398,7 @@ $(if ($showAttempts) { "                    <th>Update Attempts</th>`n" })      
                     <td class="message-cell" title="$encRunStep">$encRunStep</td>
 $(if ($showAttempts) { "                    <td>$encRunAttempts</td>`n" })                    <td>$encRunDuration</td>
                     <td>$encRunStart</td>
+                    <td>$encRunEnd</td>
                 </tr>
 "@)
         }

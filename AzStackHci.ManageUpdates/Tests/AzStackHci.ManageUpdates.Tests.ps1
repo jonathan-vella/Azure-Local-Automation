@@ -34,8 +34,8 @@ Describe 'Module: AzStackHci.ManageUpdates' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.0' {
-            $script:ModuleInfo.Version | Should -Be '0.7.0'
+        It 'Should have version 0.7.1' {
+            $script:ModuleInfo.Version | Should -Be '0.7.1'
         }
 
         It 'Should export exactly 19 functions' {
@@ -594,6 +594,107 @@ Describe 'Function: Get-AzureLocalUpdateRuns' {
             $command.ParameterSets.Name | Should -Contain 'ByName'
             $command.ParameterSets.Name | Should -Contain 'ByResourceId'
             $command.ParameterSets.Name | Should -Contain 'ByTag'
+        }
+    }
+}
+
+Describe 'Helper Function: Get-AzLocalRunEndTime (Internal)' {
+
+    It 'Should return progress.endTimeUtc when present (preferred source)' {
+        InModuleScope AzStackHci.ManageUpdates {
+            $props = [PSCustomObject]@{
+                state           = 'Succeeded'
+                lastUpdatedTime = '2026-04-25T00:48:30Z'
+                progress        = [PSCustomObject]@{ endTimeUtc = '2026-04-25T00:48:10Z' }
+            }
+            $r = Get-AzLocalRunEndTime -props $props
+            $r | Should -Not -BeNullOrEmpty
+            $r.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss') | Should -Be '2026-04-25T00:48:10'
+        }
+    }
+
+    It 'Should fall back to lastUpdatedTime when progress.endTimeUtc is missing' {
+        InModuleScope AzStackHci.ManageUpdates {
+            $props = [PSCustomObject]@{
+                state           = 'Failed'
+                lastUpdatedTime = '2026-04-09T15:30:00Z'
+                progress        = [PSCustomObject]@{ endTimeUtc = $null }
+            }
+            $r = Get-AzLocalRunEndTime -props $props
+            $r | Should -Not -BeNullOrEmpty
+            $r.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss') | Should -Be '2026-04-09T15:30:00'
+        }
+    }
+
+    It 'Should return $null for InProgress runs (no terminal end yet)' {
+        InModuleScope AzStackHci.ManageUpdates {
+            $props = [PSCustomObject]@{
+                state           = 'InProgress'
+                lastUpdatedTime = '2026-04-25T01:00:00Z'
+                progress        = [PSCustomObject]@{ endTimeUtc = $null }
+            }
+            $r = Get-AzLocalRunEndTime -props $props
+            $r | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'Should return $null when both sources are missing' {
+        InModuleScope AzStackHci.ManageUpdates {
+            $props = [PSCustomObject]@{ state = 'Succeeded' }
+            $r = Get-AzLocalRunEndTime -props $props
+            $r | Should -BeNullOrEmpty
+        }
+    }
+}
+
+Describe 'Helper Function: Format-AzLocalUpdateRun (Internal)' {
+
+    It 'Should populate EndTime from progress.endTimeUtc and use ARM duration' {
+        InModuleScope AzStackHci.ManageUpdates {
+            $run = [PSCustomObject]@{
+                id         = '/subscriptions/x/resourceGroups/rg/providers/Microsoft.AzureStackHCI/clusters/c1/updates/Solution12.2604/updateRuns/abc123'
+                name       = 'abc123'
+                properties = [PSCustomObject]@{
+                    state           = 'Succeeded'
+                    timeStarted     = '2026-04-24T16:10:24Z'
+                    lastUpdatedTime = '2026-04-25T00:48:30Z'
+                    duration        = 'PT8H37M58S'
+                    progress        = [PSCustomObject]@{
+                        endTimeUtc = '2026-04-25T00:48:10Z'
+                        steps      = @([PSCustomObject]@{ name = 'Step1'; status = 'Success' })
+                    }
+                    location        = 'eastus'
+                }
+            }
+            $f = Format-AzLocalUpdateRun -run $run -clusterName 'c1'
+            # EndTime is rendered in local time; compare via parse + UTC normalize
+            ([datetime]::ParseExact($f.EndTime, 'yyyy-MM-dd HH:mm', $null)).ToUniversalTime().ToString('yyyy-MM-dd HH:mm') | Should -Be '2026-04-25 00:48'
+            ([datetime]::ParseExact($f.StartTime, 'yyyy-MM-dd HH:mm', $null)).ToUniversalTime().ToString('yyyy-MM-dd HH:mm') | Should -Be '2026-04-24 16:10'
+            $f.State | Should -Be 'Succeeded'
+            $f.Duration | Should -Match '8 hours'
+        }
+    }
+
+    It 'Should leave EndTime blank for InProgress runs' {
+        InModuleScope AzStackHci.ManageUpdates {
+            $run = [PSCustomObject]@{
+                id         = '/subscriptions/x/resourceGroups/rg/providers/Microsoft.AzureStackHCI/clusters/c1/updates/Solution12.2604/updateRuns/abc123'
+                name       = 'abc123'
+                properties = [PSCustomObject]@{
+                    state           = 'InProgress'
+                    timeStarted     = (Get-Date).AddMinutes(-30).ToUniversalTime().ToString('o')
+                    lastUpdatedTime = $null
+                    duration        = $null
+                    progress        = [PSCustomObject]@{
+                        endTimeUtc = $null
+                        steps      = @([PSCustomObject]@{ name = 'Step1'; status = 'InProgress' })
+                    }
+                    location        = 'eastus'
+                }
+            }
+            $f = Format-AzLocalUpdateRun -run $run -clusterName 'c1'
+            $f.EndTime | Should -BeNullOrEmpty
+            $f.Duration | Should -Match 'running'
         }
     }
 }

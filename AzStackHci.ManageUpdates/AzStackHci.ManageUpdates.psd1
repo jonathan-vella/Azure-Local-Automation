@@ -3,7 +3,7 @@
     RootModule = 'AzStackHci.ManageUpdates.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.0'
+    ModuleVersion = '0.7.1'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -79,6 +79,20 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.1 - EndTime column for update runs
+
+- New "EndTime" column on Get-AzureLocalUpdateRuns table output, sourced from the run's
+  properties.progress.endTimeUtc (most accurate "work finished" timestamp), falling back
+  to properties.lastUpdatedTime for older runs. Blank for InProgress runs.
+- Per-run Duration now prefers properties.duration (ARM-reported ISO-8601 timespan) when
+  present, falling back to EndTime - StartTime. Authoritative and immune to clock skew.
+- Fleet HTML report "Recent Update Run History" now includes End Time column. For the
+  aggregated multi-attempt row, EndTime reflects the latest attempt's end time.
+- JUnit XML test bodies now include Start Time and End Time lines for each cluster
+  testcase (the JUnit time= attribute is unchanged - still seconds).
+- New private helper Get-AzLocalRunEndTime centralises the EndTime resolution rule so
+  the per-run formatter and the fleet aggregator never drift.
+
 ## Version 0.7.0 - Fleet-scale correctness, parallelism, and hardening
 
 The jump from 0.6.5 to 0.7.0 reflects the scope of this release: correctness fixes for large

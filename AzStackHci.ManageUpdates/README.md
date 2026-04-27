@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.0
+**Latest Version:** v0.7.1
 
 This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managing updates on Azure Local (Azure Stack HCI) clusters using the Azure Stack HCI REST API. The module supports both interactive use and CI/CD automation via Service Principal or Managed Identity authentication.
 
@@ -746,10 +746,10 @@ Get-AzureLocalUpdateRuns -ScopeByUpdateRingTag -UpdateRingValue "Production" -La
 
 **Sample Output:**
 ```
-UpdateName                State       StartTime        Duration               Progress    CurrentStep
-----------                -----       ---------        --------               --------    -----------
-Solution12.2603.1002.500  InProgress  2026-04-09 16:50 1 hour 12 minutes      3/5 steps   DownloadSBE
-Solution12.2602.1002.501  Succeeded   2026-03-15 09:00 2 hours 30 minutes     5/5 steps
+UpdateName                State       StartTime        EndTime          Duration               Progress    CurrentStep
+----------                -----       ---------        -------          --------               --------    -----------
+Solution12.2603.1002.500  InProgress  2026-04-09 16:50                  1 hour 12 minutes      3/5 steps   DownloadSBE
+Solution12.2602.1002.501  Succeeded   2026-03-15 09:00 2026-03-15 11:30 2 hours 30 minutes     5/5 steps
 ```
 
 ### `Test-AzureLocalClusterHealth`
