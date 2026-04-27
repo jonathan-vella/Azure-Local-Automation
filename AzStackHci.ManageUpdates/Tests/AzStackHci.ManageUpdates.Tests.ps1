@@ -2710,6 +2710,40 @@ Describe 'Helper Function: Invoke-AzLocalSideloadedAutoResetForCluster (Internal
         $global:azPatchCalled | Should -Be $false
     }
 
+    It 'Action=OrphanCleared when UpdateSideloaded absent but stale UpdateVersionInProgress matches a Succeeded run' {
+        # Cluster opted out of sideloaded workflow (no UpdateSideloaded) but a stale
+        # UpdateVersionInProgress tag remains from a previous in-module update. Latest
+        # run is Succeeded and matches the tag - clear the orphan tag, do NOT write
+        # UpdateSideloaded.
+        $global:azGetTagsJson = '{"tags":{"UpdateRing":"Wave1","UpdateVersionInProgress":"Solution12.2604.1003.209"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'Solution12.2604.1003.209' -Confirm:$false } $rid
+        $r.Action | Should -Be 'OrphanCleared'
+        $r.Message | Should -BeLike '*orphan*'
+        $global:azPatchCalled | Should -Be $true
+        # PATCH body must NOT contain UpdateSideloaded (we did not write it)
+        $global:azPatchBody | Should -Not -Match 'UpdateSideloaded'
+        # PATCH body must NOT contain UpdateVersionInProgress (we cleared it)
+        $global:azPatchBody | Should -Not -Match 'UpdateVersionInProgress'
+        # Existing tags preserved
+        $global:azPatchBody | Should -Match '"UpdateRing":\s*"Wave1"'
+    }
+
+    It 'Action=NoTag when UpdateSideloaded absent and orphan UpdateVersionInProgress does NOT match latest run' {
+        # Stale tag, but the latest run name does not match - safer to leave the orphan
+        # tag in place than to risk clearing a tag that points at a different update.
+        $global:azGetTagsJson = '{"tags":{"UpdateVersionInProgress":"Solution12.2604.1003.209"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'Solution12.2604.1003.210' } $rid
+        $r.Action | Should -Be 'NoTag'
+        $global:azPatchCalled | Should -Be $false
+    }
+
+    It 'Action=NoTag when UpdateSideloaded absent and orphan UpdateVersionInProgress present but latest run not Succeeded' {
+        $global:azGetTagsJson = '{"tags":{"UpdateVersionInProgress":"Solution12.2604.1003.209"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState InProgress -LatestRunUpdateName 'Solution12.2604.1003.209' } $rid
+        $r.Action | Should -Be 'NoTag'
+        $global:azPatchCalled | Should -Be $false
+    }
+
     It 'Action=Skipped when UpdateSideloaded=False already' {
         $global:azGetTagsJson = '{"tags":{"UpdateSideloaded":"False"}}'
         $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'X' } $rid

@@ -7259,7 +7259,8 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
         PSCustomObject describing the action taken or the reason it was skipped.
 
         Decision matrix (LatestRunState=Succeeded only - any other state -> Skipped/RunNotSucceeded):
-            UpdateSideloaded absent              -> NoTag
+            UpdateSideloaded absent, no version  -> NoTag (cluster opted out; nothing to do)
+            UpdateSideloaded absent, orphan ver  -> OrphanCleared (clear stale UpdateVersionInProgress only)
             UpdateSideloaded=False               -> Skipped (already reset)
             UpdateSideloaded=True, no version    -> Skipped (warning: no UpdateVersionInProgress)
             UpdateSideloaded=True, mismatch      -> Skipped (mismatch reason)
@@ -7268,6 +7269,13 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
 
         UpdateSideloaded with malformed value is treated as Skipped (with reason) so
         a typo cannot cause a silent reset.
+
+        Orphan cleanup: if a cluster was previously updated through this module and then
+        the operator removed the UpdateSideloaded tag (opting out of the workflow), the
+        UpdateVersionInProgress tag would otherwise linger forever. When the latest run
+        is Succeeded AND its name matches that tag, we clear it on a best-effort basis.
+        We never write UpdateSideloaded in this path - the operator has explicitly opted
+        out, and we only clean up our own breadcrumb.
     .PARAMETER ClusterName
         Display name of the cluster (for logging/output only).
     .PARAMETER ClusterResourceId
@@ -7282,7 +7290,7 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
         When specified, bypasses the UpdateVersionInProgress match check and resets the
         tags as long as UpdateSideloaded=True and the latest run state is Succeeded.
     .OUTPUTS
-        PSCustomObject with ClusterName, Action (Reset|Skipped|NoTag|RunNotSucceeded),
+        PSCustomObject with ClusterName, Action (Reset|OrphanCleared|Skipped|NoTag|NoRuns|RunNotSucceeded),
         PreviousSideloaded, NewSideloaded, StagedVersion, MatchedRunUpdateName, Message.
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
@@ -7338,6 +7346,36 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
 
     # 1. UpdateSideloaded tag absent
     if ([string]::IsNullOrWhiteSpace($tagSideloaded)) {
+        # Orphan-cleanup branch: if there's a leftover UpdateVersionInProgress tag
+        # (e.g. the cluster was updated via this module while opted-in, and the operator
+        # has since removed UpdateSideloaded to opt out) and the latest run matches that
+        # tag and succeeded, clear UpdateVersionInProgress on a best-effort basis. We do
+        # NOT write UpdateSideloaded in this path - the cluster has explicitly opted out.
+        if (-not [string]::IsNullOrWhiteSpace($tagVersion) `
+            -and $LatestRunState -eq 'Succeeded' `
+            -and (Test-AzLocalUpdateVersionInProgressMatch -TagValue $tagVersion -RunUpdateName $LatestRunUpdateName)) {
+
+            if (-not $PSCmdlet.ShouldProcess($ClusterResourceId, "Clear orphan UpdateVersionInProgress (UpdateSideloaded tag absent)")) {
+                $result.Action = 'NoTag'
+                $result.Message = "WhatIf: would clear orphan UpdateVersionInProgress='$tagVersion'."
+                return [PSCustomObject]$result
+            }
+
+            try {
+                [void](Set-AzLocalClusterTagsMerge `
+                    -ClusterResourceId $ClusterResourceId `
+                    -Tags @{ $script:UpdateVersionInProgressTagName = $null } `
+                    -ApiVersion $ApiVersion)
+                $result.Action = 'OrphanCleared'
+                $result.Message = "UpdateSideloaded tag absent; cleared orphan UpdateVersionInProgress='$tagVersion' (latest run '$LatestRunUpdateName' Succeeded)."
+            }
+            catch {
+                $result.Action = 'NoTag'
+                $result.Message = "UpdateSideloaded tag absent; failed to clear orphan UpdateVersionInProgress: $($_.Exception.Message)"
+            }
+            return [PSCustomObject]$result
+        }
+
         $result.Action = 'NoTag'
         $result.Message = 'UpdateSideloaded tag not set; nothing to reset.'
         return [PSCustomObject]$result
@@ -7478,6 +7516,7 @@ function Invoke-AzLocalSideloadedAutoReset {
 
         switch ($r.Action) {
             'Reset'           { Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: $($r.Message)" -Level Success }
+            'OrphanCleared'   { Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: $($r.Message)" -Level Info }
             'NoTag'           { Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: $($r.Message)" -Level Verbose }
             'RunNotSucceeded' { Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: $($r.Message)" -Level Verbose }
             default           { Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: $($r.Message)" -Level Warning }
@@ -7657,6 +7696,7 @@ resources
 
         switch ($r.Action) {
             'Reset'           { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Success }
+            'OrphanCleared'   { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
             'NoTag'           { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
             'NoRuns'          { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
             'RunNotSucceeded' { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
