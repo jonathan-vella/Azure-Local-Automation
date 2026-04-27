@@ -10,22 +10,33 @@ Azure Stack HCI REST API specification (includes update management endpoints): h
 
 ## Where to Start
 
-If you are new to this module, work through these in order. Each step links to the dedicated reference section further down the README.
+This module supports **two main paths**. Pick the one that matches your scenario:
+
+| Path | Best for | Auth | Where to read next |
+|------|----------|------|--------------------|
+| **Interactive** | Manual ops, ad-hoc fleet checks, tag clean-up, learning the module | `az login` | Continue below - the [Quick Start](#quick-start) and per-function reference sections in this README |
+| **CI/CD / scheduled automation** | GitHub Actions, Azure DevOps, scheduled fleet reports, gated wave deployments | OIDC, Managed Identity, or Service Principal | **[Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md)** - end-to-end pipeline guide with copy-pasteable workflows |
+
+### Getting started interactively
+
+If you are new to this module, work through these in order from a regular PowerShell session. Each step links to the dedicated reference section further down the README.
 
 | Step | Goal | Function(s) |
 |------|------|-------------|
-| 1 | Authenticate to Azure | [`Connect-AzureLocalServicePrincipal`](#connect-azurelocalserviceprincipal) (or `az login` for interactive use) |
+| 1 | Authenticate to Azure | `az login` (interactive) - see [Quick Start - 1. Authenticate](#1-authenticate-to-azure) |
 | 2 | Discover what is in the fleet | [`Get-AzureLocalClusterInventory`](#get-azurelocalclusterinventory) |
 | 3 | Tag clusters into rings (Wave1, Prod, Test, ...) | [`Set-AzureLocalClusterUpdateRingTag`](#set-azurelocalclusterupdateringtag) |
 | 4 | Assess readiness for the wave | [`Get-AzureLocalClusterUpdateReadiness`](#get-azurelocalclusterupdatereadiness), [`Test-AzureLocalClusterHealth`](#test-azurelocalclusterhealth) |
 | 5 | Apply the update | [`Start-AzureLocalClusterUpdate`](#start-azurelocalclusterupdate) (single cluster or `-ScopeByUpdateRingTag` for a wave) |
 | 6 | Monitor and report | [`Get-AzureLocalUpdateRuns`](#get-azurelocalupdateruns), [`Get-AzureLocalFleetProgress`](#get-azurelocalfleetprogress), [`New-AzureLocalFleetStatusHtmlReport`](#new-azurelocalfleetstatushtmlreport) |
 
+> **For CI/CD?** Skip this table and go straight to [Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md) - it covers OIDC / Managed Identity / Service Principal setup, federated credentials, three GitHub Actions workflows, and three Azure DevOps pipelines.
+
 ### Common workflows (function-invocation order)
 
 | Scenario | Recommended order |
 |----------|-------------------|
-| **One-off cluster update** | `Connect-AzureLocalServicePrincipal` -> `Get-AzureLocalUpdateSummary` -> `Get-AzureLocalAvailableUpdates` -> `Start-AzureLocalClusterUpdate` -> `Get-AzureLocalUpdateRuns` |
+| **One-off cluster update** | `az login` -> `Get-AzureLocalUpdateSummary` -> `Get-AzureLocalAvailableUpdates` -> `Start-AzureLocalClusterUpdate` -> `Get-AzureLocalUpdateRuns` |
 | **Staged wave deployment** | `Get-AzureLocalClusterInventory` -> `Set-AzureLocalClusterUpdateRingTag` -> `Get-AzureLocalClusterUpdateReadiness -ScopeByUpdateRingTag` -> `Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag` -> `Get-AzureLocalFleetProgress` -> `New-AzureLocalFleetStatusHtmlReport` |
 | **Daily fleet status report** | `Get-AzureLocalFleetStatusData -AllClusters -IncludeUpdateRuns -IncludeHealthDetails -ExportPath ...` -> `New-AzureLocalFleetStatusHtmlReport -StatusData $data -OutputPath ...` |
 | **Pre-update health gate (CI/CD)** | `Test-AzureLocalClusterHealth -BlockingOnly` -> `Test-AzureLocalUpdateScheduleAllowed` -> `Test-AzureLocalFleetHealthGate` -> proceed only on pass |
@@ -1775,22 +1786,22 @@ The functions use the Azure Stack HCI REST API (version 2025-10-01):
 
 | State | Description | Can Start Update? |
 |-------|-------------|-------------------|
-| `UpdateAvailable` | Updates are available | ? Yes |
-| `AppliedSuccessfully` | All updates applied | ? No updates to apply |
-| `UpdateInProgress` | Update is running | ? Wait for completion |
-| `UpdateFailed` | Last update failed | ?? Investigate first |
-| `NeedsAttention` | Manual intervention needed | ? Resolve issues first |
+| `UpdateAvailable` | Updates are available | Yes |
+| `AppliedSuccessfully` | All updates applied | No - already up to date |
+| `UpdateInProgress` | Update is running | No - wait for completion |
+| `UpdateFailed` | Last update failed | Investigate first |
+| `NeedsAttention` | Manual intervention needed | Resolve issues first |
 
 ### Individual Update States
 
 | State | Description | Can Apply? |
 |-------|-------------|------------|
-| `Ready` | Update is ready to install | ? Yes |
-| `ReadyToInstall` | Preparation complete | ? Yes |
-| `HasPrerequisite` | Prerequisites required | ? Install prerequisites first |
-| `Installing` | Currently installing | ? In progress |
-| `Installed` | Successfully installed | ? Already done |
-| `InstallationFailed` | Installation failed | ?? Retry or investigate |
+| `Ready` | Update is ready to install | Yes |
+| `ReadyToInstall` | Preparation complete | Yes |
+| `HasPrerequisite` | Prerequisites required | No - install prerequisites first (see SBE dependency info) |
+| `Installing` | Currently installing | No - in progress |
+| `Installed` | Successfully installed | No - already done |
+| `InstallationFailed` | Installation failed | Retry or investigate |
 
 ## Using Azure CLI Directly
 
@@ -1824,147 +1835,26 @@ Invoke-AzStackHciUpdate -ClusterName 'MyCluster' -Name 'Solution12.2601.1002.38'
 
 ## CI/CD Automation
 
-The module supports Service Principal authentication for use in automated pipelines, and can export results in **JUnit XML format** for test result visualization in CI/CD tools.
+> 📦 **The complete CI/CD guide lives in [Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md).** It covers OIDC / Managed Identity / Service Principal setup, federated credentials, three ready-to-run GitHub Actions workflows, three Azure DevOps pipelines, and end-to-end automation diagrams. **Start there for any pipeline work.** This section only documents the module-level features that pipelines depend on.
 
-> ðŸ“ **Complete Pipeline Examples**: For production-ready CI/CD pipeline examples including inventory collection, tag management, and update deployment workflows, see the **[Automation-Pipeline-Examples](./Automation-Pipeline-Examples/README.md)** folder. It includes:
-> - Complete GitHub Actions workflows (3 pipelines)
-> - Complete Azure DevOps pipelines (3 pipelines)
-> - Service Principal setup instructions
-> - Typical automation workflow diagrams
+The module is pipeline-friendly out of the box:
 
-### JUnit XML Export for CI/CD Pipelines
+- **Authentication**: works with OIDC (recommended), Managed Identity, or Service Principal + secret. See `Connect-AzureLocalServicePrincipal` and the pipeline guide above.
+- **JUnit XML export**: any function that takes `-ExportPath` / `-ExportResultsPath` will emit JUnit XML when the path ends in `.xml`. Consumed natively by Azure DevOps **Publish Test Results**, GitHub Actions (`dorny/test-reporter`, `mikepenz/action-junit-report`), Jenkins, GitLab CI (`artifacts:reports:junit`), and TeamCity.
+- **CSV / JSON export**: pass `.csv` or `.json` for the same paths to drive downstream reporting / Power BI / Log Analytics ingestion.
+- **`-WhatIf` and `-PassThru`**: every state-changing function supports `-WhatIf` (counted as `WouldUpdate` in the summary) so dry-runs are auditable; `-PassThru` returns structured objects for pipeline-stage chaining.
+- **Parallelism**: `-ThrottleLimit 1..16` on per-cluster operations; default 4. Tune for your runner and ARM throttling envelope.
 
-Use the `.xml` extension with `-ExportResultsPath` to generate JUnit-compatible test results for CI/CD toolchains:
+Minimal example - export update results as JUnit XML:
 
 ```powershell
-# Export update results to JUnit XML
-Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force `
-    -ExportResultsPath "C:\Results\update-results.xml"
-
-# Export readiness check to JUnit XML
-Get-AzureLocalClusterUpdateReadiness -ScopeByUpdateRingTag -UpdateRingValue "Ring1" `
-    -ExportPath "C:\Results\readiness-results.xml"
+Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue 'Ring1' -Force `
+    -ExportResultsPath './test-results/update-results.xml'
 ```
 
-**Supported CI/CD Tools:**
+For full GitHub Actions / Azure DevOps YAML, federated-credential setup, and the recommended two-stage "collect once, render later" pattern, see [Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md).
 
-| CI/CD Tool | Integration |
-|------------|-------------|
-| **Azure DevOps** | Publish Test Results task |
-| **GitHub Actions** | `dorny/test-reporter` or `mikepenz/action-junit-report` |
-| **Jenkins** | Built-in JUnit plugin |
-| **GitLab CI** | Native `artifacts:reports:junit` support |
-| **TeamCity** | Built-in test report processing |
-
-### GitHub Actions Example
-
-```yaml
-name: Update Azure Local Clusters
-
-on:
-  workflow_dispatch:
-    inputs:
-      update_ring:
-        description: 'Update ring to target (e.g., Ring1, Ring2)'
-        required: true
-        default: 'Ring1'
-
-jobs:
-  update-clusters:
-    runs-on: windows-latest
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    
-    - name: Install Azure CLI
-      run: |
-        Invoke-WebRequest -Uri https://aka.ms/installazurecliwindows -OutFile .\AzureCLI.msi
-        Start-Process msiexec.exe -Wait -ArgumentList '/I AzureCLI.msi /quiet'
-    
-    - name: Update Azure Local Clusters
-      env:
-        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      run: |
-        Import-Module ./AzureLocal-Manage-Updates-Using-AUM-APIs/AzStackHci.ManageUpdates.psd1
-        
-        # Authenticate using Service Principal
-        Connect-AzureLocalServicePrincipal
-        
-        # Update clusters by tag - export to JUnit XML for visualization
-        Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "${{ github.event.inputs.update_ring }}" `
-            -Force -ExportResultsPath "./test-results/update-results.xml"
-    
-    - name: Publish Test Results
-      uses: dorny/test-reporter@v1
-      if: always()
-      with:
-        name: Azure Local Update Results
-        path: test-results/update-results.xml
-        reporter: java-junit
-```
-
-### Azure DevOps Pipeline Example
-
-```yaml
-trigger: none
-
-parameters:
-- name: updateRing
-  displayName: 'Update Ring'
-  type: string
-  default: 'Ring1'
-  values:
-  - Ring1
-  - Ring2
-  - Production
-
-pool:
-  vmImage: 'windows-latest'
-
-steps:
-- task: AzureCLI@2
-  displayName: 'Update Azure Local Clusters'
-  inputs:
-    azureSubscription: 'Your-Service-Connection'
-    scriptType: 'pscore'
-    scriptLocation: 'inlineScript'
-    inlineScript: |
-      Import-Module $(System.DefaultWorkingDirectory)/AzureLocal-Manage-Updates-Using-AUM-APIs/AzStackHci.ManageUpdates.psd1
-      
-      # Azure CLI is already authenticated via the AzureCLI task
-      # Update clusters by tag - export to JUnit XML
-      Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "${{ parameters.updateRing }}" `
-          -Force -ExportResultsPath "$(Build.ArtifactStagingDirectory)/update-results.xml"
-
-- task: PublishTestResults@2
-  displayName: 'Publish Update Results'
-  condition: always()
-  inputs:
-    testResultsFormat: 'JUnit'
-    testResultsFiles: '$(Build.ArtifactStagingDirectory)/update-results.xml'
-    testRunTitle: 'Azure Local Cluster Updates - ${{ parameters.updateRing }}'
-```
-
-### Service Principal Setup
-
-1. **Create a Service Principal:**
-```bash
-az ad sp create-for-rbac --name "AzureLocal-UpdateAutomation" --role "Azure Stack HCI Administrator" --scopes /subscriptions/{subscription-id}
-```
-
-2. **Store the credentials securely:**
-   - **GitHub Actions**: Add `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID` as repository secrets
-   - **Azure DevOps**: Create a service connection with the Service Principal credentials
-
-3. **Required permissions for the Service Principal:**
-   - `Microsoft.AzureStackHCI/clusters/read`
-   - `Microsoft.AzureStackHCI/clusters/updates/read`
-   - `Microsoft.AzureStackHCI/clusters/updates/apply/action`
-   - `Microsoft.AzureStackHCI/clusters/updateSummaries/read`
-   - `Microsoft.AzureStackHCI/clusters/updateRuns/read`
+<!-- Detailed CI/CD examples removed in v0.7.1; canonical content now in Automation-Pipeline-Examples/README.md -->
 
 ## Troubleshooting
 

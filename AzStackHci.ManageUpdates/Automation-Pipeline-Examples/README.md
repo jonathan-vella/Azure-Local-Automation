@@ -329,9 +329,10 @@ Copy the workflow files from `github-actions/` to your repository's `.github/wor
 .github/
 └── workflows/
     ├── inventory-clusters.yml
-    ├── fleet-update-status.yml
     ├── manage-updatering-tags.yml
-    └── apply-updates.yml
+    ├── assess-update-readiness.yml
+    ├── apply-updates.yml
+    └── fleet-update-status.yml
 ```
 
 ### Step 3: Run Workflows
@@ -407,9 +408,10 @@ For each pipeline definition in `azure-devops/`:
 ```
 azure-devops/
 ├── inventory-clusters.yml
-├── fleet-update-status.yml
 ├── manage-updatering-tags.yml
-└── apply-updates.yml
+├── assess-update-readiness.yml
+├── apply-updates.yml
+└── fleet-update-status.yml
 ```
 
 1. Go to **Pipelines** → **Pipelines**
@@ -420,7 +422,7 @@ azure-devops/
 6. Select the path to the YAML file (e.g., `/Automation-Pipeline-Examples/azure-devops/inventory-clusters.yml`)
 7. Click **Continue** and then **Save** (not Run, unless you want to test immediately)
 
-Repeat for each of the 4 pipeline files.
+Repeat for each of the 5 pipeline files.
 
 > 📝 **Note**: The pipeline YAML files reference a service connection named `AzureLocal-ServiceConnection`. Either name your service connection to match, or update the `azureSubscription` value in each YAML file to match your service connection name.
 
@@ -652,24 +654,24 @@ This workflow shows how to use all four pipelines together for a staged update d
    - Run "Apply Updates" with `UpdateRing = Wave1`
    - Monitor progress in CI/CD dashboard
 
-5. **Analyze Wave1 Results**
+6. **Analyze Wave1 Results**
    - Check duration from `update-runs.csv`
    - Review any failures before proceeding
    - Estimate time needed for Wave2/Production
 
-6. **Wave2 and Production Updates**
+7. **Wave2 and Production Updates**
    - Use Wave1 duration data to plan maintenance windows
    - Apply updates to subsequent rings
    - Monitor each wave before proceeding
 
 #### Phase 3: Ongoing Operations
 
-7. **Enable Automated Monitoring**
+8. **Enable Automated Monitoring**
    - Fleet Update Status runs daily at 6 AM UTC
    - Configure alerts for test failures
    - Review dashboards for health trends
 
-8. **Periodic Inventory Refresh**
+9. **Periodic Inventory Refresh**
    - Run inventory weekly/monthly
    - Identify new clusters needing tags
    - Update tags as environment changes
@@ -682,7 +684,8 @@ This workflow shows how to use all four pipelines together for a staged update d
 ├─────────────────────────────────────────────────────────────────┤
 │  "Fleet Update Status" runs daily at 6 AM UTC (scheduled)       │
 │                                                                  │
-│  📊 Outputs (v0.7.0: parallel data collection, `-ThrottleLimit` honored):\n│  ├── JUnit XML → CI/CD Dashboard (Tests tab)                    │
+│  📊 Outputs (v0.7.0: parallel data collection, `-ThrottleLimit` honored):    │
+│  ├── JUnit XML → CI/CD Dashboard (Tests tab)                    │
 │  ├── CSV → Download for spreadsheet analysis                    │
 │  │   • readiness-status.csv (cluster health)                    │
 │  │   • update-summaries.csv (update states)                     │
