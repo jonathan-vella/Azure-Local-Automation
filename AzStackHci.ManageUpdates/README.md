@@ -319,6 +319,8 @@ Three Azure resource tags control how clusters are grouped and when updates are 
 | `UpdateWindow` | Defines allowed maintenance windows in UTC (e.g., `Sat-Sun_02:00-06:00`) | Optional | CSV import via `Set-AzureLocalClusterUpdateRingTag` |
 | `UpdateExclusions` | Defines blackout/change-freeze periods (e.g., `2026-12-20/2027-01-03`) | Optional | CSV import via `Set-AzureLocalClusterUpdateRingTag` |
 
+> ℹ️ **Tag matching is case-insensitive throughout this module.** Tag *names* (`UpdateRing`, `UpdateWindow`, `UpdateExclusions`) and tag *values* (the ring name like `Prod1`, day tokens like `Mon`, the `Daily` keyword) are all compared without regard to case. So `prod1`, `Prod1`, and `PROD1` resolve to the same set of clusters via `-ScopeByUpdateRingTag -UpdateRingValue 'Prod1'` (Azure Resource Graph `=~` operator), and `Mon-Fri`, `mon-fri`, and `MON-FRI` parse to the same maintenance window. This applies to every function that scopes clusters by tag, every CSV import path, and the `UpdateWindow` / `UpdateExclusions` parsers. Note: the day tokens themselves still require the strict 3-letter form — `Mon Tue Wed Thu Fri Sat Sun` — case doesn't matter, but `Thur` / `Tues` / `Friday` will be rejected (see the `UpdateWindow` section below for the full table).
+
 > **What happens if you only set `UpdateRing`?** Updates proceed immediately with **no schedule restrictions**. The `UpdateWindow` and `UpdateExclusions` tags are entirely optional - if neither is present on a cluster, the schedule check returns "No schedule restrictions defined" and the update starts as soon as the pipeline runs. Add `UpdateWindow` and `UpdateExclusions` tags when you need to control *when* updates can be applied.
 
 **Step 1: Inventory clusters and export to CSV**
@@ -342,11 +344,38 @@ Open `cluster-inventory.csv` and populate the tag columns:
 | HCI-Critical| Production | Sat_02:00-06:00 | 20**-12-20/20**-01-03 |
 
 - **UpdateRing** (required): The deployment wave for this cluster
-- **UpdateWindow** (optional): UTC maintenance window. Format: `<days>_<HH:MM>-<HH:MM>`. Multiple windows separated by `;`. Examples:
+- **UpdateWindow** (optional): UTC maintenance window. Format: `<days>_<HH:MM>-<HH:MM>`. Multiple windows separated by `;`.
+
+  **Day tokens** — strict 3-letter abbreviations only (case-insensitive — `Mon`, `mon`, `MON` all work):
+
+  | Token | Day | Token | Day |
+  |---|---|---|---|
+  | `Mon` | Monday | `Fri` | Friday |
+  | `Tue` | Tuesday | `Sat` | Saturday |
+  | `Wed` | Wednesday | `Sun` | Sunday |
+  | `Thu` | Thursday | `Daily` / `*` | All days |
+
+  **Day specifiers**:
+  - **Range**: `Mon-Fri` (Mon through Fri inclusive), `Sat-Sun`, `Fri-Mon` (wrap-around — Fri, Sat, Sun, Mon)
+  - **Comma list**: `Mon,Wed,Fri` (Monday, Wednesday, Friday only — useful for non-contiguous days)
+  - **Single day**: `Sat`
+  - **All days**: `Daily` or `*`
+
+  > ⚠️ Common mistakes: `Thur`, `Tues`, `Mond`, `Friday`, `tuesday-friday` — all rejected. Use the strict 3-letter form: `Thu`, `Tue`, `Mon`, `Fri`, `Tue-Fri`.
+
+  **Time format**: 24-hour `HH:MM` UTC. Overnight wraps are supported (`22:00-02:00` means 10 PM today through 2 AM tomorrow).
+
+  **Examples**:
   - `Sat-Sun_02:00-06:00` — Weekends 2-6 AM UTC
-  - `Mon-Fri_22:00-06:00` — Weeknights 10 PM - 6 AM UTC (overnight wrap supported)
-  - `Sat_22:00-06:00;Sun_22:00-06:00` — Two separate windows
-  - `Daily_02:00-06:00` or `*_02:00-06:00` — Every day 2-6 AM UTC
+  - `Mon-Fri_22:00-06:00` — Weeknights 10 PM - 6 AM UTC (overnight wrap)
+  - `Mon-Thu_20:00-04:00` — Mon/Tue/Wed/Thu nights 8 PM - 4 AM UTC (excludes Fri night)
+  - `Mon,Wed,Fri_01:00-05:00` — Only Mon/Wed/Fri 1-5 AM UTC (note the **comma list**, not range)
+  - `Sat_22:00-06:00;Sun_22:00-06:00` — Two separate Sat-night and Sun-night windows
+  - `Sat-Sun_00:00-23:59` — Whole weekend
+  - `Daily_02:00-06:00` (or `*_02:00-06:00`) — Every day 2-6 AM UTC
+  - `Fri-Mon_22:00-06:00` — Long weekend (Fri/Sat/Sun/Mon nights, with wrap)
+
+  > **Tag-value matching is case-insensitive everywhere** — both the day tokens above and the `UpdateRing` value used by `-ScopeByUpdateRingTag -UpdateRingValue 'Prod1'` (resolved via Azure Resource Graph `=~` operator), so `prod1`/`Prod1`/`PROD1` all match the same set of clusters.
 - **UpdateExclusions** (optional): Change-freeze periods. Format: `YYYY-MM-DD/YYYY-MM-DD`. Multiple ranges separated by `,`. Wildcards with `*` for recurring annual patterns. Examples:
   - `2026-12-20/2027-01-03` — Specific date range
   - `20**-12-20/20**-01-03` — Every year, Dec 20 to Jan 3
