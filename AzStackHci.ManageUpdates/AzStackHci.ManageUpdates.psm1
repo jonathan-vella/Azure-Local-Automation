@@ -2449,7 +2449,7 @@ function Start-AzureLocalClusterUpdate {
         }
 
         # Results collection
-        $results = @()
+        $results = [System.Collections.Generic.List[object]]::new()
 
         # Parallel prefetch (v0.7.0+): when -ThrottleLimit > 1 and caller did not already
         # provide cached data, fan out the read-heavy Get-AzureLocalUpdateSummary +
@@ -2543,7 +2543,7 @@ function Start-AzureLocalClusterUpdate {
 
                 if (-not $clusterInfo) {
                     Write-Log -Message "Cluster '$clusterName' not found." -Level Warning
-                    $results += [PSCustomObject]@{
+                    $results.Add([PSCustomObject]@{
                         ClusterName   = $clusterName
                         Status        = "NotFound"
                         Message       = "Cluster not found"
@@ -2551,7 +2551,7 @@ function Start-AzureLocalClusterUpdate {
                         StartTime     = $clusterStartTime
                         EndTime       = Get-Date
                         Duration      = $null
-                    }
+                    }) | Out-Null
                     continue
                 }
 
@@ -2579,7 +2579,7 @@ function Start-AzureLocalClusterUpdate {
 
                 if (-not $updateSummary) {
                     Write-Log -Message "Unable to retrieve update summary for cluster '$clusterName'." -Level Warning
-                    $results += [PSCustomObject]@{
+                    $results.Add([PSCustomObject]@{
                         ClusterName   = $clusterName
                         Status        = "Error"
                         Message       = "Unable to retrieve update summary"
@@ -2587,7 +2587,7 @@ function Start-AzureLocalClusterUpdate {
                         StartTime     = $clusterStartTime
                         EndTime       = Get-Date
                         Duration      = $null
-                    }
+                    }) | Out-Null
                     continue
                 }
 
@@ -2625,7 +2625,7 @@ function Start-AzureLocalClusterUpdate {
                         -LastUpdateErrorStep $lastErrorDetails.ErrorStep `
                         -LastUpdateErrorMessage $lastErrorDetails.ErrorMessage
                     
-                    $results += [PSCustomObject]@{
+                    $results.Add([PSCustomObject]@{
                         ClusterName   = $clusterName
                         Status        = "NotReady"
                         Message       = "Cluster state: $($updateSummary.properties.state)"
@@ -2633,7 +2633,7 @@ function Start-AzureLocalClusterUpdate {
                         StartTime     = $clusterStartTime
                         EndTime       = Get-Date
                         Duration      = $null
-                    }
+                    }) | Out-Null
                     continue
                 }
 
@@ -2664,7 +2664,7 @@ function Start-AzureLocalClusterUpdate {
                         -HealthState "Failure" `
                         -HealthCheckFailures $critSummary
                     
-                    $results += [PSCustomObject]@{
+                    $results.Add([PSCustomObject]@{
                         ClusterName   = $clusterName
                         Status        = "HealthCheckBlocked"
                         Message       = "Critical health failures: $critSummary"
@@ -2672,7 +2672,7 @@ function Start-AzureLocalClusterUpdate {
                         StartTime     = $clusterStartTime
                         EndTime       = Get-Date
                         Duration      = $null
-                    }
+                    }) | Out-Null
                     continue
                 }
                 Write-Log -Message "No critical health issues found - cluster is eligible for update" -Level Success
@@ -2710,7 +2710,7 @@ function Start-AzureLocalClusterUpdate {
                                 -UpdateState $updateSummary.properties.state `
                                 -HealthState $healthState
 
-                            $results += [PSCustomObject]@{
+                            $results.Add([PSCustomObject]@{
                                 ClusterName   = $clusterName
                                 Status        = "SideloadedBlocked"
                                 Message       = "$($sideloadedResult.Reason): $($sideloadedResult.Details)"
@@ -2718,7 +2718,7 @@ function Start-AzureLocalClusterUpdate {
                                 StartTime     = $clusterStartTime
                                 EndTime       = Get-Date
                                 Duration      = $null
-                            }
+                            }) | Out-Null
                             continue
                         }
 
@@ -2748,7 +2748,7 @@ function Start-AzureLocalClusterUpdate {
                                 -UpdateState $updateSummary.properties.state `
                                 -HealthState $healthState
 
-                            $results += [PSCustomObject]@{
+                            $results.Add([PSCustomObject]@{
                                 ClusterName   = $clusterName
                                 Status        = "SideloadedBlocked"
                                 Message       = "Malformed UpdateSideloaded tag value '$sideloadedTagValue': $($_.Exception.Message). Re-run with -Force to override."
@@ -2756,7 +2756,7 @@ function Start-AzureLocalClusterUpdate {
                                 StartTime     = $clusterStartTime
                                 EndTime       = Get-Date
                                 Duration      = $null
-                            }
+                            }) | Out-Null
                             continue
                         }
                     }
@@ -2794,7 +2794,7 @@ function Start-AzureLocalClusterUpdate {
                                 -UpdateState $updateSummary.properties.state `
                                 -HealthState $healthState
 
-                            $results += [PSCustomObject]@{
+                            $results.Add([PSCustomObject]@{
                                 ClusterName   = $clusterName
                                 Status        = "ScheduleBlocked"
                                 Message       = "$($scheduleResult.Reason): $($scheduleResult.Details)"
@@ -2802,7 +2802,7 @@ function Start-AzureLocalClusterUpdate {
                                 StartTime     = $clusterStartTime
                                 EndTime       = Get-Date
                                 Duration      = $null
-                            }
+                            }) | Out-Null
                             continue
                         }
 
@@ -2835,7 +2835,7 @@ function Start-AzureLocalClusterUpdate {
                                 -UpdateState $updateSummary.properties.state `
                                 -HealthState $healthState
 
-                            $results += [PSCustomObject]@{
+                            $results.Add([PSCustomObject]@{
                                 ClusterName   = $clusterName
                                 Status        = "ScheduleBlocked"
                                 Message       = "Unparseable schedule tags: $($_.Exception.Message). Re-run with -Force to override."
@@ -2843,7 +2843,7 @@ function Start-AzureLocalClusterUpdate {
                                 StartTime     = $clusterStartTime
                                 EndTime       = Get-Date
                                 Duration      = $null
-                            }
+                            }) | Out-Null
                             continue
                         }
                     }
@@ -2871,7 +2871,7 @@ function Start-AzureLocalClusterUpdate {
 
                 if (-not $availableUpdates -or $availableUpdates.Count -eq 0) {
                     Write-Log -Message "No updates available for cluster '$clusterName'." -Level Warning
-                    $results += [PSCustomObject]@{
+                    $results.Add([PSCustomObject]@{
                         ClusterName   = $clusterName
                         Status        = "NoUpdatesAvailable"
                         Message       = "No updates available"
@@ -2879,7 +2879,7 @@ function Start-AzureLocalClusterUpdate {
                         StartTime     = $clusterStartTime
                         EndTime       = Get-Date
                         Duration      = $null
-                    }
+                    }) | Out-Null
                     continue
                 }
 
@@ -2939,7 +2939,7 @@ function Start-AzureLocalClusterUpdate {
                         -LastUpdateErrorStep $lastErrorDetails.ErrorStep `
                         -LastUpdateErrorMessage $lastErrorDetails.ErrorMessage
                     
-                    $results += [PSCustomObject]@{
+                    $results.Add([PSCustomObject]@{
                         ClusterName   = $clusterName
                         Status        = "NoReadyUpdates"
                         Message       = "No updates in Ready state"
@@ -2947,7 +2947,7 @@ function Start-AzureLocalClusterUpdate {
                         StartTime     = $clusterStartTime
                         EndTime       = Get-Date
                         Duration      = $null
-                    }
+                    }) | Out-Null
                     continue
                 }
 
@@ -2963,7 +2963,7 @@ function Start-AzureLocalClusterUpdate {
                     $selectedUpdate = $readyUpdates | Where-Object { $_.name -eq $UpdateName }
                     if (-not $selectedUpdate) {
                         Write-Log -Message "Specified update '$UpdateName' not found or not in Ready state for cluster '$clusterName'." -Level Warning
-                        $results += [PSCustomObject]@{
+                        $results.Add([PSCustomObject]@{
                             ClusterName   = $clusterName
                             Status        = "UpdateNotFound"
                             Message       = "Specified update '$UpdateName' not found or not ready"
@@ -2971,7 +2971,7 @@ function Start-AzureLocalClusterUpdate {
                             StartTime     = $clusterStartTime
                             EndTime       = Get-Date
                             Duration      = $null
-                        }
+                        }) | Out-Null
                         continue
                     }
                 }
@@ -3002,7 +3002,7 @@ function Start-AzureLocalClusterUpdate {
                                 -UpdateState $updateSummary.properties.state `
                                 -HealthState $healthState
                             
-                            $results += [PSCustomObject]@{
+                            $results.Add([PSCustomObject]@{
                                 ClusterName   = $clusterName
                                 Status        = "Skipped"
                                 Message       = "Update skipped by user"
@@ -3010,7 +3010,7 @@ function Start-AzureLocalClusterUpdate {
                                 StartTime     = $clusterStartTime
                                 EndTime       = Get-Date
                                 Duration      = $null
-                            }
+                            }) | Out-Null
                             continue
                         }
                     }
@@ -3050,7 +3050,7 @@ function Start-AzureLocalClusterUpdate {
                             Write-Log -Message "  Update has been initiated successfully; only auto-reset correlation metadata is affected." -Level Warning
                         }
 
-                        $results += [PSCustomObject]@{
+                        $results.Add([PSCustomObject]@{
                             ClusterName   = $clusterName
                             Status        = "UpdateStarted"
                             Message       = "Update initiated successfully"
@@ -3058,11 +3058,11 @@ function Start-AzureLocalClusterUpdate {
                             StartTime     = $clusterStartTime
                             EndTime       = $endTime
                             Duration      = $duration.ToString("hh\:mm\:ss")
-                        }
+                        }) | Out-Null
                     }
                     else {
                         Write-Log -Message "Failed to start update on cluster '$clusterName'." -Level Error
-                        $results += [PSCustomObject]@{
+                        $results.Add([PSCustomObject]@{
                             ClusterName   = $clusterName
                             Status        = "Failed"
                             Message       = "Failed to start update"
@@ -3070,7 +3070,7 @@ function Start-AzureLocalClusterUpdate {
                             StartTime     = $clusterStartTime
                             EndTime       = $endTime
                             Duration      = $duration.ToString("hh\:mm\:ss")
-                        }
+                        }) | Out-Null
                     }
                 }
                 elseif ($WhatIfPreference) {
@@ -3079,7 +3079,7 @@ function Start-AzureLocalClusterUpdate {
                     # update started. Matches the normal 'UpdateStarted' shape.
                     $clusterRgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
                     Write-Log -Message "[WhatIf] Would start update '$($selectedUpdate.name)' on cluster '$clusterName' (RG: $clusterRgName)" -Level Info
-                    $results += [PSCustomObject]@{
+                    $results.Add([PSCustomObject]@{
                         ClusterName = $clusterName
                         Status      = "WouldUpdate"
                         Message     = "WhatIf: would start update '$($selectedUpdate.name)'"
@@ -3087,7 +3087,7 @@ function Start-AzureLocalClusterUpdate {
                         StartTime   = $clusterStartTime
                         EndTime     = Get-Date
                         Duration    = $null
-                    }
+                    }) | Out-Null
                 }
             }
             catch {
@@ -3095,7 +3095,7 @@ function Start-AzureLocalClusterUpdate {
                 $duration = $endTime - $clusterStartTime
                 Write-Log -Message "Error processing cluster '$clusterName': $($_.Exception.Message)" -Level Error
                 Write-Log -Message "Stack trace: $($_.ScriptStackTrace)" -Level Error
-                $results += [PSCustomObject]@{
+                $results.Add([PSCustomObject]@{
                     ClusterName   = $clusterName
                     Status        = "Error"
                     Message       = $_.Exception.Message
@@ -3103,7 +3103,7 @@ function Start-AzureLocalClusterUpdate {
                     StartTime     = $clusterStartTime
                     EndTime       = $endTime
                     Duration      = $duration.ToString("hh\:mm\:ss")
-                }
+                }) | Out-Null
             }
         }
     }
@@ -4601,7 +4601,7 @@ function Get-AzLocalClusterUpdateRuns {
     [OutputType([object[]])]
     param($resourceId, $updateNameFilter, $apiVer)
 
-    $allRuns = @()
+    $allRuns = [System.Collections.Generic.List[object]]::new()
 
     if ($updateNameFilter) {
         $uri = "https://management.azure.com$resourceId/updates/$updateNameFilter/updateRuns?api-version=$apiVer"
@@ -4616,7 +4616,7 @@ function Get-AzLocalClusterUpdateRuns {
             $uri = "https://management.azure.com$resourceId/updates/$($update.name)/updateRuns?api-version=$apiVer"
             $runs = (Invoke-AzRestJson -Uri $uri).Data
             if ($runs.value) {
-                $allRuns += $runs.value
+                foreach ($_run in @($runs.value)) { $allRuns.Add($_run) | Out-Null }
             }
         }
     }
@@ -4799,9 +4799,9 @@ function Get-AzureLocalUpdateRuns {
         }
 
         # Format runs
-        $formattedRuns = @()
+        $formattedRuns = [System.Collections.Generic.List[object]]::new()
         foreach ($run in $allRuns) {
-            $formattedRuns += Format-AzLocalUpdateRun -run $run -clusterName $ClusterName -clusterResourceId $clusterInfo.id
+            $formattedRuns.Add((Format-AzLocalUpdateRun -run $run -clusterName $ClusterName -clusterResourceId $clusterInfo.id)) | Out-Null
         }
 
         $formattedRuns = @($formattedRuns | Sort-Object StartTime -Descending)
@@ -4961,7 +4961,7 @@ function Get-AzureLocalUpdateRuns {
     Write-Log -Message "Querying update runs for $($clustersToProcess.Count) cluster(s)..." -Level Info
 
     # Collect results
-    $allFormattedRuns = @()
+    $allFormattedRuns = [System.Collections.Generic.List[object]]::new()
     $stateCounts = @{}
 
     # Per-cluster update-runs scriptblock. Runs inline (ThrottleLimit=1)
@@ -5178,7 +5178,7 @@ function Get-AzureLocalUpdateRuns {
         }
 
         foreach ($row in @($entry.Rows)) {
-            $allFormattedRuns += $row
+            $allFormattedRuns.Add($row) | Out-Null
         }
     }
 
