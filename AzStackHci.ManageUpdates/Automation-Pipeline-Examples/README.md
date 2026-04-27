@@ -744,6 +744,14 @@ v0.7.0 runs per-cluster ARM calls in parallel `Start-Job` batches. The `throttle
 | 50 - 500 clusters | `6` - `8` | Readiness / fleet-status pipelines complete measurably faster. |
 | 500 - 1500+ clusters | `8` - `16` | Required for the fleet-status pipeline to finish inside a 6-hour runner window. Watch for ARM throttling (`429 TooManyRequests`) and back off if you see it. |
 
+> ⚠️ **Throttling is influenced by your subscription topology, not just fleet size.** ARM and Azure Resource Graph throttling limits apply per-subscription **and** per-tenant. A 1,500-cluster fleet spread across 30 subscriptions hits very different limits than the same fleet packed into a single subscription:
+>
+> - **Single subscription / few subscriptions**: per-subscription ARM read/write quotas (e.g. `Microsoft.Resources` reads ~12,000/hour per subscription) are the first thing you'll exhaust. Use the lower end of the suggested `throttle_limit` range and stagger pipeline schedules.
+> - **Many subscriptions (10+)**: per-subscription quotas are rarely the bottleneck; tenant-wide ARG query limits and the runner's outbound connection pool become the constraint instead. You can usually push to the upper end of the range.
+> - **Mixed (some subscriptions with hundreds of clusters, others with a handful)**: the densest subscription dictates the safe ceiling. Consider splitting the pipeline by subscription (matrix job) so each leg's throttle is sized to its own subscription's clusters.
+>
+> If you see `429 TooManyRequests`, check the `x-ms-ratelimit-remaining-*` response headers in verbose logs to identify whether you're hitting subscription, tenant, or resource-type limits before adjusting `throttle_limit`.
+
 Lower values (`1` - `2`) are useful on constrained self-hosted runners, or when you need sequential deterministic logs for debugging.
 
 ### Standalone HTML Report
