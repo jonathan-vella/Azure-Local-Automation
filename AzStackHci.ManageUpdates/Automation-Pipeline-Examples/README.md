@@ -25,6 +25,7 @@ Five pipelines are provided for each platform:
   - `UpdateVersionInProgress` (module-managed; do not set manually) holds the staged update name. `Get-AzureLocalUpdateRuns` (used by the Fleet Update Status pipeline) auto-resets `UpdateSideloaded` -> `False` and clears `UpdateVersionInProgress` when the latest run is `Succeeded` and its update name matches. Use `-SkipSideloadedReset` on read-only/assessment paths if you want to inspect tags without mutating them.
 - **New public function** `Reset-AzureLocalSideloadedTag` for explicit-scope manual reset (useful for one-off rotations or rescuing stuck tags via `-Force`).
 - **No new RBAC**. The workflow only reads/writes cluster tags; the existing `Microsoft.Resources/tags/read` and `/write` permissions documented below are sufficient.
+- **Fully opt-in**. Clusters without the `UpdateSideloaded` tag behave exactly as in v0.7.0 - the gate is bypassed, no module-managed tags are written. Pipelines do not need to be reconfigured for clusters that don't use sideloading. The Fleet Update Status pipeline will safely clean up an orphan `UpdateVersionInProgress` tag (`Action = OrphanCleared`) on opted-out clusters when the latest run name matches the tag.
 - See the [Sideloaded Payload Workflow section in the main README](../README.md#7a-sideloaded-payload-workflow-v071) for the full operator runbook.
 
 ### What's new for v0.7.0

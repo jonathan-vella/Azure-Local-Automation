@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `Set-AzLocalClusterTagsMerge` is now idempotent: when the requested tag merge produces no actual change against the cluster's current tags, the PATCH is skipped entirely. Avoids redundant ARM writes from overlapping fleet-pipeline runs and from auto-reset against already-clean clusters.
 - `Invoke-AzLocalSideloadedAutoResetForCluster` now distinguishes `Action = NoRuns` (cluster has no update history) from `RunNotSucceeded` (latest run is InProgress / Failed). Operators can tell "never updated" apart from "current run still running" in the auto-reset summary.
+- `Invoke-AzLocalSideloadedAutoResetForCluster` now also surfaces `Action = OrphanCleared`. If a cluster has no `UpdateSideloaded` tag (opted out of the workflow) but a leftover `UpdateVersionInProgress` tag exists from an earlier in-module update, **and** the latest run is `Succeeded` and its name matches that tag, the orphan tag is cleared on a best-effort basis. `UpdateSideloaded` is **never** written in this path - the cluster has explicitly opted out, we only clean up our own breadcrumb.
 - The sideloaded gate in `Start-AzureLocalClusterUpdate` and the auto-reset path now both read tags via the shape-agnostic `Get-TagValue` helper (handles both `[PSCustomObject]` and `[IDictionary]` tag containers consistently).
 
 ### CI/CD pipeline examples (v0.7.1)

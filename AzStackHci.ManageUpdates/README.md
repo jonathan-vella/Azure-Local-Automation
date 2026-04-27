@@ -448,6 +448,17 @@ Use this workflow when an admin manually copies an Azure Local update payload on
 4. **Update**: Next pipeline run sees `True`, proceeds through schedule/health gates, and starts the update. As the run kicks off, the module writes `UpdateVersionInProgress = <update name>` to the cluster.
 5. **Auto-reset**: When `Get-AzureLocalUpdateRuns` next reads runs for this cluster, it inspects the latest run. If it is `Succeeded` **and** its update name matches `UpdateVersionInProgress`, it flips `UpdateSideloaded` back to `False` and clears `UpdateVersionInProgress` in a single PATCH. The cluster is now re-armed for the next sideloaded payload.
 
+**Auto-reset action values** (returned by `Reset-AzureLocalSideloadedTag` and surfaced in `Get-AzureLocalUpdateRuns` verbose logs):
+
+| Action | Meaning |
+|--------|---------|
+| `Reset` | Match success path - both tags flipped/cleared in a single PATCH. |
+| `OrphanCleared` | `UpdateSideloaded` absent (cluster opted out) but a stale `UpdateVersionInProgress` tag matched the latest succeeded run name - the orphan tag was cleared. `UpdateSideloaded` is **never** written in this path. |
+| `NoTag` | `UpdateSideloaded` tag is absent and there is nothing to clean up. Cluster is fully outside the workflow. |
+| `NoRuns` | `UpdateSideloaded=True` but the cluster has no update-run history yet. Tag preserved. |
+| `RunNotSucceeded` | Latest run is `InProgress` / `Failed`. Tag preserved (will be re-evaluated next run). |
+| `Skipped` | `UpdateSideloaded=False` already, malformed tag value, version mismatch, or PATCH failure. Reason in the `Message` field. |
+
 **Manual reset (escape hatch):**
 
 ```powershell

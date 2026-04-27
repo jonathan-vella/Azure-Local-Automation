@@ -88,17 +88,31 @@
   case-insensitive). When set to False, Start-AzureLocalClusterUpdate blocks the
   update with Status="SideloadedBlocked" and a clear "UpdateSideloaded == False"
   message. Malformed values fail-closed (override with -Force).
-- New module-managed cluster tag `UpdateVersionInProgress`. Written automatically
-  on every successful update start (sideloaded or not) to the update name being
-  applied (e.g. "Solution12.2604.1003.209"). Provides an audit/correlation tag
-  visible in the Azure portal alongside UpdateRing/UpdateWindow.
+- New module-managed cluster tag `UpdateVersionInProgress`. Written by
+  Start-AzureLocalClusterUpdate alongside the staged update name (e.g.
+  "Solution12.2604.1003.209") to enable the auto-reset match check.
+- Fully opt-in: clusters without the `UpdateSideloaded` tag behave exactly as
+  in v0.7.0 - updates proceed through the existing schedule / health gates with
+  no behavioural change. Start-AzureLocalClusterUpdate still stamps
+  `UpdateVersionInProgress` on every started update (used as audit metadata
+  and to enable the orphan-tag cleanup path described below); on opted-out
+  clusters this tag is removed automatically the next time
+  Get-AzureLocalUpdateRuns sees a matching Succeeded run (Action=OrphanCleared).
 - Auto-reset in Get-AzureLocalUpdateRuns (default ON, opt-out via
-  -SkipSideloadedReset): when the latest run is Succeeded, UpdateSideloaded=True,
-  and UpdateVersionInProgress matches the run's update name (case-insensitive),
-  flips UpdateSideloaded=False and clears UpdateVersionInProgress.
+  -SkipSideloadedReset). Returns one of:
+  Reset (match success path - both tags flipped/cleared);
+  OrphanCleared (UpdateSideloaded absent but stale UpdateVersionInProgress
+  matched the latest succeeded run name - orphan tag cleared, UpdateSideloaded
+  never written);
+  NoTag (cluster fully outside the workflow);
+  NoRuns (UpdateSideloaded=True but no run history yet);
+  RunNotSucceeded (latest run InProgress / Failed - tag preserved);
+  Skipped (already False, malformed, version mismatch, or PATCH failure).
 - New public function Reset-AzureLocalSideloadedTag with explicit scope
   (-ClusterNames / -ClusterResourceIds / -ScopeByUpdateRingTag) and -Force escape
   hatch for stuck-tag recovery.
+- Set-AzLocalClusterTagsMerge is now idempotent - PATCH is skipped when the
+  merge produces no actual change against the cluster's current tags.
 - JUnit XML and CSV/HTML reporting recognise the new "SideloadedBlocked" status
   alongside ScheduleBlocked/HealthCheckBlocked.
 - RBAC unchanged: relies on existing Microsoft.Resources/tags/read +
