@@ -9,7 +9,11 @@
 #
 # REPORTS GENERATED:
 # - JUnit XML: Shows each cluster as a test case (passed/failed/skipped) for CI/CD visualization
-# - CSV: Detailed export for spreadsheet analysis
+#   (v0.7.1: testcase bodies now include `Start Time:` and `End Time:` lines per cluster).
+# - CSV: Detailed export for spreadsheet analysis (v0.7.1: includes `EndTime` column sourced
+#   from properties.progress.endTimeUtc, with fallback to properties.lastUpdatedTime - blank for InProgress runs).
+# - HTML report (Recent Update Run History section): includes `End Time` column for the
+#   aggregated multi-attempt row (v0.7.1).
 # - JSON: Machine-readable format for custom integrations
 #
 # AUTHENTICATION:

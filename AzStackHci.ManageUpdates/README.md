@@ -8,68 +8,44 @@ This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managi
 
 Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 
-## What's New in v0.7.0
+## Where to Start
 
-The jump from `0.6.5` to `0.7.0` is a large, fleet-scale release focused on correctness at 1500+ clusters, true parallel execution, HTML report performance, and a round of security hardening. No breaking public-surface changes. 
+If you are new to this module, work through these in order. Each step links to the dedicated reference section further down the README.
 
-### Fixed - Correctness at scale
-- **HIGH**: Azure Resource Graph queries were hardcoded to `az graph query --first 1000`. At 1500 clusters, 500 were silently dropped - no error, no warning. New private `Invoke-AzResourceGraphQuery` helper loops on the `$skipToken` until exhausted.
-- **HIGH**: `Invoke-AzureLocalFleetOperation -ThrottleLimit` previously only affected retry-backoff math; the per-cluster loop was fully sequential. At 1500 clusters that meant 4+ hour runs. Extracted the parallel `Start-Job` pattern into a shared private helper `Invoke-FleetJobsInParallel` and rerouted all fleet operations through it. `-ThrottleLimit` now controls concurrent API calls (default 4, range 1-16). PowerShell 5.1 compatibility preserved.
-- **HIGH**: `Get-AzureLocalClusterInventory` threw `The variable cannot be validated because the value '' is not a valid value for the UpdateRingValue variable.` whenever a cluster in the fleet was missing the `UpdateRing` tag. Root cause: the function's `[ValidatePattern]` parameter `$UpdateRingValue` collided with a loop-local `$updateRingValue` (PowerShell variable names are case-insensitive). Locals renamed to `$ringTagValue` / `$windowTagValue` / `$exclusionsTagValue`. `-AllClusters` reports now complete against real-world mixed-tag fleets.
+| Step | Goal | Function(s) |
+|------|------|-------------|
+| 1 | Authenticate to Azure | [`Connect-AzureLocalServicePrincipal`](#connect-azurelocalserviceprincipal) (or `az login` for interactive use) |
+| 2 | Discover what is in the fleet | [`Get-AzureLocalClusterInventory`](#get-azurelocalclusterinventory) |
+| 3 | Tag clusters into rings (Wave1, Prod, Test, ...) | [`Set-AzureLocalClusterUpdateRingTag`](#set-azurelocalclusterupdateringtag) |
+| 4 | Assess readiness for the wave | [`Get-AzureLocalClusterUpdateReadiness`](#get-azurelocalclusterupdatereadiness), [`Test-AzureLocalClusterHealth`](#test-azurelocalclusterhealth) |
+| 5 | Apply the update | [`Start-AzureLocalClusterUpdate`](#start-azurelocalclusterupdate) (single cluster or `-ScopeByUpdateRingTag` for a wave) |
+| 6 | Monitor and report | [`Get-AzureLocalUpdateRuns`](#get-azurelocalupdateruns), [`Get-AzureLocalFleetProgress`](#get-azurelocalfleetprogress), [`New-AzureLocalFleetStatusHtmlReport`](#new-azurelocalfleetstatushtmlreport) |
 
-### Changed - Performance (parallel by default)
-- These per-cluster functions now run in parallel batches via the shared helper: `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Set-AzureLocalClusterUpdateRingTag`, `Get-AzureLocalUpdateRuns`. Expected 5-10x speedup on 1500-cluster runs (readiness check from ~10 min to ~1-2 min).
-- `New-AzureLocalFleetStatusHtmlReport` renderer rewritten for O(n) scaling: pre-indexed `LatestRuns` and `ClusterDetails` hashtables, HTML encoding moved to collection time, per-cluster portal URLs precomputed once. ~60% faster HTML render at 1500 clusters.
-- HTML report output now written as UTF-8 **without BOM** via `[System.IO.File]::WriteAllText` + `UTF8Encoding($false)`.
-- New opt-in pass-through parameters (`-UpdateSummary`, `-AvailableUpdates`) so pre-fetched data can be reused across a pipeline, avoiding redundant ARM reads.
+### Common workflows (function-invocation order)
 
-### Changed - `-AllClusters` cap removed
-- `New-AzureLocalFleetStatusHtmlReport -AllClusters` and `Get-AzureLocalFleetStatusData -AllClusters` previously truncated at the first 100 clusters silently. **The default cap is removed - all discovered clusters are now included.** New `-MaxClusters <int>` parameter (default 0 = no cap, range 1-100000) lets callers optionally trim the slice for targeted runs or testing.
+| Scenario | Recommended order |
+|----------|-------------------|
+| **One-off cluster update** | `Connect-AzureLocalServicePrincipal` -> `Get-AzureLocalUpdateSummary` -> `Get-AzureLocalAvailableUpdates` -> `Start-AzureLocalClusterUpdate` -> `Get-AzureLocalUpdateRuns` |
+| **Staged wave deployment** | `Get-AzureLocalClusterInventory` -> `Set-AzureLocalClusterUpdateRingTag` -> `Get-AzureLocalClusterUpdateReadiness -ScopeByUpdateRingTag` -> `Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag` -> `Get-AzureLocalFleetProgress` -> `New-AzureLocalFleetStatusHtmlReport` |
+| **Daily fleet status report** | `Get-AzureLocalFleetStatusData -AllClusters -IncludeUpdateRuns -IncludeHealthDetails -ExportPath ...` -> `New-AzureLocalFleetStatusHtmlReport -StatusData $data -OutputPath ...` |
+| **Pre-update health gate (CI/CD)** | `Test-AzureLocalClusterHealth -BlockingOnly` -> `Test-AzureLocalUpdateScheduleAllowed` -> `Test-AzureLocalFleetHealthGate` -> proceed only on pass |
+| **Sideloaded payload (v0.7.1)** | Operator sets `UpdateSideloaded=False` -> stage payload out-of-band -> operator flips `UpdateSideloaded=True` -> `Start-AzureLocalClusterUpdate` (auto-stamps `UpdateVersionInProgress`) -> `Get-AzureLocalUpdateRuns` (auto-resets tags on success) -> `Reset-AzureLocalSideloadedTag -Force` only if a tag gets stuck |
+| **Pause / resume long fleet run** | `Stop-AzureLocalFleetUpdate -SaveState` -> ... -> `Resume-AzureLocalFleetUpdate -StateFilePath ...` |
+| **Recover from emergency** | `Stop-AzureLocalFleetUpdate` -> `Test-AzureLocalClusterHealth` (assess) -> `Resume-AzureLocalFleetUpdate -RetryFailed` |
 
-### Fixed - Bugs and strict-mode hardening
-- All `| ConvertFrom-Json` call sites outside `Invoke-AzRestJson` audited - previously any non-JSON ARM response (HTTP 204, error HTML, stray stderr on stdout) would throw uncaught under Strict Mode.
-- Empty-pipeline guards added to health-failures and latest-run aggregation paths so they no longer silently return `$null`.
-- Update-name sort is now deterministic (secondary sort on `$_.name`); unparseable YYMM components log a `Warning` instead of silently grouping at position 0.
-- Parallel CSV log writes: each worker writes a per-job CSV; coordinator merges at the end. Eliminates line interleaving / header corruption that `Add-Content` cannot protect against.
-- Tag property access is now robust to both `Hashtable` and `PSCustomObject` tag shapes returned by different ARM endpoints.
-- Malformed `UpdateWindow` / `UpdateExclusions` tag values are now **blocking** by default (update skipped, `Error` logged) unless `-Force` is specified. Previously logged as a warning and the update proceeded.
+> Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-### Security
-- `-UpdateRingValue` is whitelist-validated against `^[a-zA-Z0-9._-]+$` before KQL interpolation in ARG queries.
-- New private helper `ConvertTo-SafeCsvField` prefixes formula-leader characters (`=`, `+`, `-`, `@`, tab) with a single quote and strips embedded CR/LF. Applied uniformly to every field written by the CSV loggers. Prevents Excel formula injection via attacker-controlled cluster name / error message.
-- User-supplied output paths (`-OutputPath`, `-ExportResultsPath`, `-LogFolderPath`, `-StateFilePath`) are resolved via `[IO.Path]::GetFullPath()`, length-capped at 248 chars, and rejected if they contain `..\` traversal sequences when a relative root was expected.
-- Az CLI error output is scrubbed before being written to logs: `--password <value>` / `--secret <value>` echoes masked; token-shaped substrings redacted.
-- `Invoke-AzRestJson` handles mid-run token expiry: on HTTP 401 it runs `az account get-access-token` once, refreshes, and retries. Long fleet operations crossing the 1-hour token boundary no longer fail partway through.
-- `Stop-AzureLocalFleetUpdate` and `New-AzureLocalFleetStatusHtmlReport` now support `ShouldProcess` (`-WhatIf` / `-Confirm`).
+## What's New in v0.7.1
 
-### Changed - Maintenance window tag format
-- **Breaking for pre-release consumers only (no one was using this yet)**: the `UpdateWindow` Azure resource tag now uses `_` as the separator between the day-spec and the time range, instead of `:`. This removes the ambiguity with the `HH:MM` time portion and makes the tag easier to read at a glance.
-  - Old: `Mon-Fri:22:00-02:00`
-  - **New: `Mon-Fri_22:00-02:00`**
-  - Multi-window separator (`;`) and day-range separator (`-`) are unchanged.
-  - The parser in `ConvertFrom-AzLocalUpdateWindow` will throw `Invalid window segment syntax` for the old format; combined with the fail-closed schedule-tag evaluation above, any cluster still carrying the old tag value will have its updates blocked until re-tagged. Use `Set-AzureLocalClusterUpdateRingTag -UpdateWindowValue 'Mon-Fri_22:00-02:00' -Force` to migrate.
+- **Sideloaded payload workflow (new)**: opt-in two-tag protocol (`UpdateSideloaded` set by operator, `UpdateVersionInProgress` set by module) for staging out-of-band update payloads. `Start-AzureLocalClusterUpdate` blocks with `Status = SideloadedBlocked` while the payload is being staged. `Get-AzureLocalUpdateRuns` auto-resets the tags once the matching run succeeds. New public function [`Reset-AzureLocalSideloadedTag`](#reset-azurelocalsideloadedtag) for explicit / `-Force` recovery. See [section 7a](#7a-sideloaded-payload-workflow-v071) for the full flow. **No new RBAC required** - rides on the existing `Microsoft.Resources/tags/read|write` permissions.
+- **EndTime column for update runs**: new `EndTime` column on `Get-AzureLocalUpdateRuns` table output, sourced from `properties.progress.endTimeUtc` (most accurate "work finished" timestamp), falling back to `properties.lastUpdatedTime`. Blank for `InProgress` runs. Per-run `Duration` now prefers ARM-reported `properties.duration` (ISO-8601 timespan) over the computed `EndTime - StartTime` delta, so it is immune to clock skew. Fleet HTML report's "Recent Update Run History" gains an `End Time` column; JUnit XML test bodies include `Start Time:` / `End Time:` lines per testcase (the JUnit `time=` attribute is unchanged).
+- **Idempotent tag merges**: `Set-AzLocalClusterTagsMerge` (private helper used by both `Set-AzureLocalClusterUpdateRingTag` and the sideloaded workflow) now skips the PATCH when the merge produces no actual change against the cluster's current tags. Quieter logs and one less ARM write per no-op.
+- **Enterprise-readiness review fixes**:
+  - **Security**: `Write-UpdateCsvLog` (the diagnostic CSV path used during apply runs) now sanitises every field through `ConvertTo-SafeCsvField` before quote-escaping, closing the same Excel-formula-injection gap on the interim `Update_Skipped.csv` / `Update_Started.csv` logs that was already covered for the final exported results.
+  - **Operational**: parallel `Get-AzureLocalFleetStatusData` job dispatch now treats `Stopped` and `Disconnected` job states as failures alongside `Failed`. Previously these terminal states fell through into `Receive-Job` and were misdiagnosed as "no output", obscuring the real cause of `Stop-Job` / Ctrl-C / remoting-disconnect scenarios.
+  - **Performance**: `Get-AzureLocalUpdateSummary`, `Get-AzureLocalClusterUpdateReadiness`, `Start-AzureLocalClusterUpdate`, `Get-AzureLocalUpdateRuns`, and the private `Get-AzLocalClusterUpdateRuns` helper now accumulate per-cluster results in a `[System.Collections.Generic.List[object]]` (O(1) amortised `.Add()`) instead of an `Object[]` with `+=` (O(n^2) total). Measurable speed-up at fleet scale (1000+ clusters); no API surface change - the functions still return arrays.
 
-### Changed - Fleet HTML report Recent Update Run History
-- Duration now uses `HH:MM:SS` fixed-width format (was `N.N hours` fractional). Easier to read, no loss of precision, survives multi-day runs (`52:15:30` for 52h 15m).
-- **Attempts are now aggregated per update**: when an update runs multiple times on a cluster (a re-run after failure), the report shows **one row** with `Update Attempts = N` and `Duration = <sum of all attempts>` instead of showing just the last attempt's duration. `StartTime` reflects the earliest attempt; `State` / `Progress` / `Current Step` reflect the latest attempt.
-- New **Update Attempts** column is shown **only** when at least one cluster has >1 attempt on its current update, keeping single-attempt fleets uncluttered.
-- Only the most-recently-started update per cluster is displayed (one row per cluster); historical update versions from prior cycles are no longer duplicated into separate rows.
-
-### Changed - Cluster Information section (HTML report)
-- New **Current SBE Version** column shows the solution-builder-extension version installed on each cluster, alongside the solution update version. Extracted from the `/updates` `additionalProperties.SBEVersion` of the most recent applied SBE update and surfaced through `Get-AzureLocalFleetStatusData` and the GitHub Actions / Azure DevOps fleet-status pipelines.
-
-### Changed - `Start-AzureLocalClusterUpdate`
-- `-WhatIf` output is no longer polluted by the module's own `Write-Log` / `Write-UpdateCsvLog` side effects, internal `Env:` cleanup, or log-folder creation. Previously every internal housekeeping line produced a `What if:` row. Now only the actual ARM `POST` `apply/action` call appears in the WhatIf preview.
-- `-WhatIf` runs (and `ShouldProcess`-declined runs) now count as **WouldUpdate** in the final summary and are surfaced distinctly from `Started` / `Skipped` / `Failed`. Makes dry-runs at fleet scale actually auditable.
-
-### Added - `Format-AzLocalDurationHuman` helper (private)
-- Central helper for duration rendering; accepts `[TimeSpan]`, numeric seconds, or `HH:MM:SS` string. Emits `"1 hour 23 minutes"` style for the per-run `Get-AzureLocalUpdateRuns` output. The fleet HTML report uses its own `HH:MM:SS` formatter because it sums across attempts (see above).
-
-### Notes
-- No breaking changes to exported functions or parameter sets. All new helpers are private.
-- Az CLI remains the ARM transport for v0.7.0; a native `Invoke-RestMethod` port is deferred.
-
-> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.6.5 and earlier changes.
+> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.7.0 and earlier changes.
 
 ## Files
 
@@ -1512,6 +1488,160 @@ Note: Updates already in progress on individual clusters will continue.
 
 ---
 
+### `Test-AzureLocalUpdateScheduleAllowed`
+
+Master gate that evaluates whether an update is allowed against the `UpdateWindow` (maintenance schedule) and `UpdateExclusions` (blackout periods) tag values. Exclusions take priority over windows. Returns a structured result with `Allowed`, `Reason`, `WindowOpen`, `ExclusionActive`, and `Details`. Used internally by `Start-AzureLocalClusterUpdate` and exposed as a public function so pipelines can pre-flight a wave before triggering the apply step.
+
+> **Fail-closed behaviour**: malformed `UpdateWindow` / `UpdateExclusions` tag values cause this function to throw rather than swallow - this is intentional so the calling apply path can block the update unless `-Force` is supplied.
+
+**Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `-UpdateWindow` | String | No | (none) | The `UpdateWindow` tag value (e.g. `Mon-Fri_22:00-02:00;Sat-Sun_02:00-06:00`). Empty/null = no window restriction. |
+| `-UpdateExclusions` | String | No | (none) | The `UpdateExclusions` tag value (e.g. `2026-12-20/2027-01-03;2027-04-05`). Empty/null = no exclusion restriction. |
+| `-TestTime` | DateTime | No | `(Get-Date).ToUniversalTime()` | UTC time to test against. Local/Unspecified inputs are normalised to UTC automatically. |
+
+**Examples:**
+
+```powershell
+# Pre-flight a wave: would now be allowed?
+$gate = Test-AzureLocalUpdateScheduleAllowed `
+    -UpdateWindow 'Sat-Sun_02:00-06:00' `
+    -UpdateExclusions '2026-12-20/2027-01-03'
+
+if (-not $gate.Allowed) {
+    Write-Host "Wave blocked: $($gate.Reason) - $($gate.Details)"
+    exit 1
+}
+
+# Test a specific UTC point in time (e.g. when the pipeline will run tonight)
+Test-AzureLocalUpdateScheduleAllowed `
+    -UpdateWindow 'Mon-Fri_22:00-02:00' `
+    -TestTime ([DateTime]::UtcNow.AddHours(6))
+```
+
+---
+
+### `Reset-AzureLocalSideloadedTag`
+
+Explicit, scope-required entry point for the same auto-reset logic that `Get-AzureLocalUpdateRuns` runs by default. Use it to: (a) manually reset the sideloaded tags after an out-of-band update where `Get-AzureLocalUpdateRuns` was not executed (or was run with `-SkipSideloadedReset`), or (b) force-clear a stuck `UpdateSideloaded=True` tag with `-Force`.
+
+For each in-scope cluster the function fetches the latest update run and applies the same decision matrix as the auto-reset path - see [the action-values table in section 7a](#7a-sideloaded-payload-workflow-v071) for the full meaning of `Reset` / `OrphanCleared` / `NoTag` / `RunNotSucceeded` / `Skipped`. **Scope must be explicit** - there is no implicit `-AllClusters`. Supports `-WhatIf` / `-Confirm` (`ConfirmImpact = Medium`).
+
+**Parameter sets:**
+
+| Parameter set | Required | Use when |
+|---------------|----------|----------|
+| `ByName` | `-ClusterNames <string[]>` (+ optional `-ResourceGroupName`) | Resetting one or a small list of named clusters. |
+| `ByResourceId` | `-ClusterResourceIds <string[]>` | Resetting by full ARM resource IDs (e.g. piped from another query). |
+| `ByTag` | `-ScopeByUpdateRingTag` + `-UpdateRingValue <string>` | Bulk reset across an UpdateRing (e.g. all of `Wave1`). |
+
+**Common parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `-SubscriptionId` | String | No | Current `az` subscription | Override subscription context. |
+| `-ApiVersion` | String | No | Module default | ARM api-version for the cluster + tag PATCH calls. |
+| `-Force` | Switch | No | - | Bypasses the `UpdateVersionInProgress` match check. **Still requires the cluster's latest run state to be `Succeeded`** - this prevents flipping the gate while an in-flight update is still running. |
+
+**Returns:** `PSCustomObject[]` - one row per cluster with `ClusterName`, `Action`, `PreviousSideloaded`, `NewSideloaded`, `StagedVersion`, `MatchedRunUpdateName`, `Message`.
+
+**Examples:**
+
+```powershell
+# Inspect a single cluster (no changes)
+Reset-AzureLocalSideloadedTag -ClusterNames 'cl-01' -ResourceGroupName 'rg-fleet' -WhatIf
+
+# Bulk reset across an UpdateRing, default behaviour: only succeeded runs get reset
+Reset-AzureLocalSideloadedTag -ScopeByUpdateRingTag -UpdateRingValue 'Wave1'
+
+# Force-clear a stuck cluster (operator abandoned the staged payload).
+# -Force still requires latest run = Succeeded; it just bypasses the version-match check.
+Reset-AzureLocalSideloadedTag -ClusterNames 'cl-stuck' -Force -Confirm:$false
+```
+
+> **No new RBAC required.** Uses the same `Microsoft.Resources/tags/read` + `Microsoft.Resources/tags/write` already required by `Set-AzureLocalClusterUpdateRingTag`.
+
+---
+
+### `Get-AzureLocalFleetStatusData`
+
+Single-pass data collector that gathers everything `New-AzureLocalFleetStatusHtmlReport` needs, in one structured object. Returns a `PSCustomObject` with `SchemaVersion`, `Timestamp`, `ModuleVersion`, `Scope`, `Readiness`, `ClusterDetails`, `LatestRuns`, `HealthResults`. Use this when you want to:
+
+- Decouple data collection from rendering (collect once in a CI/CD job, render in another).
+- Pass data between pipeline stages as a JSON artifact (`-ExportPath`).
+- Avoid the redundant API calls that happen if you call the readiness / inventory / health functions separately.
+
+Honours `-ThrottleLimit 1-8` for parallel collection; default 4.
+
+**Parameter sets:** `ByResourceId` / `ByName` / `ByTag` / `All` (mirrors the other fleet functions).
+
+**Common parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `-IncludeUpdateRuns` | Switch | - | Collect latest update run history per cluster. |
+| `-IncludeHealthDetails` | Switch | - | Collect detailed health-check failure data per cluster. |
+| `-ThrottleLimit` | Int 1-8 | 4 | Parallel workers. Set 1 for sequential / debugging. |
+| `-MaxClusters` | Int 0-100000 | 0 (no cap) | Optional cap when `-AllClusters` is used. |
+| `-ExportPath` | String | - | JSON path for the artifact. |
+
+**Examples:**
+
+```powershell
+# One-step: collect + render
+$data = Get-AzureLocalFleetStatusData -AllClusters -ThrottleLimit 4 -IncludeUpdateRuns -IncludeHealthDetails
+New-AzureLocalFleetStatusHtmlReport -StatusData $data -OutputPath 'C:\Reports\fleet.html'
+
+# CI/CD: collect in job 1, render in job 2 from the artifact
+Get-AzureLocalFleetStatusData -ScopeByUpdateRingTag -UpdateRingValue 'Wave1' `
+    -IncludeUpdateRuns -IncludeHealthDetails `
+    -ExportPath '$(Pipeline.Workspace)/fleet-data.json'
+```
+
+---
+
+### `New-AzureLocalFleetStatusHtmlReport`
+
+Renders a self-contained HTML report (executive summary, progress bar, cluster status table, optional health-details and update-run-history sections, embedded CSS). UTF-8 without BOM; safe to email or host on SharePoint. Supports `-WhatIf` / `-Confirm`.
+
+Two ways to drive it:
+
+1. **Self-collecting** (default): pass a scope (`-AllClusters` / `-ClusterNames` / `-ScopeByUpdateRingTag` / `-ClusterResourceIds`) and the function will call `Get-AzureLocalClusterInventory`, `Get-AzureLocalClusterUpdateReadiness`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates` (and optionally `Get-AzureLocalUpdateRuns` / `Test-AzureLocalClusterHealth`) itself.
+2. **From pre-collected data**: pass `-StatusData $data` (the object returned by `Get-AzureLocalFleetStatusData`) and the function skips all API calls, going straight to rendering. **Use this in CI/CD to avoid double-billing yourself for ARM reads.**
+
+**Common parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `-OutputPath` | String | Yes | - | Destination `.html` / `.htm` file. Validated. |
+| `-StatusData` | PSCustomObject | No | - | Pre-collected payload from `Get-AzureLocalFleetStatusData`. |
+| `-IncludeUpdateRuns` | Switch | No | - | Add the **Recent Update Run History** section (now includes `End Time` column - v0.7.1). |
+| `-IncludeHealthDetails` | Switch | No | - | Add the detailed health-check failure section. |
+| `-Title` | String | No | Auto | Custom report title (auto-derived from scope if omitted). |
+| `-MaxClusters` | Int 0-100000 | No | 0 (no cap) | Optional cap when `-AllClusters` is used. |
+| `-ThrottleLimit` | Int 1-8 | No | 4 | Parallel workers (only relevant when self-collecting). |
+| `-PassThru` | Switch | No | - | Also return the HTML string (useful for emailing). |
+
+**Examples:**
+
+```powershell
+# Whole fleet, full detail
+New-AzureLocalFleetStatusHtmlReport -AllClusters `
+    -OutputPath 'C:\Reports\fleet.html' `
+    -IncludeUpdateRuns -IncludeHealthDetails
+
+# Wave-scoped, capture HTML for email body
+$html = New-AzureLocalFleetStatusHtmlReport `
+    -ScopeByUpdateRingTag -UpdateRingValue 'Wave1' `
+    -OutputPath 'C:\Reports\wave1.html' -PassThru
+
+# Two-stage CI/CD pattern (no double API calls)
+$data = Get-AzureLocalFleetStatusData -AllClusters -IncludeUpdateRuns -IncludeHealthDetails
+New-AzureLocalFleetStatusHtmlReport -StatusData $data -OutputPath 'C:\Reports\fleet.html'
+```
+
+---
+
 ## Logging and Output
 
 The module includes comprehensive logging capabilities for tracking update operations.
@@ -1919,6 +2049,67 @@ This code is provided as-is for educational and reference purposes.
 ---
 
 ## Release History
+
+### What's New in v0.7.0
+
+The jump from `0.6.5` to `0.7.0` is a large, fleet-scale release focused on correctness at 1500+ clusters, true parallel execution, HTML report performance, and a round of security hardening. No breaking public-surface changes.
+
+#### Fixed - Correctness at scale
+- **HIGH**: Azure Resource Graph queries were hardcoded to `az graph query --first 1000`. At 1500 clusters, 500 were silently dropped - no error, no warning. New private `Invoke-AzResourceGraphQuery` helper loops on the `$skipToken` until exhausted.
+- **HIGH**: `Invoke-AzureLocalFleetOperation -ThrottleLimit` previously only affected retry-backoff math; the per-cluster loop was fully sequential. At 1500 clusters that meant 4+ hour runs. Extracted the parallel `Start-Job` pattern into a shared private helper `Invoke-FleetJobsInParallel` and rerouted all fleet operations through it. `-ThrottleLimit` now controls concurrent API calls (default 4, range 1-16). PowerShell 5.1 compatibility preserved.
+- **HIGH**: `Get-AzureLocalClusterInventory` threw `The variable cannot be validated because the value '' is not a valid value for the UpdateRingValue variable.` whenever a cluster in the fleet was missing the `UpdateRing` tag. Root cause: the function's `[ValidatePattern]` parameter `$UpdateRingValue` collided with a loop-local `$updateRingValue` (PowerShell variable names are case-insensitive). Locals renamed to `$ringTagValue` / `$windowTagValue` / `$exclusionsTagValue`. `-AllClusters` reports now complete against real-world mixed-tag fleets.
+
+#### Changed - Performance (parallel by default)
+- These per-cluster functions now run in parallel batches via the shared helper: `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Set-AzureLocalClusterUpdateRingTag`, `Get-AzureLocalUpdateRuns`. Expected 5-10x speedup on 1500-cluster runs (readiness check from ~10 min to ~1-2 min).
+- `New-AzureLocalFleetStatusHtmlReport` renderer rewritten for O(n) scaling: pre-indexed `LatestRuns` and `ClusterDetails` hashtables, HTML encoding moved to collection time, per-cluster portal URLs precomputed once. ~60% faster HTML render at 1500 clusters.
+- HTML report output now written as UTF-8 **without BOM** via `[System.IO.File]::WriteAllText` + `UTF8Encoding($false)`.
+- New opt-in pass-through parameters (`-UpdateSummary`, `-AvailableUpdates`) so pre-fetched data can be reused across a pipeline, avoiding redundant ARM reads.
+
+#### Changed - `-AllClusters` cap removed
+- `New-AzureLocalFleetStatusHtmlReport -AllClusters` and `Get-AzureLocalFleetStatusData -AllClusters` previously truncated at the first 100 clusters silently. **The default cap is removed - all discovered clusters are now included.** New `-MaxClusters <int>` parameter (default 0 = no cap, range 1-100000) lets callers optionally trim the slice for targeted runs or testing.
+
+#### Fixed - Bugs and strict-mode hardening
+- All `| ConvertFrom-Json` call sites outside `Invoke-AzRestJson` audited - previously any non-JSON ARM response (HTTP 204, error HTML, stray stderr on stdout) would throw uncaught under Strict Mode.
+- Empty-pipeline guards added to health-failures and latest-run aggregation paths so they no longer silently return `$null`.
+- Update-name sort is now deterministic (secondary sort on `$_.name`); unparseable YYMM components log a `Warning` instead of silently grouping at position 0.
+- Parallel CSV log writes: each worker writes a per-job CSV; coordinator merges at the end. Eliminates line interleaving / header corruption that `Add-Content` cannot protect against.
+- Tag property access is now robust to both `Hashtable` and `PSCustomObject` tag shapes returned by different ARM endpoints.
+- Malformed `UpdateWindow` / `UpdateExclusions` tag values are now **blocking** by default (update skipped, `Error` logged) unless `-Force` is specified. Previously logged as a warning and the update proceeded.
+
+#### Security
+- `-UpdateRingValue` is whitelist-validated against `^[a-zA-Z0-9._-]+$` before KQL interpolation in ARG queries.
+- New private helper `ConvertTo-SafeCsvField` prefixes formula-leader characters (`=`, `+`, `-`, `@`, tab) with a single quote and strips embedded CR/LF. Applied uniformly to every field written by the CSV loggers. Prevents Excel formula injection via attacker-controlled cluster name / error message.
+- User-supplied output paths (`-OutputPath`, `-ExportResultsPath`, `-LogFolderPath`, `-StateFilePath`) are resolved via `[IO.Path]::GetFullPath()`, length-capped at 248 chars, and rejected if they contain `..\` traversal sequences when a relative root was expected.
+- Az CLI error output is scrubbed before being written to logs: `--password <value>` / `--secret <value>` echoes masked; token-shaped substrings redacted.
+- `Invoke-AzRestJson` handles mid-run token expiry: on HTTP 401 it runs `az account get-access-token` once, refreshes, and retries. Long fleet operations crossing the 1-hour token boundary no longer fail partway through.
+- `Stop-AzureLocalFleetUpdate` and `New-AzureLocalFleetStatusHtmlReport` now support `ShouldProcess` (`-WhatIf` / `-Confirm`).
+
+#### Changed - Maintenance window tag format
+- **Breaking for pre-release consumers only (no one was using this yet)**: the `UpdateWindow` Azure resource tag now uses `_` as the separator between the day-spec and the time range, instead of `:`. This removes the ambiguity with the `HH:MM` time portion and makes the tag easier to read at a glance.
+  - Old: `Mon-Fri:22:00-02:00`
+  - **New: `Mon-Fri_22:00-02:00`**
+  - Multi-window separator (`;`) and day-range separator (`-`) are unchanged.
+  - The parser in `ConvertFrom-AzLocalUpdateWindow` will throw `Invalid window segment syntax` for the old format; combined with the fail-closed schedule-tag evaluation above, any cluster still carrying the old tag value will have its updates blocked until re-tagged. Use `Set-AzureLocalClusterUpdateRingTag -UpdateWindowValue 'Mon-Fri_22:00-02:00' -Force` to migrate.
+
+#### Changed - Fleet HTML report Recent Update Run History
+- Duration now uses `HH:MM:SS` fixed-width format (was `N.N hours` fractional). Easier to read, no loss of precision, survives multi-day runs (`52:15:30` for 52h 15m).
+- **Attempts are now aggregated per update**: when an update runs multiple times on a cluster (a re-run after failure), the report shows **one row** with `Update Attempts = N` and `Duration = <sum of all attempts>` instead of showing just the last attempt's duration. `StartTime` reflects the earliest attempt; `State` / `Progress` / `Current Step` reflect the latest attempt.
+- New **Update Attempts** column is shown **only** when at least one cluster has >1 attempt on its current update, keeping single-attempt fleets uncluttered.
+- Only the most-recently-started update per cluster is displayed (one row per cluster); historical update versions from prior cycles are no longer duplicated into separate rows.
+
+#### Changed - Cluster Information section (HTML report)
+- New **Current SBE Version** column shows the solution-builder-extension version installed on each cluster, alongside the solution update version. Extracted from the `/updates` `additionalProperties.SBEVersion` of the most recent applied SBE update and surfaced through `Get-AzureLocalFleetStatusData` and the GitHub Actions / Azure DevOps fleet-status pipelines.
+
+#### Changed - `Start-AzureLocalClusterUpdate`
+- `-WhatIf` output is no longer polluted by the module's own `Write-Log` / `Write-UpdateCsvLog` side effects, internal `Env:` cleanup, or log-folder creation. Previously every internal housekeeping line produced a `What if:` row. Now only the actual ARM `POST` `apply/action` call appears in the WhatIf preview.
+- `-WhatIf` runs (and `ShouldProcess`-declined runs) now count as **WouldUpdate** in the final summary and are surfaced distinctly from `Started` / `Skipped` / `Failed`. Makes dry-runs at fleet scale actually auditable.
+
+#### Added - `Format-AzLocalDurationHuman` helper (private)
+- Central helper for duration rendering; accepts `[TimeSpan]`, numeric seconds, or `HH:MM:SS` string. Emits `"1 hour 23 minutes"` style for the per-run `Get-AzureLocalUpdateRuns` output. The fleet HTML report uses its own `HH:MM:SS` formatter because it sums across attempts (see above).
+
+#### Notes
+- No breaking changes to exported functions or parameter sets. All new helpers are private.
+- Az CLI remains the ARM transport for v0.7.0; a native `Invoke-RestMethod` port is deferred.
 
 ### What's New in v0.6.5
 

@@ -83,6 +83,22 @@
             ReleaseNotes = @'
 ## Version 0.7.1 - EndTime column for update runs + Sideloaded payload workflow
 
+### Enterprise-readiness review fixes (v0.7.1)
+- Security: Write-UpdateCsvLog (the diagnostic CSV path used during apply runs)
+  now sanitises every field through ConvertTo-SafeCsvField before quote-escaping,
+  closing a CSV-injection gap in the interim Update_Skipped.csv / Update_Started.csv
+  logs (the final exported results path was already protected).
+- Operational: parallel Get-AzureLocalFleetStatusData job dispatch now treats
+  Stopped and Disconnected job states as failures alongside Failed, so Stop-Job /
+  Ctrl-C / remoting-disconnect scenarios are surfaced rather than misdiagnosed as
+  "no output".
+- Performance: Get-AzureLocalUpdateSummary, Get-AzureLocalClusterUpdateReadiness,
+  Start-AzureLocalClusterUpdate, Get-AzureLocalUpdateRuns, and the private
+  Get-AzLocalClusterUpdateRuns helper now accumulate per-cluster results in a
+  [System.Collections.Generic.List[object]] (O(1) amortised .Add()) instead of an
+  Object[] with += (O(n^2) total). Measurable speed-up at fleet scale (1000+
+  clusters); no API surface change - the functions still return arrays.
+
 ### Sideloaded payload workflow (new)
 - New optional cluster tag `UpdateSideloaded` (operator-set: True / False / 1 / 0,
   case-insensitive). When set to False, Start-AzureLocalClusterUpdate blocks the
