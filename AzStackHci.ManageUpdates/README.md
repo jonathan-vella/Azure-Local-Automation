@@ -431,6 +431,8 @@ Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Production
 
 Use this workflow when an admin manually copies an Azure Local update payload onto a cluster (sideloading) and wants the module to gate `Start-AzureLocalClusterUpdate` until the payload is in place, then automatically clear the gate once the run succeeds.
 
+> ✅ **Fully opt-in.** Clusters that do not have the `UpdateSideloaded` tag behave exactly as in v0.7.0 - the gate is bypassed entirely and updates proceed through the existing schedule/health checks. You only "join" the workflow by setting the tag on a specific cluster when you want to stage a sideloaded payload. No new RBAC, no fleet-wide opt-out switch needed.
+
 **Two tags coordinate the workflow:**
 
 | Tag | Set by | Values | Purpose |
