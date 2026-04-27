@@ -4607,7 +4607,7 @@ function Get-AzLocalClusterUpdateRuns {
         $uri = "https://management.azure.com$resourceId/updates/$updateNameFilter/updateRuns?api-version=$apiVer"
         $result = (Invoke-AzRestJson -Uri $uri).Data
         if ($LASTEXITCODE -eq 0 -and $result.value) {
-            $allRuns = $result.value
+            foreach ($_run in @($result.value)) { $allRuns.Add($_run) | Out-Null }
         }
     }
     else {
