@@ -1,6 +1,15 @@
 # Inventory Azure Local Clusters
 # This workflow queries all Azure Local clusters and exports inventory with UpdateRing tag status
 #
+# v0.7.1 OUTPUT COLUMNS:
+#   ClusterName, ResourceGroup, SubscriptionId, SubscriptionName,
+#   UpdateRing, HasUpdateRingTag, UpdateWindow, UpdateExclusions,
+#   UpdateSideloaded, UpdateVersionInProgress, ResourceId
+#
+#   - UpdateSideloaded (operator-set): True/False/1/0 - sideloaded-payload gate
+#   - UpdateVersionInProgress (module-managed; do not edit): staged update name
+#   See main module README, section "Sideloaded Payload Workflow (v0.7.1)".
+#
 # AUTHENTICATION OPTIONS:
 # This workflow supports two authentication methods:
 # 1. OpenID Connect (OIDC) - RECOMMENDED - No secrets, uses federated credentials

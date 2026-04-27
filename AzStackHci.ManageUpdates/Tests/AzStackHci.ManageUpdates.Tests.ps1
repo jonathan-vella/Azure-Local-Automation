@@ -1630,6 +1630,38 @@ Describe 'Integration: Start-AzureLocalClusterUpdate Schedule Status' {
             }
         }
     }
+
+    Context 'JUnit XML export handles SideloadedBlocked (v0.7.1)' {
+        It 'Export-ResultsToJUnitXml should handle SideloadedBlocked result' {
+            $testResult = [PSCustomObject]@{
+                ClusterName = 'test-cluster'
+                Status      = 'SideloadedBlocked'
+                Message     = 'UpdateSideloaded == False, update is blocked'
+                UpdateName  = $null
+                StartTime   = Get-Date
+                EndTime     = Get-Date
+                Duration    = '00:00:01'
+            }
+            $outputPath = Join-Path $env:TEMP "pester-junit-sideloaded-test.xml"
+            try {
+                & (Get-Module 'AzStackHci.ManageUpdates') {
+                    param($results, $path)
+                    Export-ResultsToJUnitXml -Results $results -OutputPath $path -TestSuiteName 'Test' -OperationType 'StartUpdate'
+                } @($testResult) $outputPath
+
+                $outputPath | Should -Exist
+                $xml = [xml](Get-Content $outputPath -Raw)
+                $testCase = $xml.SelectSingleNode('//testcase')
+                $testCase | Should -Not -BeNullOrEmpty
+                $failure = $testCase.SelectSingleNode('failure')
+                $failure | Should -Not -BeNullOrEmpty
+                $failure.type | Should -Be 'SideloadedBlocked'
+            }
+            finally {
+                if (Test-Path $outputPath) { Remove-Item $outputPath -Force }
+            }
+        }
+    }
 }
 
 #endregion Update Schedule Tag Helpers Tests
@@ -2690,6 +2722,14 @@ Describe 'Helper Function: Invoke-AzLocalSideloadedAutoResetForCluster (Internal
         $global:azGetTagsJson = '{"tags":{"UpdateSideloaded":"True","UpdateVersionInProgress":"Solution12.2604.1003.209"}}'
         $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState InProgress -LatestRunUpdateName 'Solution12.2604.1003.209' } $rid
         $r.Action | Should -Be 'RunNotSucceeded'
+        $global:azPatchCalled | Should -Be $false
+    }
+
+    It 'Action=NoRuns when latest run state is empty (cluster has no run history)' {
+        $global:azGetTagsJson = '{"tags":{"UpdateSideloaded":"True","UpdateVersionInProgress":"Solution12.2604.1003.209"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState '' -LatestRunUpdateName '' } $rid
+        $r.Action | Should -Be 'NoRuns'
+        $r.Message | Should -BeLike '*no update runs*'
         $global:azPatchCalled | Should -Be $false
     }
 

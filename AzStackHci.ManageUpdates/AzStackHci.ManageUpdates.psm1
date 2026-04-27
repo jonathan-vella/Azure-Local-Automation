@@ -2666,8 +2666,10 @@ function Start-AzureLocalClusterUpdate {
                 # operator is signalling that no sideloaded content is staged on the
                 # cluster (or it has already been consumed) and the update MUST be
                 # blocked. Mirrors the ScheduleBlocked pattern used below.
+                # Use Get-TagValue (shape-agnostic, handles PSCustomObject + IDictionary
+                # tag containers) for consistency with the rest of the module.
                 $clusterTags = $clusterInfo.tags
-                $sideloadedTagValue = if ($clusterTags -and $clusterTags.$($script:UpdateSideloadedTagName)) { $clusterTags.$($script:UpdateSideloadedTagName) } else { $null }
+                $sideloadedTagValue = Get-TagValue -Tags $clusterTags -Name $script:UpdateSideloadedTagName
 
                 if ($sideloadedTagValue) {
                     Write-Log -Message "Step 3b1: Checking UpdateSideloaded tag..." -Level Info
@@ -7183,23 +7185,41 @@ function Set-AzLocalClusterTagsMerge {
 
     $cluster = $clusterJson | ConvertFrom-Json
     $newTags = [ordered]@{}
+    $existingTags = [ordered]@{}
     if ($cluster.tags) {
         foreach ($prop in $cluster.tags.PSObject.Properties) {
             if ($prop.MemberType -eq 'NoteProperty') {
                 $newTags[$prop.Name] = $prop.Value
+                $existingTags[$prop.Name] = $prop.Value
             }
         }
     }
 
     # Apply the merge: set non-null values, remove null values
+    $changed = $false
     foreach ($key in $Tags.Keys) {
         $val = $Tags[$key]
         if ($null -eq $val) {
-            if ($newTags.Contains($key)) { $newTags.Remove($key) }
+            if ($newTags.Contains($key)) {
+                $newTags.Remove($key)
+                $changed = $true
+            }
         }
         else {
-            $newTags[$key] = $val
+            $existingValue = if ($existingTags.Contains($key)) { [string]$existingTags[$key] } else { $null }
+            if ($null -eq $existingValue -or $existingValue -cne [string]$val) {
+                $newTags[$key] = $val
+                $changed = $true
+            }
         }
+    }
+
+    # Idempotency: if the merge produces no actual change, skip the PATCH entirely.
+    # Avoids redundant ARM writes when running auto-reset paths against already-clean
+    # clusters (common at fleet scale and across overlapping pipeline runs).
+    if (-not $changed) {
+        Write-Verbose "Set-AzLocalClusterTagsMerge: no tag changes for '$ClusterResourceId'; skipping PATCH."
+        return $true
     }
 
     $describe = ($Tags.Keys | ForEach-Object { "$_=$($Tags[$_])" }) -join ', '
@@ -7311,16 +7331,8 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
     }
 
     $cluster = $clusterJson | ConvertFrom-Json
-    $tagSideloaded = $null
-    $tagVersion = $null
-    if ($cluster.tags) {
-        if ($cluster.tags.PSObject.Properties[$script:UpdateSideloadedTagName]) {
-            $tagSideloaded = $cluster.tags.$($script:UpdateSideloadedTagName)
-        }
-        if ($cluster.tags.PSObject.Properties[$script:UpdateVersionInProgressTagName]) {
-            $tagVersion = $cluster.tags.$($script:UpdateVersionInProgressTagName)
-        }
-    }
+    $tagSideloaded = Get-TagValue -Tags $cluster.tags -Name $script:UpdateSideloadedTagName
+    $tagVersion = Get-TagValue -Tags $cluster.tags -Name $script:UpdateVersionInProgressTagName
     $result.PreviousSideloaded = $tagSideloaded
     $result.StagedVersion = $tagVersion
 
@@ -7349,6 +7361,14 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
     }
 
     # 4. Latest run must be Succeeded
+    if ([string]::IsNullOrWhiteSpace($LatestRunState)) {
+        # Distinct from "RunNotSucceeded" - cluster has no run history at all.
+        # Surface as its own action so operators can tell "no runs yet" apart from
+        # "latest run is InProgress / Failed".
+        $result.Action = 'NoRuns'
+        $result.Message = 'Cluster has no update runs yet; UpdateSideloaded preserved.'
+        return [PSCustomObject]$result
+    }
     if ($LatestRunState -ne 'Succeeded') {
         $result.Action = 'RunNotSucceeded'
         $result.Message = "Latest run state is '$LatestRunState'; UpdateSideloaded preserved (will be reset when a matching run succeeds)."
@@ -7638,6 +7658,7 @@ resources
         switch ($r.Action) {
             'Reset'           { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Success }
             'NoTag'           { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
+            'NoRuns'          { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
             'RunNotSucceeded' { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
             default           { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Warning }
         }
