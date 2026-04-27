@@ -50,7 +50,9 @@
         'Get-AzureLocalFleetStatusData',
         'New-AzureLocalFleetStatusHtmlReport',
         # Update Schedule Tag Helpers (v0.6.4)
-        'Test-AzureLocalUpdateScheduleAllowed'
+        'Test-AzureLocalUpdateScheduleAllowed',
+        # Sideloaded Payload Workflow (v0.7.1)
+        'Reset-AzureLocalSideloadedTag'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -79,7 +81,31 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.1 - EndTime column for update runs
+## Version 0.7.1 - EndTime column for update runs + Sideloaded payload workflow
+
+### Sideloaded payload workflow (new)
+- New optional cluster tag `UpdateSideloaded` (operator-set: True / False / 1 / 0,
+  case-insensitive). When set to False, Start-AzureLocalClusterUpdate blocks the
+  update with Status="SideloadedBlocked" and a clear "UpdateSideloaded == False"
+  message. Malformed values fail-closed (override with -Force).
+- New module-managed cluster tag `UpdateVersionInProgress`. Written automatically
+  on every successful update start (sideloaded or not) to the update name being
+  applied (e.g. "Solution12.2604.1003.209"). Provides an audit/correlation tag
+  visible in the Azure portal alongside UpdateRing/UpdateWindow.
+- Auto-reset in Get-AzureLocalUpdateRuns (default ON, opt-out via
+  -SkipSideloadedReset): when the latest run is Succeeded, UpdateSideloaded=True,
+  and UpdateVersionInProgress matches the run's update name (case-insensitive),
+  flips UpdateSideloaded=False and clears UpdateVersionInProgress.
+- New public function Reset-AzureLocalSideloadedTag with explicit scope
+  (-ClusterNames / -ClusterResourceIds / -ScopeByUpdateRingTag) and -Force escape
+  hatch for stuck-tag recovery.
+- JUnit XML and CSV/HTML reporting recognise the new "SideloadedBlocked" status
+  alongside ScheduleBlocked/HealthCheckBlocked.
+- RBAC unchanged: relies on existing Microsoft.Resources/tags/read +
+  Microsoft.Resources/tags/write permissions already required by the
+  UpdateRing/UpdateWindow tag features.
+
+### EndTime column for update runs
 
 - New "EndTime" column on Get-AzureLocalUpdateRuns table output, sourced from the run's
   properties.progress.endTimeUtc (most accurate "work finished" timestamp), falling back

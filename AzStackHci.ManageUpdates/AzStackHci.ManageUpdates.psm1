@@ -1915,9 +1915,9 @@ function Export-ResultsToJUnitXml {
         [void]$xmlBuilder.AppendLine("    <testcase name=`"$(ConvertTo-XmlSafeString $testName)`" classname=`"$TestSuiteName.$OperationType`" time=`"$testTime`">")
 
         switch ($result.Status) {
-            { $_ -in @("Failed", "Error", "HealthCheckBlocked", "ScheduleBlocked") } {
+            { $_ -in @("Failed", "Error", "HealthCheckBlocked", "ScheduleBlocked", "SideloadedBlocked") } {
                 $message = ConvertTo-XmlSafeString ($result.Message)
-                $errorType = if ($result.Status -eq "Error") { "Error" } elseif ($result.Status -eq "HealthCheckBlocked") { "HealthCheckBlocked" } elseif ($result.Status -eq "ScheduleBlocked") { "ScheduleBlocked" } else { "AssertionError" }
+                $errorType = if ($result.Status -eq "Error") { "Error" } elseif ($result.Status -eq "HealthCheckBlocked") { "HealthCheckBlocked" } elseif ($result.Status -eq "ScheduleBlocked") { "ScheduleBlocked" } elseif ($result.Status -eq "SideloadedBlocked") { "SideloadedBlocked" } else { "AssertionError" }
                 [void]$xmlBuilder.AppendLine("      <failure message=`"$message`" type=`"$errorType`">")
                 [void]$xmlBuilder.AppendLine("Cluster: $clusterName")
                 [void]$xmlBuilder.AppendLine("Status: $($result.Status)")
@@ -2661,6 +2661,89 @@ function Start-AzureLocalClusterUpdate {
                 }
                 Write-Log -Message "No critical health issues found - cluster is eligible for update" -Level Success
 
+                # Step 3b1: Sideloaded-payload gate (v0.7.1)
+                # Honour the UpdateSideloaded tag if present. When set to False/0 the
+                # operator is signalling that no sideloaded content is staged on the
+                # cluster (or it has already been consumed) and the update MUST be
+                # blocked. Mirrors the ScheduleBlocked pattern used below.
+                $clusterTags = $clusterInfo.tags
+                $sideloadedTagValue = if ($clusterTags -and $clusterTags.$($script:UpdateSideloadedTagName)) { $clusterTags.$($script:UpdateSideloadedTagName) } else { $null }
+
+                if ($sideloadedTagValue) {
+                    Write-Log -Message "Step 3b1: Checking UpdateSideloaded tag..." -Level Info
+                    Write-Log -Message "  UpdateSideloaded tag: $sideloadedTagValue" -Level Info
+
+                    try {
+                        $sideloadedResult = Test-AzLocalUpdateSideloadedAllowed -UpdateSideloaded $sideloadedTagValue
+
+                        if (-not $sideloadedResult.Allowed) {
+                            Write-Log -Message "Cluster '$clusterName' is blocked by UpdateSideloaded tag: $($sideloadedResult.Reason)" -Level Warning
+                            Write-Log -Message "  Details: $($sideloadedResult.Details)" -Level Warning
+
+                            $clusterRgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                            $clusterSubId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                            $healthState = if ($updateSummary.properties.healthState) { $updateSummary.properties.healthState } else { "Unknown" }
+
+                            Write-UpdateCsvLog -LogType Skipped `
+                                -ClusterName $clusterName `
+                                -ResourceGroup $clusterRgName `
+                                -SubscriptionId $clusterSubId `
+                                -Message "Update blocked by UpdateSideloaded tag: $($sideloadedResult.Reason). $($sideloadedResult.Details)" `
+                                -UpdateState $updateSummary.properties.state `
+                                -HealthState $healthState
+
+                            $results += [PSCustomObject]@{
+                                ClusterName   = $clusterName
+                                Status        = "SideloadedBlocked"
+                                Message       = "$($sideloadedResult.Reason): $($sideloadedResult.Details)"
+                                UpdateName    = $null
+                                StartTime     = $clusterStartTime
+                                EndTime       = Get-Date
+                                Duration      = $null
+                            }
+                            continue
+                        }
+
+                        Write-Log -Message "UpdateSideloaded check passed: $($sideloadedResult.Reason)" -Level Success
+                    }
+                    catch {
+                        # Malformed UpdateSideloaded tag value. Fail-closed unless -Force,
+                        # matching the v0.7.0 schedule-tag policy: a typo in the tag must
+                        # not silently bypass the operator's intended gate.
+                        if ($Force) {
+                            Write-Log -Message "Warning: Failed to parse UpdateSideloaded tag '$sideloadedTagValue': $($_.Exception.Message)" -Level Warning
+                            Write-Log -Message "  -Force is set; proceeding with update despite malformed UpdateSideloaded tag." -Level Warning
+                        }
+                        else {
+                            Write-Log -Message "Failed to parse UpdateSideloaded tag for '$clusterName': $($_.Exception.Message)" -Level Error
+                            Write-Log -Message "  Update blocked because the tag could not be evaluated. Re-run with -Force to override." -Level Error
+
+                            $clusterRgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                            $clusterSubId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                            $healthState = if ($updateSummary.properties.healthState) { $updateSummary.properties.healthState } else { "Unknown" }
+
+                            Write-UpdateCsvLog -LogType Skipped `
+                                -ClusterName $clusterName `
+                                -ResourceGroup $clusterRgName `
+                                -SubscriptionId $clusterSubId `
+                                -Message "Update blocked: malformed UpdateSideloaded tag value '$sideloadedTagValue' ($($_.Exception.Message)). Re-run with -Force to override." `
+                                -UpdateState $updateSummary.properties.state `
+                                -HealthState $healthState
+
+                            $results += [PSCustomObject]@{
+                                ClusterName   = $clusterName
+                                Status        = "SideloadedBlocked"
+                                Message       = "Malformed UpdateSideloaded tag value '$sideloadedTagValue': $($_.Exception.Message). Re-run with -Force to override."
+                                UpdateName    = $null
+                                StartTime     = $clusterStartTime
+                                EndTime       = Get-Date
+                                Duration      = $null
+                            }
+                            continue
+                        }
+                    }
+                }
+
                 # Step 3c: Schedule/maintenance window validation
                 # Check UpdateWindow and UpdateExclusions tags if present on the cluster resource
                 $clusterTags = $clusterInfo.tags
@@ -2930,7 +3013,25 @@ function Start-AzureLocalClusterUpdate {
                         $clusterRgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
                         $clusterSubId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
                         Write-UpdateCsvLog -LogType Started -ClusterName $clusterName -ResourceGroup $clusterRgName -SubscriptionId $clusterSubId -Message "Update Started: $($selectedUpdate.name)"
-                        
+
+                        # v0.7.1: Always write UpdateVersionInProgress tag after successful apply.
+                        # This is the audit/correlation tag used by the auto-reset path in
+                        # Get-AzureLocalUpdateRuns to verify a Succeeded run corresponds to
+                        # the staged sideloaded payload before flipping UpdateSideloaded=False.
+                        # Failure to write the tag is non-fatal: the update has already been
+                        # initiated; degraded auto-reset metadata only.
+                        try {
+                            [void](Set-AzLocalClusterTagsMerge `
+                                -ClusterResourceId $clusterInfo.id `
+                                -Tags @{ $script:UpdateVersionInProgressTagName = $selectedUpdate.name } `
+                                -ApiVersion $ApiVersion)
+                            Write-Log -Message "Set $($script:UpdateVersionInProgressTagName) tag to '$($selectedUpdate.name)'" -Level Verbose
+                        }
+                        catch {
+                            Write-Log -Message "Warning: failed to write $($script:UpdateVersionInProgressTagName) tag on '$clusterName': $($_.Exception.Message)" -Level Warning
+                            Write-Log -Message "  Update has been initiated successfully; only auto-reset correlation metadata is affected." -Level Warning
+                        }
+
                         $results += [PSCustomObject]@{
                             ClusterName   = $clusterName
                             Status        = "UpdateStarted"
@@ -3000,7 +3101,7 @@ function Start-AzureLocalClusterUpdate {
         $succeeded = @($results | Where-Object { $_.Status -eq "UpdateStarted" }).Count
         $wouldUpdate = @($results | Where-Object { $_.Status -eq "WouldUpdate" }).Count
         $failed = @($results | Where-Object { $_.Status -in @("Failed", "Error") }).Count
-        $skipped = @($results | Where-Object { $_.Status -in @("Skipped", "NotReady", "NoUpdatesAvailable", "NoReadyUpdates", "NotFound", "UpdateNotFound", "HealthCheckBlocked", "ScheduleBlocked") }).Count
+        $skipped = @($results | Where-Object { $_.Status -in @("Skipped", "NotReady", "NoUpdatesAvailable", "NoReadyUpdates", "NotFound", "UpdateNotFound", "HealthCheckBlocked", "ScheduleBlocked", "SideloadedBlocked") }).Count
 
         Write-Log -Message "Total clusters processed: $totalClusters" -Level Info
         if ($WhatIfPreference) {
@@ -4376,7 +4477,7 @@ function Get-AzLocalRunEndTime {
 function Format-AzLocalUpdateRun {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
-    param($run, $clusterName = "")
+    param($run, $clusterName = "", $clusterResourceId = "")
 
     $props = $run.properties
 
@@ -4466,6 +4567,10 @@ function Format-AzLocalUpdateRun {
 
     if ($clusterName) {
         $result | Add-Member -NotePropertyName "ClusterName" -NotePropertyValue $clusterName -Force
+    }
+
+    if ($clusterResourceId) {
+        $result | Add-Member -NotePropertyName "ClusterResourceId" -NotePropertyValue $clusterResourceId -Force
     }
 
     return $result
@@ -4620,7 +4725,15 @@ function Get-AzureLocalUpdateRuns {
         [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
         [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
         [ValidateRange(1, 32)]
-        [int]$ThrottleLimit = 1
+        [int]$ThrottleLimit = 1,
+
+        # v0.7.1: when omitted (default), Get-AzureLocalUpdateRuns will auto-reset
+        # the UpdateSideloaded tag (True->False) and clear UpdateVersionInProgress
+        # for any cluster whose latest update run is Succeeded AND whose
+        # UpdateVersionInProgress tag matches the run's update name. Pass this
+        # switch on read-only audit pipelines that must not mutate cluster tags.
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipSideloadedReset
     )
 
     # Pre-flight: Validate export path is writable before expensive operations
@@ -4669,7 +4782,7 @@ function Get-AzureLocalUpdateRuns {
         # Format runs
         $formattedRuns = @()
         foreach ($run in $allRuns) {
-            $formattedRuns += Format-AzLocalUpdateRun -run $run
+            $formattedRuns += Format-AzLocalUpdateRun -run $run -clusterName $ClusterName -clusterResourceId $clusterInfo.id
         }
 
         $formattedRuns = @($formattedRuns | Sort-Object StartTime -Descending)
@@ -4717,6 +4830,16 @@ function Get-AzureLocalUpdateRuns {
                 if ($_ -ne "") { Write-Host "`t$_" }
             }
             Write-Host ""
+        }
+
+        # v0.7.1: Sideloaded auto-reset (default ON; -SkipSideloadedReset to disable).
+        if (-not $SkipSideloadedReset -and $formattedRuns.Count -gt 0) {
+            try {
+                [void](Invoke-AzLocalSideloadedAutoReset -FormattedRuns $formattedRuns -ApiVersion $ApiVersion)
+            }
+            catch {
+                Write-Log -Message "Sideloaded auto-reset failed: $($_.Exception.Message)" -Level Warning
+            }
         }
 
         if ($PassThru) {
@@ -4882,9 +5005,10 @@ function Get-AzureLocalUpdateRuns {
                     $runsToFormat = if ($LatestOnly) { @($latestRun) } else { $runs }
 
                     $rows = foreach ($run in $runsToFormat) {
-                        $formatted = Format-AzLocalUpdateRun -run $run -clusterName $clusterName
+                        $formatted = Format-AzLocalUpdateRun -run $run -clusterName $clusterName -clusterResourceId $resourceId
                         [PSCustomObject]@{
                             ClusterName       = $clusterName
+                            ClusterResourceId = $resourceId
                             UpdateName        = $formatted.UpdateName
                             RunId             = $formatted.RunId
                             State             = $formatted.State
@@ -5160,6 +5284,16 @@ function Get-AzureLocalUpdateRuns {
             if ($_ -ne "") { Write-Host "`t$_" }
         }
         Write-Host ""
+    }
+
+    # v0.7.1: Sideloaded auto-reset (default ON; -SkipSideloadedReset to disable).
+    if (-not $SkipSideloadedReset -and $allFormattedRuns.Count -gt 0) {
+        try {
+            [void](Invoke-AzLocalSideloadedAutoReset -FormattedRuns $allFormattedRuns -ApiVersion $ApiVersion)
+        }
+        catch {
+            Write-Log -Message "Sideloaded auto-reset failed: $($_.Exception.Message)" -Level Warning
+        }
     }
 
     if ($PassThru) {
@@ -6113,17 +6247,21 @@ function Get-AzureLocalClusterInventory {
             $ringTagValue = Get-TagValue -Tags $cluster.tags -Name 'UpdateRing'
             $windowTagValue = Get-TagValue -Tags $cluster.tags -Name $script:UpdateWindowTagName
             $exclusionsTagValue = Get-TagValue -Tags $cluster.tags -Name $script:UpdateExclusionsTagName
+            $sideloadedTagValue = Get-TagValue -Tags $cluster.tags -Name $script:UpdateSideloadedTagName
+            $versionInProgressTagValue = Get-TagValue -Tags $cluster.tags -Name $script:UpdateVersionInProgressTagName
 
             $inventoryItem = [PSCustomObject]@{
-                ClusterName      = $cluster.name
-                ResourceGroup    = $cluster.resourceGroup
-                SubscriptionId   = $cluster.subscriptionId
-                SubscriptionName = $subscriptionMap[$cluster.subscriptionId]
-                UpdateRing       = if ($ringTagValue) { $ringTagValue } else { "" }
-                HasUpdateRingTag = if ($ringTagValue) { "Yes" } else { "No" }
-                UpdateWindow     = if ($windowTagValue) { $windowTagValue } else { "" }
-                UpdateExclusions = if ($exclusionsTagValue) { $exclusionsTagValue } else { "" }
-                ResourceId       = $cluster.id
+                ClusterName             = $cluster.name
+                ResourceGroup           = $cluster.resourceGroup
+                SubscriptionId          = $cluster.subscriptionId
+                SubscriptionName        = $subscriptionMap[$cluster.subscriptionId]
+                UpdateRing              = if ($ringTagValue) { $ringTagValue } else { "" }
+                HasUpdateRingTag        = if ($ringTagValue) { "Yes" } else { "No" }
+                UpdateWindow            = if ($windowTagValue) { $windowTagValue } else { "" }
+                UpdateExclusions        = if ($exclusionsTagValue) { $exclusionsTagValue } else { "" }
+                UpdateSideloaded        = if ($sideloadedTagValue) { $sideloadedTagValue } else { "" }
+                UpdateVersionInProgress = if ($versionInProgressTagValue) { $versionInProgressTagValue } else { "" }
+                ResourceId              = $cluster.id
             }
             $inventory += $inventoryItem
         }
@@ -6145,7 +6283,7 @@ function Get-AzureLocalClusterInventory {
 
                 # Determine export format from file extension
                 $extension = [System.IO.Path]::GetExtension($ExportPath).ToLower()
-                $exportData = $inventory | Select-Object ClusterName, ResourceGroup, SubscriptionId, SubscriptionName, UpdateRing, HasUpdateRingTag, UpdateWindow, UpdateExclusions, ResourceId
+                $exportData = $inventory | Select-Object ClusterName, ResourceGroup, SubscriptionId, SubscriptionName, UpdateRing, HasUpdateRingTag, UpdateWindow, UpdateExclusions, UpdateSideloaded, UpdateVersionInProgress, ResourceId
                 
                 switch ($extension) {
                     '.json' {
@@ -6217,6 +6355,16 @@ function Get-AzureLocalClusterInventory {
 # Tag name constants for update scheduling
 $script:UpdateWindowTagName = 'UpdateWindow'
 $script:UpdateExclusionsTagName = 'UpdateExclusions'
+
+# Tag name constants for sideloaded-payload workflow (v0.7.1)
+# - UpdateSideloaded: operator-set boolean gate. When 'False'/'0' (case-insensitive),
+#   Start-AzureLocalClusterUpdate blocks the update with Status=SideloadedBlocked.
+# - UpdateVersionInProgress: module-set audit/correlation tag. Written at UpdateStarted
+#   (always - any update start, sideloaded or not). Cleared by the auto-reset path in
+#   Get-AzureLocalUpdateRuns when the latest run state is Succeeded AND its update name
+#   matches this tag value (case-insensitive exact match).
+$script:UpdateSideloadedTagName = 'UpdateSideloaded'
+$script:UpdateVersionInProgressTagName = 'UpdateVersionInProgress'
 
 # Day abbreviation mapping (3-letter English, case-insensitive input)
 $script:DayMap = [ordered]@{
@@ -6830,6 +6978,674 @@ function Test-AzureLocalUpdateScheduleAllowed {
 }
 
 #endregion Update Schedule Tag Helpers
+
+#region Update Sideloaded Tag Helpers (v0.7.1)
+
+function ConvertFrom-AzLocalUpdateSideloaded {
+    <#
+    .SYNOPSIS
+        Parses an UpdateSideloaded tag value into a strict boolean.
+    .DESCRIPTION
+        Strict, case-insensitive parser for the UpdateSideloaded tag. Accepted values
+        are 'True', 'False', '1', '0' only. Anything else (including empty string,
+        'Yes', 'No', 'Enabled', '2', etc.) throws so the caller can fail-closed on
+        a malformed tag rather than silently treating it as one value or the other.
+
+        Mapping:
+            'True'  / 'true'  / 'TRUE'  -> $true
+            '1'                          -> $true
+            'False' / 'false' / 'FALSE' -> $false
+            '0'                          -> $false
+    .PARAMETER Value
+        The raw tag value to parse.
+    .OUTPUTS
+        [bool]
+    .EXAMPLE
+        ConvertFrom-AzLocalUpdateSideloaded -Value 'True'   # returns $true
+        ConvertFrom-AzLocalUpdateSideloaded -Value '0'      # returns $false
+        ConvertFrom-AzLocalUpdateSideloaded -Value 'Yes'    # throws
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "UpdateSideloaded tag value cannot be empty. Accepted values: 'True', 'False', '1', '0' (case-insensitive)."
+    }
+
+    $trimmed = $Value.Trim()
+    switch -Regex ($trimmed) {
+        '^(?i:true|1)$'  { return $true }
+        '^(?i:false|0)$' { return $false }
+        default {
+            throw "Invalid UpdateSideloaded tag value '$Value'. Accepted values: 'True', 'False', '1', '0' (case-insensitive)."
+        }
+    }
+}
+
+function Test-AzLocalUpdateSideloadedAllowed {
+    <#
+    .SYNOPSIS
+        Evaluates whether an update is allowed by the UpdateSideloaded tag.
+    .DESCRIPTION
+        Returns a structured result indicating whether the sideloaded gate permits
+        the update to proceed. Mirrors the shape returned by Test-AzureLocalUpdateScheduleAllowed
+        so the calling decision site in Start-AzureLocalClusterUpdate can use a uniform pattern.
+
+        Decision rules:
+        - Tag absent / empty                          -> Allowed=$true (no gate)
+        - Tag parses to True (or '1')                 -> Allowed=$true
+        - Tag parses to False (or '0')                -> Allowed=$false, Reason='UpdateSideloaded == False'
+        - Tag value malformed                         -> throws (caller decides fail-closed vs -Force)
+    .PARAMETER UpdateSideloaded
+        The raw UpdateSideloaded tag value (or $null/empty if the tag is not set).
+    .OUTPUTS
+        PSCustomObject with Allowed (bool), Reason (string), Details (string),
+        TagPresent (bool), TagValue (string)
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$UpdateSideloaded
+    )
+
+    if ([string]::IsNullOrWhiteSpace($UpdateSideloaded)) {
+        return [PSCustomObject]@{
+            Allowed    = $true
+            Reason     = "UpdateSideloaded tag not set"
+            Details    = "No sideloaded-payload gate configured on this cluster."
+            TagPresent = $false
+            TagValue   = $null
+        }
+    }
+
+    # Throws on malformed - caller catches and applies fail-closed/Force semantics.
+    $parsed = ConvertFrom-AzLocalUpdateSideloaded -Value $UpdateSideloaded
+
+    if ($parsed) {
+        return [PSCustomObject]@{
+            Allowed    = $true
+            Reason     = "UpdateSideloaded == True"
+            Details    = "Sideloaded payload is staged; update is permitted."
+            TagPresent = $true
+            TagValue   = $UpdateSideloaded
+        }
+    }
+
+    return [PSCustomObject]@{
+        Allowed    = $false
+        Reason     = "UpdateSideloaded == False, update is blocked"
+        Details    = "Cluster has UpdateSideloaded=False (sideloaded content has not been staged or has already been consumed)."
+        TagPresent = $true
+        TagValue   = $UpdateSideloaded
+    }
+}
+
+function Test-AzLocalUpdateVersionInProgressMatch {
+    <#
+    .SYNOPSIS
+        Compares an UpdateVersionInProgress tag value to a run's update name.
+    .DESCRIPTION
+        Case-insensitive exact equality (after trim). Used by the auto-reset path
+        in Get-AzureLocalUpdateRuns and by Reset-AzureLocalSideloadedTag to decide
+        whether a Succeeded run actually corresponds to the staged sideloaded payload.
+    .PARAMETER TagValue
+        The current value of the UpdateVersionInProgress tag.
+    .PARAMETER RunUpdateName
+        The update.name (or run.UpdateName) reported by ARM for the Succeeded run.
+    .OUTPUTS
+        [bool] - $true when the tag matches the run name, $false otherwise (including
+        when either side is null/empty).
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$TagValue,
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$RunUpdateName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TagValue) -or [string]::IsNullOrWhiteSpace($RunUpdateName)) {
+        return $false
+    }
+    return ([string]::Equals($TagValue.Trim(), $RunUpdateName.Trim(), [System.StringComparison]::OrdinalIgnoreCase))
+}
+
+#endregion Update Sideloaded Tag Helpers
+
+#region Cluster Tag Merge Helper (v0.7.1)
+
+function Set-AzLocalClusterTagsMerge {
+    <#
+    .SYNOPSIS
+        Merges a set of tag key/value pairs into an Azure Local cluster's tags via ARM PATCH.
+    .DESCRIPTION
+        Private helper that performs an additive ARM tag merge on a single cluster
+        resource. Existing tags are preserved; supplied keys are added or overwritten.
+        A supplied value of $null removes that tag key from the cluster.
+
+        Used by:
+        - Start-AzureLocalClusterUpdate to write UpdateVersionInProgress at update start.
+        - Reset-AzureLocalSideloadedTag (and the auto-reset path in Get-AzureLocalUpdateRuns)
+          to flip UpdateSideloaded=False and clear UpdateVersionInProgress on matched success.
+
+        Failures are surfaced as terminating errors so callers can wrap in try/catch and
+        decide whether to treat the failure as fatal (reset) or warn-and-continue (start).
+    .PARAMETER ClusterResourceId
+        The full ARM resource ID of the microsoft.azurestackhci/clusters resource.
+    .PARAMETER Tags
+        Hashtable of tag keys to set. Use $null as a value to remove a tag key.
+    .PARAMETER ApiVersion
+        The ARM api-version to use for the PATCH. Defaults to a stable cluster api-version.
+    .OUTPUTS
+        [bool] - $true on success. Throws on failure.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ClusterResourceId,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [hashtable]$Tags,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ApiVersion = $script:DefaultApiVersion
+    )
+
+    if ($Tags.Count -eq 0) {
+        Write-Verbose "Set-AzLocalClusterTagsMerge: no tags supplied; nothing to do."
+        return $true
+    }
+
+    # Fetch current cluster to preserve existing tags
+    $getUri = "https://management.azure.com$ClusterResourceId`?api-version=$ApiVersion"
+    $clusterJson = az rest --method GET --uri $getUri 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Set-AzLocalClusterTagsMerge: failed to fetch cluster '$ClusterResourceId': $clusterJson"
+    }
+
+    $cluster = $clusterJson | ConvertFrom-Json
+    $newTags = [ordered]@{}
+    if ($cluster.tags) {
+        foreach ($prop in $cluster.tags.PSObject.Properties) {
+            if ($prop.MemberType -eq 'NoteProperty') {
+                $newTags[$prop.Name] = $prop.Value
+            }
+        }
+    }
+
+    # Apply the merge: set non-null values, remove null values
+    foreach ($key in $Tags.Keys) {
+        $val = $Tags[$key]
+        if ($null -eq $val) {
+            if ($newTags.Contains($key)) { $newTags.Remove($key) }
+        }
+        else {
+            $newTags[$key] = $val
+        }
+    }
+
+    $describe = ($Tags.Keys | ForEach-Object { "$_=$($Tags[$_])" }) -join ', '
+    if (-not $PSCmdlet.ShouldProcess($ClusterResourceId, "Merge tags ($describe)")) {
+        return $true
+    }
+
+    $patchBodyObj = [PSCustomObject]@{ tags = [PSCustomObject]$newTags }
+    $patchBody = $patchBodyObj | ConvertTo-Json -Compress -Depth 10
+
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    try {
+        Write-Utf8NoBomFile -Path $tempFile -Content $patchBody
+        $patchResult = az rest --method PATCH --uri $getUri --body "@$tempFile" --headers "Content-Type=application/json" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Set-AzLocalClusterTagsMerge: PATCH failed for '$ClusterResourceId': $patchResult"
+        }
+    }
+    finally {
+        if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue -WhatIf:$false }
+    }
+
+    return $true
+}
+
+#endregion Cluster Tag Merge Helper
+
+#region Sideloaded Auto-Reset Helper (v0.7.1)
+
+function Invoke-AzLocalSideloadedAutoResetForCluster {
+    <#
+    .SYNOPSIS
+        Evaluates and (when matched) flips UpdateSideloaded=False + clears UpdateVersionInProgress for one cluster.
+    .DESCRIPTION
+        Implements the auto-reset decision matrix used by Get-AzureLocalUpdateRuns
+        (default-on) and Reset-AzureLocalSideloadedTag (explicit). Returns a single
+        PSCustomObject describing the action taken or the reason it was skipped.
+
+        Decision matrix (LatestRunState=Succeeded only - any other state -> Skipped/RunNotSucceeded):
+            UpdateSideloaded absent              -> NoTag
+            UpdateSideloaded=False               -> Skipped (already reset)
+            UpdateSideloaded=True, no version    -> Skipped (warning: no UpdateVersionInProgress)
+            UpdateSideloaded=True, mismatch      -> Skipped (mismatch reason)
+            UpdateSideloaded=True, match         -> Reset (PATCH both tags)
+            UpdateSideloaded=True, -Force        -> Reset (bypass match check)
+
+        UpdateSideloaded with malformed value is treated as Skipped (with reason) so
+        a typo cannot cause a silent reset.
+    .PARAMETER ClusterName
+        Display name of the cluster (for logging/output only).
+    .PARAMETER ClusterResourceId
+        Full ARM resource ID of the cluster.
+    .PARAMETER LatestRunState
+        State of the cluster's most recent update run (e.g. 'Succeeded', 'InProgress', 'Failed').
+    .PARAMETER LatestRunUpdateName
+        UpdateName of the cluster's most recent update run (used for match check).
+    .PARAMETER ApiVersion
+        ARM api-version for the cluster GET/PATCH.
+    .PARAMETER Force
+        When specified, bypasses the UpdateVersionInProgress match check and resets the
+        tags as long as UpdateSideloaded=True and the latest run state is Succeeded.
+    .OUTPUTS
+        PSCustomObject with ClusterName, Action (Reset|Skipped|NoTag|RunNotSucceeded),
+        PreviousSideloaded, NewSideloaded, StagedVersion, MatchedRunUpdateName, Message.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ClusterName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ClusterResourceId,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$LatestRunState,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$LatestRunUpdateName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ApiVersion = $script:DefaultApiVersion,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Force
+    )
+
+    $result = [ordered]@{
+        ClusterName          = $ClusterName
+        Action               = 'Skipped'
+        PreviousSideloaded   = $null
+        NewSideloaded        = $null
+        StagedVersion        = $null
+        MatchedRunUpdateName = $LatestRunUpdateName
+        Message              = ''
+    }
+
+    # GET cluster to read current tags
+    $getUri = "https://management.azure.com$ClusterResourceId`?api-version=$ApiVersion"
+    $clusterJson = az rest --method GET --uri $getUri 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $result.Action = 'Skipped'
+        $result.Message = "Failed to fetch cluster tags: $clusterJson"
+        return [PSCustomObject]$result
+    }
+
+    $cluster = $clusterJson | ConvertFrom-Json
+    $tagSideloaded = $null
+    $tagVersion = $null
+    if ($cluster.tags) {
+        if ($cluster.tags.PSObject.Properties[$script:UpdateSideloadedTagName]) {
+            $tagSideloaded = $cluster.tags.$($script:UpdateSideloadedTagName)
+        }
+        if ($cluster.tags.PSObject.Properties[$script:UpdateVersionInProgressTagName]) {
+            $tagVersion = $cluster.tags.$($script:UpdateVersionInProgressTagName)
+        }
+    }
+    $result.PreviousSideloaded = $tagSideloaded
+    $result.StagedVersion = $tagVersion
+
+    # 1. UpdateSideloaded tag absent
+    if ([string]::IsNullOrWhiteSpace($tagSideloaded)) {
+        $result.Action = 'NoTag'
+        $result.Message = 'UpdateSideloaded tag not set; nothing to reset.'
+        return [PSCustomObject]$result
+    }
+
+    # 2. Parse UpdateSideloaded - malformed -> skip (do not reset on malformed input)
+    try {
+        $sideloadedBool = ConvertFrom-AzLocalUpdateSideloaded -Value $tagSideloaded
+    }
+    catch {
+        $result.Action = 'Skipped'
+        $result.Message = "Malformed UpdateSideloaded tag '$tagSideloaded'; not resetting. ($($_.Exception.Message))"
+        return [PSCustomObject]$result
+    }
+
+    # 3. Already False -> nothing to do
+    if (-not $sideloadedBool) {
+        $result.Action = 'Skipped'
+        $result.Message = 'UpdateSideloaded=False already; no reset needed.'
+        return [PSCustomObject]$result
+    }
+
+    # 4. Latest run must be Succeeded
+    if ($LatestRunState -ne 'Succeeded') {
+        $result.Action = 'RunNotSucceeded'
+        $result.Message = "Latest run state is '$LatestRunState'; UpdateSideloaded preserved (will be reset when a matching run succeeds)."
+        return [PSCustomObject]$result
+    }
+
+    # 5. Match check (unless -Force)
+    if (-not $Force) {
+        if ([string]::IsNullOrWhiteSpace($tagVersion)) {
+            $result.Action = 'Skipped'
+            $result.Message = "UpdateSideloaded=True with no UpdateVersionInProgress tag (run started outside this module?). Skipping; use Reset-AzureLocalSideloadedTag -Force to override."
+            return [PSCustomObject]$result
+        }
+        if (-not (Test-AzLocalUpdateVersionInProgressMatch -TagValue $tagVersion -RunUpdateName $LatestRunUpdateName)) {
+            $result.Action = 'Skipped'
+            $result.Message = "Latest succeeded run '$LatestRunUpdateName' does not match UpdateVersionInProgress '$tagVersion'; UpdateSideloaded preserved."
+            return [PSCustomObject]$result
+        }
+    }
+
+    # 6. Perform the flip
+    $describe = if ($Force) { "force-reset (skipping version match)" } else { "matched version '$tagVersion'" }
+    if (-not $PSCmdlet.ShouldProcess($ClusterResourceId, "Reset UpdateSideloaded=False, clear UpdateVersionInProgress ($describe)")) {
+        $result.Action = 'Skipped'
+        $result.Message = 'WhatIf: would reset UpdateSideloaded=False and clear UpdateVersionInProgress.'
+        return [PSCustomObject]$result
+    }
+
+    try {
+        [void](Set-AzLocalClusterTagsMerge `
+            -ClusterResourceId $ClusterResourceId `
+            -Tags @{
+                $script:UpdateSideloadedTagName        = 'False'
+                $script:UpdateVersionInProgressTagName = $null
+            } `
+            -ApiVersion $ApiVersion)
+        $result.Action = 'Reset'
+        $result.NewSideloaded = 'False'
+        $result.Message = if ($Force) {
+            "UpdateSideloaded reset to False and UpdateVersionInProgress cleared (forced)."
+        } else {
+            "UpdateSideloaded reset to False and UpdateVersionInProgress cleared (matched run '$LatestRunUpdateName')."
+        }
+    }
+    catch {
+        $result.Action = 'Skipped'
+        $result.Message = "Failed to PATCH tags: $($_.Exception.Message)"
+    }
+
+    return [PSCustomObject]$result
+}
+
+function Invoke-AzLocalSideloadedAutoReset {
+    <#
+    .SYNOPSIS
+        Runs the sideloaded auto-reset evaluation across an array of formatted update-run objects.
+    .DESCRIPTION
+        Internal driver used by Get-AzureLocalUpdateRuns. Groups the supplied update-run
+        objects by ClusterName, picks the latest run per cluster (by StartTime), and
+        invokes Invoke-AzLocalSideloadedAutoResetForCluster for each. Results are logged
+        via Write-Log so the operator sees what happened.
+    .PARAMETER FormattedRuns
+        Array of update-run objects (must contain ClusterName, ClusterResourceId or
+        ClusterId, State, UpdateName, StartTime).
+    .PARAMETER ApiVersion
+        ARM api-version for cluster GET/PATCH.
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$FormattedRuns,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ApiVersion = $script:DefaultApiVersion
+    )
+
+    if (-not $FormattedRuns -or $FormattedRuns.Count -eq 0) { return @() }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    $byCluster = $FormattedRuns | Where-Object { $_.ClusterName } | Group-Object ClusterName
+
+    foreach ($g in $byCluster) {
+        $latest = $g.Group | Sort-Object StartTime -Descending | Select-Object -First 1
+        if (-not $latest) { continue }
+
+        # Resolve cluster resource ID from the run object (multiple property names possible)
+        $rid = $null
+        foreach ($propName in @('ClusterResourceId', 'ClusterId', 'ResourceId')) {
+            if ($latest.PSObject.Properties[$propName] -and $latest.$propName) {
+                $rid = $latest.$propName
+                break
+            }
+        }
+        if (-not $rid) {
+            Write-Log -Message "Sideloaded auto-reset: cannot resolve resource ID for cluster '$($g.Name)' - skipping." -Level Verbose
+            continue
+        }
+
+        $r = Invoke-AzLocalSideloadedAutoResetForCluster `
+            -ClusterName $g.Name `
+            -ClusterResourceId $rid `
+            -LatestRunState ($latest.State) `
+            -LatestRunUpdateName ($latest.UpdateName) `
+            -ApiVersion $ApiVersion
+
+        switch ($r.Action) {
+            'Reset'           { Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: $($r.Message)" -Level Success }
+            'NoTag'           { Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: $($r.Message)" -Level Verbose }
+            'RunNotSucceeded' { Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: $($r.Message)" -Level Verbose }
+            default           { Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: $($r.Message)" -Level Warning }
+        }
+
+        $results.Add($r) | Out-Null
+    }
+
+    return $results.ToArray()
+}
+
+#endregion Sideloaded Auto-Reset Helper
+
+function Reset-AzureLocalSideloadedTag {
+    <#
+    .SYNOPSIS
+        Resets the UpdateSideloaded tag (True->False) and clears UpdateVersionInProgress
+        on Azure Local clusters whose latest update run has succeeded.
+    .DESCRIPTION
+        Provides an explicit, scope-required entry point for the same auto-reset logic
+        invoked by Get-AzureLocalUpdateRuns. Use this for:
+        - Manual cleanup after an out-of-band update where Get-AzureLocalUpdateRuns
+          was not run (or was run with -SkipSideloadedReset).
+        - Forcing a reset (-Force) when an UpdateSideloaded=True tag is stuck because
+          the operator abandoned the staged payload, or UpdateVersionInProgress is
+          missing/mismatched.
+
+        For each in-scope cluster the function fetches the latest update run, then
+        applies the same decision matrix:
+            UpdateSideloaded absent              -> NoTag
+            UpdateSideloaded=False               -> Skipped (already reset)
+            Latest run state != Succeeded        -> RunNotSucceeded (preserved)
+            UpdateSideloaded=True, no version    -> Skipped (use -Force to override)
+            UpdateSideloaded=True, mismatch      -> Skipped (use -Force to override)
+            UpdateSideloaded=True, match         -> Reset
+            -Force                               -> Reset (bypasses match check; still
+                                                     requires latest run state Succeeded)
+
+        Scope must be explicit (no implicit -AllClusters): supply -ClusterNames,
+        -ClusterResourceIds, or -ScopeByUpdateRingTag/-UpdateRingValue.
+    .PARAMETER ClusterNames
+        One or more cluster names to evaluate.
+    .PARAMETER ClusterResourceIds
+        One or more full ARM cluster resource IDs to evaluate.
+    .PARAMETER ScopeByUpdateRingTag
+        Selects clusters by an UpdateRing tag value via Azure Resource Graph.
+        Must be paired with -UpdateRingValue.
+    .PARAMETER UpdateRingValue
+        The UpdateRing tag value to match when -ScopeByUpdateRingTag is used.
+    .PARAMETER ResourceGroupName
+        Optional - scopes -ClusterNames lookup to a single resource group.
+    .PARAMETER SubscriptionId
+        Optional - subscription context. Defaults to the current az subscription.
+    .PARAMETER ApiVersion
+        ARM api-version. Default is the module's default API version.
+    .PARAMETER Force
+        Bypasses the UpdateVersionInProgress match check. Still requires the cluster's
+        latest run state to be 'Succeeded'.
+    .OUTPUTS
+        PSCustomObject[] - one row per cluster with ClusterName, Action, PreviousSideloaded,
+        NewSideloaded, StagedVersion, MatchedRunUpdateName, Message.
+    .EXAMPLE
+        Reset-AzureLocalSideloadedTag -ClusterNames 'cl-01','cl-02'
+    .EXAMPLE
+        Reset-AzureLocalSideloadedTag -ScopeByUpdateRingTag -UpdateRingValue 'Wave1'
+    .EXAMPLE
+        # Force-clear stuck tag (operator abandoned the staged payload)
+        Reset-AzureLocalSideloadedTag -ClusterNames 'cl-03' -Force -Confirm:$false
+    .NOTES
+        Requires az CLI authenticated with Microsoft.Resources/tags/read +
+        Microsoft.Resources/tags/write on the cluster scope. No additional RBAC
+        beyond what is already required by Set-AzureLocalClusterUpdateRingTag.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium', DefaultParameterSetName = 'ByName')]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByName')]
+        [string[]]$ClusterNames,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByResourceId')]
+        [string[]]$ClusterResourceIds,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [switch]$ScopeByUpdateRingTag,
+
+        [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
+        [string]$UpdateRingValue,
+
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$SubscriptionId,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ApiVersion = $script:DefaultApiVersion,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Force
+    )
+
+    Test-AzCliAvailable | Out-Null
+
+    if (-not $SubscriptionId) {
+        $SubscriptionId = (az account show --query id -o tsv)
+    }
+
+    # Resolve in-scope clusters to {Name, ResourceId}
+    $targets = @()
+    switch ($PSCmdlet.ParameterSetName) {
+        'ByResourceId' {
+            foreach ($rid in $ClusterResourceIds) {
+                if ($rid -match '/clusters/([^/]+)$') {
+                    $targets += [PSCustomObject]@{ Name = $matches[1]; ResourceId = $rid }
+                }
+            }
+        }
+        'ByName' {
+            foreach ($name in $ClusterNames) {
+                $info = Get-AzureLocalClusterInfo -ClusterName $name `
+                    -ResourceGroupName $ResourceGroupName `
+                    -SubscriptionId $SubscriptionId `
+                    -ApiVersion $ApiVersion
+                if ($info) {
+                    $targets += [PSCustomObject]@{ Name = $name; ResourceId = $info.id }
+                }
+                else {
+                    Write-Log -Message "Cluster '$name' not found - skipping." -Level Warning
+                }
+            }
+        }
+        'ByTag' {
+            $kqlQuery = @"
+resources
+| where type =~ 'microsoft.azurestackhci/clusters'
+| where tags['UpdateRing'] =~ '$UpdateRingValue'
+| project name, id
+"@
+            $rows = Invoke-AzResourceGraphQuery -Query $kqlQuery
+            foreach ($row in $rows) {
+                $targets += [PSCustomObject]@{ Name = $row.name; ResourceId = $row.id }
+            }
+        }
+    }
+
+    if ($targets.Count -eq 0) {
+        Write-Log -Message "Reset-AzureLocalSideloadedTag: no matching clusters found." -Level Warning
+        return @()
+    }
+
+    Write-Log -Message "Reset-AzureLocalSideloadedTag: evaluating $($targets.Count) cluster(s)..." -Level Info
+
+    $results = New-Object System.Collections.Generic.List[object]
+    foreach ($t in $targets) {
+        # Fetch the latest update run state + name
+        $latestRun = Get-AzLocalClusterUpdateRuns -resourceId $t.ResourceId -updateNameFilter $null -apiVer $ApiVersion |
+            Sort-Object { $_.properties.timeStarted } -Descending |
+            Select-Object -First 1
+
+        $state = ''
+        $updName = ''
+        if ($latestRun) {
+            $state = [string]$latestRun.properties.state
+            if ($latestRun.id -match '/updates/([^/]+)/updateRuns/') {
+                $updName = $matches[1]
+            }
+        }
+
+        $r = Invoke-AzLocalSideloadedAutoResetForCluster `
+            -ClusterName $t.Name `
+            -ClusterResourceId $t.ResourceId `
+            -LatestRunState $state `
+            -LatestRunUpdateName $updName `
+            -ApiVersion $ApiVersion `
+            -Force:$Force
+
+        switch ($r.Action) {
+            'Reset'           { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Success }
+            'NoTag'           { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
+            'RunNotSucceeded' { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
+            default           { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Warning }
+        }
+        $results.Add($r) | Out-Null
+    }
+
+    return $results.ToArray()
+}
 
 function Set-AzureLocalClusterUpdateRingTag {
     <#
@@ -10672,6 +11488,8 @@ Export-ModuleMember -Function @(
     'Get-AzureLocalFleetStatusData',
     'New-AzureLocalFleetStatusHtmlReport',
     # Update Schedule Tag Helpers (v0.6.5)
-    'Test-AzureLocalUpdateScheduleAllowed'
+    'Test-AzureLocalUpdateScheduleAllowed',
+    # Sideloaded Payload Workflow (v0.7.1)
+    'Reset-AzureLocalSideloadedTag'
 )
 

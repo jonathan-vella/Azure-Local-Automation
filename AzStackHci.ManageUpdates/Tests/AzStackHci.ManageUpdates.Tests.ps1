@@ -1,4 +1,4 @@
-#Requires -Module Pester
+﻿#Requires -Module Pester
 <#
 .SYNOPSIS
     Pester tests for the AzStackHci.ManageUpdates module.
@@ -38,8 +38,8 @@ Describe 'Module: AzStackHci.ManageUpdates' {
             $script:ModuleInfo.Version | Should -Be '0.7.1'
         }
 
-        It 'Should export exactly 19 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 19
+        It 'Should export exactly 20 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 20
         }
 
         It 'Should export the expected functions' {
@@ -66,7 +66,9 @@ Describe 'Module: AzStackHci.ManageUpdates' {
                 'Get-AzureLocalFleetStatusData',
                 'New-AzureLocalFleetStatusHtmlReport',
                 # Update Schedule Tag Helpers (v0.6.4)
-                'Test-AzureLocalUpdateScheduleAllowed'
+                'Test-AzureLocalUpdateScheduleAllowed',
+                # Sideloaded Payload Workflow (v0.7.1)
+                'Reset-AzureLocalSideloadedTag'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -2535,4 +2537,206 @@ Describe 'Integration: Get-AzureLocalUpdateRuns parallel dispatch' {
 }
 
 #endregion Integration: Get-AzureLocalUpdateRuns parallel dispatch
+
+#region Sideloaded Payload Workflow (v0.7.1)
+
+Describe 'Helper Function: ConvertFrom-AzLocalUpdateSideloaded (Internal)' {
+    BeforeAll { $moduleName = 'AzStackHci.ManageUpdates' }
+
+    Context 'Accepted values' {
+        It 'Returns $true for "True" / "true" / "TRUE"' {
+            (& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value 'True' })  | Should -Be $true
+            (& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value 'true' })  | Should -Be $true
+            (& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value 'TRUE' })  | Should -Be $true
+        }
+        It 'Returns $true for "1"' {
+            (& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value '1' }) | Should -Be $true
+        }
+        It 'Returns $false for "False" / "false" / "FALSE"' {
+            (& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value 'False' }) | Should -Be $false
+            (& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value 'false' }) | Should -Be $false
+            (& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value 'FALSE' }) | Should -Be $false
+        }
+        It 'Returns $false for "0"' {
+            (& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value '0' }) | Should -Be $false
+        }
+        It 'Trims surrounding whitespace' {
+            (& (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value '  True  ' }) | Should -Be $true
+        }
+    }
+
+    Context 'Rejected values' {
+        It 'Throws on empty string' {
+            { & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value '' } } | Should -Throw '*cannot be empty*'
+        }
+        It 'Throws on Yes / No / Enabled / 2' {
+            { & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value 'Yes' } }     | Should -Throw '*Invalid UpdateSideloaded*'
+            { & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value 'No' } }      | Should -Throw '*Invalid UpdateSideloaded*'
+            { & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value 'Enabled' } } | Should -Throw '*Invalid UpdateSideloaded*'
+            { & (Get-Module $moduleName) { ConvertFrom-AzLocalUpdateSideloaded -Value '2' } }       | Should -Throw '*Invalid UpdateSideloaded*'
+        }
+    }
+}
+
+Describe 'Helper Function: Test-AzLocalUpdateSideloadedAllowed (Internal)' {
+    BeforeAll { $moduleName = 'AzStackHci.ManageUpdates' }
+
+    It 'Allowed=$true and TagPresent=$false when tag is empty/null' {
+        $r = & (Get-Module $moduleName) { Test-AzLocalUpdateSideloadedAllowed -UpdateSideloaded '' }
+        $r.Allowed    | Should -Be $true
+        $r.TagPresent | Should -Be $false
+    }
+    It 'Allowed=$true when tag is True' {
+        $r = & (Get-Module $moduleName) { Test-AzLocalUpdateSideloadedAllowed -UpdateSideloaded 'True' }
+        $r.Allowed    | Should -Be $true
+        $r.TagPresent | Should -Be $true
+        $r.Reason     | Should -BeLike '*UpdateSideloaded == True*'
+    }
+    It 'Allowed=$true when tag is 1' {
+        $r = & (Get-Module $moduleName) { Test-AzLocalUpdateSideloadedAllowed -UpdateSideloaded '1' }
+        $r.Allowed | Should -Be $true
+    }
+    It 'Allowed=$false with clear reason when tag is False' {
+        $r = & (Get-Module $moduleName) { Test-AzLocalUpdateSideloadedAllowed -UpdateSideloaded 'False' }
+        $r.Allowed    | Should -Be $false
+        $r.TagPresent | Should -Be $true
+        $r.Reason     | Should -BeLike '*UpdateSideloaded == False*'
+    }
+    It 'Allowed=$false when tag is 0' {
+        $r = & (Get-Module $moduleName) { Test-AzLocalUpdateSideloadedAllowed -UpdateSideloaded '0' }
+        $r.Allowed | Should -Be $false
+    }
+    It 'Throws on malformed tag (caller decides fail-closed/-Force)' {
+        { & (Get-Module $moduleName) { Test-AzLocalUpdateSideloadedAllowed -UpdateSideloaded 'Yes' } } | Should -Throw '*Invalid UpdateSideloaded*'
+    }
+}
+
+Describe 'Helper Function: Test-AzLocalUpdateVersionInProgressMatch (Internal)' {
+    BeforeAll { $moduleName = 'AzStackHci.ManageUpdates' }
+
+    It 'Exact match returns $true' {
+        (& (Get-Module $moduleName) { Test-AzLocalUpdateVersionInProgressMatch -TagValue 'Solution12.2604.1003.209' -RunUpdateName 'Solution12.2604.1003.209' }) | Should -Be $true
+    }
+    It 'Case-insensitive match returns $true' {
+        (& (Get-Module $moduleName) { Test-AzLocalUpdateVersionInProgressMatch -TagValue 'solution12.2604.1003.209' -RunUpdateName 'SOLUTION12.2604.1003.209' }) | Should -Be $true
+    }
+    It 'Whitespace-tolerant match returns $true' {
+        (& (Get-Module $moduleName) { Test-AzLocalUpdateVersionInProgressMatch -TagValue '  Solution12.2604.1003.209  ' -RunUpdateName 'Solution12.2604.1003.209' }) | Should -Be $true
+    }
+    It 'Mismatch returns $false' {
+        (& (Get-Module $moduleName) { Test-AzLocalUpdateVersionInProgressMatch -TagValue 'Solution12.2604.1003.209' -RunUpdateName 'Solution12.2604.1003.210' }) | Should -Be $false
+    }
+    It 'Returns $false when either side is empty' {
+        (& (Get-Module $moduleName) { Test-AzLocalUpdateVersionInProgressMatch -TagValue '' -RunUpdateName 'X' }) | Should -Be $false
+        (& (Get-Module $moduleName) { Test-AzLocalUpdateVersionInProgressMatch -TagValue 'X' -RunUpdateName '' }) | Should -Be $false
+    }
+}
+
+Describe 'Helper Function: Invoke-AzLocalSideloadedAutoResetForCluster (Internal)' {
+    BeforeAll {
+        $moduleName = 'AzStackHci.ManageUpdates'
+        $rid = '/subscriptions/s/resourceGroups/r/providers/microsoft.azurestackhci/clusters/c1'
+    }
+
+    BeforeEach {
+        # Mock the cluster GET (and PATCH inside Set-AzLocalClusterTagsMerge) by stubbing az
+        # at module scope. We use $global: scoped variables so the mock (which runs inside
+        # the module's $script: scope when invoked via az rest) and the assertions (which
+        # run in the test's scope) share state.
+        $global:azGetTagsJson = $null
+        $global:azPatchCalled = $false
+        $global:azPatchBody   = $null
+        InModuleScope AzStackHci.ManageUpdates {
+            function global:az {
+                $args2 = @($args)
+                $global:LASTEXITCODE = 0
+                if ($args2 -contains 'PATCH') {
+                    $fIdx = [array]::IndexOf($args2, '--body')
+                    if ($fIdx -ge 0 -and $args2[$fIdx + 1] -match '^@(.+)$') {
+                        $global:azPatchBody = Get-Content -Raw $matches[1]
+                    }
+                    $global:azPatchCalled = $true
+                    return ''
+                }
+                if ($args2 -contains 'GET') {
+                    return $global:azGetTagsJson
+                }
+                return ''
+            }
+        }
+    }
+
+    AfterEach {
+        InModuleScope AzStackHci.ManageUpdates { Remove-Item function:\global:az -ErrorAction SilentlyContinue }
+        Remove-Variable -Name azGetTagsJson, azPatchCalled, azPatchBody -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It 'Action=NoTag when UpdateSideloaded tag is absent' {
+        $global:azGetTagsJson = '{"tags":{"UpdateRing":"Wave1"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'Solution12.2604.1003.209' } $rid
+        $r.Action | Should -Be 'NoTag'
+        $global:azPatchCalled | Should -Be $false
+    }
+
+    It 'Action=Skipped when UpdateSideloaded=False already' {
+        $global:azGetTagsJson = '{"tags":{"UpdateSideloaded":"False"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'X' } $rid
+        $r.Action | Should -Be 'Skipped'
+        $r.Message | Should -BeLike '*already*'
+        $global:azPatchCalled | Should -Be $false
+    }
+
+    It 'Action=RunNotSucceeded when latest run state is InProgress' {
+        $global:azGetTagsJson = '{"tags":{"UpdateSideloaded":"True","UpdateVersionInProgress":"Solution12.2604.1003.209"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState InProgress -LatestRunUpdateName 'Solution12.2604.1003.209' } $rid
+        $r.Action | Should -Be 'RunNotSucceeded'
+        $global:azPatchCalled | Should -Be $false
+    }
+
+    It 'Action=Skipped when UpdateSideloaded=True but UpdateVersionInProgress is missing' {
+        $global:azGetTagsJson = '{"tags":{"UpdateSideloaded":"True"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'Solution12.2604.1003.209' } $rid
+        $r.Action | Should -Be 'Skipped'
+        $r.Message | Should -BeLike '*outside this module*'
+        $global:azPatchCalled | Should -Be $false
+    }
+
+    It 'Action=Skipped when UpdateVersionInProgress mismatches the run name' {
+        $global:azGetTagsJson = '{"tags":{"UpdateSideloaded":"True","UpdateVersionInProgress":"Solution12.2604.1003.209"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'Solution12.2604.1003.210' } $rid
+        $r.Action | Should -Be 'Skipped'
+        $r.Message | Should -BeLike '*does not match*'
+        $global:azPatchCalled | Should -Be $false
+    }
+
+    It 'Action=Reset and PATCH called when match + Succeeded' {
+        $global:azGetTagsJson = '{"tags":{"UpdateRing":"Wave1","UpdateSideloaded":"True","UpdateVersionInProgress":"Solution12.2604.1003.209"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'Solution12.2604.1003.209' -Confirm:$false } $rid
+        $r.Action | Should -Be 'Reset'
+        $r.NewSideloaded | Should -Be 'False'
+        $global:azPatchCalled | Should -Be $true
+        # Patch body should set UpdateSideloaded=False and remove UpdateVersionInProgress
+        $global:azPatchBody | Should -Match '"UpdateSideloaded":\s*"False"'
+        $global:azPatchBody | Should -Not -Match 'UpdateVersionInProgress'
+        # Existing UpdateRing must be preserved in the merge
+        $global:azPatchBody | Should -Match '"UpdateRing":\s*"Wave1"'
+    }
+
+    It 'Action=Reset on -Force even with mismatch' {
+        $global:azGetTagsJson = '{"tags":{"UpdateSideloaded":"True","UpdateVersionInProgress":"OldVer"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'NewVer' -Force -Confirm:$false } $rid
+        $r.Action | Should -Be 'Reset'
+        $global:azPatchCalled | Should -Be $true
+    }
+
+    It 'Action=Skipped on malformed UpdateSideloaded value (no PATCH)' {
+        $global:azGetTagsJson = '{"tags":{"UpdateSideloaded":"Yes"}}'
+        $r = & (Get-Module $moduleName) { param($id) Invoke-AzLocalSideloadedAutoResetForCluster -ClusterName c1 -ClusterResourceId $id -LatestRunState Succeeded -LatestRunUpdateName 'X' } $rid
+        $r.Action | Should -Be 'Skipped'
+        $r.Message | Should -BeLike '*Malformed*'
+        $global:azPatchCalled | Should -Be $false
+    }
+}
+
+#endregion Sideloaded Payload Workflow (v0.7.1)
 

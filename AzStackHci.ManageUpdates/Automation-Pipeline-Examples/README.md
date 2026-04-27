@@ -18,6 +18,15 @@ Five pipelines are provided for each platform:
 
 > 📝 **Tip**: For ad-hoc reporting outside of CI/CD, you can also generate a standalone HTML report using `New-AzureLocalFleetStatusHtmlReport`. See [Standalone HTML Report](#standalone-html-report) below.
 
+### What's new for v0.7.1
+
+- **Sideloaded payload workflow**. Two new tags coordinate human-driven sideloaded update payloads with the apply-updates pipeline:
+  - `UpdateSideloaded` (operator-set, `True`/`False`/`1`/`0`) gates `Start-AzureLocalClusterUpdate`. When `False`, the apply-updates pipeline skips the cluster with `Status = SideloadedBlocked` (visible in the JUnit Tests tab as a new skipped reason).
+  - `UpdateVersionInProgress` (module-managed; do not set manually) holds the staged update name. `Get-AzureLocalUpdateRuns` (used by the Fleet Update Status pipeline) auto-resets `UpdateSideloaded` -> `False` and clears `UpdateVersionInProgress` when the latest run is `Succeeded` and its update name matches. Use `-SkipSideloadedReset` on read-only/assessment paths if you want to inspect tags without mutating them.
+- **New public function** `Reset-AzureLocalSideloadedTag` for explicit-scope manual reset (useful for one-off rotations or rescuing stuck tags via `-Force`).
+- **No new RBAC**. The workflow only reads/writes cluster tags; the existing `Microsoft.Resources/tags/read` and `/write` permissions documented below are sufficient.
+- See the [Sideloaded Payload Workflow section in the main README](../README.md#7a-sideloaded-payload-workflow-v071) for the full operator runbook.
+
 ### What's new for v0.7.0
 
 - **Parallel per-cluster operations**. `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns`, and `Set-AzureLocalClusterUpdateRingTag` now run per-cluster ARM calls in parallel `Start-Job` batches. `Invoke-AzureLocalFleetOperation -ThrottleLimit` is honored end-to-end (was previously retry-math only). Expected 5-10x speedup on 1500-cluster runs.
@@ -943,6 +952,7 @@ jobs:
 ### "Permission denied applying tags"
 - Verify the Service Principal has `Microsoft.Resources/tags/write` permission
 - Check that the scope includes the resource groups containing the clusters
+- Same permission also covers v0.7.1 sideloaded-workflow tag writes (`UpdateSideloaded`, `UpdateVersionInProgress`). If `Start-AzureLocalClusterUpdate` logs a Warning that it could not write `UpdateVersionInProgress`, or `Get-AzureLocalUpdateRuns` warns about auto-reset failure, this is the permission to check.
 
 ### "Update failed to start"
 - Check cluster health status in Azure Portal
