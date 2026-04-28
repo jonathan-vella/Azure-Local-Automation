@@ -28,14 +28,18 @@ $SourceDir   = $PSScriptRoot                          # repo module folder
 $StagingDir  = Join-Path 'C:\Temp' $ModuleName
 
 # ── 1. Clean staging area ──────────────────────────────────────────────────────
+# NOTE: Staging refresh deliberately bypasses -WhatIf via -WhatIf:$false so that
+# Test-ModuleManifest in step 5 always validates the CURRENT source. Without this,
+# a -WhatIf dry-run would skip Remove-Item/Copy-Item and validate a STALE staging
+# copy from a previous publish, hiding version mismatches.
 Write-Host "[$ModuleName] Cleaning staging folder: $StagingDir" -ForegroundColor Cyan
 if (Test-Path $StagingDir) {
-    Remove-Item $StagingDir -Recurse -Force
+    Remove-Item $StagingDir -Recurse -Force -WhatIf:$false
 }
 
 # ── 2. Copy module to staging ──────────────────────────────────────────────────
 Write-Host "[$ModuleName] Copying module to staging..." -ForegroundColor Cyan
-Copy-Item -Path $SourceDir -Destination $StagingDir -Recurse -Force
+Copy-Item -Path $SourceDir -Destination $StagingDir -Recurse -Force -WhatIf:$false
 
 # ── 3. Remove files/folders not needed in published package ────────────────────
 Write-Host "[$ModuleName] Removing files not needed for publishing..." -ForegroundColor Cyan
@@ -56,7 +60,7 @@ $RemovePaths = @(
 foreach ($relativePath in $RemovePaths) {
     $fullPath = Join-Path $StagingDir $relativePath
     if (Test-Path $fullPath) {
-        Remove-Item $fullPath -Recurse -Force
+        Remove-Item $fullPath -Recurse -Force -WhatIf:$false
         Write-Host "  Removed: $relativePath" -ForegroundColor DarkGray
     }
 }
