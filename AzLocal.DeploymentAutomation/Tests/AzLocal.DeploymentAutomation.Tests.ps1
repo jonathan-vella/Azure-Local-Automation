@@ -4629,15 +4629,17 @@ Describe 'Disaggregated (SAN) Deployment Support' {
             }
         }
 
-        It 'Should reject NodeCount = 0 for Disaggregated' {
+        It 'Should reject NodeCount = 0 for Disaggregated (param binder enforces ValidateRange 1-64)' {
             InModuleScope AzLocal.DeploymentAutomation {
-                { Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 0 } | Should -Throw -ExpectedMessage '*1-64*'
+                { Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 0 } |
+                    Should -Throw -ExpectedMessage '*minimum allowed range of 1*'
             }
         }
 
-        It 'Should reject NodeCount = 65 for Disaggregated' {
+        It 'Should reject NodeCount = 65 for Disaggregated (param binder enforces ValidateRange 1-64)' {
             InModuleScope AzLocal.DeploymentAutomation {
-                { Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 65 } | Should -Throw -ExpectedMessage '*1-64*'
+                { Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 65 } |
+                    Should -Throw -ExpectedMessage '*maximum allowed range of 64*'
             }
         }
     }
@@ -4792,7 +4794,9 @@ Describe 'Disaggregated (SAN) Deployment Support' {
             $csv = Join-Path $script:ModuleInfo.ModuleBase 'automation-pipelines\cluster-deployments.csv'
             Test-Path $csv | Should -Be $true
             $rows = Import-Csv -Path $csv
-            ($rows | Where-Object { $_.TypeOfDeployment -eq 'Disaggregated' }).Count | Should -BeGreaterOrEqual 1
+            # Wrap with @() so single-item result still has a .Count (PS 5.1 quirk)
+            $disaggRows = @($rows | Where-Object { $_.TypeOfDeployment -eq 'Disaggregated' })
+            $disaggRows.Count | Should -BeGreaterOrEqual 1
         }
 
         It 'shipped CSV header should include the 5 SAN columns' {
