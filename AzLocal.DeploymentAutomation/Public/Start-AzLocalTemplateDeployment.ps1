@@ -79,7 +79,11 @@
         [string]$SanNetworkAdapterName = "",
 
         [Parameter(Mandatory = $false)]
-        [ValidateRange(0, 4095)]
+        # SAN cluster network VLAN ID. Valid VLANs are 0-4095 (0 = untagged).
+        # The sentinel value -1 means "not provided" and triggers the JSON / config fallback.
+        # Range explicitly includes -1 so callers can pass it explicitly without binder failure;
+        # do NOT tighten this to (0, 4095) as that would break the sentinel contract.
+        [ValidateRange(-1, 4095)]
         [int]$SanNetworkVlanId = -1,
 
         [Parameter(Mandatory = $false)]
@@ -186,10 +190,11 @@
         Write-AzLocalLog "Disaggregated deployment requires -NodeCount (1-64)." -Level Error
         throw "Disaggregated deployment requires -NodeCount between 1 and 64."
     }
-    if ($TypeOfDeployment -eq "Disaggregated") { $effectiveNodeCount = $NodeCount } Determine effective node count early (needed for parameter file selection and node IP validation)
+    # Determine effective node count early (needed for parameter file selection and node IP validation)
     switch ($TypeOfDeployment) {
-        "SingleNode" { $effectiveNodeCount = 1 }
-        default      { $effectiveNodeCount = $NodeCount }
+        "SingleNode"    { $effectiveNodeCount = 1 }
+        "Disaggregated" { $effectiveNodeCount = $NodeCount }
+        default         { $effectiveNodeCount = $NodeCount }
     }
 
     # Load naming configuration (user profile, explicit path, or module default)
@@ -287,6 +292,11 @@
         'DeploymentName'                   = $deploymentName
     }
     Test-AzLocalResourceNames -Names $namesToValidate
+
+    # Initialize $phase so the catch block has a sensible value if a failure occurs
+    # before the deployment-phase foreach loop is entered (StrictMode otherwise throws
+    # "variable not set" inside the catch and masks the real root cause).
+    $phase = '<pre-deployment>'
 
     # Wrap all post-credential code in try/finally to ensure SecureString disposal on any failure path
     try{
@@ -719,9 +729,11 @@
 
         throw $deployError
     } finally {
-        # Securely dispose sensitive credential variables from memory
-        if ($localAdminPassword -is [System.Security.SecureString]) { $localAdminPassword.Dispose() }
-        if ($AzureStackLCMAdminPassword -is [System.Security.SecureString]) { $AzureStackLCMAdminPassword.Dispose() }
+        # Securely dispose sensitive credential variables from memory.
+        # Each Dispose() is wrapped individually so that a failure on one variable
+        # does not skip cleanup of subsequent variables.
+        try { if ($localAdminPassword -is [System.Security.SecureString]) { $localAdminPassword.Dispose() } } catch { Write-Verbose "Failed to dispose localAdminPassword: $($_.Exception.Message)" }
+        try { if ($AzureStackLCMAdminPassword -is [System.Security.SecureString]) { $AzureStackLCMAdminPassword.Dispose() } } catch { Write-Verbose "Failed to dispose AzureStackLCMAdminPassword: $($_.Exception.Message)" }
         $localAdminPassword = $null
         $AzureStackLCMAdminPassword = $null
         $kvLocalSecret = $null

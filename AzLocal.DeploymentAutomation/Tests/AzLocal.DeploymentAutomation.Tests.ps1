@@ -52,9 +52,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.9.81 in manifest' {
+        It 'Should have version 0.9.9 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '0.9.81'
+            $manifest.ModuleVersion | Should -Be '0.9.9'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -144,8 +144,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 0.9.81' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.81'
+        It 'Should have version 0.9.9' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.9'
         }
     }
 }
@@ -325,6 +325,9 @@ Describe 'Function: Start-AzLocalTemplateDeployment' {
         It 'Should allow RackAware' {
             $script:ValidateSet.ValidValues | Should -Contain 'RackAware'
         }
+        It 'Should allow Disaggregated (SAN, v0.9.9)' {
+            $script:ValidateSet.ValidValues | Should -Contain 'Disaggregated'
+        }
         It 'Should NOT allow TwoNode (consolidated into StorageSwitched)' {
             $script:ValidateSet.ValidValues | Should -Not -Contain 'TwoNode'
         }
@@ -333,8 +336,8 @@ Describe 'Function: Start-AzLocalTemplateDeployment' {
             $script:ValidateSet.ValidValues | Should -Not -Contain 'TwoNode-Switchless'
         }
 
-        It 'Should have exactly 4 valid deployment types' {
-            $script:ValidateSet.ValidValues.Count | Should -Be 4
+        It 'Should have exactly 5 valid deployment types' {
+            $script:ValidateSet.ValidValues.Count | Should -Be 5
         }
     }
 
@@ -373,12 +376,12 @@ Describe 'Function: Start-AzLocalTemplateDeployment' {
             $script:ValidateRange | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have minimum value of 2' {
-            $script:ValidateRange.MinRange | Should -Be 2
+        It 'Should have minimum value of 1 (lowered from 2 in v0.9.9 to support Disaggregated single-node)' {
+            $script:ValidateRange.MinRange | Should -Be 1
         }
 
-        It 'Should have maximum value of 16' {
-            $script:ValidateRange.MaxRange | Should -Be 16
+        It 'Should have maximum value of 64 (raised from 16 in v0.9.9 to support Disaggregated up to 64 nodes)' {
+            $script:ValidateRange.MaxRange | Should -Be 64
         }
     }
 
@@ -4533,6 +4536,273 @@ Describe 'Function: New-AzLocalDeploymentReport' {
                 $cmd = Get-Command New-AzLocalDeploymentReport
                 $cmd.OutputType.Type.Name | Should -Contain 'hashtable'
             }
+        }
+    }
+}
+
+# ============================================================================
+# Disaggregated (SAN) Deployment Tests - v0.9.9
+# ============================================================================
+Describe 'Disaggregated (SAN) Deployment Support' {
+
+    Context 'Start-AzLocalTemplateDeployment - Disaggregated parameters' {
+        BeforeAll {
+            $script:DisCmd = Get-Command Start-AzLocalTemplateDeployment
+        }
+
+        It 'Should expose -InfraVolLunId parameter as [string]' {
+            $script:DisCmd.Parameters.Keys | Should -Contain 'InfraVolLunId'
+            $script:DisCmd.Parameters['InfraVolLunId'].ParameterType.Name | Should -Be 'String'
+        }
+
+        It 'Should expose -InfraPerfLunId parameter as [string]' {
+            $script:DisCmd.Parameters.Keys | Should -Contain 'InfraPerfLunId'
+            $script:DisCmd.Parameters['InfraPerfLunId'].ParameterType.Name | Should -Be 'String'
+        }
+
+        It 'Should expose -SanNetworkAdapterName parameter as [string]' {
+            $script:DisCmd.Parameters.Keys | Should -Contain 'SanNetworkAdapterName'
+            $script:DisCmd.Parameters['SanNetworkAdapterName'].ParameterType.Name | Should -Be 'String'
+        }
+
+        It 'Should expose -SanNetworkVlanId parameter as [int]' {
+            $script:DisCmd.Parameters.Keys | Should -Contain 'SanNetworkVlanId'
+            $script:DisCmd.Parameters['SanNetworkVlanId'].ParameterType.Name | Should -Be 'Int32'
+        }
+
+        It 'SanNetworkVlanId ValidateRange should accept the -1 sentinel and 0-4095' {
+            $vrange = $script:DisCmd.Parameters['SanNetworkVlanId'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] }
+            $vrange | Should -Not -BeNullOrEmpty
+            $vrange.MinRange | Should -Be -1
+            $vrange.MaxRange | Should -Be 4095
+        }
+
+        It 'Should expose -SanNetworkAddressPrefix with a CIDR ValidatePattern' {
+            $script:DisCmd.Parameters.Keys | Should -Contain 'SanNetworkAddressPrefix'
+            $vpattern = $script:DisCmd.Parameters['SanNetworkAddressPrefix'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ValidatePatternAttribute] }
+            $vpattern | Should -Not -BeNullOrEmpty
+        }
+
+        It 'Should expose -SanBandwidthPercentageSmb (1-97, default 50)' {
+            $script:DisCmd.Parameters.Keys | Should -Contain 'SanBandwidthPercentageSmb'
+            $vrange = $script:DisCmd.Parameters['SanBandwidthPercentageSmb'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] }
+            $vrange.MinRange | Should -Be 1
+            $vrange.MaxRange | Should -Be 97
+        }
+
+        It 'Should expose -SanJumboPacket accepting only 1514 or 9014' {
+            $script:DisCmd.Parameters.Keys | Should -Contain 'SanJumboPacket'
+            $vset = $script:DisCmd.Parameters['SanJumboPacket'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+            $vset | Should -Not -BeNullOrEmpty
+            ([int[]]$vset.ValidValues | Sort-Object) | Should -Be @(1514, 9014)
+        }
+    }
+
+    Context 'Get-AzLocalParameterFilePath - Disaggregated mapping' {
+        It 'Should return disaggregated-parameters-file.json for Disaggregated' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 8
+                $result | Should -Match 'disaggregated-parameters-file\.json$'
+            }
+        }
+
+        It 'Should resolve to a file that exists on disk' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $result = Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 8
+                Test-Path $result | Should -Be $true
+            }
+        }
+
+        It 'Should accept NodeCount = 1 (single-node SAN)' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                { Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 1 } | Should -Not -Throw
+            }
+        }
+
+        It 'Should accept NodeCount = 64 (boundary)' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                { Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 64 } | Should -Not -Throw
+            }
+        }
+
+        It 'Should reject NodeCount = 0 for Disaggregated' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                { Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 0 } | Should -Throw -ExpectedMessage '*1-64*'
+            }
+        }
+
+        It 'Should reject NodeCount = 65 for Disaggregated' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                { Get-AzLocalParameterFilePath -TypeOfDeployment 'Disaggregated' -NodeCount 65 } | Should -Throw -ExpectedMessage '*1-64*'
+            }
+        }
+    }
+
+    Context 'SAN ARM Template - templates/azure-local-deployment-template-san.json' {
+        BeforeAll {
+            $script:SanTemplatePath = Join-Path $script:ModuleInfo.ModuleBase 'templates\azure-local-deployment-template-san.json'
+            $script:SanTemplate = Get-Content $script:SanTemplatePath -Raw | ConvertFrom-Json
+        }
+
+        It 'Should exist on disk' {
+            Test-Path $script:SanTemplatePath | Should -Be $true
+        }
+
+        It 'Should declare an infraVolLunId parameter' {
+            $script:SanTemplate.parameters.PSObject.Properties.Name | Should -Contain 'infraVolLunId'
+        }
+
+        It 'Should declare an infraPerfLunId parameter' {
+            $script:SanTemplate.parameters.PSObject.Properties.Name | Should -Contain 'infraPerfLunId'
+        }
+
+        It 'Should declare a sanNetworkList parameter' {
+            $script:SanTemplate.parameters.PSObject.Properties.Name | Should -Contain 'sanNetworkList'
+        }
+
+        It 'Should NOT declare storageNetworkList (SAN template uses sanNetworkList)' {
+            $script:SanTemplate.parameters.PSObject.Properties.Name | Should -Not -Contain 'storageNetworkList'
+        }
+    }
+
+    Context 'Disaggregated parameter file - template-parameter-files/disaggregated-parameters-file.json' {
+        BeforeAll {
+            $script:DisaggParamPath = Join-Path $script:ModuleInfo.ModuleBase 'template-parameter-files\disaggregated-parameters-file.json'
+            $script:DisaggParam = Get-Content $script:DisaggParamPath -Raw | ConvertFrom-Json
+        }
+
+        It 'Should exist on disk' {
+            Test-Path $script:DisaggParamPath | Should -Be $true
+        }
+
+        It 'Should contain a sanNetworkList parameter block' {
+            $script:DisaggParam.parameters.PSObject.Properties.Name | Should -Contain 'sanNetworkList'
+        }
+
+        It 'sanNetworkList should contain clusterNetworkConfig with adapterProperties and adapterIPConfig' {
+            $cnc = $script:DisaggParam.parameters.sanNetworkList.value.clusterNetworkConfig
+            $cnc | Should -Not -BeNullOrEmpty
+            $cnc.PSObject.Properties.Name | Should -Contain 'adapterProperties'
+            $cnc.PSObject.Properties.Name | Should -Contain 'adapterIPConfig'
+        }
+
+        It 'adapterProperties should include bandwidthPercentageSmb and jumboPacket' {
+            $ap = $script:DisaggParam.parameters.sanNetworkList.value.clusterNetworkConfig.adapterProperties
+            $ap.PSObject.Properties.Name | Should -Contain 'bandwidthPercentageSmb'
+            $ap.PSObject.Properties.Name | Should -Contain 'jumboPacket'
+        }
+    }
+
+    Context 'Get-AzLocalNetworkSettingsFromJson - sanSettings parsing' {
+        It 'Should reject Disaggregated JSON without a sanSettings block' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.5.1","startingIPAddress":"10.0.5.10","endingIPAddress":"10.0.5.30","nodeIPAddresses":["10.0.5.100","10.0.5.101"]}'
+                { Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'Disaggregated' -NodeCount 2 } |
+                    Should -Throw -ExpectedMessage '*sanSettings*'
+            }
+        }
+
+        It 'Should accept a complete Disaggregated JSON with sanSettings' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.5.1","startingIPAddress":"10.0.5.10","endingIPAddress":"10.0.5.30","nodeIPAddresses":["10.0.5.100","10.0.5.101"],"sanSettings":{"infraVolLunId":"PURE1234567890ABCDEF","infraPerfLunId":"PURE0987654321MNOPQR","sanNetworkAdapterName":"ethernet 3","sanNetworkVlanId":711,"sanNetworkAddressPrefix":"10.10.30.0/24"}}'
+                $result = Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'Disaggregated' -NodeCount 2
+                $result.sanSettings | Should -Not -BeNullOrEmpty
+                $result.sanSettings.infraVolLunId | Should -Be 'PURE1234567890ABCDEF'
+                $result.sanSettings.sanNetworkVlanId | Should -Be 711
+                $result.sanSettings.sanNetworkAddressPrefix | Should -Be '10.10.30.0/24'
+            }
+        }
+
+        It 'Should reject sanNetworkVlanId outside the 0-4095 range' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.5.1","startingIPAddress":"10.0.5.10","endingIPAddress":"10.0.5.30","nodeIPAddresses":["10.0.5.100"],"sanSettings":{"infraVolLunId":"X","infraPerfLunId":"Y","sanNetworkAdapterName":"e3","sanNetworkVlanId":5000,"sanNetworkAddressPrefix":"10.10.30.0/24"}}'
+                { Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'Disaggregated' -NodeCount 1 } |
+                    Should -Throw -ExpectedMessage '*0-4095*'
+            }
+        }
+
+        It 'Should reject malformed sanNetworkAddressPrefix (not CIDR)' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.5.1","startingIPAddress":"10.0.5.10","endingIPAddress":"10.0.5.30","nodeIPAddresses":["10.0.5.100"],"sanSettings":{"infraVolLunId":"X","infraPerfLunId":"Y","sanNetworkAdapterName":"e3","sanNetworkVlanId":711,"sanNetworkAddressPrefix":"not-a-cidr"}}'
+                { Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'Disaggregated' -NodeCount 1 } |
+                    Should -Throw -ExpectedMessage '*CIDR*'
+            }
+        }
+    }
+
+    Context 'Import-AzLocalDeploymentCsv - Disaggregated CSV columns' {
+        BeforeAll {
+            $script:DisaggCsvDir = Join-Path $env:TEMP 'AzLocal-Disagg-Tests'
+            New-Item -ItemType Directory -Path $script:DisaggCsvDir -Force | Out-Null
+            $script:DisaggCsvHeader = 'UniqueID,ReadyToDeploy,SubscriptionId,TenantId,TypeOfDeployment,NodeCount,Location,CredentialKeyVaultName,LocalAdminSecretName,LCMAdminSecretName,SubnetMask,DefaultGateway,StartingIPAddress,EndingIPAddress,DnsServers,NodeIPAddresses,InfraVolLunId,InfraPerfLunId,SanNetworkAdapterName,SanNetworkVlanId,SanNetworkAddressPrefix'
+        }
+
+        AfterAll {
+            Remove-Item -Path $script:DisaggCsvDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        It 'Should accept a Disaggregated row with all SAN columns populated' {
+            $tmp = Join-Path $script:DisaggCsvDir 'good.csv'
+            $row = 'D01,TRUE,aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,ffffffff-aaaa-bbbb-cccc-dddddddddddd,Disaggregated,2,westeurope,kv,LocalAdminCredential,AzureStackLCMUserCredential,255.255.255.0,10.0.5.1,10.0.5.10,10.0.5.30,10.0.0.1,10.0.5.100;10.0.5.101,PUREVOL,PUREPERF,ethernet 3,711,10.10.30.0/24'
+            Set-Content -Path $tmp -Value @($script:DisaggCsvHeader, $row) -Encoding ASCII
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ Path = $tmp } {
+                param($Path)
+                { Import-AzLocalDeploymentCsv -CsvFilePath $Path } | Should -Not -Throw
+            }
+        }
+
+        It 'Should reject a Disaggregated row missing InfraVolLunId' {
+            $tmp = Join-Path $script:DisaggCsvDir 'missing-lun.csv'
+            $row = 'D02,TRUE,aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,ffffffff-aaaa-bbbb-cccc-dddddddddddd,Disaggregated,2,westeurope,kv,,,255.255.255.0,10.0.5.1,10.0.5.10,10.0.5.30,10.0.0.1,10.0.5.100;10.0.5.101,,PUREPERF,ethernet 3,711,10.10.30.0/24'
+            Set-Content -Path $tmp -Value @($script:DisaggCsvHeader, $row) -Encoding ASCII
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ Path = $tmp } {
+                param($Path)
+                { Import-AzLocalDeploymentCsv -CsvFilePath $Path } | Should -Throw -ExpectedMessage '*InfraVolLunId*'
+            }
+        }
+
+        It 'Should reject a Disaggregated row with VLAN > 4095' {
+            $tmp = Join-Path $script:DisaggCsvDir 'bad-vlan.csv'
+            $row = 'D03,TRUE,aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,ffffffff-aaaa-bbbb-cccc-dddddddddddd,Disaggregated,2,westeurope,kv,,,255.255.255.0,10.0.5.1,10.0.5.10,10.0.5.30,10.0.0.1,10.0.5.100;10.0.5.101,VOL,PERF,ethernet 3,9999,10.10.30.0/24'
+            Set-Content -Path $tmp -Value @($script:DisaggCsvHeader, $row) -Encoding ASCII
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ Path = $tmp } {
+                param($Path)
+                { Import-AzLocalDeploymentCsv -CsvFilePath $Path } | Should -Throw -ExpectedMessage '*VlanId*'
+            }
+        }
+
+        It 'Should reject a Disaggregated row with NodeCount = 65' {
+            $tmp = Join-Path $script:DisaggCsvDir 'too-many.csv'
+            $nips = (1..65 | ForEach-Object { "10.0.5.$_" }) -join ';'
+            $row = "D04,TRUE,aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,ffffffff-aaaa-bbbb-cccc-dddddddddddd,Disaggregated,65,westeurope,kv,,,255.255.255.0,10.0.5.1,10.0.5.10,10.0.5.200,10.0.0.1,$nips,VOL,PERF,ethernet 3,711,10.10.30.0/24"
+            Set-Content -Path $tmp -Value @($script:DisaggCsvHeader, $row) -Encoding ASCII
+            InModuleScope AzLocal.DeploymentAutomation -Parameters @{ Path = $tmp } {
+                param($Path)
+                { Import-AzLocalDeploymentCsv -CsvFilePath $Path } | Should -Throw -ExpectedMessage '*1-64*'
+            }
+        }
+    }
+
+    Context 'Disaggregated v0.9.9 - shipped example CSV' {
+        It 'automation-pipelines/cluster-deployments.csv should have at least one Disaggregated row' {
+            $csv = Join-Path $script:ModuleInfo.ModuleBase 'automation-pipelines\cluster-deployments.csv'
+            Test-Path $csv | Should -Be $true
+            $rows = Import-Csv -Path $csv
+            ($rows | Where-Object { $_.TypeOfDeployment -eq 'Disaggregated' }).Count | Should -BeGreaterOrEqual 1
+        }
+
+        It 'shipped CSV header should include the 5 SAN columns' {
+            $csv = Join-Path $script:ModuleInfo.ModuleBase 'automation-pipelines\cluster-deployments.csv'
+            $headers = (Get-Content $csv -TotalCount 1) -split ','
+            $headers | Should -Contain 'InfraVolLunId'
+            $headers | Should -Contain 'InfraPerfLunId'
+            $headers | Should -Contain 'SanNetworkAdapterName'
+            $headers | Should -Contain 'SanNetworkVlanId'
+            $headers | Should -Contain 'SanNetworkAddressPrefix'
         }
     }
 }
