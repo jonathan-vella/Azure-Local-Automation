@@ -93,6 +93,43 @@
         }
     }
 
+    # For Disaggregated (SAN) deployments, also extract SAN-specific settings.
+    # Expected optional sanSettings block:
+    #   "sanSettings": {
+    #       "infraVolLunId": "PURE1234567890ABCDEF",
+    #       "infraPerfLunId": "PURE0987654321MNOPQR",
+    #       "sanNetworkAdapterName": "ethernet 3",
+    #       "sanNetworkVlanId": 711,
+    #       "sanNetworkAddressPrefix": "10.10.30.0/24"
+    #   }
+    $sanSettings = $null
+    if ($TypeOfDeployment -eq 'Disaggregated') {
+        if (-not $settings.PSObject.Properties['sanSettings'] -or -not $settings.sanSettings) {
+            throw "Disaggregated deployments require a 'sanSettings' block in the network settings JSON (infraVolLunId, infraPerfLunId, sanNetworkAdapterName, sanNetworkVlanId, sanNetworkAddressPrefix)."
+        }
+        $san = $settings.sanSettings
+        $requiredSan = @('infraVolLunId', 'infraPerfLunId', 'sanNetworkAdapterName', 'sanNetworkVlanId', 'sanNetworkAddressPrefix')
+        foreach ($f in $requiredSan) {
+            if (-not $san.PSObject.Properties[$f] -or [string]::IsNullOrWhiteSpace([string]$san.$f)) {
+                throw "Disaggregated network settings JSON is missing required sanSettings field '$f'."
+            }
+        }
+        $sanVlan = 0
+        if (-not [int]::TryParse([string]$san.sanNetworkVlanId, [ref]$sanVlan) -or $sanVlan -lt 0 -or $sanVlan -gt 4095) {
+            throw "sanSettings.sanNetworkVlanId must be an integer 0-4095."
+        }
+        if ([string]$san.sanNetworkAddressPrefix -notmatch '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$') {
+            throw "sanSettings.sanNetworkAddressPrefix must be valid CIDR notation (e.g. 10.10.30.0/24)."
+        }
+        $sanSettings = [PsCustomObject][Ordered]@{
+            infraVolLunId           = $san.infraVolLunId
+            infraPerfLunId          = $san.infraPerfLunId
+            sanNetworkAdapterName   = $san.sanNetworkAdapterName
+            sanNetworkVlanId        = $sanVlan
+            sanNetworkAddressPrefix = $san.sanNetworkAddressPrefix
+        }
+    }
+
     Write-AzLocalLog "Network settings loaded from JSON successfully." -Level Success
 
     return [PsCustomObject][Ordered]@{
@@ -101,5 +138,6 @@
         startingIPAddress = $settings.startingIPAddress
         endingIPAddress   = $settings.endingIPAddress
         nodeIPAddresses   = $nodeIPs
+        sanSettings       = $sanSettings
     }
 }

@@ -2,9 +2,9 @@
 <#
 .SYNOPSIS
     Author:     Neil Bird, MSFT
-    Version:    0.9.81
+    Version:    0.9.9
     Created:    May 15th 2025
-    Updated:    April 16th 2026
+    Updated:    April 28th 2026
 
 .DESCRIPTION
 
@@ -13,7 +13,7 @@
     This script is used to deploy Azure Local using an ARM template deployment. It requires the following parameters:
     - SubscriptionId: The ID of the Azure subscription to use for the deployment.
     - TenantId: The ID of the Azure tenant to use for the deployment.
-    - TypeOfDeployment: The type of deployment to perform (e.g., SingleNode, StorageSwitched, StorageSwitchless, RackAware).
+    - TypeOfDeployment: The type of deployment to perform (e.g., SingleNode, StorageSwitched, StorageSwitchless, RackAware, Disaggregated).
     
     Credentials can be supplied via three methods (in priority order):
     1. Azure Key Vault: -CredentialKeyVaultName with optional -LocalAdminSecretName / -LCMAdminSecretName

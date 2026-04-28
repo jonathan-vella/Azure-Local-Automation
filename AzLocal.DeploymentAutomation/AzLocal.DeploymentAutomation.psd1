@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.81'
+    ModuleVersion = '0.9.9'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -19,7 +19,7 @@
     Copyright = '(c) Neil Bird. Published using MIT License, See LICENSE file for details.'
 
     # Description of the functionality provided by this module
-    Description = 'AzLocal.DeploymentAutomation module for deploying Azure Local using ARM templates and parameter files using PowerShell. Supports SingleNode, StorageSwitched (2-16 nodes with storage network switch), StorageSwitchless (2-4 nodes), and RackAware (2, 4, 6, 8 nodes) deployments. Resource naming standards are configurable via .config/naming-standards-config.json.'
+    Description = 'AzLocal.DeploymentAutomation module for deploying Azure Local using ARM templates and parameter files using PowerShell. Supports SingleNode, StorageSwitched (2-16 nodes with storage network switch), StorageSwitchless (2-4 nodes), RackAware (2, 4, 6, 8 nodes), and Disaggregated/SAN (1-64 nodes, SAN-backed storage with infraVolLunId/infraPerfLunId) deployments. Resource naming standards are configurable via .config/naming-standards-config.json.'
 
     # Minimum version of the PowerShell engine required by this module
     PowerShellVersion = '5.1'
@@ -97,6 +97,30 @@
 
             # Release notes for this version
             ReleaseNotes = @'
+## v0.9.9 - April 2026
+
+### New deployment topology: Disaggregated (SAN storage)
+Adds first-class support for SAN-backed Azure Local clusters of up to **64 nodes**, modeled on the official quickstart [microsoft.azurestackhci/create-cluster-san](https://github.com/Azure/azure-quickstart-templates/tree/master/quickstarts/microsoft.azurestackhci/create-cluster-san). Disaggregated clusters use external SAN LUNs (e.g. Pure Storage, NetApp, Dell PowerStore) instead of Storage Spaces Direct, and require additional infrastructure + performance LUN identifiers and a dedicated SAN cluster network.
+
+- Added new TypeOfDeployment value: `Disaggregated` (1-64 nodes, SAN storage)
+- Added new ARM template: `templates/azure-local-deployment-template-san.json` (uses `Microsoft.AzureStackHCI` API `2026-04-01-preview`, sets `storage.storageType = SAN`, `storage.san.{infraVolLunId,infraPerfLunId}`, replaces `hostNetwork.storageNetworks` with `hostNetwork.sanNetworks` object)
+- Added new parameter-file template: `template-parameter-files/disaggregated-parameters-file.json`
+- Added new parameters to `Start-AzLocalTemplateDeployment`: `-InfraVolLunId`, `-InfraPerfLunId`, `-SanNetworkAdapterName`, `-SanNetworkVlanId` (0-4095), `-SanNetworkAddressPrefix` (CIDR), `-SanBandwidthPercentageSmb` (1-97, default 50), `-SanJumboPacket` (1514|9014, default 9014)
+- `configurationMode` is forced to `InfraOnly` for Disaggregated (the only value supported by the SAN deploymentSettings schema)
+- Raised `-NodeCount` ValidateRange to (1, 64) - existing topology checks (SingleNode<=1, StorageSwitched 2-16, StorageSwitchless 2-4, RackAware 2/4/6/8) still apply
+- `Start-AzLocalCsvDeployment` now accepts and forwards five new optional CSV columns: `InfraVolLunId`, `InfraPerfLunId`, `SanNetworkAdapterName`, `SanNetworkVlanId`, `SanNetworkAddressPrefix` (required only when TypeOfDeployment = Disaggregated)
+- `Get-AzLocalNetworkSettingsFromJson` accepts a new optional `sanSettings` block (infraVolLunId, infraPerfLunId, sanNetworkAdapterName, sanNetworkVlanId, sanNetworkAddressPrefix) for non-interactive Disaggregated deployments
+- `Get-AzLocalDeploymentNetworkSettings` prompts interactively for the SAN-specific values when TypeOfDeployment = Disaggregated
+- `Import-AzLocalDeploymentCsv` validates the SAN columns (presence, VLAN range 0-4095, CIDR format) when a row is Disaggregated; non-Disaggregated rows can leave those columns blank
+- Updated example `automation-pipelines/cluster-deployments.csv` with a Store005 Disaggregated 8-node row
+- Per-phase parameter-file regeneration now skips the storageNetworkList override when running against the SAN template (the SAN template has no storageNetworkList; it uses sanNetworkList instead)
+- Pre-flight, naming resolution, and KeyVault credential paths are unchanged - Disaggregated reuses all existing helpers
+
+### Backwards-compatibility notes
+- Existing parameter files, ARM template, and all four prior deployment topologies are unchanged
+- `clusterPattern` and `localAvailabilityZones` parameters are emitted only for non-Disaggregated deployments (the SAN template does not declare them)
+- The default `-NodeCount` ValidateRange has changed from (2, 16) to (1, 64). Calls passing NodeCount=1 explicitly are now accepted at the parameter-validation layer (still rejected for SingleNode by the topology check, which is unchanged)
+
 ## v0.9.81 - April 2026
 - Fixed bug in Start-AzLocalTemplateDeployment where $_ was shadowed by a nested catch block, causing ARM deployment error details to be silently lost
 - Fixed credential SecureString disposal gap: moved try/finally to wrap all post-credential code so credentials are always disposed even if pre-deployment checks throw

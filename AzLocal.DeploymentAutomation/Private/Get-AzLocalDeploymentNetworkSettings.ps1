@@ -16,7 +16,7 @@
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true,Position=0)]
-        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware")]
+        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware","Disaggregated")]
         [string]$TypeOfDeployment,
 
         [Parameter(Mandatory = $false,Position=1)]
@@ -34,6 +34,7 @@
         "StorageSwitchless"     { $effectiveNodeCount = $NodeCount }
         "StorageSwitched"       { $effectiveNodeCount = $NodeCount }
         "RackAware"             { $effectiveNodeCount = $NodeCount }
+        "Disaggregated"         { $effectiveNodeCount = $NodeCount }
     }
 
     # Prompt for Network Settings
@@ -63,6 +64,44 @@
         }
     }
 
+    # For Disaggregated (SAN) deployments, also collect SAN-specific settings:
+    #  - InfraVolLunId: vendor-issued LUN ID for the infrastructure volume
+    #  - InfraPerfLunId: vendor-issued LUN ID for the performance volume
+    #  - SanNetworkAdapterName: physical NIC used for the SAN/cluster network (e.g. "ethernet 3")
+    #  - SanNetworkVlanId: VLAN tag for the SAN network (0-4095, 0 = untagged)
+    #  - SanNetworkAddressPrefix: CIDR for the SAN/cluster network (e.g. 10.10.30.0/24)
+    $sanSettings = $null
+    if ($TypeOfDeployment -eq 'Disaggregated') {
+        $infraVolLunId = Read-Host "`nPlease enter the SAN Infrastructure Volume LUN ID (e.g. PURE1234567890ABCDEF)" -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($infraVolLunId)) {
+            throw "Disaggregated deployment requires a non-empty InfraVolLunId."
+        }
+        $infraPerfLunId = Read-Host "`nPlease enter the SAN Infrastructure Performance LUN ID (e.g. PURE0987654321MNOPQR)" -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($infraPerfLunId)) {
+            throw "Disaggregated deployment requires a non-empty InfraPerfLunId."
+        }
+        $sanNetworkAdapterName = Read-Host "`nPlease enter the SAN cluster network physical adapter name (e.g. 'ethernet 3')" -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($sanNetworkAdapterName)) {
+            throw "Disaggregated deployment requires a non-empty SAN network adapter name."
+        }
+        $sanVlanRaw = Read-Host "`nPlease enter the SAN network VLAN ID (0-4095, 0 = untagged)" -ErrorAction Stop
+        $sanVlanId = 0
+        if (-not [int]::TryParse($sanVlanRaw, [ref]$sanVlanId) -or $sanVlanId -lt 0 -or $sanVlanId -gt 4095) {
+            throw "Invalid SAN network VLAN ID '$sanVlanRaw'. Must be an integer between 0 and 4095."
+        }
+        $sanAddressPrefix = Read-Host "`nPlease enter the SAN network address prefix in CIDR notation (e.g. 10.10.30.0/24)" -ErrorAction Stop
+        if ($sanAddressPrefix -notmatch '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$') {
+            throw "Invalid SAN network address prefix '$sanAddressPrefix'. Must be valid CIDR notation (e.g. 10.10.30.0/24)."
+        }
+        $sanSettings = [PsCustomObject][Ordered]@{
+            infraVolLunId           = $infraVolLunId
+            infraPerfLunId          = $infraPerfLunId
+            sanNetworkAdapterName   = $sanNetworkAdapterName
+            sanNetworkVlanId        = $sanVlanId
+            sanNetworkAddressPrefix = $sanAddressPrefix
+        }
+    }
+
     # Return the network settings as a custom object
     $networkSettings = [PsCustomObject][Ordered]@{
         subnetMask       = $subnetMask.IPAddressToString
@@ -70,6 +109,7 @@
         startingIPAddress = $startingIPAddress.IPAddressToString
         endingIPAddress  = $endingIPAddress.IPAddressToString
         nodeIPAddresses  = $nodeIPAddresses
+        sanSettings      = $sanSettings
     }
 
     return $networkSettings

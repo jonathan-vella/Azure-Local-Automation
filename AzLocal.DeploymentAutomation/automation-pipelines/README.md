@@ -87,6 +87,11 @@ The CSV file drives all deployments. Each row represents one cluster/site.
 | `EndingIPAddress` | IP | End of IP range for cluster IPs | `10.0.1.110` |
 | `DnsServers` | String | DNS server IPs (semicolon-separated for multiple) | `10.0.1.10;10.0.1.11` |
 | `NodeIPAddresses` | String | Node management IPs (semicolon-separated for multiple) | `10.0.1.50;10.0.1.51` |
+| `InfraVolLunId` | String | **Disaggregated only.** SAN infrastructure volume LUN ID. | `PURE1234567890ABCDEF` |
+| `InfraPerfLunId` | String | **Disaggregated only.** SAN performance LUN ID. | `PURE0987654321MNOPQR` |
+| `SanNetworkAdapterName` | String | **Disaggregated only.** Physical NIC name used for the SAN cluster network. | `ethernet 3` |
+| `SanNetworkVlanId` | Int | **Disaggregated only.** VLAN ID for the SAN cluster network (0-4095, 0 = untagged). | `711` |
+| `SanNetworkAddressPrefix` | CIDR | **Disaggregated only.** CIDR for the SAN cluster network. | `10.10.30.0/24` |
 
 ### TypeOfDeployment Values
 
@@ -96,6 +101,7 @@ The CSV file drives all deployments. Each row represents one cluster/site.
 | `StorageSwitched` | Multi-node cluster with storage network switch | 2–16 |
 | `StorageSwitchless` | Switchless cluster. The module automatically selects the correct per-node-count parameter template with the appropriate number of storage networks: 2 for 2-node, 4 for 3-node, 6 for 4-node (formula: 2×(N-1) for dual-link mesh). | 2–4 |
 | `RackAware` | Rack-aware deployment with availability zones | 2, 4, 6, 8 |
+| `Disaggregated` | SAN-backed cluster (Pure / NetApp / PowerStore, etc.) using external LUNs instead of Storage Spaces Direct. Requires the five SAN columns above. `configurationMode` is forced to `InfraOnly`. | 1–64 |
 
 ### Multi-Value Fields
 

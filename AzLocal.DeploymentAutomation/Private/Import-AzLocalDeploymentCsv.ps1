@@ -18,6 +18,9 @@
     Optional columns (fall back to naming-standards-config.json defaults):
     Location, DnsServers, LocalAdminSecretName, LCMAdminSecretName
 
+    Disaggregated (SAN) deployment columns (required only when TypeOfDeployment = Disaggregated):
+    InfraVolLunId, InfraPerfLunId, SanNetworkAdapterName, SanNetworkVlanId, SanNetworkAddressPrefix
+
     .PARAMETER CsvFilePath
     Path to the CSV file.
 
@@ -70,7 +73,7 @@
 
     # Validate each row
     $errors = @()
-    $validTypes = @('SingleNode', 'StorageSwitchless', 'StorageSwitched', 'RackAware')
+    $validTypes = @('SingleNode', 'StorageSwitchless', 'StorageSwitched', 'RackAware', 'Disaggregated')
     $rowNum = 1
     foreach ($row in $csvData) {
         $rowNum++
@@ -115,6 +118,29 @@
                 'StorageSwitchless' { if ($nodeCount -lt 2 -or $nodeCount -gt 4) { $errors += "Row $rowNum (UniqueID=$uid): StorageSwitchless requires NodeCount 2-4, got $nodeCount." } }
                 'StorageSwitched'   { if ($nodeCount -lt 2 -or $nodeCount -gt 16) { $errors += "Row $rowNum (UniqueID=$uid): StorageSwitched requires NodeCount 2-16, got $nodeCount." } }
                 'RackAware'         { if ($nodeCount -notin @(2, 4, 6, 8)) { $errors += "Row $rowNum (UniqueID=$uid): RackAware requires NodeCount 2, 4, 6, or 8, got $nodeCount." } }
+                'Disaggregated'     { if ($nodeCount -lt 1 -or $nodeCount -gt 64) { $errors += "Row $rowNum (UniqueID=$uid): Disaggregated requires NodeCount 1-64, got $nodeCount." } }
+            }
+        }
+
+        # Disaggregated-specific column requirements (SAN storage)
+        if ($row.TypeOfDeployment -eq 'Disaggregated') {
+            $sanRequired = @('InfraVolLunId', 'InfraPerfLunId', 'SanNetworkAdapterName', 'SanNetworkVlanId', 'SanNetworkAddressPrefix')
+            foreach ($sanCol in $sanRequired) {
+                if ($sanCol -notin $presentColumns) {
+                    $errors += "Row $rowNum (UniqueID=$uid): Disaggregated deployment requires CSV column '$sanCol'."
+                } elseif ([string]::IsNullOrWhiteSpace($row.$sanCol)) {
+                    $errors += "Row $rowNum (UniqueID=$uid): Disaggregated deployment requires non-empty value for '$sanCol'."
+                }
+            }
+            if ($row.PSObject.Properties['SanNetworkVlanId'] -and -not [string]::IsNullOrWhiteSpace($row.SanNetworkVlanId)) {
+                $vlan = 0
+                if (-not [int]::TryParse($row.SanNetworkVlanId, [ref]$vlan) -or $vlan -lt 0 -or $vlan -gt 4095) {
+                    $errors += "Row $rowNum (UniqueID=$uid): SanNetworkVlanId must be an integer 0-4095, got '$($row.SanNetworkVlanId)'."
+                }
+            }
+            if ($row.PSObject.Properties['SanNetworkAddressPrefix'] -and -not [string]::IsNullOrWhiteSpace($row.SanNetworkAddressPrefix) -and
+                $row.SanNetworkAddressPrefix -notmatch '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$') {
+                $errors += "Row $rowNum (UniqueID=$uid): SanNetworkAddressPrefix must be valid CIDR (e.g. 10.10.30.0/24), got '$($row.SanNetworkAddressPrefix)'."
             }
         }
 

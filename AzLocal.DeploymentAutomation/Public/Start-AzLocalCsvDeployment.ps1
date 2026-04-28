@@ -146,13 +146,26 @@
 
         # Build network settings JSON from CSV columns
         $nodeIPs = @($cluster.NodeIPAddresses -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-        $networkJson = @{
+        $networkHash = @{
             subnetMask        = $cluster.SubnetMask
             defaultGateway    = $cluster.DefaultGateway
             startingIPAddress = $cluster.StartingIPAddress
             endingIPAddress   = $cluster.EndingIPAddress
             nodeIPAddresses   = $nodeIPs
-        } | ConvertTo-Json -Compress
+        }
+        # Disaggregated: include sanSettings block from CSV columns
+        if ($cluster.TypeOfDeployment -eq 'Disaggregated') {
+            $sanVlan = 0
+            [void][int]::TryParse($cluster.SanNetworkVlanId, [ref]$sanVlan)
+            $networkHash['sanSettings'] = @{
+                infraVolLunId           = $cluster.InfraVolLunId
+                infraPerfLunId          = $cluster.InfraPerfLunId
+                sanNetworkAdapterName   = $cluster.SanNetworkAdapterName
+                sanNetworkVlanId        = $sanVlan
+                sanNetworkAddressPrefix = $cluster.SanNetworkAddressPrefix
+            }
+        }
+        $networkJson = $networkHash | ConvertTo-Json -Compress -Depth 5
 
         # Build deployment parameters
         $deployParams = @{

@@ -20,7 +20,7 @@
         [string]$UniqueID,
 
         [Parameter(Mandatory = $true,Position=1)]
-        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware")]
+        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware","Disaggregated")]
         [string]$TypeOfDeployment,
 
         [Parameter(Mandatory = $true,Position=2)]
@@ -30,7 +30,7 @@
         [PsCustomObject]$Parameters,
 
         [Parameter(Mandatory = $false,Position=4)]
-        [ValidateRange(1,16)]
+        [ValidateRange(1,64)]
         [int]$NodeCount = 2
     )
 
@@ -50,11 +50,17 @@
         throw "StorageSwitchless deployments support 2-4 nodes only. NodeCount '$NodeCount' is not valid."
     }
 
+    # Validate NodeCount for Disaggregated (SAN) deployments (1-64 nodes)
+    if ($TypeOfDeployment -eq 'Disaggregated' -and ($NodeCount -lt 1 -or $NodeCount -gt 64)) {
+        throw "Disaggregated deployments support 1-64 nodes only. NodeCount '$NodeCount' is not valid."
+    }
+
     $parameterFileMap = @{
         'SingleNode'          = 'single-node-parameters-file.json'
         'StorageSwitchless'   = $switchlessFileMap[$NodeCount]
         'StorageSwitched'     = 'storage-switched-parameters-file.json'
         'RackAware'           = 'rack-aware-parameters-file.json'
+        'Disaggregated'       = 'disaggregated-parameters-file.json'
     }
     $DeploymentParameterFilePath = Join-Path $OutputDirectory "$($UniqueID)-$($parameterFileMap[$TypeOfDeployment])"
     # Check if the directory exists, if not create it

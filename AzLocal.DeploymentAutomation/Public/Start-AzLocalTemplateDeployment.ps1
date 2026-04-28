@@ -9,9 +9,9 @@
     This script is used to deploy Azure Local using an ARM template deployment. It requires the following parameters:
     - SubscriptionId: The ID of the Azure subscription to use for the deployment.
     - TenantId: The ID of the Azure tenant to use for the deployment.
-    - TypeOfDeployment: The type of deployment to perform (e.g., SingleNode, StorageSwitched, StorageSwitchless, RackAware).
+    - TypeOfDeployment: The type of deployment to perform (e.g., SingleNode, StorageSwitched, StorageSwitchless, RackAware, Disaggregated).
     - DeploymentMode: Validate (validate only), Deploy (deploy only), or ValidateAndDeploy (validate first, then deploy on success).
-    - NodeCount: The number of nodes for StorageSwitched (2-16), StorageSwitchless (2-4), or RackAware (2, 4, 6, 8) deployments.
+    - NodeCount: The number of nodes for StorageSwitched (2-16), StorageSwitchless (2-4), RackAware (2, 4, 6, 8), or Disaggregated (1-64) deployments.
 
     Credentials can be supplied in three ways (highest to lowest priority):
     1. Azure Key Vault: -CredentialKeyVaultName (with optional -LocalAdminSecretName / -LCMAdminSecretName)
@@ -40,7 +40,7 @@
         [guid]$SubscriptionId,
 
         [Parameter(Mandatory = $true,Position=1)]
-        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware")]
+        [ValidateSet("SingleNode","StorageSwitchless","StorageSwitched","RackAware","Disaggregated")]
         [string]$TypeOfDeployment,
         
         [Parameter(Mandatory = $true,Position=2)]
@@ -51,7 +51,7 @@
         [string]$DeploymentMode,
 
         [Parameter(Mandatory = $false,Position=4)]
-        [ValidateRange(2, 16)]
+        [ValidateRange(1, 64)]
         [int]$NodeCount = 0,
 
         [Parameter(Mandatory = $false,Position=5)]
@@ -65,6 +65,34 @@
 
         [Parameter(Mandatory = $false,Position=8)]
         [string[]]$StorageAdapters = @(),
+
+        # --- Disaggregated (SAN) deployment parameters ---
+        # Required when -TypeOfDeployment is 'Disaggregated' and not supplied via -NetworkSettingsJson
+
+        [Parameter(Mandatory = $false)]
+        [string]$InfraVolLunId = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$InfraPerfLunId = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$SanNetworkAdapterName = "",
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(0, 4095)]
+        [int]$SanNetworkVlanId = -1,
+
+        [Parameter(Mandatory = $false)]
+        [ValidatePattern('^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$|^$')]
+        [string]$SanNetworkAddressPrefix = "",
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(1, 97)]
+        [int]$SanBandwidthPercentageSmb = 50,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet(1514, 9014)]
+        [int]$SanJumboPacket = 9014,
 
         [Parameter(Mandatory = $false)]
         [string]$LogFilePath = "",
@@ -146,8 +174,19 @@
         Write-AzLocalLog "RackAware deployment requires the -NodeCount parameter with an even number of nodes (2, 4, 6, or 8)." -Level Error
         throw "RackAware deployment requires -NodeCount of 2, 4, 6, or 8."
     }
+    if ($TypeOfDeployment -eq "Disaggregated" -and ($NodeCount -lt 1 -or $NodeCount -gt 64)) {
+        Write-AzLocalLog "Disaggregated (SAN) deployment requires the -NodeCount parameter (1 to 64 nodes)." -Level Error
+        throw "Disaggregated deployment requires -NodeCount between 1 and 64."
+    }
 
-    # Determine effective node count early (needed for parameter file selection and node IP validation)
+    #
+
+    # Disaggregated: NodeCount of 1 is permitted (single SAN node) - SingleNode topology rules don't apply
+    if ($TypeOfDeployment -eq "Disaggregated" -and $NodeCount -eq 0) {
+        Write-AzLocalLog "Disaggregated deployment requires -NodeCount (1-64)." -Level Error
+        throw "Disaggregated deployment requires -NodeCount between 1 and 64."
+    }
+    if ($TypeOfDeployment -eq "Disaggregated") { $effectiveNodeCount = $NodeCount } Determine effective node count early (needed for parameter file selection and node IP validation)
     switch ($TypeOfDeployment) {
         "SingleNode" { $effectiveNodeCount = 1 }
         default      { $effectiveNodeCount = $NodeCount }
@@ -183,7 +222,13 @@
     # Call function to Get Parameter File Path (StorageSwitchless uses node-count-specific templates)
     $ParameterFilePath = Get-AzLocalParameterFilePath -TypeOfDeployment $TypeOfDeployment -NodeCount $effectiveNodeCount
 
-    $TemplateFilePath = Join-Path $script:ModuleRoot "templates\azure-local-deployment-template.json"
+    # Disaggregated (SAN) deployments use a separate ARM template with SAN-specific schema
+    # (storage.storageType = SAN, storage.san block, hostNetwork.sanNetworks instead of storageNetworks).
+    if ($TypeOfDeployment -eq 'Disaggregated') {
+        $TemplateFilePath = Join-Path $script:ModuleRoot "templates\azure-local-deployment-template-san.json"
+    } else {
+        $TemplateFilePath = Join-Path $script:ModuleRoot "templates\azure-local-deployment-template.json"
+    }
     if(-Not (Test-Path $TemplateFilePath)) {
         Write-AzLocalLog "Template file not found at '$TemplateFilePath'." -Level Error
         throw "Template file not found at '$TemplateFilePath'."
@@ -343,6 +388,13 @@
         $effectiveNodeCount = $NodeCount
         $storageConnectivitySwitchless = $false
         $witnessType = "Cloud"
+
+    } elseif ($TypeOfDeployment -eq "Disaggregated") {
+        # SAN-backed disaggregated cluster: storageConnectivitySwitchless is meaningful only for S2D,
+        # for SAN it is reported as false. Witness Type follows standard rules (Cloud for >=2 nodes).
+        $effectiveNodeCount = $NodeCount
+        $storageConnectivitySwitchless = $false
+        if ($effectiveNodeCount -le 1) { $witnessType = "No Witness" } else { $witnessType = "Cloud" }
     }
 
     # Build RackAware local availability zones (auto-split evenly across 2 zones)
@@ -417,7 +469,7 @@
             })
         }
     } else {
-        # StorageSwitched, StorageSwitchless, and RackAware: build physical node settings dynamically
+        # StorageSwitched, StorageSwitchless, RackAware and Disaggregated: build physical node settings dynamically
         $nodeSettingsArray = @()
         for ($i = 0; $i -lt $effectiveNodeCount; $i++) {
             $nodeSettingsArray += [PSCustomObject][Ordered]@{
@@ -426,6 +478,58 @@
             }
         }
         $physicalNodeSettings = [PSCustomObject][Ordered]@{"value" = $nodeSettingsArray}
+    }
+
+    # Disaggregated: resolve SAN-specific settings (LUN IDs, SAN cluster network) from
+    # explicit parameters > NetworkSettingsJson sanSettings block > error
+    $sanNetworkListValue = $null
+    if ($TypeOfDeployment -eq 'Disaggregated') {
+        $sanFromJson = $null
+        if ($NetworkSettings -and $NetworkSettings.PSObject.Properties['sanSettings']) {
+            $sanFromJson = $NetworkSettings.sanSettings
+        }
+
+        # Resolve each SAN field: explicit parameter wins; otherwise fall back to JSON sanSettings
+        if ([string]::IsNullOrWhiteSpace($InfraVolLunId))           { if ($sanFromJson) { $InfraVolLunId = $sanFromJson.infraVolLunId } }
+        if ([string]::IsNullOrWhiteSpace($InfraPerfLunId))          { if ($sanFromJson) { $InfraPerfLunId = $sanFromJson.infraPerfLunId } }
+        if ([string]::IsNullOrWhiteSpace($SanNetworkAdapterName))   { if ($sanFromJson) { $SanNetworkAdapterName = $sanFromJson.sanNetworkAdapterName } }
+        if ($SanNetworkVlanId -lt 0)                                { if ($sanFromJson) { $SanNetworkVlanId = [int]$sanFromJson.sanNetworkVlanId } }
+        if ([string]::IsNullOrWhiteSpace($SanNetworkAddressPrefix)) { if ($sanFromJson) { $SanNetworkAddressPrefix = $sanFromJson.sanNetworkAddressPrefix } }
+
+        # Validate all required SAN fields are now resolved
+        $missingSan = @()
+        if ([string]::IsNullOrWhiteSpace($InfraVolLunId))           { $missingSan += '-InfraVolLunId' }
+        if ([string]::IsNullOrWhiteSpace($InfraPerfLunId))          { $missingSan += '-InfraPerfLunId' }
+        if ([string]::IsNullOrWhiteSpace($SanNetworkAdapterName))   { $missingSan += '-SanNetworkAdapterName' }
+        if ($SanNetworkVlanId -lt 0)                                { $missingSan += '-SanNetworkVlanId' }
+        if ([string]::IsNullOrWhiteSpace($SanNetworkAddressPrefix)) { $missingSan += '-SanNetworkAddressPrefix' }
+        if ($missingSan.Count -gt 0) {
+            $list = $missingSan -join ', '
+            Write-AzLocalLog "Disaggregated deployment is missing required SAN parameters: $list" -Level Error
+            throw "Disaggregated deployment requires SAN parameters: $list (or supply them via -NetworkSettingsJson sanSettings block)."
+        }
+
+        # Build the sanNetworks object that the deploymentSettings.hostNetwork.sanNetworks expects.
+        # Schema: clusterNetworkConfig { adapterProperties{...}, adapterIPConfig[ {...} ] }
+        $sanNetworkListValue = [PSCustomObject][Ordered]@{
+            "clusterNetworkConfig" = [PSCustomObject][Ordered]@{
+                "adapterProperties" = [PSCustomObject][Ordered]@{
+                    "bandwidthPercentageSmb"          = $SanBandwidthPercentageSmb
+                    "jumboPacket"                     = $SanJumboPacket
+                    "priorityValue8021ActionCluster"  = 7
+                    "priorityValue8021ActionSmb"      = 3
+                }
+                "adapterIPConfig" = @(
+                    [PSCustomObject][Ordered]@{
+                        "name"               = "clusterNetwork-A"
+                        "networkAdapterName" = $SanNetworkAdapterName
+                        "vlanId"             = $SanNetworkVlanId
+                        "addressPrefix"      = $SanNetworkAddressPrefix
+                    }
+                )
+            }
+        }
+        Write-AzLocalLog "Disaggregated SAN config: InfraVolLunId='$InfraVolLunId', InfraPerfLunId='$InfraPerfLunId', SanNetworkAdapter='$SanNetworkAdapterName', VLAN=$SanNetworkVlanId, Prefix='$SanNetworkAddressPrefix'" -Level Success
     }
 
     # Determine the deployment phases based on DeploymentMode
@@ -460,11 +564,22 @@
         "adouPath" = [PSCustomObject][Ordered]@{"value" = $adouPath}
         "dnsServers" = [PSCustomObject][Ordered]@{"value" = $DnsServers}
         "storageConnectivitySwitchless" = [PSCustomObject][Ordered]@{"value" = $storageConnectivitySwitchless}
-        "clusterPattern" = [PSCustomObject][Ordered]@{"value" = $clusterPattern}
-        "localAvailabilityZones" = [PSCustomObject][Ordered]@{"value" = $localAvailabilityZones}
         "physicalNodesSettings" = $physicalNodeSettings
         "hciResourceProviderObjectID" = [PSCustomObject][Ordered]@{"value" = $hciResourceProviderObjectID}
         "deploymentMode" = [PSCustomObject][Ordered]@{"value" = $deploymentPhases[0]}
+    }
+
+    if ($TypeOfDeployment -eq 'Disaggregated') {
+        # SAN template parameters: storage LUN IDs, sanNetworkList object, configurationMode forced to InfraOnly.
+        # The SAN ARM template does NOT define clusterPattern / localAvailabilityZones / enableStorageAutoIp parameters.
+        $Parameters | Add-Member -MemberType NoteProperty -Name "infraVolLunId"   -Value ([PSCustomObject][Ordered]@{"value" = $InfraVolLunId})
+        $Parameters | Add-Member -MemberType NoteProperty -Name "infraPerfLunId"  -Value ([PSCustomObject][Ordered]@{"value" = $InfraPerfLunId})
+        $Parameters | Add-Member -MemberType NoteProperty -Name "sanNetworkList"  -Value ([PSCustomObject][Ordered]@{"value" = $sanNetworkListValue})
+        $Parameters | Add-Member -MemberType NoteProperty -Name "configurationMode" -Value ([PSCustomObject][Ordered]@{"value" = "InfraOnly"})
+    } else {
+        # Non-SAN templates: include RackAware-specific parameters
+        $Parameters | Add-Member -MemberType NoteProperty -Name "clusterPattern"          -Value ([PSCustomObject][Ordered]@{"value" = $clusterPattern})
+        $Parameters | Add-Member -MemberType NoteProperty -Name "localAvailabilityZones"  -Value ([PSCustomObject][Ordered]@{"value" = $localAvailabilityZones})
     }
 
     # Create the deployment
@@ -537,9 +652,12 @@
                 if ($intent.name -eq "Compute_Management") { $intent.adapter = $ComputeManagementAdapters }
                 if ($intent.name -eq "Storage") { $intent.adapter = $StorageAdapters }
             }
-            for ($si = 0; $si -lt $PhaseParameterFileSettings.parameters.storageNetworkList.value.Count; $si++) {
-                if ($si -lt $StorageAdapters.Count) {
-                    $PhaseParameterFileSettings.parameters.storageNetworkList.value[$si].networkAdapterName = $StorageAdapters[$si]
+            # storageNetworkList only applies to non-SAN templates (Disaggregated has sanNetworkList instead)
+            if ($TypeOfDeployment -ne 'Disaggregated' -and $PhaseParameterFileSettings.parameters.PSObject.Properties['storageNetworkList']) {
+                for ($si = 0; $si -lt $PhaseParameterFileSettings.parameters.storageNetworkList.value.Count; $si++) {
+                    if ($si -lt $StorageAdapters.Count) {
+                        $PhaseParameterFileSettings.parameters.storageNetworkList.value[$si].networkAdapterName = $StorageAdapters[$si]
+                    }
                 }
             }
 

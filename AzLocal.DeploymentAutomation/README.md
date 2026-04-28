@@ -1,6 +1,6 @@
 # AzLocal.DeploymentAutomation
 
-### Latest Version: **0.9.81**
+### Latest Version: **0.9.9**
 
 ```powershell
 # Install the module (initial setup)
@@ -10,7 +10,7 @@ Install-Module -Name AzLocal.DeploymentAutomation -Scope CurrentUser
 Update-Module -Name AzLocal.DeploymentAutomation
 ```
 
-PowerShell module for deploying Azure Local (formerly Azure Stack HCI) clusters using ARM templates and parameter files. Supports SingleNode, StorageSwitched (2–16 nodes with storage network switch), StorageSwitchless (2–4 nodes), and Rack-Aware Cluster (2, 4, 6 and 8) deployment topologies with configurable resource naming standards and automated two-phase deployment process. This requires the physical nodes to have a running OS installed, with hardware component drivers installed, and Azure Arc Agent registered and resources present in an Azure subscription.
+PowerShell module for deploying Azure Local (formerly Azure Stack HCI) clusters using ARM templates and parameter files. Supports SingleNode, StorageSwitched (2-16 nodes with storage network switch), StorageSwitchless (2-4 nodes), Rack-Aware Cluster (2, 4, 6 and 8), and **Disaggregated / SAN (1-64 nodes, SAN-backed storage)** deployment topologies with configurable resource naming standards and automated two-phase deployment process. This requires the physical nodes to have a running OS installed, with hardware component drivers installed, and Azure Arc Agent registered and resources present in an Azure subscription.
 
 > **Disclaimer:** This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](../LICENSE) for further information.
 
@@ -318,7 +318,7 @@ Create a CSV file with one row per cluster. See [automation-pipelines/cluster-de
 | `UniqueID` | 2–8 character alphanumeric identifier |
 | `ReadyToDeploy` | `TRUE` or `FALSE` — only TRUE rows are processed |
 | `SubscriptionId` / `TenantId` | Azure identifiers for the target environment |
-| `TypeOfDeployment` | `SingleNode`, `StorageSwitched`, `StorageSwitchless`, or `RackAware` |
+| `TypeOfDeployment` | `SingleNode`, `StorageSwitched`, `StorageSwitchless`, `RackAware`, or `Disaggregated` |
 | `NodeCount` | Number of physical nodes |
 | `CredentialKeyVaultName` | Key Vault containing deployment credentials |
 | Network columns | `SubnetMask`, `DefaultGateway`, `StartingIPAddress`, `EndingIPAddress`, `DnsServers`, `NodeIPAddresses` |
@@ -379,7 +379,7 @@ Main entry point for deploying a single Azure Local cluster.
 | `-TypeOfDeployment` | `[string]` | Yes | Deployment topology (see below) |
 | `-TenantId` | `[guid]` | Yes | Azure tenant ID |
 | `-DeploymentMode` | `[string]` | Yes | `Validate`, `Deploy`, or `ValidateAndDeploy` |
-| `-NodeCount` | `[int]` | No | Number of nodes for StorageSwitchless (2–4), StorageSwitched (2–16), or RackAware (2, 4, 6, 8) |
+| `-NodeCount` | `[int]` | No | Number of nodes for StorageSwitchless (2-4), StorageSwitched (2-16), RackAware (2, 4, 6, 8), or Disaggregated (1-64) |
 | `-Location` | `[string]` | No | Azure region override (default: config value) |
 | `-DnsServers` | `[string[]]` | No | DNS server IPs override (default: config value) |
 | `-ComputeManagementAdapters` | `[string[]]` | No | Compute/Management NIC names override (default: config value) |
@@ -405,6 +405,7 @@ Main entry point for deploying a single Azure Local cluster.
 | `StorageSwitchless` | Switchless deployment (requires `-NodeCount`). Uses a node-count-specific template with the correct number of storage networks: 2 for 2-node, 4 for 3-node, 6 for 4-node (formula: 2×(N-1) for dual-link mesh). | 2–4 |
 | `StorageSwitched` | Multi-node switched deployment (requires `-NodeCount`) | 2–16 |
 | `RackAware` | Rack-aware deployment with availability zones (requires `-NodeCount`) | 2, 4, 6, 8 |
+| `Disaggregated` | **SAN-backed cluster.** Uses an external SAN (Pure, NetApp, Dell PowerStore, etc.) instead of Storage Spaces Direct. Requires LUN IDs and a dedicated SAN cluster network. Storage `configurationMode` is forced to `InfraOnly`. Scales to **64 nodes** in a single cluster. See [Disaggregated (SAN) Deployments](#disaggregated-san-deployments) below. | 1–64 |
 
 #### Deployment Modes
 
@@ -675,6 +676,92 @@ Start-AzLocalTemplateDeployment `
 ```
 
 > **RackAware:** Nodes are automatically split evenly into two local availability zones (ZoneA and ZoneB). For example, with 4 nodes, nodes 1–2 are assigned to ZoneA and nodes 3–4 to ZoneB. Only even node counts (2, 4, 6, 8) are supported.
+
+### Disaggregated (SAN) Deployments
+
+Disaggregated deployments use **external SAN storage** (Pure Storage, NetApp, Dell PowerStore, etc.) instead of local Storage Spaces Direct (S2D), and scale to **64 nodes** in a single cluster. The module ships a separate ARM template (`templates/azure-local-deployment-template-san.json`) and parameter file (`template-parameter-files/disaggregated-parameters-file.json`) that match the SAN deploymentSettings schema (`storage.storageType = SAN`, `storage.san.{infraVolLunId,infraPerfLunId}`, `hostNetwork.sanNetworks` instead of `storageNetworks`). Modeled on the official quickstart [microsoft.azurestackhci/create-cluster-san](https://github.com/Azure/azure-quickstart-templates/tree/master/quickstarts/microsoft.azurestackhci/create-cluster-san).
+
+#### Required additional parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `-InfraVolLunId` | `[string]` | Vendor-issued infrastructure volume LUN ID (e.g. `PURE1234567890ABCDEF`). |
+| `-InfraPerfLunId` | `[string]` | Vendor-issued performance LUN ID (e.g. `PURE0987654321MNOPQR`). |
+| `-SanNetworkAdapterName` | `[string]` | Physical NIC used for the SAN cluster network (e.g. `"ethernet 3"`). |
+| `-SanNetworkVlanId` | `[int]` | VLAN tag for the SAN cluster network, 0–4095 (0 = untagged). |
+| `-SanNetworkAddressPrefix` | `[string]` | CIDR for the SAN cluster network (e.g. `10.10.30.0/24`). |
+
+#### Optional QoS overrides (sensible defaults provided)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `-SanBandwidthPercentageSmb` | `50` | SMB bandwidth allocation, 1–97. |
+| `-SanJumboPacket` | `9014` | Jumbo packet size: `1514` or `9014`. |
+
+> **Behaviour notes for Disaggregated:**
+> - Storage `configurationMode` is forced to `InfraOnly` (the only value supported by the SAN deploymentSettings schema).
+> - `clusterPattern` and `localAvailabilityZones` are NOT emitted (the SAN template does not declare them).
+> - `storageConnectivitySwitchless` is set to `false`; the SAN cluster network replaces SMB-Direct/RDMA storage networks.
+> - `NodeCount` accepts 1–64. For NodeCount = 1, witness type is `No Witness`; for ≥ 2, witness type is `Cloud`.
+
+#### Interactive (Disaggregated, 8 nodes)
+
+```powershell
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "Disaggregated" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy" `
+    -NodeCount 8
+```
+
+The module will prompt for the management network (subnet/gateway/IP pool/node IPs) **and** the SAN-specific values (LUN IDs, SAN adapter name, VLAN ID, SAN address prefix).
+
+#### Non-Interactive (Disaggregated)
+
+Pass all SAN parameters explicitly, or include a `sanSettings` block in `-NetworkSettingsJson`:
+
+```powershell
+Start-AzLocalTemplateDeployment `
+    -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -TypeOfDeployment "Disaggregated" `
+    -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" `
+    -DeploymentMode "ValidateAndDeploy" `
+    -UniqueID "NYC02" `
+    -NodeCount 16 `
+    -CredentialKeyVaultName "kv-deployments-prod" `
+    -NetworkSettingsJson "C:\Pipeline\san-network-settings.json" `
+    -InfraVolLunId   "PURE1234567890ABCDEF" `
+    -InfraPerfLunId  "PURE0987654321MNOPQR" `
+    -SanNetworkAdapterName "ethernet 3" `
+    -SanNetworkVlanId 711 `
+    -SanNetworkAddressPrefix "10.10.30.0/24" `
+    -Confirm:$false
+```
+
+Or with the `sanSettings` block embedded in the JSON file:
+
+```json
+{
+    "subnetMask": "255.255.255.0",
+    "defaultGateway": "10.0.5.1",
+    "startingIPAddress": "10.0.5.10",
+    "endingIPAddress": "10.0.5.30",
+    "nodeIPAddresses": [ "10.0.5.100", "10.0.5.101", "10.0.5.102", "10.0.5.103",
+                         "10.0.5.104", "10.0.5.105", "10.0.5.106", "10.0.5.107" ],
+    "sanSettings": {
+        "infraVolLunId": "PURE1234567890ABCDEF",
+        "infraPerfLunId": "PURE0987654321MNOPQR",
+        "sanNetworkAdapterName": "ethernet 3",
+        "sanNetworkVlanId": 711,
+        "sanNetworkAddressPrefix": "10.10.30.0/24"
+    }
+}
+```
+
+#### CSV-driven Disaggregated (CI/CD)
+
+The example CSV ships with a `Store005` Disaggregated row demonstrating the additional columns: `InfraVolLunId`, `InfraPerfLunId`, `SanNetworkAdapterName`, `SanNetworkVlanId`, `SanNetworkAddressPrefix`. Existing rows leave these columns blank — they are validated only when `TypeOfDeployment = Disaggregated`.
 
 ### Fully Non-Interactive (CI/CD Pipeline)
 
