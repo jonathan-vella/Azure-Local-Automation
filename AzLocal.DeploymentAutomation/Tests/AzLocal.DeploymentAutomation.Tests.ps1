@@ -52,9 +52,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.9.9 in manifest' {
+        It 'Should have version 1.0.0 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '0.9.9'
+            $manifest.ModuleVersion | Should -Be '1.0.0'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -144,8 +144,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 0.9.9' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '0.9.9'
+        It 'Should have version 1.0.0' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '1.0.0'
         }
     }
 }
@@ -325,7 +325,7 @@ Describe 'Function: Start-AzLocalTemplateDeployment' {
         It 'Should allow RackAware' {
             $script:ValidateSet.ValidValues | Should -Contain 'RackAware'
         }
-        It 'Should allow Disaggregated (SAN, v0.9.9)' {
+        It 'Should allow Disaggregated (SAN, v1.0.0)' {
             $script:ValidateSet.ValidValues | Should -Contain 'Disaggregated'
         }
         It 'Should NOT allow TwoNode (consolidated into StorageSwitched)' {
@@ -376,11 +376,11 @@ Describe 'Function: Start-AzLocalTemplateDeployment' {
             $script:ValidateRange | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have minimum value of 1 (lowered from 2 in v0.9.9 to support Disaggregated single-node)' {
+        It 'Should have minimum value of 1 (lowered from 2 in v1.0.0 to support Disaggregated single-node)' {
             $script:ValidateRange.MinRange | Should -Be 1
         }
 
-        It 'Should have maximum value of 64 (raised from 16 in v0.9.9 to support Disaggregated up to 64 nodes)' {
+        It 'Should have maximum value of 64 (raised from 16 in v1.0.0 to support Disaggregated up to 64 nodes)' {
             $script:ValidateRange.MaxRange | Should -Be 64
         }
     }
@@ -4541,7 +4541,7 @@ Describe 'Function: New-AzLocalDeploymentReport' {
 }
 
 # ============================================================================
-# Disaggregated (SAN) Deployment Tests - v0.9.9
+# Disaggregated (SAN) Deployment Tests - v1.0.0
 # ============================================================================
 Describe 'Disaggregated (SAN) Deployment Support' {
 
@@ -4789,7 +4789,7 @@ Describe 'Disaggregated (SAN) Deployment Support' {
         }
     }
 
-    Context 'Disaggregated v0.9.9 - shipped example CSV' {
+    Context 'Disaggregated v1.0.0 - shipped example CSV' {
         It 'automation-pipelines/cluster-deployments.csv should have at least one Disaggregated row' {
             $csv = Join-Path $script:ModuleInfo.ModuleBase 'automation-pipelines\cluster-deployments.csv'
             Test-Path $csv | Should -Be $true

@@ -1,6 +1,6 @@
 # AzLocal.DeploymentAutomation
 
-### Latest Version: **0.9.9**
+### Latest Version: **1.0.0**
 
 ```powershell
 # Install the module (initial setup)

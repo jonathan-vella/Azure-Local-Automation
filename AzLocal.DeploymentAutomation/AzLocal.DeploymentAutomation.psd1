@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.9.9'
+    ModuleVersion = '1.0.0'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -97,7 +97,7 @@
 
             # Release notes for this version
             ReleaseNotes = @'
-## v0.9.9 - April 2026
+## v1.0.0 - April 2026
 
 ### New deployment topology: Disaggregated (SAN storage)
 Adds first-class support for SAN-backed Azure Local clusters of up to **64 nodes**, modeled on the official quickstart [microsoft.azurestackhci/create-cluster-san](https://github.com/Azure/azure-quickstart-templates/tree/master/quickstarts/microsoft.azurestackhci/create-cluster-san). Disaggregated clusters use external SAN LUNs (e.g. Pure Storage, NetApp, Dell PowerStore) instead of Storage Spaces Direct, and require additional infrastructure + performance LUN identifiers and a dedicated SAN cluster network.
