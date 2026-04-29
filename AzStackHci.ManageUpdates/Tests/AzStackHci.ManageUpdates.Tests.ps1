@@ -75,6 +75,17 @@ Describe 'Module: AzStackHci.ManageUpdates' {
                 $script:ModuleInfo.ExportedFunctions.Keys | Should -Contain $func
             }
         }
+
+        It "Should have ReleaseNotes within the PSGallery character limit" {
+            # PSGallery enforces a maximum of 10000 characters on the ReleaseNotes field
+            # (publish fails with "Tags, ReleaseNotes, ... cannot exceed 10000 characters").
+            # This test guards against accidental regressions when the release notes grow.
+            $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzStackHci.ManageUpdates.psd1'
+            $data = Import-PowerShellDataFile -Path $manifestPath
+            $releaseNotes = $data.PrivateData.PSData.ReleaseNotes
+            $releaseNotes | Should -Not -BeNullOrEmpty
+            $releaseNotes.Length | Should -BeLessOrEqual 10000 -Because "PSGallery rejects ReleaseNotes longer than 10000 characters"
+        }
     }
 }
 
