@@ -147,6 +147,15 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
         It 'Should have version 1.0.0' {
             $script:ManifestRaw.ModuleVersion | Should -Be '1.0.0'
         }
+
+        It 'Should have ReleaseNotes within the PSGallery character limit' {
+            # PSGallery enforces a maximum of 10000 characters on the ReleaseNotes field
+            # (publish fails with "Tags, ReleaseNotes, ... cannot exceed 10000 characters").
+            # This test guards against accidental regressions when the release notes grow.
+            $releaseNotes = $script:ManifestRaw.PrivateData.PSData.ReleaseNotes
+            $releaseNotes | Should -Not -BeNullOrEmpty
+            $releaseNotes.Length | Should -BeLessOrEqual 10000 -Because "PSGallery rejects ReleaseNotes longer than 10000 characters"
+        }
     }
 }
 
