@@ -34,8 +34,8 @@ Describe 'Module: AzStackHci.ManageUpdates' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.1' {
-            $script:ModuleInfo.Version | Should -Be '0.7.1'
+        It 'Should have version 0.7.2' {
+            $script:ModuleInfo.Version | Should -Be '0.7.2'
         }
 
         It 'Should export exactly 20 functions' {

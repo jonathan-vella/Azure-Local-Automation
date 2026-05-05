@@ -131,9 +131,23 @@
 Set-StrictMode -Version 1.0
 
 # Module constants
-$script:ModuleVersion = '0.7.1'
+$script:ModuleVersion = '0.7.2'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzStackHci.ManageUpdates'
+
+# Best-effort default for PYTHONIOENCODING. az.cmd launches python with the -I
+# (isolated) flag which implies -E and so causes python to IGNORE all PYTHON*
+# environment variables - meaning this assignment alone is NOT sufficient to
+# stop the cp1252 encode warning. The actual fix is the --only-show-errors
+# flag passed to every az invocation in Invoke-AzRestJson. This module-load
+# assignment is retained as harmless defence-in-depth for the case where the
+# user has manually patched az.cmd to remove -I, or is running in an
+# environment that respects the env var. See:
+# https://github.com/Azure/azure-cli/issues/14426 (recommended workaround),
+# https://github.com/Azure/azure-cli/issues/28497 (-I behaviour confirmation).
+if (-not $env:PYTHONIOENCODING) {
+    $env:PYTHONIOENCODING = 'utf-8'
+}
 
 # Update state constants aligned with queries in Azure Local LENS workbook
 # States that indicate an update is installable (ready to apply)
@@ -701,9 +715,25 @@ function Invoke-AzRestJson {
         # which, when captured via 2>&1, gets prepended to the JSON and breaks
         # ConvertFrom-Json. That previously manifested as silently-dropped update
         # runs / available updates for affected clusters.
+        #
+        # NOTE: az.cmd launches python with the -I (isolated) flag, which causes
+        # python to ignore PYTHONIOENCODING / PYTHONUTF8 (-I implies -E). The
+        # env-var assignment below is therefore best-effort defence-in-depth and
+        # is not, on its own, sufficient. The hard fix is the --only-show-errors
+        # CLI flag added to $azArgs below: it suppresses the encode warning at
+        # source, keeping the captured stderr/stdout streams clean. Reference:
+        # https://github.com/Azure/azure-cli/issues/14426 (jiasli's recommended
+        # workaround), https://github.com/Azure/azure-cli/issues/28497
+        # (confirmation that az uses python -I and PYTHONIOENCODING is ignored).
         $env:PYTHONIOENCODING = 'utf-8'
 
-        $azArgs = @('rest', '--method', $Method, '--uri', $Uri)
+        # --only-show-errors mutes ALL CLI-level warnings, including the cp1252
+        # encode warning. Characters that fail to encode are still replaced
+        # silently, but for ARM cluster/update payloads (timestamps, GUIDs,
+        # status enums, resource IDs - all ASCII) this is a non-issue. Any
+        # genuine error from the CLI (auth failures, 4xx/5xx ARM responses,
+        # invalid args) still surfaces normally.
+        $azArgs = @('rest', '--method', $Method, '--uri', $Uri, '--only-show-errors')
         if ($PSBoundParameters.ContainsKey('Body') -and $Body) {
             $tempBodyFile = [System.IO.Path]::GetTempFileName()
             Write-Utf8NoBomFile -Path $tempBodyFile -Content $Body
@@ -849,7 +879,7 @@ function Invoke-AzResourceGraphQuery {
             break
         }
 
-        $azArgs = @('graph', 'query', '-q', $Query, '--first', $First)
+        $azArgs = @('graph', 'query', '-q', $Query, '--first', $First, '--only-show-errors')
         if ($SubscriptionId) { $azArgs += @('--subscriptions', $SubscriptionId) }
         if ($skipToken) { $azArgs += @('--skip-token', $skipToken) }
 
@@ -2368,7 +2398,9 @@ function Start-AzureLocalClusterUpdate {
                 $validateUri = "https://management.azure.com$resourceId`?api-version=$ApiVersion"
                 Write-Verbose "Validating resource at: $validateUri"
                 try {
-                    $validateResult = az rest --method GET --uri $validateUri 2>&1
+                    # --only-show-errors mutes the cp1252 encode warning emitted by az.cmd's
+                    # python (-I isolated mode ignores PYTHONIOENCODING). See Invoke-AzRestJson.
+                    $validateResult = az rest --method GET --uri $validateUri --only-show-errors 2>&1
                     if ($LASTEXITCODE -ne 0) {
                         $errorMessage = $validateResult | Out-String
                         if ($errorMessage -match "ResourceGroupNotFound") {
@@ -3544,14 +3576,20 @@ function Get-AzureLocalUpdateSummary {
     # Start-Job (ThrottleLimit>1). Returns an array of PSCustomObject rows.
     # Note: Write-Host lives in the parent process after aggregation so
     # coloured terminal output is deterministic regardless of job ordering.
+    # Private helpers (Invoke-AzRestJson) are filtered out by Export-ModuleMember,
+    # so in a child Start-Job runspace they are NOT visible at script scope after
+    # Import-Module. We resolve the module reference and call private helpers via
+    # & $mod { ... } so they execute against the module's own session state. The
+    # inline path picks up the already-loaded module via Get-Module.
     $summaryJob = {
         param(
             [object[]]$Shard,
             [string]$ApiVer,
             [string]$ModulePath
         )
-        if (-not (Get-Command -Name Invoke-AzRestJson -ErrorAction SilentlyContinue)) {
-            Import-Module $ModulePath -Force -ErrorAction Stop
+        $mod = Get-Module -Name AzStackHci.ManageUpdates | Select-Object -First 1
+        if (-not $mod) {
+            $mod = Import-Module $ModulePath -Force -PassThru -ErrorAction Stop
         }
         $shardRows = foreach ($cluster in $Shard) {
             $clusterName = $cluster.Name
@@ -3582,7 +3620,10 @@ function Get-AzureLocalUpdateSummary {
                 }
 
                 $uri = "https://management.azure.com$resourceId/updateSummaries/default?api-version=$ApiVer"
-                $summary = (Invoke-AzRestJson -Uri $uri).Data
+                $summary = (& $mod {
+                        param($u)
+                        Invoke-AzRestJson -Uri $u
+                    } $uri).Data
 
                 if ($LASTEXITCODE -eq 0 -and $summary) {
                     $props = $summary.properties
@@ -4391,7 +4432,7 @@ function Invoke-AzureLocalUpdateApply {
     Write-Verbose "Applying update via POST to: $uri"
     
     # The apply endpoint is a POST with empty body
-    $result = az rest --method POST --uri $uri 2>&1
+    $result = az rest --method POST --uri $uri --only-show-errors 2>&1
     
     if ($LASTEXITCODE -eq 0) {
         return $true
@@ -4969,7 +5010,15 @@ function Get-AzureLocalUpdateRuns {
     # parent replays deterministically: Rows (formatted run rows already
     # flattened) plus LatestState for tally + coloured display. Format-
     # AzLocalUpdateRun and Get-AzLocalClusterUpdateRuns are module-private
-    # so they are available after Import-Module inside child jobs.
+    # (filtered out by Export-ModuleMember), so when this scriptblock runs
+    # inside a Start-Job runspace they are NOT visible at script scope after
+    # Import-Module. We therefore re-import the module with -PassThru and
+    # invoke the private helpers via the module's own session state using
+    # & $module { ... }, which is the supported pattern for reaching
+    # non-exported helpers from a child runspace. The inline (ThrottleLimit=1)
+    # path runs in the parent runspace where the module's script scope is
+    # already active, so the same scriptblock works there too because
+    # Get-Module returns the already-loaded module.
     $runsJob = {
         param(
             [object[]]$Shard,
@@ -4978,8 +5027,12 @@ function Get-AzureLocalUpdateRuns {
             [bool]$LatestOnly,
             [string]$ModulePath
         )
-        if (-not (Get-Command -Name Invoke-AzRestJson -ErrorAction SilentlyContinue)) {
-            Import-Module $ModulePath -Force -ErrorAction Stop
+        # Always resolve a module reference (PassThru import in child runspace,
+        # already-loaded module in the inline parent runspace). $mod is then
+        # used to bridge into the module's session state for private helpers.
+        $mod = Get-Module -Name AzStackHci.ManageUpdates | Select-Object -First 1
+        if (-not $mod) {
+            $mod = Import-Module $ModulePath -Force -PassThru -ErrorAction Stop
         }
         $out = foreach ($cluster in $Shard) {
             $clusterName = $cluster.Name
@@ -5001,6 +5054,7 @@ function Get-AzureLocalUpdateRuns {
                         RunCount     = 0
                         Rows         = @([PSCustomObject]@{
                                 ClusterName       = $clusterName
+                                ClusterResourceId = $null
                                 UpdateName        = 'N/A'
                                 RunId             = ''
                                 State             = 'Cluster Not Found'
@@ -5016,7 +5070,10 @@ function Get-AzureLocalUpdateRuns {
                     continue
                 }
 
-                $runs = @(Get-AzLocalClusterUpdateRuns -resourceId $resourceId -updateNameFilter $UpdateNameFilter -apiVer $ApiVer)
+                $runs = @(& $mod {
+                        param($rid, $filter, $ver)
+                        Get-AzLocalClusterUpdateRuns -resourceId $rid -updateNameFilter $filter -apiVer $ver
+                    } $resourceId $UpdateNameFilter $ApiVer)
 
                 if ($runs.Count -gt 0) {
                     $latestRun = $runs | Sort-Object { $_.properties.timeStarted } -Descending | Select-Object -First 1
@@ -5024,7 +5081,10 @@ function Get-AzureLocalUpdateRuns {
                     $runsToFormat = if ($LatestOnly) { @($latestRun) } else { $runs }
 
                     $rows = foreach ($run in $runsToFormat) {
-                        $formatted = Format-AzLocalUpdateRun -run $run -clusterName $clusterName -clusterResourceId $resourceId
+                        $formatted = & $mod {
+                            param($r, $cn, $crid)
+                            Format-AzLocalUpdateRun -run $r -clusterName $cn -clusterResourceId $crid
+                        } $run $clusterName $resourceId
                         [PSCustomObject]@{
                             ClusterName       = $clusterName
                             ClusterResourceId = $resourceId
@@ -5057,6 +5117,7 @@ function Get-AzureLocalUpdateRuns {
                         RunCount    = 0
                         Rows        = @([PSCustomObject]@{
                                 ClusterName       = $clusterName
+                                ClusterResourceId = $resourceId
                                 UpdateName        = 'None'
                                 RunId             = ''
                                 State             = 'No Runs'
@@ -5080,6 +5141,7 @@ function Get-AzureLocalUpdateRuns {
                     RunCount    = 0
                     Rows        = @([PSCustomObject]@{
                             ClusterName       = $clusterName
+                            ClusterResourceId = $resourceId
                             UpdateName        = 'Error'
                             RunId             = ''
                             State             = 'Error'
@@ -5126,6 +5188,7 @@ function Get-AzureLocalUpdateRuns {
                     RunCount    = 0
                     Rows        = @([PSCustomObject]@{
                             ClusterName       = $item.Name
+                            ClusterResourceId = $item.ResourceId
                             UpdateName        = 'Error'
                             RunId             = ''
                             State             = 'Error'
@@ -5529,6 +5592,17 @@ function Get-AzureLocalClusterUpdateReadiness {
     # cluster augmented with internal __DisplayTag / __CountedRecommendedUpdate
     # fields that the parent uses to render coloured console output and tally
     # the shared $updateVersionCounts hashtable deterministically.
+    #
+    # Note: This scriptblock runs both inline (ThrottleLimit=1, in the parent
+    # module's session state) and inside Start-Job (ThrottleLimit>1, in a fresh
+    # child runspace). In the child runspace, module-private helpers filtered
+    # out by Export-ModuleMember (Invoke-AzRestJson, Get-LatestUpdateByYYMM,
+    # ConvertTo-AzLocalAdditionalProperties, Get-HealthCheckFailureSummary,
+    # Get-TagValue) are NOT visible at script command-resolution scope after
+    # Import-Module. We therefore resolve the module reference, then rebind
+    # each private helper into the local function scope using its bound
+    # scriptblock - calls to those helpers below then execute against the
+    # module's own session state and resolve all transitive private references.
     $readinessJob = {
         param(
             [object[]]$Shard,
@@ -5539,8 +5613,21 @@ function Get-AzureLocalClusterUpdateReadiness {
             [string]$UpdateExclusionsTagNameArg,
             [string]$ModulePath
         )
-        if (-not (Get-Command -Name Invoke-AzRestJson -ErrorAction SilentlyContinue)) {
-            Import-Module $ModulePath -Force -ErrorAction Stop
+        $mod = Get-Module -Name AzStackHci.ManageUpdates | Select-Object -First 1
+        if (-not $mod) {
+            $mod = Import-Module $ModulePath -Force -PassThru -ErrorAction Stop
+        }
+        foreach ($_helperName in @(
+                'Invoke-AzRestJson',
+                'ConvertTo-AzLocalAdditionalProperties',
+                'Get-LatestUpdateByYYMM',
+                'Get-HealthCheckFailureSummary',
+                'Get-TagValue'
+            )) {
+            $_cmd = & $mod { param($n) Get-Command -Name $n -ErrorAction SilentlyContinue } $_helperName
+            if ($_cmd -and $_cmd.ScriptBlock) {
+                Set-Item -Path "function:script:$_helperName" -Value $_cmd.ScriptBlock
+            }
         }
         $shardRows = foreach ($cluster in $Shard) {
             $clusterName = $cluster.Name
@@ -7196,7 +7283,7 @@ function Set-AzLocalClusterTagsMerge {
 
     # Fetch current cluster to preserve existing tags
     $getUri = "https://management.azure.com$ClusterResourceId`?api-version=$ApiVersion"
-    $clusterJson = az rest --method GET --uri $getUri 2>&1
+    $clusterJson = az rest --method GET --uri $getUri --only-show-errors 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Set-AzLocalClusterTagsMerge: failed to fetch cluster '$ClusterResourceId': $clusterJson"
     }
@@ -7251,7 +7338,7 @@ function Set-AzLocalClusterTagsMerge {
     $tempFile = [System.IO.Path]::GetTempFileName()
     try {
         Write-Utf8NoBomFile -Path $tempFile -Content $patchBody
-        $patchResult = az rest --method PATCH --uri $getUri --body "@$tempFile" --headers "Content-Type=application/json" 2>&1
+        $patchResult = az rest --method PATCH --uri $getUri --body "@$tempFile" --headers "Content-Type=application/json" --only-show-errors 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "Set-AzLocalClusterTagsMerge: PATCH failed for '$ClusterResourceId': $patchResult"
         }
@@ -7349,7 +7436,7 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
 
     # GET cluster to read current tags
     $getUri = "https://management.azure.com$ClusterResourceId`?api-version=$ApiVersion"
-    $clusterJson = az rest --method GET --uri $getUri 2>&1
+    $clusterJson = az rest --method GET --uri $getUri --only-show-errors 2>&1
     if ($LASTEXITCODE -ne 0) {
         $result.Action = 'Skipped'
         $result.Message = "Failed to fetch cluster tags: $clusterJson"
@@ -7512,6 +7599,16 @@ function Invoke-AzLocalSideloadedAutoReset {
         $latest = $g.Group | Sort-Object StartTime -Descending | Select-Object -First 1
         if (-not $latest) { continue }
 
+        # If the run-fetch step itself failed for this cluster (e.g. a transient
+        # ARM error during Get-AzureLocalUpdateRuns), there is no reliable run
+        # state to evaluate against. Skip the auto-reset rather than risk
+        # PATCHing tags off the back of incomplete data. This is informational,
+        # not a bug.
+        if ($latest.State -eq 'Error') {
+            Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: latest run could not be fetched (State=Error) - skipping reset evaluation." -Level Verbose
+            continue
+        }
+
         # Resolve cluster resource ID from the run object (multiple property names possible)
         $rid = $null
         foreach ($propName in @('ClusterResourceId', 'ClusterId', 'ResourceId')) {
@@ -7521,7 +7618,11 @@ function Invoke-AzLocalSideloadedAutoReset {
             }
         }
         if (-not $rid) {
-            Write-Log -Message "Sideloaded auto-reset: cannot resolve resource ID for cluster '$($g.Name)' - skipping." -Level Verbose
+            # Defensive: every code path that builds the run rows now plumbs
+            # ClusterResourceId through, so reaching this branch means the
+            # caller passed a hand-built object without one. Not a bug in the
+            # module's own paths.
+            Write-Log -Message "Sideloaded auto-reset [$($g.Name)]: run object has no ClusterResourceId - skipping (cannot PATCH cluster tags without resource ID)." -Level Verbose
             continue
         }
 
@@ -8214,7 +8315,7 @@ function Set-AzureLocalClusterUpdateRingTag {
                     Write-Utf8NoBomFile -Path $tempFile -Content $patchBody
                     
                     # Use az rest with @file syntax to avoid escaping issues
-                    $result = az rest --method PATCH --uri $uri --body "@$tempFile" --headers "Content-Type=application/json" 2>&1
+                    $result = az rest --method PATCH --uri $uri --body "@$tempFile" --headers "Content-Type=application/json" --only-show-errors 2>&1
                     
                     if ($LASTEXITCODE -eq 0) {
                         Write-Log -Message "Successfully $($action.ToLower()) UpdateRing tag" -Level Success
