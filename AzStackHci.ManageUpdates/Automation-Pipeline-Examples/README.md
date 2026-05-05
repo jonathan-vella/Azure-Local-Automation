@@ -18,6 +18,12 @@ Five pipelines are provided for each platform:
 
 > 📝 **Tip**: For ad-hoc reporting outside of CI/CD, you can also generate a standalone HTML report using `New-AzureLocalFleetStatusHtmlReport`. See [Standalone HTML Report](#standalone-html-report) below.
 
+### What's new for v0.7.2
+
+- **Fleet read paths now work as documented under `-ThrottleLimit > 1`**. The `fleet-update-status.yml` workflow (and any direct caller of `Get-AzureLocalUpdateRuns`, `Get-AzureLocalUpdateSummary`, or `Get-AzureLocalClusterUpdateReadiness` with `-ThrottleLimit` greater than 1) previously failed for every cluster with `The term 'Get-AzLocalClusterUpdateRuns' is not recognized...` because module-private helpers were not visible inside `Start-Job` child runspaces. Now resolved via `& $module { ... }` dispatch through the loaded module's session state. **Action**: re-enable `-ThrottleLimit` in your fleet workflows (default 4 is a reasonable starting point; raise as your fleet grows).
+- **Stray `cp1252` warnings no longer break JSON parsing on hosted Windows runners**. Default `windows-latest` GitHub runners and Azure DevOps `windows-2022` agents both run with the `cp1252` console code page; the Azure CLI emitted `WARNING: Unable to encode the output with cp1252 encoding...` on any ARM response containing non-ASCII characters (smart quotes in tag values, accented characters in cluster metadata, localised health-check messages). Captured via `2>&1`, that warning was prepended to the JSON body and silently broke `ConvertFrom-Json`, dropping update runs and available updates from pipeline reports for affected clusters. The module now passes `--only-show-errors` to every `az rest` and `az graph query` invocation, suppressing the warning at source. **No pipeline configuration changes required** - upgrade to v0.7.2+ and the runs/summaries will simply be complete.
+- See the v0.7.2 entry in the [main README](../README.md#whats-new-in-v072) for the full root-cause writeup.
+
 ### What's new for v0.7.1
 
 - **Sideloaded payload workflow**. Two new tags coordinate human-driven sideloaded update payloads with the apply-updates pipeline:

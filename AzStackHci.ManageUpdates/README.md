@@ -8,6 +8,87 @@ This folder contains the 'AzStackHci.ManageUpdates' PowerShell module for managi
 
 Azure Stack HCI REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 
+<details>
+<summary><strong>📑 Table of Contents</strong> (click to expand)</summary>
+
+- [Where to Start](#where-to-start)
+  - [Getting started interactively](#getting-started-interactively)
+  - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
+- [What's New in v0.7.2](#whats-new-in-v072)
+- [Files](#files)
+- [Prerequisites](#prerequisites)
+- [RBAC Requirements](#rbac-requirements)
+  - [Recommended Built-in Roles](#recommended-built-in-roles)
+  - [Specific Permissions Required](#specific-permissions-required)
+  - [Roles That Do NOT Have Update Permissions](#roles-that-do-not-have-update-permissions)
+  - [Custom "Azure Stack HCI Update Operator" Role Definition (Least Privilege)](#custom-azure-stack-hci-update-operator-role-definition-least-privilege)
+  - [Assigning a Role](#assigning-a-role)
+- [Quick Start](#quick-start)
+  - [1. Authenticate to Azure](#1-authenticate-to-azure)
+  - [2. Install or Import the Module](#2-install-or-import-the-module)
+  - [3. Start an Update on a Single Cluster](#3-start-an-update-on-a-single-cluster)
+  - [4. Start Updates on Multiple Clusters](#4-start-updates-on-multiple-clusters)
+  - [5. Start a Specific Update](#5-start-a-specific-update)
+  - [6. Check Update Progress](#6-check-update-progress)
+  - [7. Set Up Update Management Tags for Staged Rollouts](#7-set-up-update-management-tags-for-staged-rollouts)
+  - [7a. Sideloaded Payload Workflow (v0.7.1)](#7a-sideloaded-payload-workflow-v071)
+  - [8. Assess Readiness and Health BEFORE Applying Updates (Recommended)](#8-assess-readiness-and-health-before-applying-updates-recommended)
+- [Available Functions](#available-functions)
+  - [`Connect-AzureLocalServicePrincipal`](#connect-azurelocalserviceprincipal)
+  - [`Start-AzureLocalClusterUpdate`](#start-azurelocalclusterupdate)
+  - [`Get-AzureLocalClusterUpdateReadiness`](#get-azurelocalclusterupdatereadiness)
+  - [`Get-AzureLocalClusterInfo`](#get-azurelocalclusterinfo)
+  - [`Get-AzureLocalUpdateSummary`](#get-azurelocalupdatesummary)
+  - [`Get-AzureLocalAvailableUpdates`](#get-azurelocalavailableupdates)
+  - [`Get-AzureLocalUpdateRuns`](#get-azurelocalupdateruns)
+  - [`Test-AzureLocalClusterHealth`](#test-azurelocalclusterhealth)
+  - [`Get-AzureLocalClusterInventory`](#get-azurelocalclusterinventory)
+  - [`Set-AzureLocalClusterUpdateRingTag`](#set-azurelocalclusterupdateringtag)
+- [Fleet-Scale Operations](#fleet-scale-operations)
+  - [`Invoke-AzureLocalFleetOperation`](#invoke-azurelocalfleetoperation)
+  - [`Get-AzureLocalFleetProgress`](#get-azurelocalfleetprogress)
+  - [`Test-AzureLocalFleetHealthGate`](#test-azurelocalfleethealthgate)
+  - [`Export-AzureLocalFleetState`](#export-azurelocalfleetstate)
+  - [`Resume-AzureLocalFleetUpdate`](#resume-azurelocalfleetupdate)
+  - [`Stop-AzureLocalFleetUpdate`](#stop-azurelocalfleetupdate)
+  - [`Test-AzureLocalUpdateScheduleAllowed`](#test-azurelocalupdatescheduleallowed)
+  - [`Reset-AzureLocalSideloadedTag`](#reset-azurelocalsideloadedtag)
+  - [`Get-AzureLocalFleetStatusData`](#get-azurelocalfleetstatusdata)
+  - [`New-AzureLocalFleetStatusHtmlReport`](#new-azurelocalfleetstatushtmlreport)
+- [Logging and Output](#logging-and-output)
+  - [Log Files](#log-files)
+  - [Logging Examples](#logging-examples)
+  - [Log Entry Format](#log-entry-format)
+  - [Results Export Format](#results-export-format)
+- [API Reference](#api-reference)
+- [Update States](#update-states)
+  - [Cluster Update Summary States](#cluster-update-summary-states)
+  - [Individual Update States](#individual-update-states)
+- [Using Azure CLI Directly](#using-azure-cli-directly)
+- [Alternative: Az.StackHCI PowerShell Module](#alternative-azstackhci-powershell-module)
+- [CI/CD Automation](#cicd-automation)
+- [Troubleshooting](#troubleshooting)
+  - [Common Issues](#common-issues)
+  - [`WARNING: Unable to encode the output with cp1252 encoding`](#warning-unable-to-encode-the-output-with-cp1252-encoding)
+  - [ARM is stale - readiness recommends an already-installed update](#arm-is-stale---readiness-recommends-an-already-installed-update)
+  - [Verbose Logging](#verbose-logging)
+- [License](#license)
+- [Release History](#release-history)
+  - [What's New in v0.7.1](#whats-new-in-v071)
+  - [What's New in v0.7.0](#whats-new-in-v070)
+  - [What's New in v0.6.5](#whats-new-in-v065)
+  - [What's New in v0.6.4](#whats-new-in-v064)
+  - [What's New in v0.6.3](#whats-new-in-v063)
+  - [What's New in v0.6.2](#whats-new-in-v062)
+  - [What's New in v0.6.1](#whats-new-in-v061)
+  - [What's New in v0.5.6 (since v0.5.0)](#whats-new-in-v056-since-v050)
+  - [What's New in v0.5.0](#whats-new-in-v050)
+  - [What's New in v0.4.2](#whats-new-in-v042)
+  - [What's New in v0.4.1](#whats-new-in-v041)
+  - [What's New in v0.4.0](#whats-new-in-v040)
+
+</details>
+
 ## Where to Start
 
 This module supports **two main paths**. Pick the one that matches your scenario:
@@ -1112,9 +1193,9 @@ Cluster03   Skipped                  Ring1       Failed
 
 ---
 
-## Fleet-Scale Operations (v0.5.6)
+## Fleet-Scale Operations
 
-The following six functions enable enterprise-scale update management across fleets of 1000-3000+ clusters with batching, throttling, retry logic, health gates, and state management.
+The following six functions enable enterprise-scale update management across fleets of 1000-3000+ clusters with batching, throttling, retry logic, health gates, and state management. Originally introduced in v0.5.6 and extended through subsequent releases (parallelism + paginated ARG in v0.7.0, sideloaded payload workflow in v0.7.1, ThrottleLimit-safe private-helper dispatch in v0.7.2).
 
 ### `Invoke-AzureLocalFleetOperation`
 
@@ -1881,6 +1962,29 @@ For full GitHub Actions / Azure DevOps YAML, federated-credential setup, and the
 4. **"Cluster not in valid state"**: The cluster must be "Connected" and the update summary state must be "UpdateAvailable".
 
 5. **"Service Principal authentication failed"**: Verify the `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID` values are correct and the Service Principal has the required permissions.
+
+### `WARNING: Unable to encode the output with cp1252 encoding`
+
+**Symptom**
+
+- One or more `WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.` lines appear in the module's verbose/output stream, often interspersed with empty result tables.
+- `Get-AzureLocalUpdateRuns`, `Get-AzureLocalAvailableUpdates`, or `Get-AzureLocalFleetStatusData` returns placeholder `Error` rows for some clusters with otherwise valid Azure access.
+- Affected clusters typically have non-ASCII characters somewhere in the ARM payload (smart quotes / accented characters in tag values, localised health-check messages, etc.).
+
+**Cause**
+
+On Windows hosts where the console code page is `cp1252` (the English-US default - includes default GitHub `windows-latest` runners and Azure DevOps `windows-2022` agents), the Azure CLI emits this warning to stderr whenever it cannot encode a response character. Captured via `2>&1` it is prepended to the JSON body and breaks `ConvertFrom-Json`. Setting `$env:PYTHONIOENCODING = 'utf-8'` does **not** help: `az.cmd` launches Python with `-I` (isolated mode), which causes Python to ignore all `PYTHON*` environment variables ([Azure/azure-cli#28497](https://github.com/Azure/azure-cli/issues/28497)).
+
+**Fix**
+
+Upgrade to **AzStackHci.ManageUpdates v0.7.2 or later**. The module passes `--only-show-errors` to every `az rest` / `az graph query` invocation, which suppresses the warning at source ([Azure/azure-cli#14426](https://github.com/Azure/azure-cli/issues/14426)). Genuine errors (auth failures, 4xx/5xx ARM responses, invalid args) still surface normally.
+
+```powershell
+# Verify your installed module version is >= 0.7.2
+(Get-Module AzStackHci.ManageUpdates -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).Version
+```
+
+If you still see the warning after upgrading, you are most likely calling `az` directly outside the module (e.g. in a custom pre/post step). Add `--only-show-errors` to your direct calls.
 
 ### ARM is stale - readiness recommends an already-installed update
 
