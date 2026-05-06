@@ -133,7 +133,7 @@ This is why the Azure portal (storage paths), WAC's Volumes view, and the Azure 
 
 In WAC -> cluster -> **Volumes**, treat the `Size` column as the **thin maximum** and the `Used` column as **logical data written** (not the pool footprint). The cluster Dashboard's storage tile is the closest WAC view to pool-level reality, but it doesn't subtract the capacity reserve - so it'll be slightly more optimistic than the PowerShell above.
 
-> **Important:** if you're using WAC to administer Azure Local, please make sure the **Cluster Manager Extension** on your WAC instance is up to date (or reinstall WAC using the latest public bits). There's a known issue that can cause incorrect deletions when deleting volumes via WAC against Windows Server 2025 or Azure Local 24H2 - see [Windows Admin Center known issues](https://learn.microsoft.com/en-us/windows-server/manage/windows-admin-center/support/known-issues) on Microsoft Learn.
+> **Important:** if you're using WAC to administer Azure Local, please make sure you're **using version 5.2.6 or higher of the Cluster manager extension**. There's a known issue that can cause incorrect deletions when deleting volumes via WAC against Windows Server 2025 or Azure Local 24H2 - see [Windows Admin Center known issues](https://learn.microsoft.com/en-us/windows-server/manage/windows-admin-center/support/known-issues#incorrect-deletions-in-volumes-tool) on Microsoft Learn.
 
 ### Azure Local LENS Workbook
 
