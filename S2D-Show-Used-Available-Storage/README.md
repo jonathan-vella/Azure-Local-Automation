@@ -106,7 +106,7 @@ In WAC -> cluster -> **Volumes**, treat the `Size` column as the **thin maximum*
 
 ### Azure Local LENS Workbook
 
-LENS uses Azure Resource Graph against the ARM-projected properties, which inherit the same thin-maximum view as the Portal - that's correct for what it shows but isn't currently surfacing the pool-level "Real Available" calculation. A pool-level capacity panel that does the reserve subtraction and resiliency division would be a useful future addition to the workbook.
+Azure Local LENS uses Azure Resource Graph against the ARM-projected properties, which inherit the same thin-maximum view as the Portal - that's correct for what it shows but isn't currently surfacing the pool-level "Real Available" calculation. A pool-level capacity panel that does the reserve subtraction and resiliency division would be a useful future addition to the workbook.
 
 ## License
 
