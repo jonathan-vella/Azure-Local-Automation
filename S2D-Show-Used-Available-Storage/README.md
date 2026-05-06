@@ -8,7 +8,7 @@ A read-only PowerShell script that surfaces the **real** used and available stor
 
 ## What this script does
 
-`S2D-Show-Used-Available-Storage.ps1` is read-only - it does not modify any storage objects. Run from any node in an Azure Local / S2D cluster. It auto-detects the resiliency factor from your existing volumes rather than assuming 2-way or 3-way mirror, and flags if the cluster has volumes at multiple resiliency tiers.
+[`S2D-Show-Used-Available-Storage.ps1`](S2D-Show-Used-Available-Storage.ps1) is **read-only** - it does not modify any storage objects. Run from any node in an Azure Local / S2D cluster. It auto-detects the resiliency factor from your existing volumes rather than assuming 2-way or 3-way mirror, and flags if the cluster has volumes at multiple resiliency tiers.
 
 It produces two outputs:
 
