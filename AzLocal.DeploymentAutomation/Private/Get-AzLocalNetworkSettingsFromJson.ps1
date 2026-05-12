@@ -14,9 +14,14 @@
             "defaultGateway": "10.0.0.1",
             "startingIPAddress": "10.0.0.10",
             "endingIPAddress": "10.0.0.50",
-            "nodeIPAddresses": ["10.0.0.100", "10.0.0.101"]
+            "nodeIPAddresses": ["10.0.0.100", "10.0.0.101"],
+            "dnsServers": ["10.0.0.5", "10.0.0.6"]
         }
 
+    The 'dnsServers' field is optional. When present, it overrides the 'dnsServers' default
+    in naming-standards-config.json. When absent (or an empty array), the config default is
+    used. The -DnsServers parameter on Start-AzLocalTemplateDeployment still takes precedence
+    over both.
     #>
 
     [OutputType([PSCustomObject])]
@@ -93,6 +98,30 @@
         }
     }
 
+    # Optional 'dnsServers' override: when present and non-empty, callers will use these in
+    # place of the dnsServers default from naming-standards-config.json. An absent property,
+    # $null, or empty array all mean "no override" and return $null to the caller.
+    $dnsServers = $null
+    if ($settings.PSObject.Properties['dnsServers'] -and $null -ne $settings.dnsServers) {
+        $dnsArray = @($settings.dnsServers)
+        if ($dnsArray.Count -gt 0) {
+            foreach ($dnsIP in $dnsArray) {
+                if ([string]::IsNullOrWhiteSpace([string]$dnsIP)) {
+                    Write-AzLocalLog "dnsServers entry in network settings JSON is empty or whitespace." -Level Error
+                    throw "dnsServers entries cannot be empty. Provide one or more valid IP addresses, or omit the 'dnsServers' field to use the config default."
+                }
+                try {
+                    [System.Net.IPAddress]::Parse([string]$dnsIP) | Out-Null
+                } catch {
+                    Write-AzLocalLog "Invalid DNS server IP address '$dnsIP' in network settings JSON." -Level Error
+                    throw "Invalid dnsServers entry '$dnsIP'. $($_.Exception.Message)"
+                }
+            }
+            $dnsServers = [string[]]$dnsArray
+            Write-Verbose "dnsServers override loaded from JSON ($($dnsServers.Count) server(s))."
+        }
+    }
+
     # For Disaggregated (SAN) deployments, also extract SAN-specific settings.
     # Expected optional sanSettings block:
     #   "sanSettings": {
@@ -138,6 +167,7 @@
         startingIPAddress = $settings.startingIPAddress
         endingIPAddress   = $settings.endingIPAddress
         nodeIPAddresses   = $nodeIPs
+        dnsServers        = $dnsServers
         sanSettings       = $sanSettings
     }
 }

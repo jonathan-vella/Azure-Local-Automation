@@ -1,6 +1,6 @@
 # AzLocal.DeploymentAutomation
 
-### Latest Version: **1.0.0**
+### Latest Version: **1.0.1**
 
 ```powershell
 # Install the module (initial setup)
@@ -442,19 +442,31 @@ For non-interactive deployments, supply network settings via `-NetworkSettingsJs
     "defaultGateway": "10.0.0.1",
     "startingIPAddress": "10.0.0.10",
     "endingIPAddress": "10.0.0.50",
-    "nodeIPAddresses": ["10.0.0.100", "10.0.0.101"]
+    "nodeIPAddresses": ["10.0.0.100", "10.0.0.101"],
+    "dnsServers": ["10.0.0.5", "10.0.0.6"]
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `subnetMask` | `string` | Subnet mask for the management network |
-| `defaultGateway` | `string` | Default gateway IP address |
-| `startingIPAddress` | `string` | Start of management IP range |
-| `endingIPAddress` | `string` | End of management IP range |
-| `nodeIPAddresses` | `string[]` | IP addresses for each node (count must match deployment type/node count) |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `subnetMask` | `string` | Yes | Subnet mask for the management network |
+| `defaultGateway` | `string` | Yes | Default gateway IP address |
+| `startingIPAddress` | `string` | Yes | Start of management IP range |
+| `endingIPAddress` | `string` | Yes | End of management IP range |
+| `nodeIPAddresses` | `string[]` | Yes | IP addresses for each node (count must match deployment type/node count) |
+| `dnsServers` | `string[]` | No | DNS servers for this cluster. When present (non-empty), overrides `defaults.dnsServers` from `naming-standards-config.json`. Omit (or pass an empty array) to use the config default. |
 
 All IP address fields are validated at parse time. The number of entries in `nodeIPAddresses` must match the expected node count for the deployment type (e.g., 1 for SingleNode, 2 for StorageSwitched with `-NodeCount 2`).
+
+#### DNS Servers Precedence (v1.0.1)
+
+DNS servers are resolved in the following order (highest priority wins):
+
+1. `-DnsServers` parameter on `Start-AzLocalTemplateDeployment` (explicit CLI override).
+2. `dnsServers` array inside `-NetworkSettingsJson` (per-deployment override) — new in v1.0.1.
+3. `defaults.dnsServers` in `naming-standards-config.json` (environment-wide default).
+
+The `-DnsServers` parameter on the cmdlet (and the `DnsServers` column in `cluster-deployments.csv`, which is mapped to it) still take precedence over the JSON field, so existing pipelines are unaffected.
 
 #### ShouldProcess Support (-WhatIf / -Confirm)
 
@@ -874,7 +886,7 @@ These values are used unless overridden by function parameters:
 | `namingPrefix` | `HCI01` | — (edit config) |
 | `azureStackLCMAdminUsername` | `LCMAdminUserName` | — (edit config) |
 | `storageAccountType` | `Standard_LRS` | — (edit config) |
-| `dnsServers` | `["10.0.0.1", "10.0.0.2"]` | `-DnsServers` |
+| `dnsServers` | `["10.0.0.1", "10.0.0.2"]` | `-DnsServers` (or `dnsServers` in `-NetworkSettingsJson`) |
 | `computeManagementAdapters` | `["MGMT_COMP_Slot1_Port1", "MGMT_COMP_Slot1_Port2"]` | `-ComputeManagementAdapters` |
 | `storageAdapters` | `["SMB_Slot2_Port1", "SMB_Slot2_Port2"]` | `-StorageAdapters` |
 
