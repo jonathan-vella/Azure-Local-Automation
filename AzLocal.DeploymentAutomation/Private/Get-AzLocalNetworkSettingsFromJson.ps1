@@ -72,15 +72,15 @@
         }
     }
 
-    # Validate IP address formats
-    try {
-        [System.Net.IPAddress]::Parse($settings.subnetMask) | Out-Null
-        [System.Net.IPAddress]::Parse($settings.defaultGateway) | Out-Null
-        [System.Net.IPAddress]::Parse($settings.startingIPAddress) | Out-Null
-        [System.Net.IPAddress]::Parse($settings.endingIPAddress) | Out-Null
-    } catch {
-        Write-AzLocalLog "Invalid IP address format in network settings JSON." -Level Error
-        throw "Invalid IP address in network settings JSON. $($_.Exception.Message)"
+    # Validate IP address formats (TryParse: no exception overhead, stable error messages)
+    $ipFields = @('subnetMask', 'defaultGateway', 'startingIPAddress', 'endingIPAddress')
+    $ipRef = [System.Net.IPAddress]::None
+    foreach ($f in $ipFields) {
+        $value = [string]$settings.$f
+        if (-not [System.Net.IPAddress]::TryParse($value, [ref]$ipRef)) {
+            Write-AzLocalLog "Invalid IP address '$value' for field '$f' in network settings JSON." -Level Error
+            throw "Invalid IP address '$value' for field '$f' in network settings JSON. Provide a valid IPv4 or IPv6 address."
+        }
     }
 
     # Validate node IP addresses
@@ -90,11 +90,9 @@
         throw "Expected $expectedNodes node IP addresses for $TypeOfDeployment deployment, but found $($nodeIPs.Count)."
     }
     foreach ($nodeIP in $nodeIPs) {
-        try {
-            [System.Net.IPAddress]::Parse($nodeIP) | Out-Null
-        } catch {
+        if (-not [System.Net.IPAddress]::TryParse([string]$nodeIP, [ref]$ipRef)) {
             Write-AzLocalLog "Invalid node IP address '$nodeIP' in network settings JSON." -Level Error
-            throw "Invalid node IP address '$nodeIP'. $($_.Exception.Message)"
+            throw "Invalid node IP address '$nodeIP' in nodeIPAddresses. Provide a valid IPv4 or IPv6 address."
         }
     }
 
@@ -110,11 +108,9 @@
                     Write-AzLocalLog "dnsServers entry in network settings JSON is empty or whitespace." -Level Error
                     throw "dnsServers entries cannot be empty. Provide one or more valid IP addresses, or omit the 'dnsServers' field to use the config default."
                 }
-                try {
-                    [System.Net.IPAddress]::Parse([string]$dnsIP) | Out-Null
-                } catch {
+                if (-not [System.Net.IPAddress]::TryParse([string]$dnsIP, [ref]$ipRef)) {
                     Write-AzLocalLog "Invalid DNS server IP address '$dnsIP' in network settings JSON." -Level Error
-                    throw "Invalid dnsServers entry '$dnsIP'. $($_.Exception.Message)"
+                    throw "Invalid dnsServers entry '$dnsIP'. Provide a valid IPv4 or IPv6 address."
                 }
             }
             $dnsServers = [string[]]$dnsArray

@@ -2122,9 +2122,13 @@ Describe 'File Integrity' {
         }
 
         It 'Module should implement DnsServers precedence: -DnsServers > NetworkSettingsJson.dnsServers > config default (v1.0.1)' {
-            # Three-tier precedence introduced in v1.0.1. Guard against regression.
-            $script:ModuleContent | Should -Match 'NetworkSettings\.PSObject\.Properties\[''dnsServers''\]'
-            $script:ModuleContent | Should -Match 'NamingConfig\.defaults\.dnsServers'
+            # Three-tier precedence introduced in v1.0.1. Behaviour-level coverage lives in
+            # the Get-AzLocalNetworkSettingsFromJson Pester block; this guard just asserts
+            # that the cmdlet still consults both the JSON override and the config default
+            # somewhere in its DNS resolution. Patterns are deliberately loose to survive
+            # variable renames and whitespace changes.
+            $script:ModuleContent | Should -Match '(?s)NetworkSettings[^\r\n]*\bdnsServers\b'
+            $script:ModuleContent | Should -Match '(?s)defaults[^\r\n]*\bdnsServers\b'
         }
 
         It 'Module should not contain Return "Error" pattern' {
