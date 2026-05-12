@@ -52,9 +52,9 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 1.0.0 in manifest' {
+        It 'Should have version 1.0.1 in manifest' {
             $manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-            $manifest.ModuleVersion | Should -Be '1.0.0'
+            $manifest.ModuleVersion | Should -Be '1.0.1'
         }
 
         It 'Should contain Start-AzLocalTemplateDeployment function' {
@@ -144,8 +144,8 @@ Describe 'Module: AzLocal.DeploymentAutomation' {
             $script:ManifestRaw.FunctionsToExport | Should -Contain 'Get-AzLocalDeploymentStatus'
         }
 
-        It 'Should have version 1.0.0' {
-            $script:ManifestRaw.ModuleVersion | Should -Be '1.0.0'
+        It 'Should have version 1.0.1' {
+            $script:ManifestRaw.ModuleVersion | Should -Be '1.0.1'
         }
 
         It 'Should have ReleaseNotes within the PSGallery character limit' {
@@ -2121,6 +2121,16 @@ Describe 'File Integrity' {
             $script:ModuleContent | Should -Match 'Function Get-AzLocalNetworkSettingsFromJson'
         }
 
+        It 'Module should implement DnsServers precedence: -DnsServers > NetworkSettingsJson.dnsServers > config default (v1.0.1)' {
+            # Three-tier precedence introduced in v1.0.1. Behaviour-level coverage lives in
+            # the Get-AzLocalNetworkSettingsFromJson Pester block; this guard just asserts
+            # that the cmdlet still consults both the JSON override and the config default
+            # somewhere in its DNS resolution. Patterns are deliberately loose to survive
+            # variable renames and whitespace changes.
+            $script:ModuleContent | Should -Match '(?s)NetworkSettings[^\r\n]*\bdnsServers\b'
+            $script:ModuleContent | Should -Match '(?s)defaults[^\r\n]*\bdnsServers\b'
+        }
+
         It 'Module should not contain Return "Error" pattern' {
             # All functions should now use throw instead of Return "Error"
             $script:ModuleContent | Should -Not -Match 'Return\s+"Error"'
@@ -2583,6 +2593,57 @@ Describe 'Function: Get-AzLocalNetworkSettingsFromJson' {
         It 'Should throw for invalid node IP address' {
             InModuleScope AzLocal.DeploymentAutomation {
                 $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["not-an-ip"]}'
+                { Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'SingleNode' } | Should -Throw
+            }
+        }
+    }
+
+    Context 'Optional dnsServers override (v1.0.1)' {
+        It 'Should return $null dnsServers when the field is omitted (back-compat)' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["10.0.0.100"]}'
+                $result = Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'SingleNode'
+                $result.PSObject.Properties.Name | Should -Contain 'dnsServers'
+                $result.dnsServers | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'Should return $null dnsServers when the field is an empty array' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["10.0.0.100"],"dnsServers":[]}'
+                $result = Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'SingleNode'
+                $result.dnsServers | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'Should return a single dnsServers entry when one is provided' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["10.0.0.100"],"dnsServers":["10.0.0.5"]}'
+                $result = Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'SingleNode'
+                @($result.dnsServers).Count | Should -Be 1
+                @($result.dnsServers)[0] | Should -Be '10.0.0.5'
+            }
+        }
+
+        It 'Should return multiple dnsServers entries when provided' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["10.0.0.100","10.0.0.101"],"dnsServers":["10.0.0.5","10.0.0.6","10.0.0.7"]}'
+                $result = Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'StorageSwitched' -NodeCount 2
+                @($result.dnsServers).Count | Should -Be 3
+                @($result.dnsServers)[2] | Should -Be '10.0.0.7'
+            }
+        }
+
+        It 'Should throw for an invalid dnsServers IP address' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["10.0.0.100"],"dnsServers":["not-an-ip"]}'
+                { Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'SingleNode' } | Should -Throw
+            }
+        }
+
+        It 'Should throw for a whitespace-only dnsServers entry' {
+            InModuleScope AzLocal.DeploymentAutomation {
+                $json = '{"subnetMask":"255.255.255.0","defaultGateway":"10.0.0.1","startingIPAddress":"10.0.0.10","endingIPAddress":"10.0.0.50","nodeIPAddresses":["10.0.0.100"],"dnsServers":["   "]}'
                 { Get-AzLocalNetworkSettingsFromJson -NetworkSettingsJson $json -TypeOfDeployment 'SingleNode' } | Should -Throw
             }
         }
@@ -3904,7 +3965,7 @@ Describe 'Automation Pipelines: File Structure' {
         }
 
         It 'CSV should have valid TypeOfDeployment values' {
-            $validTypes = @('SingleNode', 'StorageSwitched', 'StorageSwitchless', 'RackAware')
+            $validTypes = @('SingleNode', 'StorageSwitched', 'StorageSwitchless', 'RackAware', 'Disaggregated')
             foreach ($row in $script:CsvData) {
                 $row.TypeOfDeployment | Should -BeIn $validTypes
             }

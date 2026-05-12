@@ -4,7 +4,7 @@
     RootModule = 'AzLocal.DeploymentAutomation.psm1'
 
     # Version number of this module.
-    ModuleVersion = '1.0.0'
+    ModuleVersion = '1.0.1'
 
     # ID used to uniquely identify this module
     GUID = 'a3e4b8c1-6f2d-4e5a-9b1c-7d8e3f0a2b4c'
@@ -97,6 +97,26 @@
 
             # Release notes for this version
             ReleaseNotes = @'
+## v1.0.1 - May 2026
+
+### Optional `dnsServers` override in `-NetworkSettingsJson`
+Adds an optional `dnsServers` array to the JSON payload accepted by the `-NetworkSettingsJson` parameter on `Start-AzLocalTemplateDeployment`. When present, it overrides the environment-wide `defaults.dnsServers` from `naming-standards-config.json` for that single deployment, without requiring a config file change. This makes it easier to support multiple sites with different DNS servers from one shared config file (e.g. CI/CD pipelines driving deployments to multiple regions).
+
+- `Get-AzLocalNetworkSettingsFromJson` now parses an optional top-level `dnsServers` array. Each entry is validated as a valid IPv4/IPv6 address via `[System.Net.IPAddress]::Parse`; empty/whitespace entries throw with a clear actionable error. An absent field, `$null`, or an empty `[]` array are all treated as "no override" (config default is used) - this is backwards compatible with all existing JSON payloads.
+- `Start-AzLocalTemplateDeployment` now uses a three-tier precedence chain for DNS resolution:
+  1. `-DnsServers` parameter (explicit CLI override) - highest priority
+  2. `dnsServers` array inside `-NetworkSettingsJson` (per-deployment override) - NEW in v1.0.1
+  3. `NamingConfig.defaults.dnsServers` from `naming-standards-config.json` (environment-wide default)
+- `Start-AzLocalCsvDeployment` is unchanged - the `DnsServers` column in `cluster-deployments.csv` continues to map to the top-level `-DnsServers` parameter and therefore still wins over anything embedded in the JSON, so existing CSV-driven pipelines are unaffected.
+- Added 6 new Pester unit tests under `Describe 'Function: Get-AzLocalNetworkSettingsFromJson'` -> `Context 'Optional dnsServers override (v1.0.1)'` covering: omitted field (back-compat), empty array, single entry, multiple entries, invalid IP, and whitespace-only entry.
+- Added a source-text precedence assertion under `Describe 'Module Content'` to guard against regression of the three-tier resolution order.
+- Updated README.md: documented the optional field in the Network Settings JSON table, added a "DNS Servers Precedence (v1.0.1)" subsection, and updated the Default Values override column to reflect both override paths.
+
+### Backwards-compatibility notes
+- All existing `-NetworkSettingsJson` payloads continue to work unchanged - `dnsServers` is strictly optional.
+- The interactive code path (`Get-AzLocalDeploymentNetworkSettings`) does not collect DNS servers; interactive deployments still inherit the config default. Set `-DnsServers` on the cmdlet to override interactively.
+- The shape of the object returned by `Get-AzLocalNetworkSettingsFromJson` gained a new `dnsServers` property (value `$null` when not provided); existing consumers that only read the previously-documented fields are unaffected.
+
 ## v1.0.0 - April 2026
 
 ### New deployment topology: Disaggregated (SAN storage)
@@ -116,7 +136,7 @@ Adds first-class support for SAN-backed Azure Local clusters of up to **64 nodes
 - Per-phase parameter-file regeneration now skips the storageNetworkList override when running against the SAN template (the SAN template has no storageNetworkList; it uses sanNetworkList instead)
 - Pre-flight, naming resolution, and KeyVault credential paths are unchanged - Disaggregated reuses all existing helpers
 
-### Backwards-compatibility notes
+### Backwards-compatibility notes (v1.0.0)
 - Existing parameter files, ARM template, and all four prior deployment topologies are unchanged
 - `clusterPattern` and `localAvailabilityZones` parameters are emitted only for non-Disaggregated deployments (the SAN template does not declare them)
 - The default `-NodeCount` ValidateRange has changed from (2, 16) to (1, 64). Calls passing NodeCount=1 explicitly are now accepted at the parameter-validation layer (still rejected for SingleNode by the topology check, which is unchanged)
@@ -133,38 +153,8 @@ Adds first-class support for SAN-backed Azure Local clusters of up to **64 nodes
 - Replaced non-ASCII emoji characters in New-AzLocalDeploymentReport with ASCII-compatible text markers to comply with encoding convention
 - Fixed version mismatch between .NOTES and HTML footer in New-AzLocalDeploymentReport
 
-## v0.9.8 - March 2026
-- Added -NamingConfigPath parameter to Start-AzLocalTemplateDeployment, Start-AzLocalCsvDeployment, and Get-AzLocalDeploymentStatus for explicit config file specification
-- New user profile config workflow: on first use, the module copies .config/naming-standards-config.json to $env:USERPROFILE\.AzLocalDeploymentAutomation\ so customisations survive Update-Module
-- Config resolution priority: (1) explicit -NamingConfigPath, (2) user profile directory, (3) auto-initialise from module defaults
-- New config validation: deployment functions now detect unmodified placeholder values (contoso.com, xxxxxxxx tenant ID, DC=contoso,DC=com) and block with actionable error messages
-- New internal functions: Initialize-AzLocalUserConfig (profile config setup), Test-AzLocalNamingConfigDefaults (placeholder detection)
-- Updated Get-AzLocalNamingConfig with -Path parameter and user profile fallback logic
-- All CI/CD pipeline examples (GitHub Actions + Azure DevOps) now include naming_config_path/namingConfigPath parameter and pass -NamingConfigPath to all function calls
-- Updated README and automation-pipelines README with new config workflow, parameter tables, and CI/CD guidance
-
-## v0.9.7 - March 2026
-- Changed Watch-AzLocalDeployment -TimeoutMinutes default from 180 to 0 (no timeout) so the watcher runs until the deployment reaches a terminal state, accommodating long-running deploy phases
-
-## Earlier versions (v0.9.6 and below)
-For full release history of v0.9.6 (RDMA / inbox driver / RP registration troubleshooting hints), v0.9.5 (GitHub Actions injection fix, Get-AzLocalValidationTroubleshootingHints + -SkipOnlineTSGSearch), v0.9.4 (Write-AzLocalLog + rich exceptions), v0.9.3 (TypeOfDeployment rename: MultiNode->StorageSwitched, Switchless->StorageSwitchless), v0.9.2 (Test-AzLocalAzurePrerequisites: RP + RBAC checks), and v0.9.1 (per-node-count switchless templates, -NodeCount parameter), see the GitHub repository: https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.DeploymentAutomation/README.md
-- Updated Pester tests for new switchless file names and node-count selection (402 tests)
-
-## v0.9.0 - February 2026
-- Added CI/CD automation pipeline support for CSV-driven multi-cluster deployments
-- New exported function: Start-AzLocalCsvDeployment — reads deployment CSV and submits ARM Validate/Deploy for eligible clusters
-- New exported function: Get-AzLocalDeploymentStatus — monitors deployment progress across all clusters defined in CSV
-- New internal functions: Import-AzLocalDeploymentCsv, Test-AzLocalClusterPreFlight, New-AzLocalJUnitXml
-- Pre-flight checks: resource naming validation, resource group existence, Arc node registration, existing deployment detection
-- JUnit XML output for CI/CD test result visibility (GitHub Actions dorny/test-reporter, Azure DevOps PublishTestResults)
-- Example GitHub Actions workflows: validate-deployments.yml, deploy-clusters.yml, deployment-monitor.yml
-- Example Azure DevOps pipelines: validate-deployments.yml, deploy-clusters.yml, deployment-monitor.yml
-- Example cluster-deployments.csv with SingleNode, StorageSwitched, StorageSwitchless, and RackAware deployment types
-- Authentication: OIDC (recommended), Managed Identity, Service Principal + Secret (legacy)
-- automation-pipelines/README.md with full setup guide
-
-For full release history for versions prior to v0.9.0, see:
-https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.DeploymentAutomation/README.md
+## Earlier versions (v0.9.8 and below)
+For full release history of v0.9.8 (user profile config workflow, -NamingConfigPath, Test-AzLocalNamingConfigDefaults), v0.9.7 (Watch-AzLocalDeployment no-timeout default), v0.9.6 (RDMA / inbox driver / RP registration troubleshooting hints), v0.9.5 (GitHub Actions injection fix, Get-AzLocalValidationTroubleshootingHints + -SkipOnlineTSGSearch), v0.9.4 (Write-AzLocalLog + rich exceptions), v0.9.3 (TypeOfDeployment rename: MultiNode->StorageSwitched, Switchless->StorageSwitchless), v0.9.2 (Test-AzLocalAzurePrerequisites: RP + RBAC checks), v0.9.1 (per-node-count switchless templates, -NodeCount parameter), and v0.9.0 (CI/CD CSV-driven multi-cluster deployments + Start-AzLocalCsvDeployment + Get-AzLocalDeploymentStatus), see the GitHub repository: https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.DeploymentAutomation/README.md
 '@
         }
     }

@@ -257,9 +257,17 @@
     }
     $DomainFqdn = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.domainFqdn -UniqueID $UniqueID
     $NamingPrefix = Resolve-AzLocalResourceName -Pattern $NamingConfig.defaults.namingPrefix -UniqueID $UniqueID
-    # DnsServers: use parameter override if provided, otherwise fall back to config default
+    # DnsServers precedence (highest to lowest):
+    #   1. -DnsServers parameter (explicit CLI override)
+    #   2. dnsServers array inside -NetworkSettingsJson (per-deployment override)
+    #   3. NamingConfig.defaults.dnsServers (environment-wide default)
     if ($DnsServers.Count -eq 0) {
-        $DnsServers = @($NamingConfig.defaults.dnsServers)
+        if ($NetworkSettings.PSObject.Properties['dnsServers'] -and $NetworkSettings.dnsServers -and @($NetworkSettings.dnsServers).Count -gt 0) {
+            $DnsServers = @($NetworkSettings.dnsServers)
+            Write-Verbose "Using dnsServers override from NetworkSettingsJson ($($DnsServers.Count) server(s))."
+        } else {
+            $DnsServers = @($NamingConfig.defaults.dnsServers)
+        }
     }
     # ComputeManagementAdapters: use parameter override if provided, otherwise fall back to config default
     if ($ComputeManagementAdapters.Count -eq 0) {
