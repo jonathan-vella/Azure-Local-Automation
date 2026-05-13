@@ -1,924 +1,519 @@
 # CI/CD Pipeline Examples for Azure Local Cluster Update Management
 
-> ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
+> **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-This folder contains example CI/CD pipelines for automating Azure Local cluster update management using GitHub Actions and Azure DevOps.
+This folder is the setup-and-configure landing page for the example GitHub Actions and Azure DevOps pipelines that ship with the `AzLocal.UpdateManagement` PowerShell module. It walks an operator from "nothing wired" to "a staged-rollout update programme runs itself, with optional ServiceNow ticketing on failures".
 
-## Overview
-
-Five pipelines are provided for each platform:
-
-| Pipeline | Description |
-|----------|-------------|
-| **Inventory Clusters** | Queries all Azure Local clusters and exports inventory to CSV with UpdateRing tag status |
-| **Manage UpdateRing Tags** | Creates or updates UpdateRing / UpdateWindow / UpdateExclusions tags on clusters from a CSV file |
-| **Assess Update Readiness** | Pre-flight **report-only** readiness + blocking-health snapshot. Runs `Get-AzureLocalClusterUpdateReadiness` + `Test-AzureLocalClusterHealth -BlockingOnly` and publishes JUnit XML + CSV. Per-cluster pass/fail surfaces in the Checks / Tests tab; the workflow itself always succeeds so a few unhealthy clusters don't block the rest of the wave. |
-| **Apply Updates** | Applies updates to clusters filtered by UpdateRing tag value |
-| **Fleet Update Status** | 📊 Monitors update status across the entire fleet with JUnit XML reports for dashboards |
-
-> 📝 **Tip**: For ad-hoc reporting outside of CI/CD, you can also generate a standalone HTML report using `New-AzureLocalFleetStatusHtmlReport`. See [Standalone HTML Report](#standalone-html-report) below.
-
-### What's new for v0.7.4
-
-- **ITSM Connector - Phase 1 (ServiceNow)**. Apply-updates and fleet-update-status pipelines can now open ServiceNow incidents for clusters that need operator action (`Failed`, `Error`, `HealthCheckBlocked`, `SideloadedBlocked`), with idempotent dedupe so re-running the same workflow does not create duplicates. The feature is **fully opt-in** - pipelines that don't pass `-Config` to `New-AzureLocalIncident` keep their existing behaviour. A working sample config plus the Mustache ticket-body template ship in this folder under [`.itsm/`](./.itsm/):
-  - [`./.itsm/azurelocal-itsm.yml`](./.itsm/azurelocal-itsm.yml) - ready-to-copy config (secrets, defaults, trigger matrix). Drop a copy into your consumer repo at the same path (the pipeline input `itsm_config_path` defaults to `./.itsm/azurelocal-itsm.yml`).
-  - [`./.itsm/templates/incident-body.md`](./.itsm/templates/incident-body.md) - Mustache-style ticket body template consumed by `Format-AzLocalIncidentBody`.
-- **Authentication**. OAuth 2.0 `client_credentials` only in Phase 1. Secrets resolve from Azure Key Vault (`kv://<vault>/<secret>`, **recommended**), environment variables (`env://NAME`) for native GitHub / Azure DevOps secret fallback, or explicit `literal://...` values guarded by `-AllowLiteral`. The pipeline service principal needs `Key Vault Secrets User` on the configured vault - no other new RBAC. Full configuration reference: [`ITSM-Config-Reference.md`](../ITSM/ITSM-Config-Reference.md). Setup and troubleshooting: [`ITSM/README.md`](../ITSM/README.md).
-- **Dry-run support**. `New-AzureLocalIncident -DryRun` (or pipeline input `itsm_dry_run: true`) builds the full ticket payload, runs dedupe lookups, but does not POST. Use this on a Personal Developer Instance to validate the trigger matrix and template rendering before pointing at production ServiceNow.
-- **Connection test**. `Test-AzureLocalItsmConnection` runs the OAuth token grant and a one-row read against `/api/now/table/incident`, matching the least-privilege scope used by ticket creation - run it as a manual pipeline step before flipping `raise_itsm_ticket: true`.
-- **Phase 2 (`Sync-AzureLocalIncident` close-out) and Phase 3 (Teams + Slack mirror)** are designed in [`ITSM/ITSM-Connector-Plan.md`](../ITSM/ITSM-Connector-Plan.md) and tracked for a later release. The `lifecycle` and `notifications` sections of the config are parsed and stored but not yet acted on.
-
-### What's new for v0.7.2
-
-- **Fleet read paths now work as documented under `-ThrottleLimit > 1`**. The `fleet-update-status.yml` workflow (and any direct caller of `Get-AzureLocalUpdateRuns`, `Get-AzureLocalUpdateSummary`, or `Get-AzureLocalClusterUpdateReadiness` with `-ThrottleLimit` greater than 1) previously failed for every cluster with `The term 'Get-AzLocalClusterUpdateRuns' is not recognized...` because module-private helpers were not visible inside `Start-Job` child runspaces. Now resolved via `& $module { ... }` dispatch through the loaded module's session state. **Action**: re-enable `-ThrottleLimit` in your fleet workflows (default 4 is a reasonable starting point; raise as your fleet grows).
-- **Stray `cp1252` warnings no longer break JSON parsing on hosted Windows runners**. Default `windows-latest` GitHub runners and Azure DevOps `windows-2022` agents both run with the `cp1252` console code page; the Azure CLI emitted `WARNING: Unable to encode the output with cp1252 encoding...` on any ARM response containing non-ASCII characters (smart quotes in tag values, accented characters in cluster metadata, localised health-check messages). Captured via `2>&1`, that warning was prepended to the JSON body and silently broke `ConvertFrom-Json`, dropping update runs and available updates from pipeline reports for affected clusters. The module now passes `--only-show-errors` to every `az rest` and `az graph query` invocation, suppressing the warning at source. **No pipeline configuration changes required** - upgrade to v0.7.2+ and the runs/summaries will simply be complete.
-- See the v0.7.2 entry in the [main README](../README.md#whats-new-in-v072) for the full root-cause writeup.
-
-### What's new for v0.7.1
-
-- **Sideloaded payload workflow**. Two new tags coordinate human-driven sideloaded update payloads with the apply-updates pipeline:
-  - `UpdateSideloaded` (operator-set, `True`/`False`/`1`/`0`) gates `Start-AzureLocalClusterUpdate`. When `False`, the apply-updates pipeline skips the cluster with `Status = SideloadedBlocked` (visible in the JUnit Tests tab as a new skipped reason).
-  - `UpdateVersionInProgress` (module-managed; do not set manually) holds the staged update name. `Get-AzureLocalUpdateRuns` (used by the Fleet Update Status pipeline) auto-resets `UpdateSideloaded` -> `False` and clears `UpdateVersionInProgress` when the latest run is `Succeeded` and its update name matches. Use `-SkipSideloadedReset` on read-only/assessment paths if you want to inspect tags without mutating them.
-- **New public function** `Reset-AzureLocalSideloadedTag` for explicit-scope manual reset (useful for one-off rotations or rescuing stuck tags via `-Force`). Three parameter sets: `-ClusterNames <string[]>` (+ optional `-ResourceGroupName`), `-ClusterResourceIds <string[]>`, or `-ScopeByUpdateRingTag -UpdateRingValue <string>` for bulk-reset by tag. Supports `-WhatIf`/`-Confirm`. Default behaviour requires `latest run = Succeeded` **and** a case-insensitive match between the run's update name and `UpdateVersionInProgress`. `-Force` bypasses the version-match check (still requires the run state to be `Succeeded` so an in-flight update is never disturbed). Returns one row per cluster with `Action` (`Reset` / `OrphanCleared` / `NoTag` / `RunNotSucceeded` / `Skipped`), `PreviousSideloaded`, `NewSideloaded`, `StagedVersion`, `MatchedRunUpdateName`, `Message`. See the [function reference in the main README](../README.md#reset-azurelocalsideloadedtag) for full parameter docs and examples.
-- **No new RBAC**. The workflow only reads/writes cluster tags; the existing `Microsoft.Resources/tags/read` and `/write` permissions documented below are sufficient.
-- **Fully opt-in**. Clusters without the `UpdateSideloaded` tag behave exactly as in v0.7.0 - the gate is bypassed, no module-managed tags are written. Pipelines do not need to be reconfigured for clusters that don't use sideloading. The Fleet Update Status pipeline will safely clean up an orphan `UpdateVersionInProgress` tag (`Action = OrphanCleared`) on opted-out clusters when the latest run name matches the tag.
-- See the [Sideloaded Payload Workflow section in the main README](../README.md#7a-sideloaded-payload-workflow-v071) for the full operator runbook.
-
-### What's new for v0.7.0
-
-- **Parallel per-cluster operations**. `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns`, and `Set-AzureLocalClusterUpdateRingTag` now run per-cluster ARM calls in parallel `Start-Job` batches. `Invoke-AzureLocalFleetOperation -ThrottleLimit` is honored end-to-end (was previously retry-math only). Expected 5-10x speedup on 1500-cluster runs.
-- **`-ThrottleLimit` is a workflow input** on `apply-updates.yml` and `fleet-update-status.yml` (default 4, range 1-16). Raise it for large fleets; lower it on constrained runners or when you are being ARM-throttled.
-- **ARG queries paginate**. All scope-resolving queries (`-AllClusters`, `-ScopeByUpdateRingTag`) follow the `$skipToken` until exhausted. Previously capped silently at 1000.
-- **`-AllClusters` cap removed**. `New-AzureLocalFleetStatusHtmlReport -AllClusters` and `Get-AzureLocalFleetStatusData -AllClusters` no longer truncate at 100; use `-MaxClusters <n>` to trim explicitly.
-- **CSV sanitization**. Every CSV field is protected against Excel formula injection (`=`, `+`, `-`, `@`, tab leaders are neutralized, CR/LF stripped).
-- **Token refresh mid-run**. `Invoke-AzRestJson` refreshes on HTTP 401 so long-running apply jobs no longer die at the 1-hour token boundary.
-- **Schedule-tag parse errors are blocking by default** (unless `-Force`). A malformed `UpdateWindow` / `UpdateExclusions` no longer lets the update sneak through with just a warning.
-
-## Prerequisites
-
-Before using these pipelines, you need:
-
-1. **Azure Subscription** with Azure Local (Azure Stack HCI) clusters
-2. **Azure Identity** - Service Principal or Managed Identity (see Authentication Options below)
-3. **CI/CD Platform** (GitHub or Azure DevOps)
+It is written in the same step-by-step style as [`ITSM/README.md`](../ITSM/README.md). If something here is unclear, that file is a good cross-reference for the connector portion.
 
 ---
 
-## 🔐 Authentication Options
+## Table of contents
 
-Microsoft recommends three authentication methods for CI/CD pipelines, listed from **most to least secure**:
-
-| Method | Security | Secrets Required | Best For |
-|--------|----------|------------------|----------|
-| **🥇 OpenID Connect (OIDC)** | ⭐⭐⭐⭐⭐ | None (secretless) | GitHub Actions, Azure DevOps |
-| **🥈 Managed Identity** | ⭐⭐⭐⭐ | None | Self-hosted runners on Azure VMs |
-| **🥉 Service Principal + Secret** | ⭐⭐ | Client Secret | Legacy systems only |
-
-> ⚠️ **Important**: Microsoft recommends **OpenID Connect** over client secrets. Client secrets can expire, be leaked, and require rotation. OIDC uses short-lived tokens with no stored secrets.
+1. [What you'll have when you're done](#1-what-youll-have-when-youre-done)
+2. [Prerequisites](#2-prerequisites)
+3. [Choose your CI/CD platform and authentication](#3-choose-your-cicd-platform-and-authentication)
+   - [3.1 GitHub Actions with OpenID Connect (recommended)](#31-github-actions-with-openid-connect-recommended)
+   - [3.2 Azure DevOps with Workload Identity Federation (recommended)](#32-azure-devops-with-workload-identity-federation-recommended)
+   - [3.3 Self-hosted runners with Managed Identity](#33-self-hosted-runners-with-managed-identity)
+   - [3.4 Service Principal + client secret (legacy fallback)](#34-service-principal--client-secret-legacy-fallback)
+4. [Required Azure permissions](#4-required-azure-permissions)
+5. [Wire the pipeline files into your repo](#5-wire-the-pipeline-files-into-your-repo)
+   - [5.1 GitHub Actions](#51-github-actions)
+   - [5.2 Azure DevOps](#52-azure-devops)
+6. [End-to-end runbook: bring an estate online](#6-end-to-end-runbook-bring-an-estate-online)
+   - [6.1 Inventory the estate](#61-inventory-the-estate)
+   - [6.2 Plan update rings, windows, and exclusions](#62-plan-update-rings-windows-and-exclusions)
+   - [6.3 Apply tags](#63-apply-tags)
+   - [6.4 Pre-flight readiness assessment](#64-pre-flight-readiness-assessment)
+   - [6.5 Apply updates - one wave at a time](#65-apply-updates---one-wave-at-a-time)
+   - [6.6 Continuous fleet monitoring](#66-continuous-fleet-monitoring)
+7. [Optional: open ITSM tickets for clusters needing operator action](#7-optional-open-itsm-tickets-for-clusters-needing-operator-action)
+8. [Scheduling, maintenance windows, and change-freeze periods](#8-scheduling-maintenance-windows-and-change-freeze-periods)
+9. [Tuning throughput (`-ThrottleLimit`)](#9-tuning-throughput--throttlelimit)
+10. [Standalone HTML report (no pipeline)](#10-standalone-html-report-no-pipeline)
+11. [Security model](#11-security-model)
+12. [Troubleshooting](#12-troubleshooting)
+13. [File layout](#13-file-layout)
+14. [Appendix A: Pipeline reference](#appendix-a-pipeline-reference)
+15. [Appendix B: Release history](#appendix-b-release-history)
+    - [B.1 v0.7.4 (current)](#b1-v074-current)
+    - [B.2 v0.7.2](#b2-v072)
+    - [B.3 v0.7.1](#b3-v071)
+    - [B.4 v0.7.0](#b4-v070)
+16. [Related documentation](#16-related-documentation)
 
 ---
 
-## 🥇 Option 1: OpenID Connect (OIDC) - Recommended
+## 1. What you'll have when you're done
 
-OIDC uses federated identity credentials - your GitHub/Azure DevOps workflow requests a token from Azure without storing any secrets.
+By the end of this guide you will have:
 
-### Benefits
-- ✅ **No secrets to manage or rotate**
-- ✅ **Short-lived tokens** (valid only for workflow execution)
-- ✅ **No risk of secret leakage**
-- ✅ **Audit trail** of token usage
+- A federated identity (no client secrets) wired into your CI/CD platform with the **minimum** Azure RBAC needed for cluster update management.
+- Five working pipelines committed to your repo and visible in the Actions / Pipelines UI:
+  - **Inventory** - enumerate every Azure Local cluster the identity can see and export a CSV.
+  - **Manage UpdateRing tags** - bulk-apply `UpdateRing`, `UpdateWindow`, `UpdateExclusions` tags from that CSV.
+  - **Assess Update Readiness** - pre-flight, report-only readiness + blocking-health snapshot, published as JUnit XML.
+  - **Apply Updates** - apply updates to a single `UpdateRing` wave at a time, with WhatIf / dry-run support.
+  - **Fleet Update Status** - scheduled daily snapshot of fleet update state, surfaced in the Tests tab.
+- An end-to-end "ring-based" rollout pattern: Pilot -> Wave2 -> Production, with each ring gated on the previous wave's success.
+- **Optional**: a ServiceNow integration that opens deduped incidents for clusters whose run status indicates the module's own retries cannot recover (failures, blocking health checks, sideloaded payload missing) - see [section 7](#7-optional-open-itsm-tickets-for-clusters-needing-operator-action).
 
-### Step 1: Create the App Registration
+The pipelines are **fully opt-in additive layers** over the module. The PowerShell functions also work without any pipeline at all - see [section 10](#10-standalone-html-report-no-pipeline) for the ad-hoc / desktop story.
+
+---
+
+## 2. Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| Azure subscription(s) containing Azure Local clusters | One or many; multi-subscription is supported and is the common state at >~500 clusters because the per-subscription storage-account quota caps how many witness accounts (and therefore clusters) fit in one subscription. |
+| Permissions to create app registrations in Microsoft Entra ID, or an existing one | Required so you can either set up Workload Identity Federation (recommended) or, as a fallback, a Service Principal + client secret. |
+| GitHub repository **or** Azure DevOps project | The pipeline YAMLs are checked in to one of these and run on the platform's hosted Windows agents (or your self-hosted runners). |
+| PowerShell 5.1 or later | Used by every pipeline step. Microsoft-hosted `windows-latest` agents ship with PowerShell 5.1 and PowerShell 7+ already installed - no extra install needed there. |
+| `Az.Accounts` + `Az.KeyVault` modules | `Az.Accounts` is required by all pipelines. `Az.KeyVault` is required only if you opt in to the ITSM connector with Key Vault-sourced secrets (recommended). The pipelines install these on the agent as needed. |
+| `powershell-yaml` module | Required only if you opt in to the ITSM connector and your matrix config is YAML (default). JSON config works on stock PowerShell. The pipeline installs this on the agent only when the ITSM step runs. |
+
+You do **not** need any cluster-side prerequisites for the inventory, tag-management, readiness, or fleet-status pipelines. The Apply Updates pipeline does require the clusters be in a healthy ARM state for the update API to accept the request - that is what the readiness pre-flight in section 6.4 measures.
+
+---
+
+## 3. Choose your CI/CD platform and authentication
+
+There are three supported authentication patterns, listed from **most to least secure**. Pick one - you do not need all three.
+
+| Method | Security | Secret to manage | Best for |
+|---|---|---|---|
+| **OpenID Connect (OIDC) / Workload Identity Federation** | Strongest | None (secretless) | GitHub Actions and Azure DevOps. **Recommended for all new setups.** |
+| **Managed Identity** | Strong | None | Self-hosted runners on Azure VMs. |
+| **Service Principal + client secret** | Weak | Client secret (expires, leaks, must rotate) | Legacy environments where OIDC / federation is not available. |
+
+> **Microsoft strongly recommends OIDC / Workload Identity Federation** over client secrets. Tokens are short-lived, scoped, and never stored anywhere you have to rotate.
+
+### 3.1 GitHub Actions with OpenID Connect (recommended)
+
+OIDC has the workflow request a short-lived token from Azure at runtime, with no stored secret. Subject claim binding ensures only **your** repository's workflows can mint the token.
+
+**Step 1 - create the App Registration**
 
 ```bash
-# Create App Registration (not a full Service Principal)
+# Create App Registration (no client secret needed)
 az ad app create --display-name "AzureLocal-UpdateAutomation-OIDC"
-
-# Note the appId from output - this is your AZURE_CLIENT_ID
+# Note the appId from the output - this becomes AZURE_CLIENT_ID.
 ```
 
-### Step 2: Create Service Principal and Assign Role
+**Step 2 - create the Service Principal and assign the role**
 
 ```bash
-# Create Service Principal from the App Registration
-az ad sp create --id {app-id-from-step-1}
+az ad sp create --id <appId-from-step-1>
 
-# Assign Azure Stack HCI Administrator role
-az role assignment create \
-    --assignee {app-id-from-step-1} \
-    --role "Azure Stack HCI Administrator" \
-    --scope "/subscriptions/{your-subscription-id}"
+az role assignment create `
+    --assignee <appId-from-step-1> `
+    --role    "Azure Stack HCI Administrator" `
+    --scope   "/subscriptions/<your-subscription-id>"
 ```
 
-### Step 3: Configure Federated Credentials
+For multi-subscription estates, run the `role assignment create` step once per subscription. Section 4 lists the lower-privilege custom-role permissions if you do not want to grant a built-in role.
 
-#### For GitHub Actions:
+**Step 3 - federate the workflow**
 
 ```bash
-# Create federated credential for GitHub Actions
-az ad app federated-credential create \
-    --id {app-id-from-step-1} \
+az ad app federated-credential create `
+    --id <appId-from-step-1> `
     --parameters '{
         "name": "GitHubActions-main",
         "issuer": "https://token.actions.githubusercontent.com",
-        "subject": "repo:{owner}/{repo}:ref:refs/heads/main",
+        "subject": "repo:<owner>/<repo>:ref:refs/heads/main",
         "audiences": ["api://AzureADTokenExchange"]
     }'
 
-# For workflow_dispatch (manual triggers), add another credential:
-az ad app federated-credential create \
-    --id {app-id-from-step-1} \
+# For manually-triggered workflow_dispatch runs from a protected environment:
+az ad app federated-credential create `
+    --id <appId-from-step-1> `
     --parameters '{
-        "name": "GitHubActions-workflow-dispatch",
+        "name": "GitHubActions-production",
         "issuer": "https://token.actions.githubusercontent.com",
-        "subject": "repo:{owner}/{repo}:environment:production",
+        "subject": "repo:<owner>/<repo>:environment:production",
         "audiences": ["api://AzureADTokenExchange"]
     }'
 ```
 
-**Subject claim patterns:**
-| Trigger | Subject |
-|---------|---------|
-| Branch push | `repo:{owner}/{repo}:ref:refs/heads/{branch}` |
-| PR | `repo:{owner}/{repo}:pull_request` |
-| Environment | `repo:{owner}/{repo}:environment:{env-name}` |
-| Tag | `repo:{owner}/{repo}:ref:refs/tags/{tag}` |
+Subject-claim patterns for other trigger types:
 
-#### For Azure DevOps:
+| Trigger | Subject claim |
+|---|---|
+| Push to a branch | `repo:<owner>/<repo>:ref:refs/heads/<branch>` |
+| Pull request | `repo:<owner>/<repo>:pull_request` |
+| Environment | `repo:<owner>/<repo>:environment:<env>` |
+| Tag | `repo:<owner>/<repo>:ref:refs/tags/<tag>` |
 
-```bash
-# Create federated credential for Azure DevOps
-az ad app federated-credential create \
-    --id {app-id-from-step-1} \
-    --parameters '{
-        "name": "AzureDevOps",
-        "issuer": "https://vstoken.dev.azure.com/{organization-id}",
-        "subject": "sc://{organization}/{project}/{service-connection-name}",
-        "audiences": ["api://AzureADTokenExchange"]
-    }'
-```
+**Step 4 - add the (three) GitHub secrets**
 
-### Step 4: Add GitHub Secrets (No Secret Value!)
+| Secret name | Value |
+|---|---|
+| `AZURE_CLIENT_ID` | The App Registration `appId` from step 1. |
+| `AZURE_TENANT_ID` | Your Entra ID tenant ID. |
+| `AZURE_SUBSCRIPTION_ID` | The subscription that hosts (or contains the management-group rollup of) your clusters. |
 
-| Secret Name | Value |
-|-------------|-------|
-| `AZURE_CLIENT_ID` | App Registration ID |
-| `AZURE_TENANT_ID` | Your Entra ID tenant ID |
-| `AZURE_SUBSCRIPTION_ID` | Your subscription ID |
+No `AZURE_CLIENT_SECRET` is needed.
 
-> 📝 **Note**: No `AZURE_CLIENT_SECRET` needed with OIDC!
+For public repositories, prefer [environment secrets with required reviewers](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#environment-secrets) over repository-level secrets - they restrict who can run the workflow against production identities.
 
-### Step 5: Update Workflow for OIDC
+Microsoft Learn reference: [Use GitHub Actions with OpenID Connect](https://learn.microsoft.com/azure/developer/github/connect-from-azure-openid-connect).
 
-```yaml
-jobs:
-  update-clusters:
-    runs-on: windows-latest
-    permissions:
-      id-token: write   # Required for OIDC
-      contents: read
-    
-    steps:
-    - name: Azure CLI Login (OIDC)
-      uses: azure/login@v2
-      with:
-        client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-```
+### 3.2 Azure DevOps with Workload Identity Federation (recommended)
 
-> **Reference**: [Use GitHub Actions with OpenID Connect](https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect)
+Workload Identity Federation is the Azure DevOps equivalent of OIDC. ADO creates the App Registration and federated credential for you.
 
----
+1. Open your Azure DevOps project.
+2. **Project Settings -> Service connections -> New service connection**.
+3. Pick **Azure Resource Manager**.
+4. Pick **Workload Identity federation (automatic)**.
+5. Select your subscription and scope.
+6. Name the connection **`AzureLocal-ServiceConnection`** so the example YAMLs work without edits. If you pick a different name, update the `azureSubscription:` value in each ADO YAML.
+7. **Save**.
 
-## 🥈 Option 2: Managed Identity (Self-Hosted Runners)
+The first run will create the App Registration in Entra ID. Grant **`Azure Stack HCI Administrator`** (or the custom role from section 4) on the same scope you selected in step 5.
 
-If you run self-hosted GitHub runners or Azure DevOps agents on Azure VMs, use Managed Identity.
+### 3.3 Self-hosted runners with Managed Identity
 
-### Step 1: Enable Managed Identity on VM
+If your GitHub Actions runner or Azure DevOps agent is a VM in Azure, Managed Identity is the cleanest option - no secret, no federation config.
 
 ```bash
-# Enable system-assigned managed identity
-az vm identity assign \
-    --name "runner-vm" \
-    --resource-group "runners-rg"
+# System-assigned managed identity on the agent VM
+az vm identity assign --name runner-vm --resource-group runners-rg
+
+# Grant the role to that identity
+$principalId = az vm show -n runner-vm -g runners-rg --query identity.principalId -o tsv
+az role assignment create `
+    --assignee $principalId `
+    --role    "Azure Stack HCI Administrator" `
+    --scope   "/subscriptions/<your-subscription-id>"
 ```
 
-### Step 2: Assign Role to Managed Identity
-
-```bash
-# Get the principal ID of the managed identity
-az vm show --name "runner-vm" --resource-group "runners-rg" --query identity.principalId -o tsv
-
-# Assign role
-az role assignment create \
-    --assignee {principal-id} \
-    --role "Azure Stack HCI Administrator" \
-    --scope "/subscriptions/{your-subscription-id}"
-```
-
-### Step 3: Use in Pipeline
+In GitHub Actions, log in with:
 
 ```yaml
 - name: Azure CLI Login (Managed Identity)
   uses: azure/login@v2
   with:
     auth-type: IDENTITY
-    client-id: ${{ secrets.AZURE_CLIENT_ID }}  # Only for user-assigned identity
+    client-id: ${{ secrets.AZURE_CLIENT_ID }}  # only required for user-assigned identity
 ```
 
-Or with the PowerShell module:
+In the PowerShell module directly:
 
 ```powershell
 Connect-AzureLocalServicePrincipal -UseManagedIdentity
 ```
 
----
+### 3.4 Service Principal + client secret (legacy fallback)
 
-## 🥉 Option 3: Service Principal + Client Secret (Legacy)
+Use this **only** if OIDC and Workload Identity Federation are unavailable.
 
-> ⚠️ **Not Recommended**: Only use this if OIDC and Managed Identity are not available.
+```bash
+az ad sp create-for-rbac `
+    --name   "AzureLocal-UpdateAutomation" `
+    --role   "Azure Stack HCI Administrator" `
+    --scopes "/subscriptions/<your-subscription-id>"
+```
 
-### Security Considerations for Client Secrets
+Save the `appId`, `password`, and `tenant` from the output - they go into four secrets:
+
+| Secret name | Value |
+|---|---|
+| `AZURE_CLIENT_ID` | `appId` from the command output. |
+| `AZURE_CLIENT_SECRET` | `password` from the command output. **Expires - rotate every 90 days.** |
+| `AZURE_TENANT_ID` | `tenant` from the command output. |
+| `AZURE_SUBSCRIPTION_ID` | Your subscription ID. |
+
+In the example GitHub Actions YAMLs, the OIDC step is active by default and the client-secret variant is left commented out. Switch the comments around (and remove the OIDC `permissions:` block) to flip to client-secret auth.
 
 If you must use client secrets:
 
-1. **Set short expiration** - Create secrets with 90-day or shorter expiration
-2. **Use environment-level secrets** - More secure than repository secrets for public repos
-3. **Rotate regularly** - Automate secret rotation before expiration
-4. **Limit scope** - Assign least-privilege roles
+1. **Expire fast** - 90 days or less.
+2. **Rotate on a schedule** - automate it; do not rely on humans.
+3. **Use environment-level secrets** with required reviewers for public repos.
+4. **Audit** - enable Activity Log monitoring for the Service Principal's sign-ins.
 
-### Step 1: Create the Service Principal
+---
+
+## 4. Required Azure permissions
+
+The identity created in section 3 needs the following permissions on every subscription that contains clusters in scope. The built-in **Azure Stack HCI Administrator** role covers all of them; the custom-role list is provided for tighter-than-default deployments.
+
+| Permission | Used by |
+|---|---|
+| `Microsoft.AzureStackHCI/clusters/read` | All pipelines (inventory + readiness + apply + status). |
+| `Microsoft.AzureStackHCI/clusters/updates/read` | Apply Updates, Fleet Update Status. |
+| `Microsoft.AzureStackHCI/clusters/updates/apply/action` | Apply Updates. |
+| `Microsoft.AzureStackHCI/clusters/updateSummaries/read` | Apply Updates, Fleet Update Status. |
+| `Microsoft.AzureStackHCI/clusters/updateRuns/read` | Apply Updates, Fleet Update Status. |
+| `Microsoft.Resources/subscriptions/resources/read` | All pipelines (Resource Graph lookups). |
+| `Microsoft.Resources/tags/read` | Manage UpdateRing Tags, sideloaded workflow. |
+| `Microsoft.Resources/tags/write` | Manage UpdateRing Tags, sideloaded workflow (`UpdateSideloaded` + `UpdateVersionInProgress`). |
+
+If you opt in to the ITSM connector with Key Vault-sourced secrets, the identity additionally needs **Key Vault Secrets User** on the configured vault. No other new RBAC.
+
+To extend to additional subscriptions:
 
 ```bash
-# Create Service Principal with Azure Stack HCI Administrator role
-az ad sp create-for-rbac \
-    --name "AzureLocal-UpdateAutomation" \
-    --role "Azure Stack HCI Administrator" \
-    --scopes /subscriptions/{your-subscription-id}
-```
-
-**Save the output** - you'll need these values:
-```json
-{
-  "appId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",      // AZURE_CLIENT_ID
-  "displayName": "AzureLocal-UpdateAutomation",
-  "password": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",       // AZURE_CLIENT_SECRET (expires!)
-  "tenant": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"     // AZURE_TENANT_ID
-}
-```
-
-### Step 2: Add All Secrets to GitHub
-
-| Secret Name | Value |
-|-------------|-------|
-| `AZURE_CLIENT_ID` | The `appId` from Service Principal creation |
-| `AZURE_CLIENT_SECRET` | The `password` from Service Principal creation |
-| `AZURE_TENANT_ID` | The `tenant` from Service Principal creation |
-| `AZURE_SUBSCRIPTION_ID` | Your subscription ID |
-
-### Step 3: Workflow Uses JSON Credentials
-
-```yaml
-- name: Azure CLI Login (Client Secret)
-  uses: azure/login@v2
-  with:
-    creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+az role assignment create `
+    --assignee <appId-or-principalId> `
+    --role    "Azure Stack HCI Administrator" `
+    --scope   "/subscriptions/<additional-subscription-id>"
 ```
 
 ---
 
-## Required Permissions
+## 5. Wire the pipeline files into your repo
 
-Whichever authentication method you choose, the identity needs these permissions:
+Both platforms expect the YAML files inside this folder to land in a platform-specific location in your **consumer** repo.
 
-| Permission | Purpose |
-|------------|---------|
-| `Microsoft.AzureStackHCI/clusters/read` | Read cluster information |
-| `Microsoft.AzureStackHCI/clusters/updates/read` | List available updates |
-| `Microsoft.AzureStackHCI/clusters/updates/apply/action` | Apply updates |
-| `Microsoft.AzureStackHCI/clusters/updateSummaries/read` | Read update summary |
-| `Microsoft.AzureStackHCI/clusters/updateRuns/read` | Monitor update progress |
-| `Microsoft.Resources/subscriptions/resources/read` | Query resources via Resource Graph |
-| `Microsoft.Resources/tags/write` | Create/update resource tags |
+### 5.1 GitHub Actions
 
-### Grant Access to Multiple Subscriptions
+1. Copy every file from [`github-actions/`](./github-actions/) into `.github/workflows/` in your repo:
+    ```text
+    .github/
+      workflows/
+        inventory-clusters.yml
+        manage-updatering-tags.yml
+        assess-update-readiness.yml
+        apply-updates.yml
+        fleet-update-status.yml
+    ```
+2. Commit and push. The workflows appear in the **Actions** tab.
+3. Each workflow exposes its inputs via the **Run workflow** button (workflow_dispatch). The scheduled triggers (e.g. fleet-update-status.yml runs daily at 06:00 UTC) activate automatically once the file is on the default branch.
 
-```bash
-# Grant access to additional subscriptions
-az role assignment create \
-    --assignee "{app-id-or-principal-id}" \
-    --role "Azure Stack HCI Administrator" \
-    --scope "/subscriptions/{additional-subscription-id}"
-```
+### 5.2 Azure DevOps
 
----
+1. Copy every file from [`azure-devops/`](./azure-devops/) into your repository at a path of your choice (the README assumes the same folder layout as this repo).
+2. **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file**, then point at the path of each file. Repeat for all five.
+3. After the pipeline is created, click **Save** (not **Run**) until you are ready to execute.
+4. Each pipeline references a service connection named `AzureLocal-ServiceConnection`. Either name your service connection to match, or change `azureSubscription:` in each YAML.
 
-## GitHub Actions Setup
-
-### Step 1: Add Repository Secrets
-
-Based on your chosen authentication method:
-
-**For OIDC (Recommended):**
-| Secret Name | Value |
-|-------------|-------|
-| `AZURE_CLIENT_ID` | App Registration ID |
-| `AZURE_TENANT_ID` | Entra ID tenant ID |
-| `AZURE_SUBSCRIPTION_ID` | Subscription ID |
-
-**For Client Secret (Legacy):**
-| Secret Name | Value |
-|-------------|-------|
-| `AZURE_CLIENT_ID` | The `appId` from Service Principal |
-| `AZURE_CLIENT_SECRET` | The `password` from Service Principal |
-| `AZURE_TENANT_ID` | The `tenant` from Service Principal |
-| `AZURE_SUBSCRIPTION_ID` | Your subscription ID |
-
-> 💡 **Tip**: For public repositories, use [environment secrets](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#environment-secrets) with required reviewers for additional security.
-
-### Step 2: Copy Workflow Files
-
-Copy the workflow files from `github-actions/` to your repository's `.github/workflows/` folder:
-
-```
-.github/
-└── workflows/
-    ├── inventory-clusters.yml
-    ├── manage-updatering-tags.yml
-    ├── assess-update-readiness.yml
-    ├── apply-updates.yml
-    └── fleet-update-status.yml
-```
-
-### Step 3: Run Workflows
-
-1. Go to **Actions** tab in your repository
-2. Select the workflow you want to run
-3. Click **Run workflow**
-4. Fill in the required inputs
-5. Click **Run workflow** (green button)
+Optional: create a variable group named **`AzureLocal-Config`** in **Pipelines -> Library** for default values (e.g. the default `UpdateRing` for your most-common rollout). The example YAMLs do not require it.
 
 ---
 
-## Azure DevOps Setup
+## 6. End-to-end runbook: bring an estate online
 
-Azure DevOps supports two authentication methods for Service Connections:
+This is the canonical "nothing wired -> staged rollout working" sequence. Follow it in order for the first rollout; afterwards sections 6.4-6.6 become recurring.
 
-| Method | Security | When to Use |
-|--------|----------|-------------|
-| **Workload Identity Federation** | ⭐⭐⭐⭐⭐ | Recommended for all new setups |
-| **Service Principal (manual)** | ⭐⭐ | Legacy - only if federation unavailable |
-
-### Option A: Workload Identity Federation (Recommended)
-
-1. Go to your Azure DevOps project
-2. Navigate to **Project Settings** → **Service connections**
-3. Click **New service connection**
-4. Select **Azure Resource Manager**
-5. Choose **Workload Identity federation (automatic)** 
-6. Select your subscription and resource group scope
-7. Name it `AzureLocal-ServiceConnection`
-8. Click **Save**
-
-Azure DevOps automatically creates the App Registration and federated credential for you.
-
-> 📝 **Note**: This method requires no secrets and uses short-lived tokens.
-
-### Option B: Service Principal (Manual/Legacy)
-
-> ⚠️ **Not recommended** - Only use if Workload Identity Federation is not available.
-
-1. Go to your Azure DevOps project
-2. Navigate to **Project Settings** → **Service connections**
-3. Click **New service connection**
-4. Select **Azure Resource Manager**
-5. Choose **Service principal (manual)**
-6. Fill in the details:
-
-| Field | Value |
-|-------|-------|
-| **Subscription ID** | Your Azure subscription ID |
-| **Subscription Name** | A friendly name for the subscription |
-| **Service Principal ID** | The `appId` from Service Principal creation |
-| **Service Principal Key** | The `password` from Service Principal creation |
-| **Tenant ID** | The `tenant` from Service Principal creation |
-| **Service connection name** | `AzureLocal-ServiceConnection` (or your preferred name) |
-
-7. Check **Grant access permission to all pipelines**
-8. Click **Verify and save**
-
-### Step 2: Create Pipeline Variable Group (Optional)
-
-For additional configuration, create a variable group:
-
-1. Go to **Pipelines** → **Library**
-2. Click **+ Variable group**
-3. Name it `AzureLocal-Config`
-4. Add variables as needed (e.g., default UpdateRing values)
-
-### Step 3: Create Pipelines
-
-For each pipeline definition in `azure-devops/`:
-
-```
-azure-devops/
-├── inventory-clusters.yml
-├── manage-updatering-tags.yml
-├── assess-update-readiness.yml
-├── apply-updates.yml
-└── fleet-update-status.yml
+```text
++-----------------------------------------------------------------------+
+|                          PHASE 1: INVENTORY                            |
+|  6.1  inventory-clusters.yml  ->  cluster-inventory.csv                |
++-----------------------------------------------------------------------+
+                              v
++-----------------------------------------------------------------------+
+|                          PHASE 2: TAG                                  |
+|  6.2  Edit the CSV (UpdateRing, UpdateWindow, UpdateExclusions)        |
+|  6.3  manage-updatering-tags.yml                                       |
++-----------------------------------------------------------------------+
+                              v
++-----------------------------------------------------------------------+
+|                          PHASE 3: ROLLOUT                              |
+|  6.4  assess-update-readiness.yml  (report-only pre-flight)            |
+|  6.5  apply-updates.yml  Wave1 -> validate -> Wave2 -> Production      |
++-----------------------------------------------------------------------+
+                              v
++-----------------------------------------------------------------------+
+|                          PHASE 4: STEADY STATE                         |
+|  6.6  fleet-update-status.yml  (scheduled, daily 06:00 UTC)            |
++-----------------------------------------------------------------------+
 ```
 
-1. Go to **Pipelines** → **Pipelines**
-2. Click **New pipeline**
-3. Select **Azure Repos Git** (or your repo source)
-4. Select your repository
-5. Choose **Existing Azure Pipelines YAML file**
-6. Select the path to the YAML file (e.g., `/Automation-Pipeline-Examples/azure-devops/inventory-clusters.yml`)
-7. Click **Continue** and then **Save** (not Run, unless you want to test immediately)
+### 6.1 Inventory the estate
 
-Repeat for each of the 5 pipeline files.
+Run **Inventory Clusters** with no parameters. It exports a CSV with one row per cluster and the current value of every update-management tag.
 
-> 📝 **Note**: The pipeline YAML files reference a service connection named `AzureLocal-ServiceConnection`. Either name your service connection to match, or update the `azureSubscription` value in each YAML file to match your service connection name.
+- **GitHub Actions**: *Actions -> Inventory Azure Local Clusters -> Run workflow*.
+- **Azure DevOps**: *Pipelines -> Inventory Clusters -> Run pipeline*.
 
----
+Download `cluster-inventory.csv` from the run artifacts. It contains `SubscriptionId`, `ResourceGroupName`, `ClusterName`, `ResourceId`, `UpdateRing`, `UpdateWindow`, `UpdateExclusions`, and the sideloaded-workflow columns added in v0.7.1.
 
-## Pipeline Descriptions
+> If you would rather skip the inventory pipeline entirely, the same operation runs from a local PowerShell session: `Import-Module ./AzLocal.UpdateManagement.psd1; Get-AzureLocalClusterInventory -ExportPath ./cluster-inventory.csv`. This is the same code path the pipeline uses.
 
-### 1. Inventory Clusters Pipeline
+### 6.2 Plan update rings, windows, and exclusions
 
-**Purpose:** Queries all Azure Local clusters and generates an inventory report showing:
-- Cluster names and resource groups
-- Current UpdateRing tag values
-- Clusters without UpdateRing tags
+Open the CSV and fill in three columns:
 
-**Outputs:**
-- CSV file artifact with cluster inventory
-- Console summary of UpdateRing distribution
+| Column | Required | Values | Purpose |
+|---|---|---|---|
+| `UpdateRing` | Yes | Free-form (e.g. `Wave1`, `Pilot`, `Production`) | Defines the wave the cluster belongs to. Apply Updates targets one ring at a time. |
+| `UpdateWindow` | No | `<days>_<HH:MM>-<HH:MM>` in UTC, semicolon-separated | Allowed maintenance window. Updates outside it return `ScheduleBlocked`. |
+| `UpdateExclusions` | No | `YYYY-MM-DD/YYYY-MM-DD`, comma-separated. Supports `*` wildcards. | Blackout / change-freeze periods. **Exclusions take priority over windows.** |
 
-**Use Case:** Run this first to understand your cluster landscape and identify clusters that need UpdateRing tags.
+Example:
 
-### 2. Manage UpdateRing Tags Pipeline
+| ClusterName | UpdateRing | UpdateWindow | UpdateExclusions |
+|---|---|---|---|
+| HCI-Pilot01 | Wave1 | | |
+| HCI-Pilot02 | Wave1 | | |
+| HCI-Prod01  | Wave2 | `Sat-Sun_02:00-06:00` | `20**-12-20/20**-01-03` |
+| HCI-Critical | Production | `Sat_02:00-06:00` | `20**-12-20/20**-01-03` |
 
-**Purpose:** Creates or updates update management tags on clusters based on a CSV input file.
+Section 8 documents the full schedule grammar (multi-window, overnight, wrap-around, wildcards) and shows how to test it interactively with `Test-AzureLocalUpdateScheduleAllowed` before committing the tag.
 
-**Inputs:**
-- CSV file with `ResourceId` and `UpdateRing` columns (required), plus optional `UpdateWindow` and `UpdateExclusions` columns
-- Optional: Force flag to overwrite existing tags
+### 6.3 Apply tags
 
-**Workflow:**
-1. Run Inventory pipeline to get current state
-2. Download the CSV artifact
-3. Edit the CSV to set `UpdateRing` values (required), and optionally `UpdateWindow` and `UpdateExclusions` values
-4. Upload the modified CSV to the repository or as pipeline input
-5. Run this pipeline to apply the tags
+Two equivalent ways to apply the edited CSV - pick whichever fits your workflow.
 
-**Use Case:** Organize clusters into update rings (Wave1, Wave2, Production, etc.) for staged rollouts, and optionally define per-cluster maintenance windows and change-freeze periods.
+**Option A - via the pipeline (audit trail in CI/CD):**
 
-### 3. Apply Updates Pipeline
+1. Commit the edited CSV to your repo (e.g. `./cluster-tags.csv`).
+2. Run **Manage UpdateRing Tags** and point its `csv_path` input at the committed CSV.
+3. Inspect the run summary - it reports added / updated / unchanged tag counts per cluster.
 
-**Purpose:** Applies available updates to clusters filtered by UpdateRing tag.
-
-**Inputs:**
-- UpdateRing value to target (e.g., "Wave1")
-- Optional: Specific update version to apply
-
-**Outputs:**
-- JUnit XML test results for CI/CD visualization
-- CSV logs of started/skipped/schedule-blocked updates
-- Detailed execution logs with per-cluster status (Started, Skipped, Failed, HealthCheckBlocked, ScheduleBlocked)
-
-**Use Case:** Execute updates on a specific ring of clusters as part of a staged deployment. Clusters outside their `UpdateWindow` maintenance window or within an `UpdateExclusions` blackout period are automatically skipped with a `ScheduleBlocked` status.
-
-### 4. Fleet Update Status Pipeline
-
-**Purpose:** Monitors and reports on update status across the entire fleet of Azure Local clusters. Ideal for dashboards, compliance tracking, and executive reporting.
-
-**Features:**
-- 📊 **JUnit XML Reports**: Each cluster appears as a test case in GitHub Actions Test tab or Azure DevOps Tests tab
-- 📁 **Multiple Formats**: CSV, JSON, and JUnit XML exports
-- 🔍 **Comprehensive Data**: Inventory, readiness status, update summaries, available updates, and recent update run history
-- 📅 **Scheduled Runs**: Automated daily checks at 6 AM UTC
-- 🏷️ **Flexible Scope**: Filter all clusters or by UpdateRing tag value
-- ⚡ **Efficient Fleet Queries**: Uses v0.5.6 fleet-wide query capabilities (no individual cluster loops)
-
-**Outputs:**
-| Artifact | Description |
-|----------|-------------|
-| `readiness-status.xml` | JUnit XML for CI/CD test visualization (passed=healthy, failed=issues/SBE blocked) |
-| `readiness-status.csv` | Detailed cluster status spreadsheet (includes UpdateWindow, UpdateExclusions, SBEDependency) |
-| `readiness-status.json` | Machine-readable format with summary counts including HasPrerequisite |
-| `cluster-inventory.csv` | Full cluster inventory |
-| `update-summaries.csv` | Fleet-wide update state summaries from Azure (current state, last updated, etc.) |
-| `available-updates.csv` | All available updates across the fleet with versions and health states |
-| `update-runs.csv` | Recent update run history per cluster (if enabled) |
-
-**Understanding JUnit Test Results:**
-| Test Status | Meaning |
-|-------------|---------|
-| ✅ **Passed** | Cluster is healthy and up-to-date or ready for updates |
-| ❌ **Failed** (UpdateFailure) | Cluster has health failures or update issues requiring attention |
-| ❌ **Failed** (HasPrerequisite) | Cluster has updates blocked by an SBE prerequisite - install the vendor SBE update first |
-
-**Dashboard Integration:**
-- **GitHub Actions**: Results appear in the workflow run's "Tests" summary
-- **Azure DevOps**: Results appear in the pipeline's "Tests" tab with trend analytics
-- **Third-party tools**: Import the JUnit XML into any CI/CD dashboard that supports JUnit format
-
-**Use Cases:**
-- Daily health checks on cluster update status
-- Executive dashboards showing fleet-wide update adoption
-- Alerting when clusters have update failures
-- Compliance tracking for update deployments
-
----
-
-## Typical Workflow
-
-### Complete End-to-End Update Deployment
-
-This workflow shows how to use all four pipelines together for a staged update deployment:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                              PHASE 1: INITIAL SETUP                                      │
-├─────────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                          │
-│  ① INVENTORY CLUSTERS                          ② ASSIGN UPDATE RINGS                    │
-│  ┌────────────────────────────┐                ┌────────────────────────────┐           │
-│  │ Run: inventory-clusters.yml│                │ Download CSV from artifacts│           │
-│  │ Output: cluster-inventory/ │───────────────▶│ Edit in Excel:             │           │
-│  │   • inventory.csv          │                │   Cluster01 → Wave1        │           │
-│  │   • inventory.json         │                │   Cluster02 → Wave1        │           │
-│  └────────────────────────────┘                │   Cluster03 → Wave2        │           │
-│                                                │   Cluster04 → Production   │           │
-│                                                └─────────────┬──────────────┘           │
-│                                                              │                           │
-│  ③ APPLY TAGS                                                ▼                           │
-│  ┌────────────────────────────────────────────────────────────────────────┐             │
-│  │ Run: manage-updatering-tags.yml with edited CSV                        │             │
-│  │ Result: All clusters now have UpdateRing tags in Azure                 │             │
-│  └────────────────────────────────────────────────────────────────────────┘             │
-│                                                                                          │
-└─────────────────────────────────────────────────────────────────────────────────────────┘
-                                          │
-                                          ▼
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                              PHASE 2: STAGED UPDATE ROLLOUT                              │
-├─────────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                          │
-│  WAVE 1 (Pilot)                    WAVE 2                      PRODUCTION               │
-│  Monday 10 PM                      Wednesday 10 PM             Saturday 2 AM            │
-│  ┌─────────────────┐               ┌─────────────────┐         ┌─────────────────┐      │
-│  │ apply-updates   │               │ apply-updates   │         │ apply-updates   │      │
-│  │ UpdateRing=Wave1│               │ UpdateRing=Wave2│         │ UpdateRing=Prod │      │
-│  └────────┬────────┘               └────────┬────────┘         └────────┬────────┘      │
-│           │                                 │                           │               │
-│           ▼                                 ▼                           ▼               │
-│  ┌─────────────────┐               ┌─────────────────┐         ┌─────────────────┐      │
-│  │ ✅ 2 clusters   │               │ ✅ 3 clusters   │         │ ✅ 10 clusters  │      │
-│  │ Duration: 3.5 hrs│──────────────▶│ Duration: ~4 hrs│─────────▶│ Duration: ~4 hrs│      │
-│  │ (validates next)│  (estimates)  │                 │          │                 │      │
-│  └─────────────────┘               └─────────────────┘         └─────────────────┘      │
-│                                                                                          │
-└─────────────────────────────────────────────────────────────────────────────────────────┘
-                                          │
-                                          ▼
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                              PHASE 3: ONGOING MONITORING                                 │
-├─────────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                          │
-│  DAILY (Automated)                              WEEKLY (Automated)                       │
-│  ┌───────────────────────────────────┐          ┌───────────────────────────────────┐   │
-│  │ fleet-update-status.yml (6 AM UTC)│          │ inventory-clusters.yml (Monday)   │   │
-│  │                                   │          │                                   │   │
-│  │ Outputs:                          │          │ Check for:                        │   │
-│  │ • JUnit XML → CI/CD Dashboard     │          │ • New clusters needing tags       │   │
-│  │ • update-runs.csv → Duration data │          │ • Tag drift or changes            │   │
-│  │ • readiness-status.csv → Health   │          │ • Subscription changes            │   │
-│  └───────────────────────────────────┘          └───────────────────────────────────┘   │
-│                                                                                          │
-│  ⚠️ ALERTS: Configure notifications for test failures in CI/CD platform                 │
-│                                                                                          │
-└─────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Step-by-Step Instructions
-
-#### Phase 1: Initial Setup (One-time)
-
-1. **Run Inventory Pipeline**
-   ```
-   GitHub: Actions → Inventory Azure Local Clusters → Run workflow
-   Azure DevOps: Pipelines → Inventory Clusters → Run
-   ```
-
-2. **Download and Edit CSV**
-   - Download `ClusterInventory_*.csv` from pipeline artifacts
-   - Open in Excel
-   - Set values for the update management tag columns:
-     | ClusterName | UpdateRing | UpdateWindow | UpdateExclusions |
-     |-------------|------------|--------------|------------------|
-     | HCI-Pilot01 | Wave1 | | |
-     | HCI-Pilot02 | Wave1 | | |
-     | HCI-Prod01  | Wave2 | Sat-Sun_02:00-06:00 | 20**-12-20/20**-01-03 |
-     | HCI-Critical| Production | Sat_02:00-06:00 | 20**-12-20/20**-01-03 |
-   
-   - **UpdateRing** (required): The deployment wave for staged rollouts
-   - **UpdateWindow** (optional): UTC maintenance window when updates are allowed. If omitted, updates proceed with no time restrictions.
-   - **UpdateExclusions** (optional): Blackout/change-freeze periods. If omitted, no date restrictions. Use `*` for recurring annual patterns.
-
-3. **Apply Tags**
-   - Upload modified CSV to repository or provide as input
-   - Run "Manage UpdateRing Tags" pipeline
-   - Verify tags in Azure Portal
-
-> 💡 **Local Alternative (No Pipeline Required)**: You can skip the download/upload workflow above and manage UpdateRing tags directly from PowerShell. This is often simpler for initial setup or small environments:
->
-> ```powershell
-> # Step 1: Export cluster inventory to CSV
-> Import-Module .\AzLocal.UpdateManagement.psd1
-> Get-AzureLocalClusterInventory -ExportPath "C:\Temp\cluster-inventory.csv"
->
-> # Step 2: Open the CSV in Excel — set UpdateRing, UpdateWindow, and UpdateExclusions values, save
->
-> # Step 3: Apply all tags directly from PowerShell
-> Set-AzureLocalClusterUpdateRingTag -InputCsvPath "C:\Temp\cluster-inventory.csv"
-> ```
->
-> This approach avoids the need to run the Inventory pipeline, download artifacts, re-upload, and run the Manage Tags pipeline. The `Set-AzureLocalClusterUpdateRingTag` function reads `UpdateRing`, `UpdateWindow`, and `UpdateExclusions` columns from the CSV (if present) and applies them in a single PATCH operation via the Azure REST API.
-
-#### Phase 2: Update Deployment (Recurring)
-
-4. **Pre-flight: Assess Update Readiness (report-only)**
-   - Run the **Assess Update Readiness** pipeline with `UpdateRing = Wave1` (schedule it a day before the maintenance window, or trigger on-demand).
-   - Produces two JUnit XML files consumed by your CI/CD dashboard and two CSVs as artifacts:
-     - `readiness.xml` / `readiness.csv` from `Get-AzureLocalClusterUpdateReadiness` - one test per cluster; fails if `ReadyForUpdate = $false`.
-     - `health-blocking.xml` / `health-blocking.csv` from `Test-AzureLocalClusterHealth -BlockingOnly` - one test per cluster; fails if any Critical health failure exists.
-   - The pipeline itself is **report-only and always succeeds** - per-cluster failures show up as red tests in the Checks / Tests tab and in the CSVs. In a large fleet, day-to-day environmental issues (transient storage noise, a single node out, etc.) will routinely flag a small subset of clusters; blocking the entire wave for one unhealthy cluster is rarely the desired behavior.
-   - `Start-AzureLocalClusterUpdate` is itself per-cluster scoped - not-ready / unhealthy clusters will no-op there too, so the healthy clusters in the ring are safe to proceed even when a few are flagged. Use the readiness report to open remediation tickets in parallel with the rollout.
-   - Common failure classes and where to fix them (remediation is **outside the scope of this module** - this module only *detects* the blockers):
-     - **Storage / drive / stamp health, ADDS connectivity** -> Microsoft Learn Azure Local docs + Environment Checker.
-     - **SBE / firmware / driver prerequisite** -> hardware vendor SBE package (Dell, HPE, Lenovo, DataON, ...). `SBEDependency` + `HasPrerequisiteUpdates` identify the publisher + release notes URL.
-     - **Certificate / trust / identity drift** -> Azure Local cert rotation runbook.
-     - **Workload state** -> Windows Admin Center cluster validation.
-   - If you *do* want a hard go/no-go gate (e.g. for the first production wave), read the job outputs `not_ready` / `critical_failures` from a downstream workflow / pipeline resource and apply your own tolerance threshold there.
-
-5. **Wave1 Updates (Pilot clusters)**
-   - Schedule: Monday 10 PM or manual trigger
-   - Run "Apply Updates" with `UpdateRing = Wave1`
-   - Monitor progress in CI/CD dashboard
-
-6. **Analyze Wave1 Results**
-   - Check duration from `update-runs.csv`
-   - Review any failures before proceeding
-   - Estimate time needed for Wave2/Production
-
-7. **Wave2 and Production Updates**
-   - Use Wave1 duration data to plan maintenance windows
-   - Apply updates to subsequent rings
-   - Monitor each wave before proceeding
-
-#### Phase 3: Ongoing Operations
-
-8. **Enable Automated Monitoring**
-   - Fleet Update Status runs daily at 6 AM UTC
-   - Configure alerts for test failures
-   - Review dashboards for health trends
-
-9. **Periodic Inventory Refresh**
-   - Run inventory weekly/monthly
-   - Identify new clusters needing tags
-   - Update tags as environment changes
-
-### Fleet Monitoring Workflow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│              Daily Automated Fleet Monitoring                    │
-├─────────────────────────────────────────────────────────────────┤
-│  "Fleet Update Status" runs daily at 6 AM UTC (scheduled)       │
-│                                                                  │
-│  📊 Outputs (v0.7.0: parallel data collection, `-ThrottleLimit` honored):    │
-│  ├── JUnit XML → CI/CD Dashboard (Tests tab)                    │
-│  ├── CSV → Download for spreadsheet analysis                    │
-│  │   • readiness-status.csv (cluster health)                    │
-│  │   • update-summaries.csv (update states)                     │
-│  │   • available-updates.csv (pending updates)                  │
-│  │   • update-runs.csv (run history)                            │
-│  └── JSON → Integration with external tools                     │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-    ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-    │  All Tests Pass │ │ Some Tests Fail │ │   Investigate   │
-    │  ✅ Fleet OK    │ │  ❌ Issues!     │ │   Failures      │
-    └─────────────────┘ └─────────────────┘ └─────────────────┘
-                                                      │
-                                                      ▼
-                              ┌─────────────────────────────────────┐
-                              │  Review test output for details:    │
-                              │  • Cluster name                     │
-                              │  • Update state                     │
-                              │  • Health state                     │
-                              │  • Health check failures            │
-                              └─────────────────────────────────────┘
-```
-
-### Executive Dashboard Integration
-
-The Fleet Update Status pipeline generates JUnit XML that integrates with CI/CD platforms:
-
-**GitHub Actions:**
-- Test results appear in the workflow run summary
-- Failed tests show clusters needing attention
-- Historical trends visible across workflow runs
-
-**Azure DevOps:**
-- Results appear in Tests tab with analytics
-- Configure test trend widgets on dashboards
-- Set up alerts for test failures
-
-### Tuning throughput (`-ThrottleLimit`)
-
-v0.7.0 runs per-cluster ARM calls in parallel `Start-Job` batches. The `throttle_limit` workflow input on `apply-updates.yml` and `fleet-update-status.yml` is threaded into the functions that expose it:
-
-| Function | `-ThrottleLimit` exposed | Used by pipeline |
-|----------|--------------------------|------------------|
-| `Get-AzureLocalClusterUpdateReadiness` | Yes (default 4) | apply-updates (check-readiness), fleet-update-status, assess-update-readiness |
-| `Get-AzureLocalUpdateSummary`          | Yes (default 4) | fleet-update-status |
-| `Get-AzureLocalUpdateRuns`             | Yes             | fleet-update-status |
-| `Get-AzureLocalFleetStatusData`        | Yes (default 4, max 8) | fleet-update-status, New-AzureLocalFleetStatusHtmlReport |
-| `New-AzureLocalFleetStatusHtmlReport`  | Yes (default 4, max 8) | standalone report |
-| `Start-AzureLocalClusterUpdate` / apply-side fleet ops | Controlled internally via `Invoke-FleetJobsInParallel`; no user-facing `-ThrottleLimit` on the top-level cmdlet in v0.7.0 | apply-updates |
-
-| Fleet size | Suggested `throttle_limit` | Notes |
-|------------|----------------------------|-------|
-| 1 - 50 clusters | `4` (default) | No tuning needed. |
-| 50 - 500 clusters | `6` - `8` | Readiness / fleet-status pipelines complete measurably faster. |
-| 500 - 1500+ clusters | `8` - `16` | Required for the fleet-status pipeline to finish inside a 6-hour runner window. Watch for ARM throttling (`429 TooManyRequests`) and back off if you see it. |
-
-> ⚠️ **Throttling is influenced by your subscription topology, not just fleet size.** ARM and Azure Resource Graph throttling limits apply per-subscription **and** per-tenant, so the safe `throttle_limit` depends on how your fleet is distributed.
->
-> In practice, fleets above ~400-500 clusters are **already** spread across multiple subscriptions because each Azure Local cluster requires a witness storage account, and the per-subscription storage-account quota (250 default, ~500 maximum) caps how many clusters fit in a single subscription. So at scale you are almost always in the multi-subscription regime.
->
-> - **Few subscriptions, dense (hundreds of clusters per subscription)**: per-subscription ARM read/write quotas are the first thing you'll exhaust. Use the lower end of the suggested `throttle_limit` range and stagger pipeline schedules.
-> - **Many subscriptions (10+), evenly distributed**: per-subscription quotas are rarely the bottleneck; tenant-wide ARG query limits and the runner's outbound connection pool become the constraint instead. You can usually push to the upper end of the range.
-> - **Mixed (some subscriptions densely populated, others sparse)**: the densest subscription dictates the safe ceiling. Consider splitting the pipeline by subscription (matrix job) so each leg's throttle is sized to its own subscription's clusters.
->
-> If you see `429 TooManyRequests`, check the `x-ms-ratelimit-remaining-*` response headers in verbose logs to identify whether you're hitting subscription, tenant, or resource-type limits before adjusting `throttle_limit`.
-
-Lower values (`1` - `2`) are useful on constrained self-hosted runners, or when you need sequential deterministic logs for debugging.
-
-### Standalone HTML Report
-
-For ad-hoc or offline reporting outside of CI/CD pipelines, use the `New-AzureLocalFleetStatusHtmlReport` function (v0.6.4) to generate a self-contained HTML report. This is useful for:
-- Sharing fleet status via email or SharePoint
-- Executive reporting without CI/CD dashboard access
-- On-demand health checks from a local workstation
+**Option B - from PowerShell (faster for one-off changes):**
 
 ```powershell
-Import-Module .\AzLocal.UpdateManagement.psd1
-
-# Generate a report for all clusters - auto-discovers via ARG (v0.7.0: uncapped by default; use -MaxClusters to trim)
-New-AzureLocalFleetStatusHtmlReport -AllClusters `
-    -OutputPath "C:\Reports\fleet-all.html" -IncludeHealthDetails -IncludeUpdateRuns
-
-# Generate a report for a single cluster (auto-titles as "Seattle - Update Status Report")
-New-AzureLocalFleetStatusHtmlReport -ClusterNames Seattle `
-    -OutputPath "C:\Reports\seattle.html" -IncludeHealthDetails -IncludeUpdateRuns
-
-# Generate a report for all Wave1 clusters
-New-AzureLocalFleetStatusHtmlReport -ScopeByUpdateRingTag -UpdateRingValue "Wave1" `
-    -OutputPath "C:\Reports\wave1-status.html" -IncludeHealthDetails -IncludeUpdateRuns
-
-# Capture HTML for email body
-$html = New-AzureLocalFleetStatusHtmlReport -ClusterNames @("Cluster01","Cluster02") `
-    -OutputPath "C:\Reports\fleet.html" -PassThru
+Import-Module ./AzLocal.UpdateManagement.psd1
+Set-AzureLocalClusterUpdateRingTag -InputCsvPath ./cluster-tags.csv
 ```
 
-The report includes executive summary cards, cluster information, status table with Active Update and Recommended Update columns, update run history with recursive step traversal, and health check failures with severity filtering.
+Either way verifies the tags in Azure with a follow-up read. Both paths use the same module function under the hood.
+
+### 6.4 Pre-flight readiness assessment
+
+Run **Assess Update Readiness** for the ring you are about to roll. It produces two JUnit XML files (visible in the Tests / Checks tab) and two CSV artefacts:
+
+| Artefact | What it shows |
+|---|---|
+| `readiness.xml` / `readiness.csv` | One test per cluster from `Get-AzureLocalClusterUpdateReadiness`. Fails if `ReadyForUpdate = $false` (e.g. missing SBE prerequisite, no updates available, cluster in `Updating`). |
+| `health-blocking.xml` / `health-blocking.csv` | One test per cluster from `Test-AzureLocalClusterHealth -BlockingOnly`. Fails if any **Critical** health failure exists. Non-critical findings are surfaced but do not fail the test. |
+
+The pipeline itself is **report-only and always succeeds**. Per-cluster red tests are signal, not a stop condition for the wave - in a large fleet, one or two clusters out at any given moment is the norm, and blocking the entire wave on those is rarely what you want. `Start-AzureLocalClusterUpdate` is per-cluster-scoped and will no-op on the un-ready clusters anyway.
+
+Common failure classes and where to fix them (the module *detects* blockers, it does not *remediate* them):
+
+| Symptom | Remediation owner |
+|---|---|
+| Storage / drive / stamp health failure | Azure Local docs + Environment Checker. |
+| SBE / firmware / driver prerequisite | Hardware vendor SBE package (Dell, HPE, Lenovo, DataON, ...). The `SBEDependency` and `HasPrerequisiteUpdates` columns identify the publisher and release-notes URL. |
+| ADDS connectivity / certificate drift | Azure Local certificate rotation runbook. |
+| Workload state preventing host updates | Windows Admin Center cluster validation. |
+
+If you do want a hard go / no-go gate (typical for first production wave), have a downstream workflow read the job outputs `not_ready` and `critical_failures` and apply your own tolerance threshold there.
+
+### 6.5 Apply updates - one wave at a time
+
+For each ring in turn (Wave1 -> validate -> Wave2 -> validate -> Production), run **Apply Updates** with:
+
+| Input | Value |
+|---|---|
+| `update_ring` | The ring to target (e.g. `Wave1`). |
+| `update_name` | Leave blank to apply the latest ready update; set explicitly to pin a version. |
+| `dry_run` | `true` for the first run of any new ring - prints the cluster list and intended actions without starting an update. |
+| `throttle_limit` | See section 9. Default 4 is fine for fleets up to ~50 clusters. |
+
+The pipeline publishes one test per cluster to the Tests tab and writes per-cluster status to artefacts:
+
+| Status | Meaning | Action |
+|---|---|---|
+| `Started` / `UpdateStarted` / `Success` | Update is running or finished. | None. |
+| `Skipped` | Cluster is up to date or has no ready updates. | None. |
+| `ScheduleBlocked` | Cluster is outside its `UpdateWindow` or inside an `UpdateExclusions` period. | Re-run during the window, or update the tag if the schedule has drifted. |
+| `HealthCheckBlocked` | Cluster has critical health failures. | Remediate per section 6.4. |
+| `SideloadedBlocked` | Cluster has `UpdateSideloaded=False` waiting for an operator to stage the payload. | Stage the payload and flip the tag (or run `Reset-AzureLocalSideloadedTag`). |
+| `Failed` / `Error` | The update request returned a non-success response. | Check pipeline logs and the cluster in Azure Portal. |
+
+Use the duration data in `update-runs.csv` from the wave you just finished to size the maintenance window for the next ring.
+
+For tighter control around production rollouts, add a manual approval gate between waves:
+
+- **Azure DevOps**: a separate stage with a `ManualValidation@0` step (the `apply-updates.yml` shipped here includes a commented-out `WaitForApproval` block ready to enable).
+- **GitHub Actions**: an `environment:` on the production job with required reviewers, configured in *Settings -> Environments*.
+
+### 6.6 Continuous fleet monitoring
+
+**Fleet Update Status** is scheduled to run daily at 06:00 UTC once you push the YAML. It does no writes - it builds a fleet-wide JUnit + CSV + JSON snapshot for dashboards and alerting.
+
+| Artefact | Description |
+|---|---|
+| `readiness-status.xml` | JUnit XML, one cluster per test (`Passed` = healthy + up to date, `Failed` = needs attention, `Failed/HasPrerequisite` = vendor SBE update required first). |
+| `readiness-status.csv` | Spreadsheet view of the same data plus `UpdateWindow`, `UpdateExclusions`, `SBEDependency`. |
+| `readiness-status.json` | Machine-readable, with summary counts. |
+| `update-summaries.csv` | Update-summary state per cluster from Azure. |
+| `available-updates.csv` | Every available update across the fleet with version + health state. |
+| `update-runs.csv` | Recent run history per cluster (durations, failure summaries) - this is what section 6.5's "size the next maintenance window" advice consumes. |
+
+Configure your CI/CD platform's alerting on the JUnit failures - GitHub Actions surfaces them in the run summary and Azure DevOps shows them in the Tests tab with trend analytics.
 
 ---
 
-## Scheduling Updates and Maintenance Windows
+## 7. Optional: open ITSM tickets for clusters needing operator action
 
-### Per-Cluster Maintenance Schedule Tags
+> **This is optional and disabled by default.** Pipelines that do not toggle `raise_itsm_ticket=true` continue to behave exactly as before. The connector adds an additive step **after** `Publish Test Results` and never affects the apply-updates exit status.
 
-Azure resource tags on each cluster control when the Apply Updates pipeline is allowed to start updates:
+The connector reads the JUnit results the Apply Updates pipeline already publishes and, for each cluster whose status matches your configured trigger matrix (default: `Failed`, `Error`, `HealthCheckBlocked`, `SideloadedBlocked`), opens a deduped ServiceNow incident via the Table API. Idempotency is enforced via a SHA256 dedupe key written to a custom `u_azlocal_dedupe_key` column, so re-running the same workflow does not create duplicates.
 
-| Tag | Format | Example | Purpose |
-|-----|--------|---------|---------|
-| `UpdateWindow` | `<days>_<HH:MM>-<HH:MM>` | `Sat-Sun_02:00-06:00` | Maintenance window (UTC). Updates only start within this window. |
-| `UpdateExclusions` | `YYYY-MM-DD/YYYY-MM-DD` | `2026-12-20/2027-01-03` | Blackout periods. No updates during these dates. Supports wildcards (`20**-12-20/20**-01-03` for recurring annual freeze). |
+This README does not duplicate the setup - it is a single-source-of-truth in [`../ITSM/README.md`](../ITSM/README.md). Here is the high-level wiring you'll do over there:
 
-**Behavior:**
-- If **neither tag** is set, updates proceed with no schedule restrictions
-- If `UpdateWindow` is set, updates are only started when the current UTC time falls within the window
-- If `UpdateExclusions` is set, updates are blocked during blackout periods — **exclusions take priority** over windows
-- The pipeline returns `ScheduleBlocked` status for clusters outside their window, with the reason in the log output
-- Schedule check failures (e.g., malformed tag values) are **non-blocking** — the update proceeds with a warning
+| Step | Where it's documented |
+|---|---|
+| Register a ServiceNow OAuth application + technical user with the `itil` role | [ITSM/README.md section 3](../ITSM/README.md#3-servicenow-one-time-setup) |
+| Add the five `u_azlocal_*` custom fields to the `incident` table (manual procedure in v0.7.4) | [ITSM/README.md section 3.2](../ITSM/README.md#32-add-the-five-custom-fields-on-the-incident-table) |
+| Pick a secret source (Azure Key Vault recommended, environment-variable fallback) | [ITSM/README.md section 4](../ITSM/README.md#4-pick-a-secret-source) |
+| Author the trigger matrix at `./.itsm/azurelocal-itsm.yml` (a ready-to-copy version ships in [`./.itsm/`](./.itsm/)) | [ITSM/README.md section 5](../ITSM/README.md#5-author-the-trigger-matrix) |
+| Validate end-to-end with `Test-AzureLocalItsmConnection` before flipping the pipeline switch | [ITSM/README.md section 6](../ITSM/README.md#6-validate-before-you-wire-it-into-a-pipeline) |
 
-**Multiple windows** can be separated with `;`: `Mon-Fri_22:00-06:00;Sat-Sun_02:00-10:00`
+Once the ServiceNow side is set up, the pipeline-side change is **already in `apply-updates.yml`** in this folder. You enable it by:
 
-**Day ranges** support wrap-around: `Fri-Mon_22:00-06:00` covers Friday through Monday
+1. Setting `raise_itsm_ticket=true` when you trigger Apply Updates (workflow input in GH Actions, parameter in Azure DevOps).
+2. Wiring the three secrets the step expects:
+   - `ITSM_SN_INSTANCE_URL`
+   - `ITSM_SN_CLIENT_ID`
+   - `ITSM_SN_CLIENT_SECRET`
+3. (Azure DevOps only) Uncomment the `- group: AzureLocal-ITSM-Secrets` line at the top of `apply-updates.yml` once the variable group exists.
 
-**Overnight windows** are supported: `Sat_22:00-06:00` means Saturday 10 PM to Sunday 6 AM UTC
+The first production run should keep `itsm_dry_run=true` (the connector still resolves secrets and performs the read-only dedupe lookup so you can validate the matrix + templates against a real workload, without creating tickets). The dry-run output includes a CSV + JUnit projection of "what would have been ticketed" - inspect those before flipping the switch.
 
-You can test schedule logic interactively before configuring pipelines:
+Phase 2 (lifecycle close-out via `Sync-AzureLocalIncident`) and Phase 3 (Teams + Slack mirror) are designed in [`ITSM-Connector-Plan.md`](../ITSM/ITSM-Connector-Plan.md) but **deferred** - they are not shipped in v0.7.4. The example pipeline reserves the slot for the Sync step with `if: false` so the wiring is forward-compatible.
+
+---
+
+## 8. Scheduling, maintenance windows, and change-freeze periods
+
+The `UpdateWindow` and `UpdateExclusions` tags on each cluster control when **Apply Updates** is allowed to start an update.
+
+| Tag | Format | Example | Behaviour |
+|---|---|---|---|
+| `UpdateWindow` | `<days>_<HH:MM>-<HH:MM>` (UTC) | `Sat-Sun_02:00-06:00` | Updates only start while current UTC time is inside the window. |
+| `UpdateExclusions` | `YYYY-MM-DD/YYYY-MM-DD`, comma-separated, supports `*` wildcards | `20**-12-20/20**-01-03,2027-06-01/2027-06-10` | No updates start during these dates. **Exclusions override windows.** |
+
+Grammar details:
+
+- **Multiple windows** - separate with `;`: `Mon-Fri_22:00-06:00;Sat-Sun_02:00-10:00`.
+- **Day ranges** - wrap-around is supported: `Fri-Mon_22:00-06:00` covers Friday through Monday.
+- **Overnight windows** - `Sat_22:00-06:00` means Saturday 22:00 UTC to Sunday 06:00 UTC.
+- **Recurring annual exclusions** - use `**` for the year: `20**-12-20/20**-01-03` means every year's Christmas freeze.
+- **No tags at all** - updates proceed with no schedule restriction.
+- **Malformed tag values** - blocking by default. v0.7.0+ refuses to start the update; pass `-Force` if you intentionally want to update with a known-bad schedule tag.
+
+Test logic interactively before tagging:
 
 ```powershell
-# Test if current UTC time is within a maintenance window
+# Right now in UTC?
 Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat-Sun_02:00-06:00" -UpdateExclusions "2026-12-20/2027-01-03"
 
-# Test a specific time
+# A specific past or future moment
 Test-AzureLocalUpdateScheduleAllowed -UpdateWindow "Sat_02:00-06:00" -TestTime ([datetime]"2026-04-19 03:00:00")
 ```
 
-The `readiness-status.csv` from the Fleet Update Status pipeline includes `UpdateWindow` and `UpdateExclusions` columns so ops teams can see which clusters have schedule restrictions defined.
+### Multi-stage rollouts with approval gates
 
-### Planning Update Deployments
-
-Azure Local cluster updates can take **2-6+ hours** depending on:
-- Number of nodes in the cluster
-- Update size (solution bundles vs. individual updates)
-- Cluster health and workload during update
-
-**Best Practice:** Use earlier update rings to estimate duration for later waves.
-
-### Using Earlier Rings to Estimate Duration
-
-The `update-runs.csv` output from Fleet Update Status includes duration data. Use Wave1/Pilot results to plan Production maintenance windows:
-
-```powershell
-# After Wave1 completes, analyze durations
-$wave1Runs = Import-Csv "update-runs.csv" | Where-Object { $_.UpdateRing -eq "Wave1" }
-
-# Calculate average and max duration
-$durations = $wave1Runs | Where-Object { $_.Duration -match '\d' } | ForEach-Object {
-    if ($_.Duration -match '([\d.]+)\s*hours') { [double]$matches[1] * 60 }
-    elseif ($_.Duration -match '([\d.]+)\s*minutes') { [double]$matches[1] }
-    else { 0 }
-}
-
-$avgMinutes = ($durations | Measure-Object -Average).Average
-$maxMinutes = ($durations | Measure-Object -Maximum).Maximum
-
-Write-Host "Wave1 Update Duration Analysis:"
-Write-Host "  Average: $([math]::Round($avgMinutes / 60, 1)) hours"
-Write-Host "  Maximum: $([math]::Round($maxMinutes / 60, 1)) hours"
-Write-Host "  Recommended maintenance window: $([math]::Ceiling($maxMinutes * 1.2 / 60)) hours"
-```
-
-### Scheduling Patterns
-
-| Ring | Schedule | Purpose |
-|------|----------|---------|
-| **Canary** | Manual trigger | Test update on 1-2 non-critical clusters |
-| **Pilot/Wave1** | Monday 10 PM | Early adopter clusters, IT-managed workloads |
-| **Wave2** | Wednesday 10 PM | Non-critical production (after Wave1 validates) |
-| **Production** | Saturday 2 AM | Critical workloads during low-usage window |
-
-### GitHub Actions Scheduled Triggers
-
-```yaml
-on:
-  schedule:
-    # Wave1: Monday at 10 PM UTC
-    - cron: '0 22 * * 1'
-  workflow_dispatch:
-    inputs:
-      update_ring:
-        description: 'Update ring to process'
-        required: true
-        default: 'Wave1'
-```
-
-### Azure DevOps Scheduled Triggers
-
-```yaml
-schedules:
-  - cron: '0 22 * * 1'  # Monday 10 PM UTC
-    displayName: 'Wave1 Weekly Update'
-    branches:
-      include:
-        - main
-    always: true  # Run even if no code changes
-```
-
-### Multi-Stage Deployment with Approval Gates
-
-For production-critical environments, add manual approval between waves:
+For production-critical environments, gate the production wave on the previous wave's success and a human's sign-off.
 
 **Azure DevOps:**
+
 ```yaml
 stages:
   - stage: Wave1
     jobs:
       - job: ApplyWave1Updates
-        # ... Wave1 update job
+        # ...
 
   - stage: ValidateWave1
     dependsOn: Wave1
@@ -929,92 +524,252 @@ stages:
           - task: ManualValidation@0
             inputs:
               notifyUsers: 'ops-team@company.com'
-              instructions: 'Review Wave1 update results before proceeding to Wave2'
+              instructions: 'Review Wave1 update results before proceeding to Wave2.'
 
   - stage: Wave2
     dependsOn: ValidateWave1
-    # ... Wave2 update job
+    # ...
 ```
 
 **GitHub Actions:**
+
 ```yaml
 jobs:
   wave1:
     runs-on: windows-latest
-    environment: wave1  # No approval required
-    # ... Wave1 steps
+    environment: wave1  # no approval required
+    # ...
 
   wave2:
     needs: wave1
     runs-on: windows-latest
-    environment: production  # Requires approval (configure in repo settings)
-    # ... Wave2 steps
+    environment: production  # configure required reviewers in repo settings
+    # ...
 ```
 
 ---
 
-## Security Best Practices
+## 9. Tuning throughput (`-ThrottleLimit`)
 
-1. **Least Privilege**: Create a custom role with only the required permissions instead of using "Azure Stack HCI Administrator" if you want tighter security.
+v0.7.0 runs per-cluster ARM calls in parallel `Start-Job` batches. The `throttle_limit` workflow input on Apply Updates and Fleet Update Status flows into every function that exposes it:
 
-2. **Secret Rotation**: Rotate the Service Principal secret regularly (e.g., every 90 days).
+| Function | `-ThrottleLimit` exposed | Used by pipeline |
+|---|---|---|
+| `Get-AzureLocalClusterUpdateReadiness` | Yes (default 4) | Apply Updates (pre-check), Fleet Update Status, Assess Update Readiness. |
+| `Get-AzureLocalUpdateSummary` | Yes (default 4) | Fleet Update Status. |
+| `Get-AzureLocalUpdateRuns` | Yes | Fleet Update Status. |
+| `Get-AzureLocalFleetStatusData` | Yes (default 4, max 8) | Fleet Update Status, `New-AzureLocalFleetStatusHtmlReport`. |
+| `New-AzureLocalFleetStatusHtmlReport` | Yes (default 4, max 8) | Standalone report. |
+| `Start-AzureLocalClusterUpdate` (apply-side fleet ops) | Internal via `Invoke-FleetJobsInParallel`; no user-facing `-ThrottleLimit` in v0.7.0. | Apply Updates. |
 
-3. **Audit Logging**: Enable Azure Activity Log monitoring for the Service Principal.
+Suggested starting values:
 
-4. **Approval Gates**: Add manual approval steps before the "Apply Updates" pipeline in production.
+| Fleet size | `throttle_limit` | Notes |
+|---|---|---|
+| 1 - 50 clusters | `4` (default) | No tuning needed. |
+| 50 - 500 clusters | `6` - `8` | Readiness / fleet-status pipelines complete measurably faster. |
+| 500 - 1500+ clusters | `8` - `16` | Required for the fleet-status pipeline to finish inside a 6-hour runner window. Watch for `429 TooManyRequests` and back off. |
 
-5. **Branch Protection**: Require PR reviews for changes to pipeline definitions.
+> **Throttling is influenced by subscription topology, not just fleet size.** ARM and Azure Resource Graph limits apply per-subscription **and** per-tenant, so the safe `throttle_limit` depends on how clusters are distributed.
+>
+> Fleets above ~400-500 clusters are almost always already spread across multiple subscriptions because the per-subscription storage-account quota caps the number of clusters that fit in one subscription.
+>
+> - **Few subscriptions, dense (hundreds per subscription)**: per-subscription ARM quotas exhaust first. Use the lower end of each range and stagger schedules.
+> - **Many subscriptions (10+), evenly distributed**: tenant-wide ARG limits and the runner's outbound connection pool dominate. You can usually push to the upper end.
+> - **Mixed**: the densest subscription dictates the safe ceiling. Consider splitting the pipeline by subscription (matrix job) so each leg's throttle is sized to its own subscription.
+>
+> If you see `429 TooManyRequests`, check `x-ms-ratelimit-remaining-*` response headers in verbose logs to identify whether you're hitting subscription, tenant, or resource-type limits before adjusting.
 
----
-
-## Troubleshooting
-
-### "Azure CLI not authenticated"
-- Verify the Service Principal credentials are correct
-- Check that secrets are properly configured in GitHub/Azure DevOps
-- Ensure the Service Principal has not expired
-
-### "No clusters found"
-- Verify the Service Principal has access to the subscription(s)
-- Check that clusters exist and are in "Connected" state
-- Ensure the `resource-graph` extension is installed (pipelines do this automatically)
-
-### "Permission denied applying tags"
-- Verify the Service Principal has `Microsoft.Resources/tags/write` permission
-- Check that the scope includes the resource groups containing the clusters
-- Same permission also covers v0.7.1 sideloaded-workflow tag writes (`UpdateSideloaded`, `UpdateVersionInProgress`). If `Start-AzureLocalClusterUpdate` logs a Warning that it could not write `UpdateVersionInProgress`, or `Get-AzureLocalUpdateRuns` warns about auto-reset failure, this is the permission to check.
-
-### "Update failed to start"
-- Check cluster health status in Azure Portal
-- Verify the update is in "Ready" state
-- Review the detailed logs in the pipeline output
+Lower values (`1` - `2`) are useful on constrained self-hosted runners and when you need sequential deterministic logs for debugging.
 
 ---
 
-## File Structure
+## 10. Standalone HTML report (no pipeline)
 
+For ad-hoc / offline reporting outside CI/CD, `New-AzureLocalFleetStatusHtmlReport` generates a self-contained HTML report you can email or upload to SharePoint. The function is the same code path the Fleet Update Status pipeline uses internally - no pipeline required.
+
+```powershell
+Import-Module ./AzLocal.UpdateManagement.psd1
+
+# All clusters the current Az session can see (v0.7.0: uncapped by default; -MaxClusters trims)
+New-AzureLocalFleetStatusHtmlReport -AllClusters `
+    -OutputPath "C:\Reports\fleet-all.html" `
+    -IncludeHealthDetails -IncludeUpdateRuns
+
+# A single named cluster (auto-titles "Seattle - Update Status Report")
+New-AzureLocalFleetStatusHtmlReport -ClusterNames Seattle `
+    -OutputPath "C:\Reports\seattle.html" `
+    -IncludeHealthDetails -IncludeUpdateRuns
+
+# A whole ring at once
+New-AzureLocalFleetStatusHtmlReport -ScopeByUpdateRingTag -UpdateRingValue Wave1 `
+    -OutputPath "C:\Reports\wave1-status.html" `
+    -IncludeHealthDetails -IncludeUpdateRuns
+
+# Capture HTML for an email body
+$html = New-AzureLocalFleetStatusHtmlReport -ClusterNames @('Cluster01','Cluster02') `
+    -OutputPath "C:\Reports\fleet.html" -PassThru
 ```
+
+The report includes executive summary cards, cluster information, a status table with Active Update and Recommended Update columns, full update-run history with recursive step traversal, and severity-filtered health-check failures.
+
+---
+
+## 11. Security model
+
+- **Least privilege** - the role list in section 4 is the minimum. Prefer a custom role over the built-in `Azure Stack HCI Administrator` if your governance requires it.
+- **OIDC / Workload Identity Federation** is the default authentication path. No client secret is stored, federated subject claims bind tokens to your repo / project, and tokens are short-lived.
+- **No raw secrets in pipeline YAML or config.** ITSM secrets (when enabled) resolve from Azure Key Vault or CI-native secrets; bearer tokens live in agent memory only.
+- **Step-level `env:` mapping** - secrets are mapped into the ITSM step's environment variables, not passed on the PowerShell command line. They never appear in process listings, rendered step inputs, or CI logs.
+- **Approval gates** - require manual approval before the Production wave (section 8).
+- **Branch protection** - require pull-request reviews for changes to pipeline definitions.
+- **TLS 1.2+** is enforced before every HTTP call in the module.
+- **CSV-injection sanitisation** - every CSV field produced by the module is neutralised for Excel formula injection (`=`, `+`, `-`, `@`, tab leaders), and CR/LF stripped (v0.7.0+).
+- **HTML-escaping** - free-text fields rendered into ITSM tickets are HTML-escaped to defend against ITSM-side HTML injection.
+
+---
+
+## 12. Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Azure CLI not authenticated` | Federated credential subject claim does not match the trigger that started the run (e.g. you triggered via `workflow_dispatch` from `production` environment but only federated `refs/heads/main`). | Add a federated credential for the actual subject claim (section 3.1). |
+| `No clusters found` | Identity does not see the subscription, or clusters are not `Connected`. | Verify the role assignment scope; confirm cluster state in Azure Portal. The resource-graph extension is auto-installed by the pipelines. |
+| `Permission denied applying tags` | Identity is missing `Microsoft.Resources/tags/write`. | Grant per section 4. Same permission covers the v0.7.1 sideloaded-workflow tag writes (`UpdateSideloaded`, `UpdateVersionInProgress`). |
+| `Update failed to start` | Cluster is not in `Ready` state, or another update is in progress. | Check cluster health and update state in Azure Portal; review pipeline logs. |
+| Apply Updates reports `ScheduleBlocked` for an unexpected cluster | Tag is set but the current UTC time is outside the window, or an `UpdateExclusions` blackout is active. | Confirm the tag value with `Test-AzureLocalUpdateScheduleAllowed` (section 8). |
+| Apply Updates reports `SideloadedBlocked` | Cluster has `UpdateSideloaded=False`. | Operator must stage the sideloaded payload and flip the tag, or run `Reset-AzureLocalSideloadedTag` after the next successful run. |
+| Fleet Update Status leaves a cluster's update missing from `update-runs.csv` | Pre-v0.7.2: `cp1252` warnings on `az rest` output corrupted JSON parsing. | Upgrade to v0.7.2+ (`--only-show-errors` is now passed everywhere). |
+| `429 TooManyRequests` from ARM during fleet operations | Throttle limit too high for the subscription topology. | Reduce `throttle_limit`; consider matrix-by-subscription (section 9). |
+| ITSM step always creates duplicates | `u_azlocal_dedupe_key` column was not indexed during ServiceNow setup. | Index it. See [ITSM/README.md section 3.2](../ITSM/README.md#32-add-the-five-custom-fields-on-the-incident-table). |
+
+For ITSM-specific failures, the troubleshooting matrix in [`ITSM/README.md` section 9](../ITSM/README.md#9-troubleshooting) is more specific.
+
+---
+
+## 13. File layout
+
+```text
 Automation-Pipeline-Examples/
-├── README.md                           # This file
-├── github-actions/
-│   ├── inventory-clusters.yml          # GitHub Actions: Inventory pipeline
-│   ├── manage-updatering-tags.yml      # GitHub Actions: Tag management pipeline
-│   ├── assess-update-readiness.yml     # GitHub Actions: Pre-flight readiness report (v0.7.0)
-│   ├── apply-updates.yml               # GitHub Actions: Update application pipeline
-│   └── fleet-update-status.yml         # GitHub Actions: Fleet status monitoring pipeline
-└── azure-devops/
-    ├── inventory-clusters.yml          # Azure DevOps: Inventory pipeline
-    ├── manage-updatering-tags.yml      # Azure DevOps: Tag management pipeline
-    ├── assess-update-readiness.yml     # Azure DevOps: Pre-flight readiness report (v0.7.0)
-    ├── apply-updates.yml               # Azure DevOps: Update application pipeline
-    └── fleet-update-status.yml         # Azure DevOps: Fleet status monitoring pipeline
+  README.md                           # This file.
+  .itsm/                              # Ready-to-copy ITSM connector config.
+    azurelocal-itsm.yml               #   - Matrix config (secrets, defaults, triggers).
+    templates/
+      incident-body.md                #   - Mustache-style ticket body template.
+  github-actions/
+    inventory-clusters.yml            # 1. Inventory.
+    manage-updatering-tags.yml        # 2. Apply UpdateRing / UpdateWindow / UpdateExclusions tags.
+    assess-update-readiness.yml       # 3. Pre-flight readiness report (v0.7.0).
+    apply-updates.yml                 # 4. Apply updates to one UpdateRing (with optional ITSM step, v0.7.4).
+    fleet-update-status.yml           # 5. Scheduled fleet status snapshot.
+  azure-devops/
+    inventory-clusters.yml
+    manage-updatering-tags.yml
+    assess-update-readiness.yml
+    apply-updates.yml
+    fleet-update-status.yml
 ```
 
 ---
 
-## Related Documentation
+## Appendix A: Pipeline reference
 
-- [Azure Local Update Management Module](../README.md)
-- [Azure Stack HCI documentation](https://learn.microsoft.com/en-us/azure-stack/hci/)
+This appendix summarises each pipeline's inputs and outputs without duplicating the YAML.
+
+### A.1 Inventory Clusters
+
+| Aspect | Value |
+|---|---|
+| **Purpose** | Enumerate every Azure Local cluster the identity can see and export to CSV. |
+| **Inputs** | None. |
+| **Artefacts** | `cluster-inventory.csv` (one row per cluster, includes current `UpdateRing` / `UpdateWindow` / `UpdateExclusions` and sideloaded-workflow tags). |
+| **When to run** | First run of a new estate; periodically to detect new clusters or tag drift. |
+
+### A.2 Manage UpdateRing Tags
+
+| Aspect | Value |
+|---|---|
+| **Purpose** | Bulk-apply `UpdateRing`, `UpdateWindow`, `UpdateExclusions` tags from a CSV. |
+| **Inputs** | `csv_path` (required). |
+| **Artefacts** | Pipeline log with added / updated / unchanged counts per cluster. |
+| **When to run** | After editing the inventory CSV; whenever ring membership or maintenance windows change. |
+
+### A.3 Assess Update Readiness
+
+| Aspect | Value |
+|---|---|
+| **Purpose** | Pre-flight, report-only readiness + blocking-health snapshot for a single `UpdateRing`. **Always succeeds** - per-cluster failures show up as JUnit test failures. |
+| **Inputs** | `update_ring` (required), `throttle_limit` (optional). |
+| **Artefacts** | `readiness.xml`, `readiness.csv`, `health-blocking.xml`, `health-blocking.csv`. |
+| **When to run** | Before an Apply Updates run; or on a schedule a day or two ahead of the maintenance window. |
+
+### A.4 Apply Updates
+
+| Aspect | Value |
+|---|---|
+| **Purpose** | Apply updates to clusters filtered by `UpdateRing` tag value. |
+| **Inputs** | `update_ring` (required), `update_name` (optional - leave blank for latest), `dry_run` (optional), `throttle_limit` (optional). **v0.7.4 adds** `raise_itsm_ticket`, `itsm_config_path`, `itsm_dry_run`, `itsm_force_create` (all optional, defaults preserve existing behaviour). |
+| **Artefacts** | `update-results.xml` (JUnit, one cluster per test), `update-logs/*` (CSV + detail). When ITSM is enabled: `itsm-results.csv`, `itsm-results.xml`. |
+| **When to run** | During the maintenance window for each ring, after the readiness assessment is reviewed. |
+
+### A.5 Fleet Update Status
+
+| Aspect | Value |
+|---|---|
+| **Purpose** | Daily fleet-wide snapshot of cluster update state. Read-only. |
+| **Inputs** | Scope (`-AllClusters` or `-ScopeByUpdateRingTag`), `throttle_limit` (optional). |
+| **Schedule** | Daily at 06:00 UTC (configurable in the YAML). |
+| **Artefacts** | `readiness-status.xml` / `.csv` / `.json`, `cluster-inventory.csv`, `update-summaries.csv`, `available-updates.csv`, `update-runs.csv`. |
+| **When to run** | Hands-off scheduled. Trigger manually for ad-hoc reporting. |
+
+---
+
+## Appendix B: Release history
+
+The body of this document tracks **v0.7.4** behaviour. Older versions are preserved below for reference.
+
+### B.1 v0.7.4 (current)
+
+- **ITSM Connector - Phase 1 (ServiceNow)**. Apply Updates can now open ServiceNow incidents for clusters that need operator action (`Failed`, `Error`, `HealthCheckBlocked`, `SideloadedBlocked`) via the new `New-AzureLocalIncident` function, with idempotent SHA256 dedupe so re-running the same workflow does not create duplicates. **Fully opt-in** - pipelines that do not set `raise_itsm_ticket=true` are byte-identical to v0.7.3 behaviour. Sample config + Mustache ticket-body template ship at [`./.itsm/`](./.itsm/). Setup, secret sourcing, and troubleshooting documented in [`../ITSM/README.md`](../ITSM/README.md); design + decisions log in [`../ITSM/ITSM-Connector-Plan.md`](../ITSM/ITSM-Connector-Plan.md).
+- **OAuth 2.0 `client_credentials`** only in Phase 1. Secrets resolve from Azure Key Vault (`kv://<vault>/<secret>`, **recommended**), environment variables (`env://NAME`, native-secret fallback), or explicit `literal://...` values guarded by `-AllowLiteral`. The pipeline service principal needs `Key Vault Secrets User` on the configured vault; no other new RBAC.
+- **DryRun mode** (`-DryRun` on `New-AzureLocalIncident`, or pipeline input `itsm_dry_run=true`) resolves secrets, runs the read-only dedupe lookup, builds the full ticket payload, but does not POST. Output CSV + JUnit projection let you validate the trigger matrix and template rendering before pointing at production ServiceNow.
+- **`Test-AzureLocalItsmConnection`** runs the OAuth token grant and a one-row read against `/api/now/table/incident`, matching the least-privilege scope used by ticket creation. Run it manually before flipping `raise_itsm_ticket=true`.
+- **New JUnit projection** (`-ExportJUnitPath` on `New-AzureLocalIncident`) emits per-cluster ITSM actions as a JUnit XML artefact - `CreateFailed` -> `<failure>`, `Skipped` / `WhatIf` -> `<skipped>`, default -> success. Consumed by `dorny/test-reporter` / `PublishTestResults@2` so ITSM activity is visible in the Tests tab.
+- **Phase 2 (`Sync-AzureLocalIncident` close-out)** and **Phase 3 (Teams + Slack mirror)** are designed in [`ITSM-Connector-Plan.md`](../ITSM/ITSM-Connector-Plan.md) and **deferred** to a future release. The `lifecycle` and `notifications` sections of the config schema are parsed and stored but not yet acted on.
+
+### B.2 v0.7.2
+
+- **Fleet read paths now work as documented under `-ThrottleLimit > 1`**. The `fleet-update-status.yml` workflow (and any direct caller of `Get-AzureLocalUpdateRuns`, `Get-AzureLocalUpdateSummary`, or `Get-AzureLocalClusterUpdateReadiness` with `-ThrottleLimit` greater than 1) previously failed for every cluster with `The term 'Get-AzLocalClusterUpdateRuns' is not recognized...` because module-private helpers were not visible inside `Start-Job` child runspaces. Resolved via `& $module { ... }` dispatch through the loaded module's session state. **Action**: re-enable `-ThrottleLimit` in your fleet workflows.
+- **Stray `cp1252` warnings no longer break JSON parsing on hosted Windows runners**. Default `windows-latest` GitHub runners and Azure DevOps `windows-2022` agents both run with the `cp1252` console code page; the Azure CLI emitted `WARNING: Unable to encode the output with cp1252 encoding...` on any ARM response containing non-ASCII characters. Captured via `2>&1`, that warning was prepended to the JSON body and silently broke `ConvertFrom-Json`, dropping update runs and available updates from pipeline reports. v0.7.2 passes `--only-show-errors` to every `az rest` and `az graph query` invocation. **No pipeline configuration change required** - upgrade and the runs/summaries are simply complete again.
+- Full root-cause writeup: [main README v0.7.2 entry](../README.md#whats-new-in-v072).
+
+### B.3 v0.7.1
+
+- **Sideloaded payload workflow**. Two new tags coordinate human-driven sideloaded update payloads with the apply-updates pipeline:
+  - `UpdateSideloaded` (operator-set, `True`/`False`/`1`/`0`) gates `Start-AzureLocalClusterUpdate`. When `False`, the apply-updates pipeline skips the cluster with `Status = SideloadedBlocked`.
+  - `UpdateVersionInProgress` (module-managed; do not set manually) holds the staged update name. `Get-AzureLocalUpdateRuns` auto-resets `UpdateSideloaded -> False` and clears `UpdateVersionInProgress` when the latest run is `Succeeded` and its update name matches. Use `-SkipSideloadedReset` on read-only paths.
+- **New public function** `Reset-AzureLocalSideloadedTag` for explicit-scope manual reset. Three parameter sets: `-ClusterNames`, `-ClusterResourceIds`, or `-ScopeByUpdateRingTag -UpdateRingValue`. Supports `-WhatIf`/`-Confirm`. Default behaviour requires `latest run = Succeeded` **and** a case-insensitive update-name match against `UpdateVersionInProgress`. `-Force` bypasses the version-match check (still requires `Succeeded` state). Returns one row per cluster with `Action` / `PreviousSideloaded` / `NewSideloaded` / `StagedVersion` / `MatchedRunUpdateName` / `Message`.
+- **No new RBAC** - the existing `Microsoft.Resources/tags/read|write` permissions cover it.
+- **Fully opt-in** - clusters without the `UpdateSideloaded` tag behave exactly as in v0.7.0.
+- Full runbook: [main README sideloaded workflow section](../README.md#7a-sideloaded-payload-workflow-v071).
+
+### B.4 v0.7.0
+
+- **Parallel per-cluster operations**. `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalUpdateRuns`, and `Set-AzureLocalClusterUpdateRingTag` now run per-cluster ARM calls in parallel `Start-Job` batches. `Invoke-AzureLocalFleetOperation -ThrottleLimit` is honoured end-to-end. Expected 5-10x speedup on 1500-cluster runs.
+- **`-ThrottleLimit` is a workflow input** on Apply Updates and Fleet Update Status (default 4, range 1-16).
+- **ARG queries paginate**. All scope-resolving queries follow the `$skipToken` until exhausted (previously capped silently at 1000).
+- **`-AllClusters` cap removed**. `New-AzureLocalFleetStatusHtmlReport -AllClusters` and `Get-AzureLocalFleetStatusData -AllClusters` no longer truncate at 100; use `-MaxClusters <n>` to trim explicitly.
+- **CSV sanitisation**. Every CSV field is protected against Excel formula injection (`=`, `+`, `-`, `@`, tab leaders neutralised, CR/LF stripped).
+- **Token refresh mid-run**. `Invoke-AzRestJson` refreshes on HTTP 401 so long-running apply jobs no longer die at the 1-hour token boundary.
+- **Schedule-tag parse errors are blocking by default** unless `-Force`. A malformed `UpdateWindow` / `UpdateExclusions` no longer lets the update sneak through with just a warning.
+
+---
+
+## 16. Related documentation
+
+- [Azure Local Update Management module README](../README.md)
+- [ITSM Connector setup guide (`ITSM/README.md`)](../ITSM/README.md) - optional, opt-in ServiceNow integration.
+- [ITSM Connector design + decisions log (`ITSM/ITSM-Connector-Plan.md`)](../ITSM/ITSM-Connector-Plan.md)
+- [Azure Stack HCI documentation](https://learn.microsoft.com/azure-stack/hci/)
 - [GitHub Actions documentation](https://docs.github.com/en/actions)
-- [Azure DevOps Pipelines documentation](https://learn.microsoft.com/en-us/azure/devops/pipelines/)
+- [Azure DevOps Pipelines documentation](https://learn.microsoft.com/azure/devops/pipelines/)
