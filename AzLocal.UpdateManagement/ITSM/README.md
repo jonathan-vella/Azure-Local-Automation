@@ -1,7 +1,7 @@
 # ITSM Connector for AzLocal.UpdateManagement
 
 > Optional feature. Disabled by default. Module: `AzLocal.UpdateManagement` v0.7.4+
-> Phase 1 (this release): ServiceNow only. Phase 2 (Sync close-out) and Phase 3 (Teams / Slack mirror) ship in subsequent v0.7.4 commits on the same branch.
+> Phase 1 (this release): ServiceNow incident creation + dedupe + connection probe. Phase 2 (Sync close-out via `Sync-AzureLocalIncident`) and Phase 3 (Teams / Slack mirror adapters) are **deferred** to a future release - the design lives in [`ITSM-Connector-Plan.md`](./ITSM-Connector-Plan.md) but the functions are not yet shipped.
 
 This folder is the setup-and-configure landing page for the ITSM Connector. It walks an operator through every step from "nothing wired" to "the apply-updates pipeline opens a deduped ServiceNow incident when a cluster needs human intervention".
 
@@ -54,19 +54,41 @@ You need three things in ServiceNow: an OAuth app, five custom fields on the `in
 4. Copy the generated **Client ID** and **Client Secret** - both go into Key Vault in Section 4.
 5. Note your instance URL (e.g. `https://yourco.service-now.com`).
 
-### 3.2 Install the custom fields
+#### 3.1.5 Service account and roles for the OAuth client
 
-The connector writes five custom fields to every incident it creates so future runs can find them:
+The OAuth `client_credentials` grant ServiceNow issues is tied to a **ServiceNow user account** (commonly called the *technical user* or *integration user*). The token the connector receives carries that user's roles, and ServiceNow Table API authorisation is evaluated against those roles - not against the OAuth app itself. Misconfigure this and step 4 of the connection probe (Section 6) fails with HTTP 403 even though OAuth succeeded.
 
-| Field | Type | Purpose |
-|---|---|---|
-| `u_azlocal_dedupe_key` | String (64), indexed | SHA256 used to deduplicate. |
-| `u_azlocal_cluster_resource_id` | String | Full Azure resource ID of the cluster. |
-| `u_azlocal_update_name` | String | The HCI update name (e.g. `2511.0.10.0`). |
-| `u_azlocal_run_id` | String | Workflow / pipeline run ID. |
-| `u_azlocal_source` | String, default `AzLocal.UpdateManagement` | Discriminator. |
+Recommended setup:
 
-Easiest way to install them is the Update Set shipped with the module (delivered in a follow-up commit; the dictionary entries can also be added manually via **System Definition -> Dictionary**).
+1. Create a dedicated user (e.g. `svc.azlocal.itsm`) in **User Administration -> Users**. Mark it **Web service access only** and **Internal Integration User** if your release supports those flags.
+2. Open the **Application Registry** record from Section 3.1 and set **OAuth Provider Profile -> Run as user** to the new account. (On releases where Application Registries do not expose this directly, set the user inside the linked **OAuth Entity Profile**.)
+3. Grant the user **`itil`** role (read + write on `incident`) AND a role that can read the table the connection probe issues a one-row read against (`itil` is sufficient). Do NOT grant `admin`.
+4. If you also want the connector to read existing incidents created by humans (for dedupe), make sure those incidents are not restricted by an ACL the `itil` role cannot satisfy.
+
+Nothing in the connector requires elevated privileges. Keep the role footprint to `itil`.
+
+### 3.2 Add the five custom fields on the `incident` table
+
+The connector writes five custom fields to every incident it creates so future runs can find them. The original plan shipped an Update Set XML for this; in v0.7.4 it is a **manual procedure** (Update Set XML is deferred to a follow-up release). All five fields go on the `incident` table:
+
+| Field name | Type | Max length | Default | Indexed | Why |
+|---|---|---:|---|---|---|
+| `u_azlocal_dedupe_key` | String | 64 | (empty) | **Yes - required** | SHA256 hex used by `FindByDedupe`. Without an index, every dedupe lookup performs a full table scan and breaks on large instances. |
+| `u_azlocal_cluster_resource_id` | String | 512 | (empty) | No | Full Azure resource ID of the cluster - operators use this to jump to Portal. |
+| `u_azlocal_update_name` | String | 64 | (empty) | No | The HCI update name (e.g. `2511.0.10.0`). |
+| `u_azlocal_run_id` | String | 128 | (empty) | No | Workflow / pipeline run ID - links back to the originating CI run. |
+| `u_azlocal_source` | String | 64 | `AzLocal.UpdateManagement` | No | Discriminator; lets `Sync-AzureLocalIncident` (Phase 2) filter to tickets it owns. |
+
+Procedure:
+
+1. Sign in to ServiceNow as a user with `admin`.
+2. Navigate to **System Definition -> Tables**, search for `incident`, open it.
+3. In the **Columns** related list, **New** and create each row from the table above. Pick **Type: String**, set **Max length**, and set **Column name** to the value in the table (ServiceNow auto-prefixes `u_`, so type `azlocal_dedupe_key` - the `u_` shown here is the rendered column name).
+4. For `u_azlocal_dedupe_key`, after saving open the column and tick **Create Index** (or **Add Index** on older releases). **This is required** - the dedupe query is `incident?sysparm_query=u_azlocal_dedupe_key=<hash>^state!=6^state!=7`, and at typical fleet sizes (low thousands of clusters) it must be index-served.
+5. For `u_azlocal_source`, set **Default value** to `AzLocal.UpdateManagement` so manual record creation (if it ever happens) still tags correctly.
+6. Optional: add the five new columns to the default incident form view via **Configure -> Form Layout** so operators see them when looking at a ticket.
+
+When an Update Set XML ships in a later release, importing it will be idempotent: the manual fields you create now will be reused.
 
 ### 3.3 Create an assignment group
 
@@ -168,6 +190,27 @@ Test-AzureLocalItsmConnection -Config $cfg | Format-Table Step, Pass, Message
 
 If any step shows `Pass=False`, fix that step before enabling the pipeline.
 
+#### What a failure looks like
+
+A typical first-time-setup failure surfaces as:
+
+```
+Step                  Pass  Message
+----                  ----  -------
+Resolve instanceUrl   True  https://yourco.service-now.com
+Resolve OAuth secrets True  clientId + clientSecret resolved.
+OAuth token grant     True  expires_in=1800s
+Incident table read   False HTTP 403 Forbidden - GET /api/now/table/incident?sysparm_limit=1. Body: { "error": { "message": "User Not Authorized", "detail": "..." } }
+```
+
+The first three rows passing tells you OAuth and the secret pipeline work. The fourth-row 403 always means the ServiceNow user backing the OAuth client (Section 3.1.5) is missing the `itil` role. Fix the role, re-run the probe.
+
+Other shapes worth recognising:
+
+- **HTTP 401** on step 4 (token issued, then immediately rejected on the read) almost always means the OAuth Entity Profile is wired to a disabled user. Re-enable the user, regenerate the secret if you suspect rotation.
+- **HTTP 200 but no body fields** is harmless - the probe only asserts a 2xx + a JSON envelope; field-presence checks are deferred to a follow-up phase.
+- **Operation timed out** at step 3 with a `.service-now.com` URL usually means a proxy in the agent's outbound path is intercepting OAuth. Open the proxy or pin the agent to a route that hits ServiceNow directly.
+
 ---
 
 ## 7. Dry run against a real JUnit file
@@ -194,15 +237,21 @@ New-AzureLocalIncident `
 
 ## 8. Wire into the pipeline
 
-The pipeline-side change is two new inputs and one step. See `ITSM-Connector-Plan.md` Section 10 for the full YAML, but the gist:
+The example pipelines under [`../Automation-Pipeline-Examples/`](../Automation-Pipeline-Examples/) already include the wired step. It is gated on `raise_itsm_ticket` (a `workflow_dispatch` choice / pipeline parameter) and is fully opt-in - existing runs that do not toggle it on are byte-identical to before.
+
+Key points from the wired step (full YAML in the example files):
 
 ```yaml
 - name: Raise ITSM tickets
-  if: ${{ inputs.raise_itsm_ticket == true }}
+  if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
   shell: pwsh
+  env:
+    ITSM_SN_INSTANCE_URL:  ${{ secrets.ITSM_SN_INSTANCE_URL }}
+    ITSM_SN_CLIENT_ID:     ${{ secrets.ITSM_SN_CLIENT_ID }}
+    ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
   run: |
     Import-Module ${{ env.MODULE_PATH }}/AzLocal.UpdateManagement.psd1 -Force
-    $cfg = Get-AzureLocalItsmConfig -Path "${{ inputs.itsm_config_path }}"
+    $cfg = Get-AzureLocalItsmConfig -Path "${{ github.event.inputs.itsm_config_path }}"
     New-AzureLocalIncident `
         -InputArtifactPath ./artifacts/update-results.xml `
         -Config $cfg `
@@ -211,11 +260,16 @@ The pipeline-side change is two new inputs and one step. See `ITSM-Connector-Pla
             RunId    = $env:GITHUB_RUN_ID
             RunUrl   = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
         } `
-        -ExportPath ./artifacts/itsm-results.csv |
-      Format-Table ClusterName, Action, TicketId, Severity -AutoSize
+        -DryRun:([bool]::Parse($env:INPUT_ITSM_DRY_RUN)) `
+        -ExportPath      ./artifacts/itsm-results.csv `
+        -ExportJUnitPath ./artifacts/itsm-results.xml
 ```
 
-The first production run should keep `raise_itsm_ticket: false` (or `itsm_dry_run: true`) and inspect the CSV / JUnit artefact before flipping the switch.
+- **Secrets are mapped via `env:`** on the step, not passed on the PowerShell command line. The module picks them up via `env://NAME` references in the config file. This keeps secret values off process listings, off the rendered step inputs, and out of CI logs.
+- The step writes **two** artefacts (`itsm-results.csv` for humans, `itsm-results.xml` for `dorny/test-reporter` / `PublishTestResults@2`). Both upload happens unconditionally if the step ran, including in `-DryRun`, so an audit trail exists either way.
+- The Azure DevOps mirror is the same shape with `AzureCLI@2` + a `- group: AzureLocal-ITSM-Secrets` variable group (kept commented out by default so the example file loads cleanly for users who have not yet wired the variable group).
+
+The first production run should keep `raise_itsm_ticket=false` (or set `itsm_dry_run=true`) and inspect the CSV / JUnit artefact before flipping the switch.
 
 ---
 
@@ -238,6 +292,7 @@ For deeper traces, run the step with `-Verbose`. The HTTP layer logs every attem
 ## 10. Security model summary
 
 - **No raw secrets ever live in config or on disk.** All secrets are read from Key Vault or environment variables at run time. The token is held in memory only.
+- **The ServiceNow instance URL is not a secret**, but it identifies the tenant. The example config exposes it as `instanceUrl: env://ITSM_SN_INSTANCE_URL` so a tenant migration only needs a CI-secret rotation rather than a config-file change, and so the value is consistent with how the OAuth secrets are wired. The connector treats it as cosmetic for redaction purposes (instance hostnames are not stripped from `Verbose` logs - bearer tokens are) but never persists it.
 - **Bearer tokens are redacted** in verbose logs (URL query and header values).
 - **All free-text inputs** (cluster names, error text) are **HTML-escaped** when rendered into ticket descriptions to defend against ITSM-side HTML injection. Titles use plain text (no escape needed; ServiceNow `short_description` is plain text).
 - **TLS 1.2+** is enforced before every HTTP call.
