@@ -270,6 +270,22 @@ az role assignment create `
 
 Both platforms expect the YAML files inside this folder to land in a platform-specific location in your **consumer** repo.
 
+> **Shortcut**: install the module first and use `Copy-AzureLocalPipelineExample` to copy this entire folder out of the module install location into a working folder, instead of cloning the repo or hunting through `$module.ModuleBase`:
+>
+> ```powershell
+> Install-Module -Name AzLocal.UpdateManagement -Scope CurrentUser
+> Import-Module AzLocal.UpdateManagement
+>
+> # Copy everything to the current folder (creates .\Automation-Pipeline-Examples\)
+> Copy-AzureLocalPipelineExample
+>
+> # Or only the GitHub Actions YAML straight into .github\workflows\ in your repo
+> New-Item -ItemType Directory .\.github\workflows -Force | Out-Null
+> Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Flatten -Force
+> ```
+>
+> The function prints a short "next steps" summary pointing at the copied README and the platform-specific YAML folder. Supports `-Platform GitHub | AzureDevOps | All`, `-Flatten`, `-Force`, `-PassThru`, `-WhatIf`, `-Confirm`.
+
 ### 5.1 GitHub Actions
 
 1. Copy every file from [`github-actions/`](./github-actions/) into `.github/workflows/` in your repo:

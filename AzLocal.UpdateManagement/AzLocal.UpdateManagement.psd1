@@ -78,6 +78,7 @@
 
         # Public exported functions
         'Public/Connect-AzureLocalServicePrincipal.ps1',
+        'Public/Copy-AzureLocalPipelineExample.ps1',
         'Public/Export-AzureLocalFleetState.ps1',
         'Public/Get-AzureLocalAvailableUpdates.ps1',
         'Public/Get-AzureLocalClusterInfo.ps1',
@@ -131,7 +132,9 @@
         # ITSM Connector Phase 1 (v0.7.4)
         'Get-AzureLocalItsmConfig',
         'Test-AzureLocalItsmConnection',
-        'New-AzureLocalIncident'
+        'New-AzureLocalIncident',
+        # Pipeline-Examples Convenience (v0.7.4)
+        'Copy-AzureLocalPipelineExample'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -186,6 +189,14 @@
 - Secrets: ITSM credentials are referenced from Azure Key Vault
   (`kv://<vault>/<secret>`) or native CI secrets (`env://<NAME>`). No raw
   secret is ever written to YAML or to disk.
+
+### Added (pipeline-examples convenience)
+- New public function `Copy-AzureLocalPipelineExample` copies the bundled
+  `Automation-Pipeline-Examples/` folder out of the module install
+  location into a user-chosen destination (default: current directory).
+  Supports `-Platform GitHub | AzureDevOps | All`, `-Flatten`, `-Force`,
+  `-PassThru`, `-WhatIf` and `-Confirm`. Saves users from hunting through
+  `$module.ModuleBase` to find the YAML samples.
 
 ## Version 0.7.3 - Module renamed to AzLocal.UpdateManagement + internal refactor
 

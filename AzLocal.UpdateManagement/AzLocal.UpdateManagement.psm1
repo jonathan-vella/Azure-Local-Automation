@@ -247,5 +247,7 @@ Export-ModuleMember -Function @(
     # ITSM Connector Phase 1 (v0.7.4)
     'Get-AzureLocalItsmConfig',
     'Test-AzureLocalItsmConnection',
-    'New-AzureLocalIncident'
+    'New-AzureLocalIncident',
+    # Pipeline-Examples Convenience (v0.7.4)
+    'Copy-AzureLocalPipelineExample'
 )

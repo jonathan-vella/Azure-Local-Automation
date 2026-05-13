@@ -38,8 +38,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo.Version | Should -Be '0.7.4'
         }
 
-        It 'Should export exactly 23 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 23
+        It 'Should export exactly 24 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 24
         }
 
         It 'Should export the expected functions' {
@@ -72,7 +72,9 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 # ITSM Connector Phase 1 (v0.7.4)
                 'Get-AzureLocalItsmConfig',
                 'Test-AzureLocalItsmConnection',
-                'New-AzureLocalIncident'
+                'New-AzureLocalIncident',
+                # Pipeline-Examples Convenience (v0.7.4)
+                'Copy-AzureLocalPipelineExample'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -3591,5 +3593,123 @@ Describe 'ITSM: Get-AzureLocalItsmConfig normalises non-Hashtable YAML dictionar
 }
 
 #endregion ITSM Connector Phase 1 (v0.7.4)
+
+#region Copy-AzureLocalPipelineExample (v0.7.4)
+
+Describe 'Function: Copy-AzureLocalPipelineExample' {
+    BeforeAll {
+        # The function reads from (Get-Module AzLocal.UpdateManagement).ModuleBase
+        # which during test runs resolves to the repo module root, so the real
+        # Automation-Pipeline-Examples/ folder under the repo is the test source.
+        $script:cpDestRoot = Join-Path $env:TEMP "azlocal-cpe-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:cpDestRoot -ItemType Directory -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item $script:cpDestRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Default: copies into a child Automation-Pipeline-Examples folder under -Destination' {
+        $dest = Join-Path $script:cpDestRoot 'default'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -PassThru 6>$null
+
+        $r | Should -Not -BeNullOrEmpty
+        $r.FullName | Should -Be (Join-Path $dest 'Automation-Pipeline-Examples')
+        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'azure-devops') | Should -BeTrue
+    }
+
+    It '-Platform GitHub: copies only github-actions and skips azure-devops' {
+        $dest = Join-Path $script:cpDestRoot 'gh'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -PassThru 6>$null
+
+        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'azure-devops')   | Should -BeFalse
+        # README and .itsm/ are platform-agnostic - always copied
+        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+    }
+
+    It '-Platform AzureDevOps: copies only azure-devops and skips github-actions' {
+        $dest = Join-Path $script:cpDestRoot 'ado'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -Platform AzureDevOps -PassThru 6>$null
+
+        Test-Path (Join-Path $r.FullName 'azure-devops')   | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeFalse
+        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+    }
+
+    It '-Flatten: copies contents directly into -Destination (no parent folder)' {
+        $dest = Join-Path $script:cpDestRoot 'flat'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -Flatten -PassThru 6>$null
+
+        $r.FullName | Should -Be $dest
+        # No "Automation-Pipeline-Examples" subfolder was created
+        Test-Path (Join-Path $dest 'Automation-Pipeline-Examples') | Should -BeFalse
+        Test-Path (Join-Path $dest 'README.md') | Should -BeTrue
+        Test-Path (Join-Path $dest 'github-actions') | Should -BeTrue
+    }
+
+    It 'Throws on a non-empty existing target without -Force' {
+        $dest = Join-Path $script:cpDestRoot 'noforce'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        # First copy populates the target
+        Copy-AzureLocalPipelineExample -Destination $dest 6>$null | Out-Null
+
+        # Second copy without -Force should refuse
+        { Copy-AzureLocalPipelineExample -Destination $dest 6>$null } |
+            Should -Throw -ExpectedMessage '*Re-run with -Force*'
+    }
+
+    It 'Re-copies and succeeds when -Force is supplied' {
+        $dest = Join-Path $script:cpDestRoot 'force'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        Copy-AzureLocalPipelineExample -Destination $dest 6>$null | Out-Null
+        { Copy-AzureLocalPipelineExample -Destination $dest -Force 6>$null } | Should -Not -Throw
+    }
+
+    It '-WhatIf does not copy anything' {
+        $dest = Join-Path $script:cpDestRoot 'whatif'
+        # Note: dest does not yet exist; -WhatIf should not create it either
+        Copy-AzureLocalPipelineExample -Destination $dest -WhatIf 6>$null
+        Test-Path (Join-Path $dest 'Automation-Pipeline-Examples') | Should -BeFalse
+    }
+
+    It '-PassThru returns a DirectoryInfo; without it nothing is emitted to the pipeline' {
+        $dest = Join-Path $script:cpDestRoot 'passthru'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $withPT = Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -PassThru 6>$null
+        $withPT | Should -BeOfType [System.IO.DirectoryInfo]
+
+        $dest2 = Join-Path $script:cpDestRoot 'nopassthru'
+        New-Item -Path $dest2 -ItemType Directory -Force | Out-Null
+        $noPT = Copy-AzureLocalPipelineExample -Destination $dest2 -Platform GitHub 6>$null
+        $noPT | Should -BeNullOrEmpty
+    }
+
+    It 'Creates -Destination when it does not already exist' {
+        $dest = Join-Path $script:cpDestRoot 'autocreate'
+        # Intentionally not creating $dest beforehand
+        Test-Path $dest | Should -BeFalse
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -PassThru 6>$null
+
+        Test-Path $dest | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+    }
+}
+
+#endregion Copy-AzureLocalPipelineExample (v0.7.4)
 
 

@@ -143,6 +143,7 @@ If you are new to this module, work through these in order from a regular PowerS
 - **ITSM Connector - Phase 1 (ServiceNow)**: new opt-in capability for opening ServiceNow incidents directly from update / fleet pipeline output. Three new exported functions - `New-AzureLocalIncident`, `Get-AzureLocalItsmConfig`, `Test-AzureLocalItsmConnection` - plus supporting private helpers (`Resolve-AzLocalItsmSecret`, `Get-AzLocalItsmDedupeKey`, `Get-AzLocalItsmTriggerDecision`, `Format-AzLocalIncidentBody`, `Invoke-AzLocalItsmHttp`, `Invoke-AzLocalServiceNowAdapter`). `New-AzureLocalIncident` reads a JUnit results artifact (and an optional readiness CSV), applies the trigger matrix from the user's [`azurelocal-itsm.yml`](Automation-Pipeline-Examples/.itsm/azurelocal-itsm.yml) config, computes a deterministic SHA256 dedupe key per `{ClusterResourceId, UpdateName, TriggerCategory}` tuple, queries ServiceNow for an existing open ticket (`u_azlocal_dedupe_key`, `stateIN1,2,3`), and either creates a new incident or returns the existing ticket - so re-running the same pipeline is idempotent. Auth is OAuth 2.0 `client_credentials` only in Phase 1; secrets resolve from Azure Key Vault (`kv://<vault>/<secret>`), environment variables (`env://NAME`), or explicit literals (`literal://...` with `-AllowLiteral`). HTTP path is TLS 1.2+, default 30s timeout, exponential backoff on 429/5xx, `Retry-After` honoured. The CSV export from `-ExportPath` is sanitised by `ConvertTo-SafeCsvCollection`, neutralising the same formula-injection class already handled elsewhere in the module. `Test-AzureLocalItsmConnection` validates the config, resolves secrets, performs the OAuth token grant, and probes a one-row read against `/api/now/table/incident` (matching the least-privilege scope used by ticket creation). Full documentation under [`ITSM/`](ITSM/): [README](ITSM/README.md), [ITSM-Connector-Plan.md](ITSM/ITSM-Connector-Plan.md), [ITSM-Config-Reference.md](ITSM/ITSM-Config-Reference.md). A ready-to-copy sample config plus the Mustache ticket-body template live under [`Automation-Pipeline-Examples/.itsm/`](Automation-Pipeline-Examples/.itsm/). 33 new ITSM Pester tests; full suite green at 337/337.
 - **Phase 2 and Phase 3 are not in this release.** Phase 2 (`Sync-AzureLocalIncident` - close-out / work-note sweep when the underlying cluster recovers) and Phase 3 (Microsoft Teams + Slack mirror adapters) are designed in [`ITSM/ITSM-Connector-Plan.md`](ITSM/ITSM-Connector-Plan.md) and tracked for a later release. The `lifecycle` and `notifications` config sections are parsed and stored in Phase 1 but not yet acted on. A small set of Phase 1.5 follow-ups is also tracked: cmdbCi token expansion, custom-field presence check, rate-limit-headroom probe, in-module token caching, `Invoke-AzLocalItsmHttp -AllowedThumbprints` cert pinning, and `raiseAfterConsecutiveOccurrences` enforcement (requires the run-history store).
 - **Code hygiene**: removed the unused username/password OAuth grant path from the ServiceNow adapter (Phase 1 is `client_credentials` only) - silences the PSScriptAnalyzer `PSAvoidUsingUsernameAndPasswordParams` Error and `PSAvoidUsingPlainTextForPassword` Warning. Tightened the ITSM config validator so `secrets.source: mixed` now requires `secrets.keyvaultName`, matching the documented behaviour. Cleaned up legacy non-ASCII characters in [`Private/Format-AzLocalUpdateRun.ps1`](Private/Format-AzLocalUpdateRun.ps1) and [`Publish-Module.ps1`](Publish-Module.ps1) divider comments. Flattened `ITSM/Docs/` into [`ITSM/`](ITSM/) (removed the stale duplicate `ITSM/Docs/ITSM-Connector-Plan.md`).
+- **`Copy-AzureLocalPipelineExample` (convenience)**: new exported function that copies the bundled [`Automation-Pipeline-Examples/`](Automation-Pipeline-Examples/) folder out of the module install location into a destination folder you control (default: current directory). Supports `-Platform GitHub | AzureDevOps | All`, `-Flatten` (drop contents directly into the destination), `-Force` (overwrite), `-PassThru`, `-WhatIf` and `-Confirm`. After copying, prints a short "next steps" summary pointing at the README and the platform-specific destination paths so you don't have to hunt through `$module.ModuleBase` to find the YAML samples.
 
 > Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
@@ -349,6 +350,20 @@ Import-Module .\AzLocal.UpdateManagement.psd1
 # Or import using the full path
 Import-Module "C:\Path\To\AzLocal.UpdateManagement\AzLocal.UpdateManagement.psd1"
 ```
+
+**Optional: copy the CI/CD pipeline samples out of the module install folder**
+
+The module ships a working set of pipeline YAML files plus a step-by-step setup README under `Automation-Pipeline-Examples/`. They live inside the module install path (typically under `C:\Program Files\WindowsPowerShell\Modules\AzLocal.UpdateManagement\<version>\`), so the easiest way to start using them is to copy them somewhere you control:
+
+```powershell
+# Copy everything (GitHub + Azure DevOps + ITSM samples + README) to the current folder
+Copy-AzureLocalPipelineExample
+
+# Or only the GitHub Actions YAML, into a target folder of your choice
+Copy-AzureLocalPipelineExample -Destination C:\repos\my-fleet -Platform GitHub
+```
+
+The function prints a short "next steps" summary pointing at the copied README and the platform-specific YAML folder. See [`Automation-Pipeline-Examples/README.md`](Automation-Pipeline-Examples/README.md) for the full step-by-step setup guide.
 
 ### 3. Start an Update on a Single Cluster
 
@@ -649,6 +664,41 @@ New-AzureLocalFleetStatusHtmlReport `
 > 💡 **CI/CD**: this same assess -> remediate -> apply flow is wired into the pipeline examples under `Automation-Pipeline-Examples/`: see the `assess-update-readiness.yml` pipeline (report-only) and the `check-readiness` job inside `apply-updates.yml`.
 
 ## Available Functions
+
+### `Copy-AzureLocalPipelineExample`
+
+Copies the bundled `Automation-Pipeline-Examples/` folder (GitHub Actions YAML, Azure DevOps Pipelines YAML, ITSM sample config + ticket-body template, plus the step-by-step setup README) out of the module install location into a destination folder you control. The function is read-only relative to the module install and only destructive relative to the destination (and only when `-Force` is supplied and the target is already populated).
+
+**Parameters:**
+
+- `-Destination` (Optional, Position 0): Target folder. If missing, it is created. Default is `$PWD`.
+- `-Platform` (Optional): `All` (default), `GitHub`, or `AzureDevOps`. Filters which `*-actions/` / `*-devops/` subfolders are copied. The top-level `README.md` and `.itsm/` sample folder are platform-agnostic and always copied.
+- `-Flatten` (Optional Switch): Copy contents directly into `-Destination` (no `Automation-Pipeline-Examples` parent folder).
+- `-Force` (Optional Switch): Required if the destination already contains pipeline files; overwrites them.
+- `-PassThru` (Optional Switch): Return the destination `[DirectoryInfo]`.
+- Supports `-WhatIf` and `-Confirm`.
+
+**Returns:** `[System.IO.DirectoryInfo]` when `-PassThru` is specified. Nothing otherwise. Always prints a short "next steps" summary to the console.
+
+**Examples:**
+
+```powershell
+# Default: copies into .\Automation-Pipeline-Examples\ under the current directory
+Copy-AzureLocalPipelineExample
+
+# Only the GitHub Actions YAML, into a target folder of your choice
+Copy-AzureLocalPipelineExample -Destination C:\repos\my-fleet -Platform GitHub
+
+# Drop the GitHub Actions YAML directly into .github\workflows (no parent folder), overwriting
+New-Item -ItemType Directory .\.github\workflows -Force | Out-Null
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Flatten -Force
+
+# Capture the destination and cd into it
+$dest = Copy-AzureLocalPipelineExample -Destination C:\repos\fleet -PassThru
+Set-Location $dest
+```
+
+---
 
 ### `Connect-AzureLocalServicePrincipal`
 
