@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.3
+**Latest Version:** v0.7.4
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new name aligns with the Azure Local product name (Microsoft retired the *Azure Stack HCI* brand in late 2024). The module GUID is preserved across the rename. If you had the old name installed:
 >
