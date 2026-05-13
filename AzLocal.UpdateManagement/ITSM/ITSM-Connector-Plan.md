@@ -555,7 +555,7 @@ All produced as part of v0.7.3:
 | `ITSM/ServiceNow-AzureLocal-Setup-UpdateSet.xml` | Update Set installing the five `u_azlocal_*` custom fields + the OAuth app role + a sample assignment group. |
 | `Automation-Pipeline-Examples/.itsm/azurelocal-itsm.yml` | Working example config. |
 | `Automation-Pipeline-Examples/.itsm/templates/incident-body.md` | Mustache-style template used by `Format-AzLocalIncidentBody`. |
-| `Automation-Pipeline-Examples/.itsm/templates/work-note.md` | Template used by `Sync-AzureLocalIncident` for close-out comments. |
+| `Automation-Pipeline-Examples/.itsm/templates/work-note.md` | Template used by `Sync-AzureLocalIncident` for close-out comments. **Deferred to Phase 2** - not present in v0.7.4 because `Sync-AzureLocalIncident` itself is Phase 2. |
 | `README.md` (module root) | New "## ITSM Connector (v0.7.3)" section + cross-link to Docs/. |
 | `Automation-Pipeline-Examples/README.md` | New "## ITSM Ticketing" section walking through KV setup, native-secret fallback, dry-run, mirror-channel setup. |
 | `CHANGELOG.md` | v0.7.3 entry covering refactor + ITSM. |
