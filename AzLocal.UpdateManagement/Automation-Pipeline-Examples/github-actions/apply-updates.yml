@@ -33,6 +33,40 @@ on:
         description: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16. Raise for large fleets.'
         required: false
         default: '4'
+      # --- ITSM Connector (v0.7.4 Phase 1: ServiceNow) ---
+      # Set raise_itsm_ticket=true to open ServiceNow incidents for clusters whose
+      # Status matches an entry in the trigger matrix (default config:
+      # ./.itsm/azurelocal-itsm.yml). Requires the secrets listed in the env: block
+      # of the 'Raise ITSM tickets' step below. Leave false to keep the existing
+      # update workflow behaviour unchanged.
+      raise_itsm_ticket:
+        description: 'Open ITSM tickets (ServiceNow) for clusters needing manual action'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_config_path:
+        description: 'Path to ITSM matrix config (YAML or JSON)'
+        required: false
+        default: './.itsm/azurelocal-itsm.yml'
+      itsm_dry_run:
+        description: 'ITSM: build payloads + run read-only dedupe but do NOT create tickets'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_force_create:
+        description: 'ITSM: bypass dedupe and always create new tickets (use with caution)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   MODULE_PATH: './AzLocal.UpdateManagement'
@@ -242,6 +276,96 @@ jobs:
         reporter: java-junit
       continue-on-error: true
     
+    # ----------------------------------------------------------------------
+    # ITSM Connector (v0.7.4 Phase 1 - ServiceNow)
+    #
+    # This block is fully opt-in (gated on inputs.raise_itsm_ticket == 'true').
+    # It runs AFTER the update results are published so a) failing clusters are
+    # already surfaced via test reporting, and b) the ITSM action is a strict
+    # additive step that never affects the apply-updates exit status.
+    #
+    # Secrets are mapped explicitly into the step's `env:` block so the module
+    # picks them up via env:// references in the config file. Do NOT pass them
+    # on the PowerShell command line - that pollutes process listings and CI logs.
+    # ----------------------------------------------------------------------
+    - name: Install powershell-yaml (ITSM config parser)
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      run: |
+        if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
+            Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+        }
+
+    - name: Raise ITSM tickets
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      id: itsm
+      env:
+        # ServiceNow OAuth client_credentials grant. Reference these via
+        # env://ITSM_SN_* in azurelocal-itsm.yml. Keep these secret names
+        # stable so users only have to wire them once.
+        ITSM_SN_INSTANCE_URL: ${{ secrets.ITSM_SN_INSTANCE_URL }}
+        ITSM_SN_CLIENT_ID:    ${{ secrets.ITSM_SN_CLIENT_ID }}
+        ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
+        INPUT_ITSM_CONFIG_PATH: ${{ github.event.inputs.itsm_config_path }}
+        INPUT_ITSM_DRY_RUN:     ${{ github.event.inputs.itsm_dry_run }}
+        INPUT_ITSM_FORCE_CREATE: ${{ github.event.inputs.itsm_force_create }}
+      run: |
+        Import-Module "${{ env.MODULE_PATH }}/AzLocal.UpdateManagement.psd1" -Force
+
+        $configPath = $env:INPUT_ITSM_CONFIG_PATH
+        $dryRun     = $env:INPUT_ITSM_DRY_RUN -eq 'true'
+        $force      = $env:INPUT_ITSM_FORCE_CREATE -eq 'true'
+
+        if (-not (Test-Path $configPath)) {
+            Write-Host "::warning::ITSM config not found at '$configPath' - skipping ticket creation."
+            exit 0
+        }
+
+        $cfg = Get-AzureLocalItsmConfig -Path $configPath
+
+        $junitInput = './artifacts/update-results.xml'
+        if (-not (Test-Path $junitInput)) {
+            Write-Host "::warning::No update-results.xml found at '$junitInput' - skipping ticket creation."
+            exit 0
+        }
+
+        $params = @{
+            InputArtifactPath = $junitInput
+            Config            = $cfg
+            RunMetadata       = @{
+                Platform = 'github'
+                RunId    = $env:GITHUB_RUN_ID
+                RunUrl   = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+                Branch   = $env:GITHUB_REF
+            }
+            DryRun            = $dryRun
+            ForceCreate       = $force
+            ExportPath        = './artifacts/itsm-results.csv'
+            ExportJUnitPath   = './artifacts/itsm-results.xml'
+        }
+
+        $results = New-AzureLocalIncident @params
+        $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
+
+    - name: Upload ITSM Artefacts
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: itsm-results
+        path: ./artifacts/itsm-*.*
+        retention-days: 30
+      continue-on-error: true
+
+    - name: Publish ITSM Test Results
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: dorny/test-reporter@v1
+      with:
+        name: ITSM Tickets
+        path: ./artifacts/itsm-results.xml
+        reporter: java-junit
+      continue-on-error: true
+
     - name: Summary
       shell: pwsh
       env:
