@@ -2,7 +2,7 @@
 
 This repository contains PowerShell modules, functions and standalone scripts that I have created to help with Azure Local deployment, updates and management automation.
 
-The modules and scripts in this repository, including AzStackHci.ManageUpdates, are not Microsoft supported service offerings or products. They are provided as example code only, with no warranty or official support. If you encounter problems or have any feedback or comments please raise an [Issue](https://github.com/NeilBird/Azure-Local/issues).
+The modules and scripts in this repository, including AzLocal.UpdateManagement, are not Microsoft supported service offerings or products. They are provided as example code only, with no warranty or official support. If you encounter problems or have any feedback or comments please raise an [Issue](https://github.com/NeilBird/Azure-Local/issues).
 
 Shared under [MIT License](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE)
 
