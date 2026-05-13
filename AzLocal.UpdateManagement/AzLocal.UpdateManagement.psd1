@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.4'
+    ModuleVersion = '0.7.41'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -43,6 +43,7 @@
         'Private/Get-AzLocalClusterUpdateRuns.ps1',
         'Private/Get-AzLocalItsmDedupeKey.ps1',
         'Private/Get-AzLocalItsmTriggerDecision.ps1',
+        'Private/Get-AzLocalModuleRootManifestPath.ps1',
         'Private/Get-AzLocalRunEndTime.ps1',
         'Private/Get-CurrentStepPath.ps1',
         'Private/Get-ExportFormat.ps1',
@@ -163,6 +164,41 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.41 - Hotfix: parallel fleet reads broken by v0.7.3 NestedModules refactor
+
+### Fixed
+- HIGH: every fleet read function that dispatches through
+  Invoke-FleetJobsInParallel (Get-AzureLocalUpdateRuns,
+  Get-AzureLocalUpdateSummary, Get-AzureLocalClusterUpdateReadiness,
+  Get-AzureLocalAvailableUpdates, Get-AzureLocalFleetProgress,
+  Invoke-AzureLocalFleetOperation, Test-AzureLocalClusterHealth, and
+  Start-AzureLocalClusterUpdate's parallel path) failed for every
+  cluster when invoked with -ThrottleLimit > 1 against the PSGallery-
+  installed v0.7.4, returning State=Error: "Cannot use '&' to invoke in
+  the context of module 'Invoke-FleetJobsInParallel' because it is not
+  imported." Inline (-ThrottleLimit 1) was unaffected. Root cause: the
+  v0.7.3 NestedModules refactor changed $PSCommandPath inside
+  Invoke-FleetJobsInParallel.ps1 to point at the helper's own .ps1, not
+  the root manifest. Per-batch Start-Job scriptblocks then imported only
+  that .ps1 in the child runspace, so & $mod { ... } against private
+  helpers always failed.
+- HIGH: New-AzureLocalFleetStatusHtmlReport -ThrottleLimit > 1 (via
+  Get-AzureLocalFleetStatusData) threw at start-up: "Parallel collection
+  requires module path '...\Public\AzLocal.UpdateManagement.psm1' to be
+  reachable by background jobs, but it does not exist." Same class of
+  regression but a separate code path: Get-AzureLocalFleetStatusData was
+  using Join-Path $PSScriptRoot 'AzLocal.UpdateManagement.psm1', and
+  after v0.7.3 $PSScriptRoot resolves to Public/, not the module root.
+  New-AzureLocalFleetStatusHtmlReport's footer fallback had the same flaw.
+- Centralised the resolution in a new private helper
+  Get-AzLocalModuleRootManifestPath, used by all three sites. It prefers
+  the loaded module's .Path (.psd1 over .psm1) and falls back to walking
+  up from the caller, so it is correct from any Public/ or Private/ file.
+- Added Pester regression tests for the helper and for the trailing
+  $ModulePath argument that Invoke-FleetJobsInParallel passes to per-
+  batch scriptblocks. Existing tests only exercised the inline
+  -ThrottleLimit 1 fast-path and silently masked the v0.7.4 regression.
+
 ## Version 0.7.4 - ITSM Connector Phase 1 (ServiceNow)
 
 ### Added (Phase 1 scaffold)
@@ -229,45 +265,26 @@
 - Get-AzureLocalUpdateRuns / Get-AzureLocalUpdateSummary /
   Get-AzureLocalClusterUpdateReadiness no longer fail when invoked with
   -ThrottleLimit greater than 1. Previously the per-cluster scriptblock
-  dispatched via Start-Job called module-private helpers
-  (Invoke-AzRestJson, Get-AzLocalClusterUpdateRuns, Format-AzLocalUpdateRun,
-  Get-LatestUpdateByYYMM, ConvertTo-AzLocalAdditionalProperties,
-  Get-HealthCheckFailureSummary, Get-TagValue) directly. Because those
-  helpers are filtered out by Export-ModuleMember, after Import-Module in
-  the child runspace they were not visible at script command-resolution
-  scope, so every cluster reported
+  dispatched via Start-Job called module-private helpers directly. After
+  Import-Module in the child runspace those helpers were not visible at
+  script command-resolution scope, so every cluster reported
   "The term 'Get-AzLocalClusterUpdateRuns' is not recognized..." (or the
-  equivalent for the other helper). Inline (-ThrottleLimit 1) execution
-  was unaffected because that path runs in the parent module's session
-  state. Fix: each affected scriptblock now resolves the loaded module
-  reference (Import-Module -PassThru when needed) and either invokes the
-  helper via & $module { ... } or rebinds the helper's bound scriptblock
-  into the local function scope, so calls execute against the module's
-  own session state and resolve all transitive private references.
-  Reported against a 9-cluster Prod fleet.
-
-- cp1252 encoding warnings no longer leak into JSON parsing on the inline
-  (-ThrottleLimit 1) path. On Windows hosts where the console code page is
-  cp1252 (the English-US default), az rest and az graph query emitted
-  "WARNING: Unable to encode the output with cp1252 encoding. Unsupported
-  characters are discarded." whenever ARM responses contained non-cp1252
-  characters (smart quotes, accented cluster tags, localised health-check
-  messages, etc.). Captured via 2>&1, that warning was being prepended to
-  the JSON body and breaking ConvertFrom-Json, silently dropping update
-  runs and available updates for affected clusters. Invoke-AzRestJson set
-  PYTHONIOENCODING=utf-8 transiently per-call (v0.7.0+), but this is
-  structurally ineffective: az.cmd launches python with the -I (isolated)
-  flag, which implies -E and so causes python to IGNORE all PYTHON*
-  environment variables. The actual fix is to pass --only-show-errors to
-  every az rest and az graph query invocation (Azure CLI maintainer's
-  recommended workaround per github.com/Azure/azure-cli/issues/14426).
-  This suppresses the encode warning at source. Applied to
-  Invoke-AzRestJson, Invoke-AzResourceGraphQuery, and all five direct
-  az rest call sites (resource validation, Start-AzureLocalClusterUpdate
-  POST, Set-AzLocalClusterTagsMerge GET+PATCH, sideloaded-tag reset
-  GET+PATCH). The module-load PYTHONIOENCODING assignment is retained as
-  harmless defence-in-depth for environments that have manually patched
-  az.cmd to remove -I.
+  equivalent). Inline (-ThrottleLimit 1) execution was unaffected. Fix:
+  each affected scriptblock now resolves the loaded module reference
+  (Import-Module -PassThru) and invokes the helper via & $module { ... }
+  so calls execute against the module's own session state and resolve
+  all transitive private references. Reported against a 9-cluster Prod
+  fleet. (See also v0.7.41 which catches a different manifestation of
+  this class.)
+- cp1252 encoding warnings no longer leak into JSON parsing. On Windows
+  hosts where the console code page is cp1252, az rest / az graph query
+  emitted "WARNING: Unable to encode the output with cp1252 encoding..."
+  for ARM responses containing non-cp1252 characters; captured via 2>&1
+  that warning broke ConvertFrom-Json. PYTHONIOENCODING=utf-8 is
+  ineffective because az.cmd launches python with -I (isolated). Fix:
+  pass --only-show-errors to every az rest and az graph query call site
+  (Azure CLI maintainer's recommended workaround per azure-cli #14426).
+  See CHANGELOG.md for full detail.
 
 ## Version 0.7.1 - EndTime column for update runs + Sideloaded payload workflow
 
