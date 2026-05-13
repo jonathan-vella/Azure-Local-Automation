@@ -162,7 +162,21 @@ function Invoke-AzureLocalFleetOperation {
     
     $totalClusters = $allClusters.Count
     Write-Log -Message "Total clusters to process: $totalClusters" -Level Info
-    
+
+    # Honour -WhatIf / -Confirm at the fleet level. Per-cluster gating would be
+    # too noisy for the typical fleet size; one prompt describing the whole
+    # operation is sufficient. The -Force interactive prompt below is retained
+    # for ApplyUpdate so the historical caller experience is preserved.
+    $scopeDescription = if ($PSCmdlet.ParameterSetName -eq 'ByTag') {
+        "$totalClusters cluster(s) with UpdateRing='$UpdateRingValue'"
+    } else {
+        "$totalClusters cluster(s) supplied by ResourceId"
+    }
+    if (-not $PSCmdlet.ShouldProcess($scopeDescription, "Fleet $Operation")) {
+        Write-Log -Message "Fleet operation cancelled by ShouldProcess." -Level Warning
+        return $null
+    }
+
     # Confirmation
     if (-not $Force -and $Operation -eq 'ApplyUpdate') {
         $confirmation = Read-Host "This will start updates on $totalClusters cluster(s). Continue? (y/n)"

@@ -7,13 +7,13 @@ function Get-AzLocalRunEndTime {
 
     if ($props.PSObject.Properties['progress'] -and $props.progress -and
         $props.progress.PSObject.Properties['endTimeUtc'] -and $props.progress.endTimeUtc) {
-        try { return [datetime]$props.progress.endTimeUtc } catch {}
+        try { return [datetime]$props.progress.endTimeUtc } catch { $null = $_ <# malformed endTimeUtc; fall through to lastUpdatedTime / null #> }
     }
 
     $state = if ($props.PSObject.Properties['state']) { $props.state } else { $null }
     if ($state -in @('Succeeded', 'Failed') -and
         $props.PSObject.Properties['lastUpdatedTime'] -and $props.lastUpdatedTime) {
-        try { return [datetime]$props.lastUpdatedTime } catch {}
+        try { return [datetime]$props.lastUpdatedTime } catch { $null = $_ <# malformed lastUpdatedTime; return null #> }
     }
 
     return $null

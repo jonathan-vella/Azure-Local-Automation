@@ -15,10 +15,10 @@ function Format-AzLocalUpdateRun {
     $duration = ""
     $durationSpan = $null
     if ($props.PSObject.Properties['duration'] -and $props.duration) {
-        try { $durationSpan = [System.Xml.XmlConvert]::ToTimeSpan([string]$props.duration) } catch {}
+        try { $durationSpan = [System.Xml.XmlConvert]::ToTimeSpan([string]$props.duration) } catch { $null = $_ <# malformed ISO-8601 duration; fall through to EndTime-StartTime fallback #> }
     }
     if (-not $durationSpan -and $props.timeStarted -and $endTimeDt) {
-        try { $durationSpan = $endTimeDt - [datetime]$props.timeStarted } catch {}
+        try { $durationSpan = $endTimeDt - [datetime]$props.timeStarted } catch { $null = $_ <# malformed timeStarted; leave duration blank #> }
     }
     if ($durationSpan) {
         $duration = Format-AzLocalDurationHuman -Value $durationSpan
@@ -28,7 +28,7 @@ function Format-AzLocalUpdateRun {
             $runningSpan = (Get-Date) - [datetime]$props.timeStarted
             $human = Format-AzLocalDurationHuman -Value $runningSpan
             if ($human) { $duration = "$human (running)" }
-        } catch {}
+        } catch { $null = $_ <# malformed timeStarted on in-flight run; leave duration blank #> }
     }
 
     $currentStep = ""

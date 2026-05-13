@@ -154,6 +154,15 @@ resources
             }
         }
 
+        # Honour -WhatIf / -Confirm. ShouldProcess gates the per-cluster
+        # tag mutation; the underlying helper still no-ops on NoTag / NoRuns /
+        # RunNotSucceeded states so this prompt only fires for clusters where
+        # a tag write could actually occur.
+        if (-not $PSCmdlet.ShouldProcess($t.Name, 'Reset UpdateSideloaded tag')) {
+            Write-Log -Message "[$($t.Name)] Skipped (ShouldProcess declined)." -Level Info
+            continue
+        }
+
         $r = Invoke-AzLocalSideloadedAutoResetForCluster `
             -ClusterName $t.Name `
             -ClusterResourceId $t.ResourceId `
@@ -161,7 +170,6 @@ resources
             -LatestRunUpdateName $updName `
             -ApiVersion $ApiVersion `
             -Force:$Force
-
         switch ($r.Action) {
             'Reset'           { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Success }
             'OrphanCleared'   { Write-Log -Message "[$($t.Name)] $($r.Message)" -Level Info }
