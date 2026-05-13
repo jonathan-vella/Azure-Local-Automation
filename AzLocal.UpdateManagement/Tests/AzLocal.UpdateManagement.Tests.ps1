@@ -34,12 +34,12 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.3' {
-            $script:ModuleInfo.Version | Should -Be '0.7.3'
+        It 'Should have version 0.7.4' {
+            $script:ModuleInfo.Version | Should -Be '0.7.4'
         }
 
-        It 'Should export exactly 20 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 20
+        It 'Should export exactly 23 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 23
         }
 
         It 'Should export the expected functions' {
@@ -68,7 +68,11 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 # Update Schedule Tag Helpers (v0.6.4)
                 'Test-AzureLocalUpdateScheduleAllowed',
                 # Sideloaded Payload Workflow (v0.7.1)
-                'Reset-AzureLocalSideloadedTag'
+                'Reset-AzureLocalSideloadedTag',
+                # ITSM Connector Phase 1 (v0.7.4)
+                'Get-AzureLocalItsmConfig',
+                'Test-AzureLocalItsmConnection',
+                'New-AzureLocalIncident'
             )
             
             foreach ($func in $expectedFunctions) {

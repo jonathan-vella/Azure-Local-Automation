@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.3'
+    ModuleVersion = '0.7.4'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -38,8 +38,11 @@
         'Private/ConvertTo-ScrubbedCliOutput.ps1',
         'Private/Export-ResultsToJUnitXml.ps1',
         'Private/Format-AzLocalDurationHuman.ps1',
+        'Private/Format-AzLocalIncidentBody.ps1',
         'Private/Format-AzLocalUpdateRun.ps1',
         'Private/Get-AzLocalClusterUpdateRuns.ps1',
+        'Private/Get-AzLocalItsmDedupeKey.ps1',
+        'Private/Get-AzLocalItsmTriggerDecision.ps1',
         'Private/Get-AzLocalRunEndTime.ps1',
         'Private/Get-CurrentStepPath.ps1',
         'Private/Get-ExportFormat.ps1',
@@ -51,11 +54,14 @@
         'Private/Install-AzGraphExtension.ps1',
         'Private/Invoke-AzLocalSideloadedAutoReset.ps1',
         'Private/Invoke-AzLocalSideloadedAutoResetForCluster.ps1',
+        'Private/Invoke-AzLocalItsmHttp.ps1',
+        'Private/Invoke-AzLocalServiceNowAdapter.ps1',
         'Private/Invoke-AzResourceGraphQuery.ps1',
         'Private/Invoke-AzRestJson.ps1',
         'Private/Invoke-AzureLocalUpdateApply.ps1',
         'Private/Invoke-FleetJobsInParallel.ps1',
         'Private/Invoke-FleetOpClusterAction.ps1',
+        'Private/Resolve-AzLocalItsmSecret.ps1',
         'Private/Resolve-SafeOutputPath.ps1',
         'Private/Resolve-WildcardDate.ps1',
         'Private/Resolve-WildcardDateRange.ps1',
@@ -79,10 +85,12 @@
         'Public/Get-AzureLocalClusterUpdateReadiness.ps1',
         'Public/Get-AzureLocalFleetProgress.ps1',
         'Public/Get-AzureLocalFleetStatusData.ps1',
+        'Public/Get-AzureLocalItsmConfig.ps1',
         'Public/Get-AzureLocalUpdateRuns.ps1',
         'Public/Get-AzureLocalUpdateSummary.ps1',
         'Public/Invoke-AzureLocalFleetOperation.ps1',
         'Public/New-AzureLocalFleetStatusHtmlReport.ps1',
+        'Public/New-AzureLocalIncident.ps1',
         'Public/Reset-AzureLocalSideloadedTag.ps1',
         'Public/Resume-AzureLocalFleetUpdate.ps1',
         'Public/Set-AzureLocalClusterUpdateRingTag.ps1',
@@ -90,6 +98,7 @@
         'Public/Stop-AzureLocalFleetUpdate.ps1',
         'Public/Test-AzureLocalClusterHealth.ps1',
         'Public/Test-AzureLocalFleetHealthGate.ps1',
+        'Public/Test-AzureLocalItsmConnection.ps1',
         'Public/Test-AzureLocalUpdateScheduleAllowed.ps1'
     )
 
@@ -118,7 +127,11 @@
         # Update Schedule Tag Helpers (v0.6.4)
         'Test-AzureLocalUpdateScheduleAllowed',
         # Sideloaded Payload Workflow (v0.7.1)
-        'Reset-AzureLocalSideloadedTag'
+        'Reset-AzureLocalSideloadedTag',
+        # ITSM Connector Phase 1 (v0.7.4)
+        'Get-AzureLocalItsmConfig',
+        'Test-AzureLocalItsmConnection',
+        'New-AzureLocalIncident'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -147,6 +160,32 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.4 - ITSM Connector Phase 1 (ServiceNow)
+
+### Added (Phase 1 scaffold)
+- New optional ITSM ticketing surface that lets `apply-updates` and
+  `fleet-update-status` pipelines open ServiceNow incidents when a cluster
+  needs operator action. Disabled by default; opt-in via pipeline input
+  `raise_itsm_ticket=true` plus a `./.itsm/azurelocal-itsm.yml` config file.
+- New public functions (Phase 1):
+  - `Get-AzureLocalItsmConfig`  - load + validate the YAML/JSON trigger matrix
+  - `Test-AzureLocalItsmConnection`  - dry-run probe of ITSM endpoint + adapters
+  - `New-AzureLocalIncident`  - consume JUnit results, evaluate trigger matrix,
+    open / dedupe ServiceNow incidents, return per-cluster Action/TicketId rows
+- New internal helpers (Phase 1):
+  - `Resolve-AzLocalItsmSecret`, `Get-AzLocalItsmDedupeKey`,
+    `Get-AzLocalItsmTriggerDecision`, `Format-AzLocalIncidentBody`,
+    `Invoke-AzLocalItsmHttp`, `Invoke-AzLocalServiceNowAdapter`
+- New documentation: `Docs/ITSM-Config-Reference.md` (full schema reference)
+  and `Automation-Pipeline-Examples/.itsm/` sample config + Mustache-style
+  ticket-body templates.
+- Phase 2 (`Sync-AzureLocalIncident` lifecycle close-out) and Phase 3
+  (Teams / Slack mirror adapters) follow in subsequent v0.7.4 work; the
+  Phase 1 surface is feature-complete on its own.
+- Secrets: ITSM credentials are referenced from Azure Key Vault
+  (`kv://<vault>/<secret>`) or native CI secrets (`env://<NAME>`). No raw
+  secret is ever written to YAML or to disk.
+
 ## Version 0.7.3 - Module renamed to AzLocal.UpdateManagement + internal refactor
 
 ### Renamed

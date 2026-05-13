@@ -1,0 +1,47 @@
+# Sample ITSM connector config for AzLocal.UpdateManagement v0.7.4 Phase 1
+# Reference: AzLocal.UpdateManagement/Docs/ITSM-Config-Reference.md
+schemaVersion: 1
+
+# ----- Authentication -----
+secrets:
+  source: keyvault                 # 'keyvault' | 'envvar' | 'mixed'
+  keyvaultName: corp-prod-kv-01    # required when source = keyvault
+  servicenow:
+    clientId: sn-azlocal-clientid
+    clientSecret: sn-azlocal-clientsecret
+    instanceUrl: env://ITSM_SN_INSTANCE_URL   # never a secret; kept here for parity
+
+# ----- Default target -----
+defaults:
+  itsmTarget: ServiceNow
+  assignmentGroup: AzureLocal-Ops
+  callerId: svc-azlocal-cicd@contoso.com
+  category: Compute / Azure Local
+  templates:
+    titleTemplate: "[Azure Local] {{cluster.name}} - {{trigger.category}} ({{run.updateName}})"
+    bodyTemplatePath: ./templates/incident-body.md
+
+# ----- Trigger matrix -----
+triggers:
+  Failed:
+    raiseTicket: true
+    severity: 2
+    category: "Cluster update failure"
+  Error:
+    raiseTicket: true
+    severity: 2
+    category: "Cluster update failure"
+  HealthCheckBlocked:
+    raiseTicket: true
+    severity: 3
+    category: "Pre-update health resolution"
+  SideloadedBlocked:
+    raiseTicket: true
+    severity: 4
+    category: "Operator action: stage sideloaded payload"
+  ScheduleBlocked:
+    raiseTicket: false   # schedule-blocked self-resolves; opt-in if you want a ticket
+  Skipped:
+    raiseTicket: false
+  NotReady:
+    raiseTicket: false
