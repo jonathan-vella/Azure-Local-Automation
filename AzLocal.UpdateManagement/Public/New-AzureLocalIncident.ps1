@@ -130,9 +130,28 @@ function New-AzureLocalIncident {
                 Action            = 'Skipped'
                 Severity          = $null
                 TicketId          = $null
+                TicketSysId       = $null
                 TicketUrl         = $null
                 DedupeKey         = $null
                 Reason            = $decision.Reason
+            })
+            continue
+        }
+
+        $dedupeInputsValid = -not ([string]::IsNullOrWhiteSpace($row.ClusterResourceId) -or [string]::IsNullOrWhiteSpace($row.UpdateName))
+        if (-not $dedupeInputsValid) {
+            [void]$results.Add([pscustomobject]@{
+                ClusterName       = $row.ClusterName
+                ClusterResourceId = $row.ClusterResourceId
+                UpdateName        = $row.UpdateName
+                Status            = $row.Status
+                Action            = 'Skipped'
+                Severity          = $null
+                TicketId          = $null
+                TicketSysId       = $null
+                TicketUrl         = $null
+                DedupeKey         = $null
+                Reason            = "Row missing ClusterResourceId or UpdateName; cannot compute dedupe key. Ensure your JUnit emitter writes both properties on each testcase."
             })
             continue
         }

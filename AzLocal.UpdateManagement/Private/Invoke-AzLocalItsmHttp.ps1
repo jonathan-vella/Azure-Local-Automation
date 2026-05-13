@@ -44,7 +44,9 @@ function Invoke-AzLocalItsmHttp {
     }
     if ($Headers) { $params['Headers'] = $Headers }
     if ($null -ne $Body -and $Method -in 'POST','PUT','PATCH') {
-        if ($Body -is [string]) {
+        if ($Body -is [string] -or $Body -is [byte[]]) {
+            # Pass-through: caller is responsible for wire format (form-urlencoded
+            # string, raw octet-stream bytes for attachments, etc.).
             $params['Body'] = $Body
         } else {
             $params['Body'] = ($Body | ConvertTo-Json -Depth 12 -Compress)
