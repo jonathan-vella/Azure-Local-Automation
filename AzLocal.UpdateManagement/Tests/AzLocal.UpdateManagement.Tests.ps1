@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.4' {
-            $script:ModuleInfo.Version | Should -Be '0.7.4'
+        It 'Should have version 0.7.41' {
+            $script:ModuleInfo.Version | Should -Be '0.7.41'
         }
 
         It 'Should export exactly 24 functions' {
@@ -2021,9 +2021,82 @@ Describe 'Internal Helper: Invoke-FleetJobsInParallel' {
             }
         }
     }
+
+    Context 'ModulePath trailing argument (regression: v0.7.4 parallel-path bug)' {
+
+        # When the helper passes the trailing $ModulePath to the per-batch
+        # scriptblock, it MUST be the root AzLocal.UpdateManagement.psd1 (or
+        # .psm1) - NOT this helper's own .ps1. Otherwise, child Start-Job
+        # runspaces calling Import-Module $ModulePath load only the helper
+        # and every private helper reference fails with
+        #   "Cannot use '&' to invoke in the context of module 'Invoke-FleetJobsInParallel' because it is not imported."
+        # See: regression bug observed on a 9-cluster Prod fleet against the
+        # PSGallery-published v0.7.4 build.
+
+        It 'Should pass the root module manifest path (not the helper .ps1) as the trailing ModulePath argument' {
+            InModuleScope AzLocal.UpdateManagement {
+                $captured = $null
+                $sb = {
+                    param([object[]]$Batch, [string]$ModPath)
+                    # Echo back the path so the test can assert on it.
+                    [PSCustomObject]@{ ModPath = $ModPath }
+                }
+                $result = Invoke-FleetJobsInParallel -InputItems @('item1') -ScriptBlock $sb -ThrottleLimit 1
+                $captured = $result[0].Output.ModPath
+                $captured | Should -Not -BeNullOrEmpty
+                # Must point at the root manifest/module, not the helper file.
+                $captured | Should -Match 'AzLocal\.UpdateManagement\.ps[dm]1$'
+                $captured | Should -Not -Match 'Invoke-FleetJobsInParallel\.ps1$'
+            }
+        }
+    }
 }
 
 #endregion Internal Helper: Invoke-FleetJobsInParallel
+
+#region Internal Helper: Get-AzLocalModuleRootManifestPath
+
+Describe 'Internal Helper: Get-AzLocalModuleRootManifestPath' {
+
+    # This helper centralises the post-v0.7.3 fix: $PSScriptRoot inside any
+    # Public/ or Private/ .ps1 resolves to that subfolder, NOT the module
+    # root. The helper must return the root manifest (preferring .psd1)
+    # so child Start-Job runspaces can re-import the whole module.
+
+    Context 'Resolution via loaded module' {
+
+        It 'Should return a path ending in AzLocal.UpdateManagement.psd1 when the module is loaded' {
+            InModuleScope AzLocal.UpdateManagement {
+                $resolved = Get-AzLocalModuleRootManifestPath
+                $resolved | Should -Not -BeNullOrEmpty
+                $resolved | Should -Match 'AzLocal\.UpdateManagement\.ps[dm]1$'
+                # MUST NOT be a Public/ or Private/ nested-module .ps1.
+                $resolved | Should -Not -Match '\\(Public|Private)\\[^\\]+\.ps1$'
+                Test-Path -LiteralPath $resolved | Should -Be $true
+            }
+        }
+
+        It 'Should resolve correctly when given a CallerScriptPath inside Public/' {
+            InModuleScope AzLocal.UpdateManagement {
+                $fakeCaller = Join-Path -Path (Split-Path -Parent (Get-Module AzLocal.UpdateManagement | Select-Object -First 1).Path) -ChildPath 'Public\Get-AzureLocalUpdateRuns.ps1'
+                $resolved = Get-AzLocalModuleRootManifestPath -CallerScriptPath $fakeCaller
+                $resolved | Should -Match 'AzLocal\.UpdateManagement\.ps[dm]1$'
+                $resolved | Should -Not -Match '\\Public\\'
+            }
+        }
+
+        It 'Should resolve correctly when given a CallerScriptPath inside Private/' {
+            InModuleScope AzLocal.UpdateManagement {
+                $fakeCaller = Join-Path -Path (Split-Path -Parent (Get-Module AzLocal.UpdateManagement | Select-Object -First 1).Path) -ChildPath 'Private\Invoke-FleetJobsInParallel.ps1'
+                $resolved = Get-AzLocalModuleRootManifestPath -CallerScriptPath $fakeCaller
+                $resolved | Should -Match 'AzLocal\.UpdateManagement\.ps[dm]1$'
+                $resolved | Should -Not -Match '\\Private\\'
+            }
+        }
+    }
+}
+
+#endregion Internal Helper: Get-AzLocalModuleRootManifestPath
 
 #region Internal Helper: Invoke-FleetOpClusterAction
 

@@ -952,8 +952,11 @@ $(if ($showAttempts) { "                    <td>$encRunAttempts</td>`n" })      
     #--- Footer ---
     $moduleVersion = (Get-Module AzLocal.UpdateManagement | Select-Object -First 1).Version
     if (-not $moduleVersion) {
-        $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath 'AzLocal.UpdateManagement.psd1'
-        if (Test-Path $manifestPath) {
+        # $PSScriptRoot resolves to Public/ (not the module root) because this
+        # file is loaded via NestedModules. Use Get-AzLocalModuleRootManifestPath
+        # to locate the manifest at the module root.
+        $manifestPath = Get-AzLocalModuleRootManifestPath -CallerScriptPath $PSCommandPath
+        if ($manifestPath -and (Test-Path -LiteralPath $manifestPath) -and ($manifestPath -like '*.psd1')) {
             $manifest = Import-PowerShellDataFile -Path $manifestPath -ErrorAction SilentlyContinue
             $moduleVersion = $manifest.ModuleVersion
         }

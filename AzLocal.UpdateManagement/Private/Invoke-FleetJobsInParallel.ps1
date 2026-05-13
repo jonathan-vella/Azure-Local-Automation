@@ -69,7 +69,21 @@ function Invoke-FleetJobsInParallel {
         return , $results.ToArray()
     }
 
-    $modulePath = $PSCommandPath
+    # Resolve the ROOT module manifest path so child Start-Job runspaces can
+    # Import-Module the WHOLE module (root + every nested helper) rather than
+    # this single helper file. See Get-AzLocalModuleRootManifestPath for the
+    # full rationale. Until this fix, $PSCommandPath was passed verbatim and
+    # resolved to this .ps1 inside Public/ or Private/ - Import-Module then
+    # loaded only that one file as a transient module named
+    # 'Invoke-FleetJobsInParallel' and every '& $mod { ... }' against module-
+    # private helpers failed at runtime.
+    $modulePath = Get-AzLocalModuleRootManifestPath -CallerScriptPath $PSCommandPath
+    if (-not $modulePath) {
+        # Last-resort fallback - keep the inline (ThrottleLimit=1) path
+        # working even when the helper can't locate the root manifest. The
+        # parallel path will still fail loudly inside the child runspace.
+        $modulePath = $PSCommandPath
+    }
 
     if ($ThrottleLimit -le 1) {
         # Inline fast-path: run the whole batch in-process, no Start-Job.

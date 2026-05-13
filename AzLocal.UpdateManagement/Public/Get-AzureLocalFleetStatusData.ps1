@@ -216,10 +216,22 @@ function Get-AzureLocalFleetStatusData {
 
         Write-Log -Message "Splitting $($allResourceIds.Count) clusters into $($batches.Count) parallel batches of ~$batchSize" -Level Info
 
-        $modulePath = Join-Path -Path $PSScriptRoot -ChildPath 'AzLocal.UpdateManagement.psm1'
+        # Resolve the ROOT module manifest path. The previous implementation
+        # used 'Join-Path -Path $PSScriptRoot -ChildPath AzLocal.UpdateManagement.psm1'
+        # which produced '<ModuleRoot>\Public\AzLocal.UpdateManagement.psm1' -
+        # WRONG, because $PSScriptRoot resolves to the Public/ subfolder when
+        # this file is loaded via NestedModules. That broken path passed the
+        # Test-Path check on dev trees only because of dot-source side effects,
+        # but failed on PSGallery-installed layouts with
+        #   "Parallel collection requires module path
+        #    'C:\Program Files\WindowsPowerShell\Modules\AzLocal.UpdateManagement\<ver>\Public\AzLocal.UpdateManagement.psm1'
+        #    to be reachable by background jobs, but it does not exist."
+        # Get-AzLocalModuleRootManifestPath returns the correct root .psd1
+        # path so Start-Job runspaces re-import the full module.
+        $modulePath = Get-AzLocalModuleRootManifestPath -CallerScriptPath $PSCommandPath
         # Pre-flight: jobs must be able to re-import this module by path
-        if (-not (Test-Path -LiteralPath $modulePath)) {
-            throw "Parallel collection requires module path '$modulePath' to be reachable by background jobs, but it does not exist. Falling back to sequential mode is not supported here - re-run without -ThrottleLimit > 1 or from a directory where PSScriptRoot resolves correctly."
+        if (-not $modulePath -or -not (Test-Path -LiteralPath $modulePath)) {
+            throw "Parallel collection requires the AzLocal.UpdateManagement root manifest path to be resolvable for background jobs, but Get-AzLocalModuleRootManifestPath returned '$modulePath'. Re-run without -ThrottleLimit > 1, or re-import the module with 'Import-Module AzLocal.UpdateManagement -Force' so Get-Module can locate the manifest."
         }
         $incRuns = $IncludeUpdateRuns.IsPresent
         $incHealth = $IncludeHealthDetails.IsPresent
