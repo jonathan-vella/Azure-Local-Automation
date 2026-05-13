@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This repository contains PowerShell automation tools for deploying and managing Azure Local (Azure Stack HCI) clusters. The primary modules are **AzLocal.DeploymentAutomation** and **AzStackHci.ManageUpdates**, which provide ARM template-based deployment automation and fleet update management capabilities, respectively. Additional tools include VM management and Active Directory permissions analysis.
+This repository contains PowerShell automation tools for deploying and managing Azure Local (Azure Stack HCI) clusters. The primary modules are **AzLocal.DeploymentAutomation** and **AzLocal.UpdateManagement**, which provide ARM template-based deployment automation and fleet update management capabilities, respectively. Additional tools include VM management and Active Directory permissions analysis.
 
 ## Repository Structure
 
@@ -13,7 +13,7 @@ This repository contains PowerShell automation tools for deploying and managing 
   - `template-parameter-files/` — ARM template parameter templates
   - `templates/` — ARM templates
   - `.config/` — Naming standards configuration
-- `AzStackHci.ManageUpdates/` — Fleet update management module
+- `AzLocal.UpdateManagement/` — Fleet update management module
 - `AzureLocalVM/` — Hyper-V VM creation/management module
 - `ad-effective-permissions/` — Active Directory permissions analysis
 - `Test-ClusterPendingRestart/` — Cluster restart pre-flight checks

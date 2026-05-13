@@ -1,0 +1,234 @@
+# Assess Update Readiness (Pre-flight go/no-go gate)
+# --------------------------------------------------
+# Runs Get-AzureLocalClusterUpdateReadiness and Test-AzureLocalClusterHealth -BlockingOnly
+# against a target UpdateRing (or the whole fleet) BEFORE apply-updates.yml runs.
+#
+# Outputs two JUnit XML artifacts consumed by the Actions test reporter:
+#   - readiness.xml       (one test per cluster; fails if ReadyForUpdate = $false)
+#   - health-blocking.xml (one test per cluster; fails if any Critical health failure exists)
+#
+# CSV artifacts are also attached for spreadsheet triage:
+#   - readiness.csv
+#   - health-blocking.csv
+#
+# This workflow is REPORT-ONLY and always succeeds. It surfaces not-ready / unhealthy
+# clusters via the JUnit test reporter (Checks tab), the CSV artifacts, and the step
+# summary - but it does NOT block downstream runs. In large fleets, day-to-day
+# environmental issues (transient storage noise, a single node out, etc.) routinely affect
+# a small subset of clusters; blocking the entire wave for one unhealthy cluster is rarely
+# the desired behavior. apply-updates.yml is itself per-cluster scoped, so clusters that
+# are not ready will simply no-op there too.
+#
+# If you want a hard pass/fail signal for a chained gate, read the job outputs
+# (not_ready, critical_failures) from a downstream workflow via `workflow_run` and apply
+# your own tolerance threshold there.
+#
+# Remediation of Critical health failures is out of scope for this module - see the module
+# README "Assess Readiness and Health BEFORE Applying Updates" section for pointers.
+
+name: Assess Update Readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Scope of clusters to check'
+        required: true
+        default: 'by-update-ring'
+        type: choice
+        options:
+          - 'by-update-ring'
+          - 'all'
+      update_ring:
+        description: 'UpdateRing tag value (only used when scope=by-update-ring)'
+        required: false
+        default: 'Wave1'
+      throttle_limit:
+        description: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
+        required: false
+        default: '4'
+
+env:
+  MODULE_PATH: './AzLocal.UpdateManagement'
+
+jobs:
+  assess:
+    name: Assess readiness + blocking health
+    runs-on: windows-latest
+    permissions:
+      id-token: write
+      contents: read
+      checks: write
+    outputs:
+      not_ready: ${{ steps.gate.outputs.NOT_READY }}
+      critical_failures: ${{ steps.gate.outputs.CRITICAL_FAILURES }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure CLI Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Azure CLI Resource Graph Extension
+        shell: pwsh
+        run: az extension add --name resource-graph --yes
+
+      - name: Run readiness + blocking health checks
+        id: gate
+        shell: pwsh
+        env:
+          INPUT_SCOPE: ${{ github.event.inputs.scope }}
+          INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+          INPUT_THROTTLE_LIMIT: ${{ github.event.inputs.throttle_limit }}
+        run: |
+          Import-Module "${{ env.MODULE_PATH }}/AzLocal.UpdateManagement.psd1" -Force
+
+          $scope = $env:INPUT_SCOPE
+          $updateRing = $env:INPUT_UPDATE_RING
+          $throttle = [int]($env:INPUT_THROTTLE_LIMIT); if ($throttle -lt 1) { $throttle = 4 }
+
+          $outputDir = './artifacts'
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+          $readinessCsv = Join-Path $outputDir 'readiness.csv'
+          $readinessXml = Join-Path $outputDir 'readiness.xml'
+          $healthCsv    = Join-Path $outputDir 'health-blocking.csv'
+          $healthXml    = Join-Path $outputDir 'health-blocking.xml'
+
+          $scopeParams = @{}
+          if ($scope -eq 'by-update-ring' -and $updateRing) {
+              $scopeParams['ScopeByUpdateRingTag'] = $true
+              $scopeParams['UpdateRingValue']      = $updateRing
+              Write-Host "Scope: UpdateRing = $updateRing"
+          } else {
+              Write-Host "Scope: all clusters (via inventory)"
+              $inventory = Get-AzureLocalClusterInventory -PassThru
+              if (-not $inventory -or $inventory.Count -eq 0) {
+                  Write-Warning 'No clusters found in inventory.'
+                  "NOT_READY=0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+                  "CRITICAL_FAILURES=0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+                  exit 0
+              }
+              $scopeParams['ClusterResourceIds'] = @($inventory | Select-Object -ExpandProperty ResourceId)
+          }
+
+          Write-Host ''
+          Write-Host '========================================' -ForegroundColor Cyan
+          Write-Host 'Step 1: Readiness (Get-AzureLocalClusterUpdateReadiness)' -ForegroundColor Cyan
+          Write-Host '========================================' -ForegroundColor Cyan
+
+          # CSV for humans
+          $readiness = Get-AzureLocalClusterUpdateReadiness @scopeParams `
+              -ThrottleLimit $throttle `
+              -ExportPath $readinessCsv `
+              -PassThru
+
+          # JUnit XML for the test reporter (ExportPath .xml auto-detects JUnitXml)
+          $null = Get-AzureLocalClusterUpdateReadiness @scopeParams `
+              -ThrottleLimit $throttle `
+              -ExportPath $readinessXml
+
+          $notReady = @($readiness | Where-Object { $_.ReadyForUpdate -ne $true }).Count
+          $total = @($readiness).Count
+
+          Write-Host ''
+          Write-Host "Total clusters in scope: $total"
+          Write-Host "Not ready for update  : $notReady"
+
+          Write-Host ''
+          Write-Host '========================================' -ForegroundColor Cyan
+          Write-Host 'Step 2: Blocking health (Test-AzureLocalClusterHealth -BlockingOnly)' -ForegroundColor Cyan
+          Write-Host '========================================' -ForegroundColor Cyan
+
+          # Reuse the same scope. -UpdateSummary skip-fetch is not available here because the
+          # per-cluster summaries are private to Get-AzureLocalClusterUpdateReadiness; a fresh
+          # call is cheap and keeps the function self-contained.
+          $health = Test-AzureLocalClusterHealth @scopeParams `
+              -BlockingOnly `
+              -ExportPath $healthCsv `
+              -PassThru
+
+          $null = Test-AzureLocalClusterHealth @scopeParams `
+              -BlockingOnly `
+              -ExportPath $healthXml
+
+          $critical = @($health | Where-Object { $_.Severity -eq 'Critical' }).Count
+          $clustersWithCritical = @($health | Where-Object { $_.Severity -eq 'Critical' } |
+              Select-Object -ExpandProperty ClusterName -Unique).Count
+
+          Write-Host ''
+          Write-Host "Critical findings      : $critical"
+          Write-Host "Clusters with Critical : $clustersWithCritical"
+
+          "NOT_READY=$notReady"                   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "CRITICAL_FAILURES=$clustersWithCritical" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          # GitHub step summary
+          $lines = New-Object 'System.Collections.Generic.List[string]'
+          $lines.Add('## Update Readiness Assessment')
+          $lines.Add('')
+          $lines.Add('| Metric | Count |')
+          $lines.Add('|--------|-------|')
+          $lines.Add("| Total clusters in scope | $total |")
+          $lines.Add("| Not ready for update | $notReady |")
+          $lines.Add("| Clusters with Critical health failures | $clustersWithCritical |")
+          $lines.Add("| Total Critical findings | $critical |")
+          $lines.Add('')
+          $scopeLabel = $scope
+          if ($updateRing) { $scopeLabel = "$scope (UpdateRing = $updateRing)" }
+          $lines.Add("**Scope**: $scopeLabel")
+          $lines.Add("**ThrottleLimit**: $throttle")
+          $lines.Add('')
+          if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
+              $lines.Add("> **Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Review the JUnit results in the Checks tab and the CSV artifacts; remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. **The healthy clusters are safe to proceed** - apply-updates.yml is per-cluster scoped.")
+          } else {
+              $lines.Add('> **All clear**: every cluster in scope is ready for update. Safe to proceed with apply-updates.yml for this ring.')
+          }
+
+          # Per-cluster detail table (installed version is useful for operators even
+          # for clusters that ARE ready, so always include it when we have rows).
+          if ($total -gt 0) {
+              $lines.Add('')
+              $lines.Add('### Cluster detail')
+              $lines.Add('')
+              $lines.Add('| Cluster | Current version | Current SBE version | Update state | Health | Ready | Recommended update |')
+              $lines.Add('|---------|-----------------|---------------------|--------------|--------|-------|--------------------|')
+              foreach ($r in $readiness) {
+                  $cv  = if ($r.CurrentVersion) { $r.CurrentVersion } else { '-' }
+                  $csv = if ($r.PSObject.Properties['CurrentSbeVersion'] -and $r.CurrentSbeVersion) { $r.CurrentSbeVersion } else { '-' }
+                  $ru  = if ($r.RecommendedUpdate) { $r.RecommendedUpdate } else { '-' }
+                  $lines.Add("| $($r.ClusterName) | $cv | $csv | $($r.UpdateState) | $($r.HealthState) | $($r.ReadyForUpdate) | $ru |")
+              }
+          }
+          ($lines -join [Environment]::NewLine) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: readiness-assessment
+          path: ./artifacts/*
+          retention-days: 30
+
+      - name: Publish readiness JUnit
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Readiness (one test per cluster)
+          path: ./artifacts/readiness.xml
+          reporter: java-junit
+        continue-on-error: true
+
+      - name: Publish blocking-health JUnit
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Blocking Health Checks (one test per cluster)
+          path: ./artifacts/health-blocking.xml
+          reporter: java-junit
+        continue-on-error: true
