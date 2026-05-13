@@ -181,8 +181,8 @@
   reference), plus `Automation-Pipeline-Examples/.itsm/` sample config
   + Mustache-style ticket-body templates.
 - Phase 2 (`Sync-AzureLocalIncident` lifecycle close-out) and Phase 3
-  (Teams / Slack mirror adapters) follow in subsequent v0.7.4 work; the
-  Phase 1 surface is feature-complete on its own.
+  (Teams / Slack mirror adapters) are **deferred to a future release**;
+  the Phase 1 surface is feature-complete on its own.
 - Secrets: ITSM credentials are referenced from Azure Key Vault
   (`kv://<vault>/<secret>`) or native CI secrets (`env://<NAME>`). No raw
   secret is ever written to YAML or to disk.

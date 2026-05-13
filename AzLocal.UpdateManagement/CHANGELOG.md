@@ -9,14 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **ITSM Connector - Phase 1 (ServiceNow).** New optional ticketing surface that lets `apply-updates` and `fleet-update-status` pipelines open ServiceNow incidents when a cluster needs operator action that the module's own retries cannot resolve. Disabled by default; opt-in via the pipeline input `raise_itsm_ticket=true` plus a `./.itsm/azurelocal-itsm.yml` config file. Setup walkthrough in `ITSM/README.md`; full design captured in `ITSM/Docs/ITSM-Connector-Plan.md`.
+- **ITSM Connector - Phase 1 (ServiceNow).** New optional ticketing surface that lets `apply-updates` and `fleet-update-status` pipelines open ServiceNow incidents when a cluster needs operator action that the module's own retries cannot resolve. Disabled by default; opt-in via the pipeline input `raise_itsm_ticket=true` plus a `./.itsm/azurelocal-itsm.yml` config file. Setup walkthrough in `ITSM/README.md`; full design captured in `ITSM/ITSM-Connector-Plan.md`.
 - **New public functions** (Phase 1):
   - `Get-AzureLocalItsmConfig` - loads and validates the YAML/JSON trigger matrix; returns a strongly typed config object so pipelines can fail-fast on misconfiguration before any HTTP call.
   - `Test-AzureLocalItsmConnection` - dry-run probe of the configured ITSM endpoint and any enabled notification adapters; verifies auth, custom-field presence, and rate-limit headroom.
   - `New-AzureLocalIncident` - consumes a JUnit results file (and optional readiness CSV), evaluates each cluster row against the trigger matrix, opens or de-duplicates ServiceNow incidents via SHA256 of `{ClusterResourceId}|{UpdateName}|{TriggerCategory}`, and returns one row per cluster considered with `Action`, `TicketId`, `TicketUrl`, `Severity`.
 - **New internal helpers**: `Resolve-AzLocalItsmSecret` (Key Vault first, `env://` fallback), `Get-AzLocalItsmDedupeKey`, `Get-AzLocalItsmTriggerDecision`, `Format-AzLocalIncidentBody` (Mustache-style template rendering with HTML-escape), `Invoke-AzLocalItsmHttp` (TLS 1.2+, `Retry-After` honour, exponential backoff capped at 3 attempts), `Invoke-AzLocalServiceNowAdapter` (OAuth 2.0 client credentials, token cache, dedupe GET, POST incident, attach file).
 - **New documentation**: top-level `ITSM/` folder with a setup-and-configure `README.md` landing page (Key Vault prep, ServiceNow OAuth app, custom fields, secret references, dry-run, troubleshooting), `ITSM/ITSM-Config-Reference.md` (full schema reference with every field documented), and `Automation-Pipeline-Examples/.itsm/azurelocal-itsm.yml` working example config plus `templates/incident-body.md` ticket-body template.
-- Phase 2 (`Sync-AzureLocalIncident` lifecycle close-out) and Phase 3 (Teams / Slack mirror adapters) follow in subsequent v0.7.4 work on the same branch; the Phase 1 surface is feature-complete on its own and ships ServiceNow-only as planned.
+- Phase 2 (`Sync-AzureLocalIncident` lifecycle close-out) and Phase 3 (Teams / Slack mirror adapters) are **deferred to a future release**; the Phase 1 surface is feature-complete on its own and ships ServiceNow-only as planned. The full three-phase design remains documented in `ITSM/ITSM-Connector-Plan.md` for forward reference.
 
 ### Security
 

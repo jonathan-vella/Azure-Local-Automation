@@ -43,6 +43,9 @@ $RemovePaths = @(
     'Tests'
     # This publish script itself
     'Publish-Module.ps1'
+    # One-off refactor helper used during the v0.7.3 monolith split.
+    # No runtime value to consumers; keep in the repo only.
+    'Tools'
 )
 
 foreach ($relativePath in $RemovePaths) {
