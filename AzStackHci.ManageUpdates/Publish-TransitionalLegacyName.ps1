@@ -43,14 +43,18 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # Paths
+# IMPORTANT: Publish-Module requires the staging folder name to MATCH the module
+# name (i.e. <FolderName>.psd1 must exist directly under the folder). We therefore
+# stage to a parent folder + a child folder literally named AzStackHci.ManageUpdates.
 $ModuleName  = 'AzStackHci.ManageUpdates'
+$StagingRoot = Join-Path 'C:\Temp' 'AzStackHci.ManageUpdates-transitional-stage'
 $SourceDir   = $PSScriptRoot
-$StagingDir  = Join-Path 'C:\Temp' ($ModuleName + '-transitional-stage')
+$StagingDir  = Join-Path $StagingRoot $ModuleName
 
 # 1. Clean staging area
-Write-Host "[$ModuleName] Cleaning staging folder: $StagingDir" -ForegroundColor Cyan
-if (Test-Path $StagingDir) {
-    Remove-Item $StagingDir -Recurse -Force
+Write-Host "[$ModuleName] Cleaning staging folder: $StagingRoot" -ForegroundColor Cyan
+if (Test-Path $StagingRoot) {
+    Remove-Item $StagingRoot -Recurse -Force
 }
 
 # 2. Copy module files to staging (only the two files; nothing else)
