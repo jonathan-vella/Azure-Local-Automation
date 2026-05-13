@@ -20,8 +20,8 @@ function Get-AzureLocalItsmConfig {
           - At least one trigger with raiseTicket: true
           - Severity values in 1..5
 
-        See AzLocal.UpdateManagement/Docs/ITSM-Connector-Plan.md Section 5
-        and Docs/ITSM-Config-Reference.md for the full schema.
+        See AzLocal.UpdateManagement/ITSM/ITSM-Connector-Plan.md Section 5
+        and ITSM/ITSM-Config-Reference.md for the full schema.
 
     .EXAMPLE
         $cfg = Get-AzureLocalItsmConfig -Path ./.itsm/azurelocal-itsm.yml

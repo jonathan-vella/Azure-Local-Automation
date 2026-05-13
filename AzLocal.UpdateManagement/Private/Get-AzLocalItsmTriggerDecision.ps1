@@ -16,7 +16,7 @@ function Get-AzLocalItsmTriggerDecision {
           MirrorTargets   [string[]] - resolved mirror list (trigger override falls back to defaults)
           Reason          [string] - human-readable explanation (used in logs)
 
-        See AzLocal.UpdateManagement/Docs/ITSM-Connector-Plan.md Section 5.2.
+        See AzLocal.UpdateManagement/ITSM/ITSM-Connector-Plan.md Section 5.2.
     #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]

@@ -384,10 +384,11 @@ AzLocal.UpdateManagement/
     Invoke-AzLocalSlackAdapter.ps1
     Invoke-AzLocalItsmHttp.ps1
   Tests/
-  Docs/
+  ITSM/
+    README.md                          # Phase 1 deliverable: setup + configure landing page (auto-renders on GitHub)
     ITSM-Connector-Plan.md             (this file)
-    ServiceNow-AzureLocal-Setup-UpdateSet.xml   # Phase 1 deliverable
     ITSM-Config-Reference.md           # Phase 1 deliverable: full schema reference
+    ServiceNow-AzureLocal-Setup-UpdateSet.xml   # Phase 1 deliverable
   Automation-Pipeline-Examples/
     .itsm/                             # Phase 1 deliverable: example config + templates
       azurelocal-itsm.yml
@@ -548,9 +549,10 @@ All produced as part of v0.7.3:
 
 | File | Purpose |
 |---|---|
-| `Docs/ITSM-Connector-Plan.md` | This document - design + decisions log. |
-| `Docs/ITSM-Config-Reference.md` | Full schema reference for the matrix config, every field documented with type / default / examples. |
-| `Docs/ServiceNow-AzureLocal-Setup-UpdateSet.xml` | Update Set installing the five `u_azlocal_*` custom fields + the OAuth app role + a sample assignment group. |
+| `ITSM/README.md` | Landing page - setup, prerequisites, secret-source guidance, quick-start, troubleshooting. Auto-rendered on GitHub when browsing the `ITSM/` folder. |
+| `ITSM/ITSM-Connector-Plan.md` | This document - design + decisions log. |
+| `ITSM/ITSM-Config-Reference.md` | Full schema reference for the matrix config, every field documented with type / default / examples. |
+| `ITSM/ServiceNow-AzureLocal-Setup-UpdateSet.xml` | Update Set installing the five `u_azlocal_*` custom fields + the OAuth app role + a sample assignment group. |
 | `Automation-Pipeline-Examples/.itsm/azurelocal-itsm.yml` | Working example config. |
 | `Automation-Pipeline-Examples/.itsm/templates/incident-body.md` | Mustache-style template used by `Format-AzLocalIncidentBody`. |
 | `Automation-Pipeline-Examples/.itsm/templates/work-note.md` | Template used by `Sync-AzureLocalIncident` for close-out comments. |

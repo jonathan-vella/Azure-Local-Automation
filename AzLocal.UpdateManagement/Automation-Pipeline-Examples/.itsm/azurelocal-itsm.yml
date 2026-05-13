@@ -1,5 +1,6 @@
 # Sample ITSM connector config for AzLocal.UpdateManagement v0.7.4 Phase 1
-# Reference: AzLocal.UpdateManagement/Docs/ITSM-Config-Reference.md
+# Reference: AzLocal.UpdateManagement/ITSM/ITSM-Config-Reference.md
+# Setup guide: AzLocal.UpdateManagement/ITSM/README.md
 schemaVersion: 1
 
 # ----- Authentication -----
