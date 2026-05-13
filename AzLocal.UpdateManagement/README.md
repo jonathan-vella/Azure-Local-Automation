@@ -23,8 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.3](#whats-new-in-v073)
-- [What's New in v0.7.2](#whats-new-in-v072)
+- [What's New in v0.7.4](#whats-new-in-v074)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -84,6 +83,8 @@ Azure Local REST API specification (includes update management endpoints): https
   - [Verbose Logging](#verbose-logging)
 - [License](#license)
 - [Release History](#release-history)
+  - [What's New in v0.7.3](#whats-new-in-v073)
+  - [What's New in v0.7.2](#whats-new-in-v072)
   - [What's New in v0.7.1](#whats-new-in-v071)
   - [What's New in v0.7.0](#whats-new-in-v070)
   - [What's New in v0.6.5](#whats-new-in-v065)
@@ -137,17 +138,14 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.3
+## What's New in v0.7.4
 
-- **Module renamed** from `AzStackHci.ManageUpdates` to `AzLocal.UpdateManagement`. The module GUID is preserved across the rename so PowerShell tooling sees this as the same module identity. All previously-published `AzStackHci.ManageUpdates` versions have been unlisted from PSGallery; a transitional v0.7.3 stub is published once to point legacy automation at the new name. Migration: `Uninstall-Module AzStackHci.ManageUpdates -AllVersions; Install-Module AzLocal.UpdateManagement`. Default log folder default also moved from `C:\ProgramData\AzStackHci.ManageUpdates\` to `C:\ProgramData\AzLocal.UpdateManagement\`.
-- **Internal refactor**: the monolithic 11,679-line `.psm1` has been split into Public/Private dot-sourced files matching the layout of `AzLocal.DeploymentAutomation`. 20 exported functions live under `Public/`, 40 internal helpers under `Private/`. The manifest's `NestedModules` list enumerates every file. No functional change; the full Pester suite (299 tests) remains green.
+- **ITSM Connector - Phase 1 (ServiceNow)**: new opt-in capability for opening ServiceNow incidents directly from update / fleet pipeline output. Three new exported functions - `New-AzureLocalIncident`, `Get-AzureLocalItsmConfig`, `Test-AzureLocalItsmConnection` - plus supporting private helpers (`Resolve-AzLocalItsmSecret`, `Get-AzLocalItsmDedupeKey`, `Get-AzLocalItsmTriggerDecision`, `Format-AzLocalIncidentBody`, `Invoke-AzLocalItsmHttp`, `Invoke-AzLocalServiceNowAdapter`). `New-AzureLocalIncident` reads a JUnit results artifact (and an optional readiness CSV), applies the trigger matrix from the user's [`azurelocal-itsm.yml`](Automation-Pipeline-Examples/.itsm/azurelocal-itsm.yml) config, computes a deterministic SHA256 dedupe key per `{ClusterResourceId, UpdateName, TriggerCategory}` tuple, queries ServiceNow for an existing open ticket (`u_azlocal_dedupe_key`, `stateIN1,2,3`), and either creates a new incident or returns the existing ticket - so re-running the same pipeline is idempotent. Auth is OAuth 2.0 `client_credentials` only in Phase 1; secrets resolve from Azure Key Vault (`kv://<vault>/<secret>`), environment variables (`env://NAME`), or explicit literals (`literal://...` with `-AllowLiteral`). HTTP path is TLS 1.2+, default 30s timeout, exponential backoff on 429/5xx, `Retry-After` honoured. The CSV export from `-ExportPath` is sanitised by `ConvertTo-SafeCsvCollection`, neutralising the same formula-injection class already handled elsewhere in the module. `Test-AzureLocalItsmConnection` validates the config, resolves secrets, performs the OAuth token grant, and probes a one-row read against `/api/now/table/incident` (matching the least-privilege scope used by ticket creation). Full documentation under [`ITSM/`](ITSM/): [README](ITSM/README.md), [ITSM-Connector-Plan.md](ITSM/ITSM-Connector-Plan.md), [ITSM-Config-Reference.md](ITSM/ITSM-Config-Reference.md). A ready-to-copy sample config plus the Mustache ticket-body template live under [`Automation-Pipeline-Examples/.itsm/`](Automation-Pipeline-Examples/.itsm/). 33 new ITSM Pester tests; full suite green at 337/337.
+- **Phase 2 and Phase 3 are not in this release.** Phase 2 (`Sync-AzureLocalIncident` - close-out / work-note sweep when the underlying cluster recovers) and Phase 3 (Microsoft Teams + Slack mirror adapters) are designed in [`ITSM/ITSM-Connector-Plan.md`](ITSM/ITSM-Connector-Plan.md) and tracked for a later release. The `lifecycle` and `notifications` config sections are parsed and stored in Phase 1 but not yet acted on. A small set of Phase 1.5 follow-ups is also tracked: cmdbCi token expansion, custom-field presence check, rate-limit-headroom probe, in-module token caching, `Invoke-AzLocalItsmHttp -AllowedThumbprints` cert pinning, and `raiseAfterConsecutiveOccurrences` enforcement (requires the run-history store).
+- **Code hygiene**: removed the unused username/password OAuth grant path from the ServiceNow adapter (Phase 1 is `client_credentials` only) - silences the PSScriptAnalyzer `PSAvoidUsingUsernameAndPasswordParams` Error and `PSAvoidUsingPlainTextForPassword` Warning. Tightened the ITSM config validator so `secrets.source: mixed` now requires `secrets.keyvaultName`, matching the documented behaviour. Cleaned up legacy non-ASCII characters in [`Private/Format-AzLocalUpdateRun.ps1`](Private/Format-AzLocalUpdateRun.ps1) and [`Publish-Module.ps1`](Publish-Module.ps1) divider comments. Flattened `ITSM/Docs/` into [`ITSM/`](ITSM/) (removed the stale duplicate `ITSM/Docs/ITSM-Connector-Plan.md`).
+- **`Copy-AzureLocalPipelineExample` (convenience)**: new exported function that copies the bundled [`Automation-Pipeline-Examples/`](Automation-Pipeline-Examples/) folder out of the module install location into a destination folder you control (default: current directory). Supports `-Platform GitHub | AzureDevOps | All`, `-Flatten` (drop contents directly into the destination), `-Force` (overwrite), `-PassThru`, `-WhatIf` and `-Confirm`. After copying, prints a short "next steps" summary pointing at the README and the platform-specific destination paths so you don't have to hunt through `$module.ModuleBase` to find the YAML samples.
 
-## What's New in v0.7.2
-
-- **Bug fix - fleet read paths under `-ThrottleLimit > 1`**: `Get-AzureLocalUpdateRuns`, `Get-AzureLocalUpdateSummary`, and `Get-AzureLocalClusterUpdateReadiness` previously failed for every cluster when invoked with `-ThrottleLimit` greater than 1, reporting `The term 'Get-AzLocalClusterUpdateRuns' is not recognized...` (or the equivalent for other private helpers). The per-cluster scriptblock dispatched via `Start-Job` called module-private helpers (`Invoke-AzRestJson`, `Get-AzLocalClusterUpdateRuns`, `Format-AzLocalUpdateRun`, `Get-LatestUpdateByYYMM`, `ConvertTo-AzLocalAdditionalProperties`, `Get-HealthCheckFailureSummary`, `Get-TagValue`) by name; because those helpers are filtered out by `Export-ModuleMember`, after `Import-Module` in the child runspace they were not visible at script command-resolution scope. Inline (`-ThrottleLimit 1`) execution was unaffected. Each affected scriptblock now captures a reference to the loaded module and either invokes the helper via `& $module { ... }` or rebinds the helper's bound scriptblock into the local function scope, so calls execute against the module's own session state and resolve all transitive private references. Reported against a 9-cluster Prod fleet.
-- **Bug fix - cp1252 encoding warnings leaking into JSON parsing**: On Windows hosts where the console code page is `cp1252` (the English-US default), the Azure CLI (`az rest`, `az graph query`) emitted `WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.` whenever ARM responses contained non-cp1252 characters (smart quotes, accented characters in cluster tags, localised health-check messages, etc.). Captured via `2>&1`, that warning was prepended to the JSON body and broke `ConvertFrom-Json`, which silently dropped update runs and available updates for affected clusters. Earlier attempts to fix this via `$env:PYTHONIOENCODING = 'utf-8'` are structurally ineffective: `az.cmd` launches Python with the `-I` (isolated) flag, which implies `-E` and so causes Python to ignore all `PYTHON*` environment variables (including `PYTHONIOENCODING` and `PYTHONUTF8`) - confirmed in [Azure/azure-cli#28497](https://github.com/Azure/azure-cli/issues/28497). The actual fix is to pass `--only-show-errors` to every `az rest` and `az graph query` invocation (Azure CLI maintainer's recommended workaround per [Azure/azure-cli#14426](https://github.com/Azure/azure-cli/issues/14426)). This suppresses the encode warning at source so the captured stderr/stdout streams stay clean. Characters that fail to encode are still replaced silently inside the CLI, but for ARM cluster/update payloads (timestamps, GUIDs, status enums, resource IDs - all ASCII) this is a non-issue. Genuine errors (auth failures, 4xx/5xx ARM responses, invalid args) still surface normally.
-
-> 📜 **Previous Release Notes**: See [Release History](#release-history) at the bottom of this document for v0.7.1 and earlier changes.
+> Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
 ## Files
 
@@ -352,6 +350,20 @@ Import-Module .\AzLocal.UpdateManagement.psd1
 # Or import using the full path
 Import-Module "C:\Path\To\AzLocal.UpdateManagement\AzLocal.UpdateManagement.psd1"
 ```
+
+**Optional: copy the CI/CD pipeline samples out of the module install folder**
+
+The module ships a working set of pipeline YAML files plus a step-by-step setup README under `Automation-Pipeline-Examples/`. They live inside the module install path (typically under `C:\Program Files\WindowsPowerShell\Modules\AzLocal.UpdateManagement\<version>\`), so the easiest way to start using them is to copy them somewhere you control:
+
+```powershell
+# Copy everything (GitHub + Azure DevOps + ITSM samples + README) to the current folder
+Copy-AzureLocalPipelineExample
+
+# Or only the GitHub Actions YAML, into a target folder of your choice
+Copy-AzureLocalPipelineExample -Destination C:\repos\my-fleet -Platform GitHub
+```
+
+The function prints a short "next steps" summary pointing at the copied README and the platform-specific YAML folder. See [`Automation-Pipeline-Examples/README.md`](Automation-Pipeline-Examples/README.md) for the full step-by-step setup guide.
 
 ### 3. Start an Update on a Single Cluster
 
@@ -652,6 +664,41 @@ New-AzureLocalFleetStatusHtmlReport `
 > 💡 **CI/CD**: this same assess -> remediate -> apply flow is wired into the pipeline examples under `Automation-Pipeline-Examples/`: see the `assess-update-readiness.yml` pipeline (report-only) and the `check-readiness` job inside `apply-updates.yml`.
 
 ## Available Functions
+
+### `Copy-AzureLocalPipelineExample`
+
+Copies the bundled `Automation-Pipeline-Examples/` folder (GitHub Actions YAML, Azure DevOps Pipelines YAML, ITSM sample config + ticket-body template, plus the step-by-step setup README) out of the module install location into a destination folder you control. The function is read-only relative to the module install and only destructive relative to the destination (and only when `-Force` is supplied and the target is already populated).
+
+**Parameters:**
+
+- `-Destination` (Optional, Position 0): Target folder. If missing, it is created. Default is `$PWD`.
+- `-Platform` (Optional): `All` (default), `GitHub`, or `AzureDevOps`. Filters which `*-actions/` / `*-devops/` subfolders are copied. The top-level `README.md` and `.itsm/` sample folder are platform-agnostic and always copied.
+- `-Flatten` (Optional Switch): Copy contents directly into `-Destination` (no `Automation-Pipeline-Examples` parent folder).
+- `-Force` (Optional Switch): Required if the destination already contains pipeline files; overwrites them.
+- `-PassThru` (Optional Switch): Return the destination `[DirectoryInfo]`.
+- Supports `-WhatIf` and `-Confirm`.
+
+**Returns:** `[System.IO.DirectoryInfo]` when `-PassThru` is specified. Nothing otherwise. Always prints a short "next steps" summary to the console.
+
+**Examples:**
+
+```powershell
+# Default: copies into .\Automation-Pipeline-Examples\ under the current directory
+Copy-AzureLocalPipelineExample
+
+# Only the GitHub Actions YAML, into a target folder of your choice
+Copy-AzureLocalPipelineExample -Destination C:\repos\my-fleet -Platform GitHub
+
+# Drop the GitHub Actions YAML directly into .github\workflows (no parent folder), overwriting
+New-Item -ItemType Directory .\.github\workflows -Force | Out-Null
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Flatten -Force
+
+# Capture the destination and cd into it
+$dest = Copy-AzureLocalPipelineExample -Destination C:\repos\fleet -PassThru
+Set-Location $dest
+```
+
+---
 
 ### `Connect-AzureLocalServicePrincipal`
 
@@ -2070,6 +2117,16 @@ This code is provided as-is for educational and reference purposes.
 ---
 
 ## Release History
+
+### What's New in v0.7.3
+
+- **Module renamed** from `AzStackHci.ManageUpdates` to `AzLocal.UpdateManagement`. The module GUID is preserved across the rename so PowerShell tooling sees this as the same module identity. All previously-published `AzStackHci.ManageUpdates` versions have been unlisted from PSGallery; a transitional v0.7.3 stub is published once to point legacy automation at the new name. Migration: `Uninstall-Module AzStackHci.ManageUpdates -AllVersions; Install-Module AzLocal.UpdateManagement`. Default log folder default also moved from `C:\ProgramData\AzStackHci.ManageUpdates\` to `C:\ProgramData\AzLocal.UpdateManagement\`.
+- **Internal refactor**: the monolithic 11,679-line `.psm1` has been split into Public/Private dot-sourced files matching the layout of `AzLocal.DeploymentAutomation`. 20 exported functions live under `Public/`, 40 internal helpers under `Private/`. The manifest's `NestedModules` list enumerates every file. No functional change; the full Pester suite (299 tests) remains green.
+
+### What's New in v0.7.2
+
+- **Bug fix - fleet read paths under `-ThrottleLimit > 1`**: `Get-AzureLocalUpdateRuns`, `Get-AzureLocalUpdateSummary`, and `Get-AzureLocalClusterUpdateReadiness` previously failed for every cluster when invoked with `-ThrottleLimit` greater than 1, reporting `The term 'Get-AzLocalClusterUpdateRuns' is not recognized...` (or the equivalent for other private helpers). The per-cluster scriptblock dispatched via `Start-Job` called module-private helpers (`Invoke-AzRestJson`, `Get-AzLocalClusterUpdateRuns`, `Format-AzLocalUpdateRun`, `Get-LatestUpdateByYYMM`, `ConvertTo-AzLocalAdditionalProperties`, `Get-HealthCheckFailureSummary`, `Get-TagValue`) by name; because those helpers are filtered out by `Export-ModuleMember`, after `Import-Module` in the child runspace they were not visible at script command-resolution scope. Inline (`-ThrottleLimit 1`) execution was unaffected. Each affected scriptblock now captures a reference to the loaded module and either invokes the helper via `& $module { ... }` or rebinds the helper's bound scriptblock into the local function scope, so calls execute against the module's own session state and resolve all transitive private references. Reported against a 9-cluster Prod fleet.
+- **Bug fix - cp1252 encoding warnings leaking into JSON parsing**: On Windows hosts where the console code page is `cp1252` (the English-US default), the Azure CLI (`az rest`, `az graph query`) emitted `WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.` whenever ARM responses contained non-cp1252 characters (smart quotes, accented characters in cluster tags, localised health-check messages, etc.). Captured via `2>&1`, that warning was prepended to the JSON body and broke `ConvertFrom-Json`, which silently dropped update runs and available updates for affected clusters. Earlier attempts to fix this via `$env:PYTHONIOENCODING = 'utf-8'` are structurally ineffective: `az.cmd` launches Python with the `-I` (isolated) flag, which implies `-E` and so causes Python to ignore all `PYTHON*` environment variables (including `PYTHONIOENCODING` and `PYTHONUTF8`) - confirmed in [Azure/azure-cli#28497](https://github.com/Azure/azure-cli/issues/28497). The actual fix is to pass `--only-show-errors` to every `az rest` and `az graph query` invocation (Azure CLI maintainer's recommended workaround per [Azure/azure-cli#14426](https://github.com/Azure/azure-cli/issues/14426)). This suppresses the encode warning at source so the captured stderr/stdout streams stay clean. Characters that fail to encode are still replaced silently inside the CLI, but for ARM cluster/update payloads (timestamps, GUIDs, status enums, resource IDs - all ASCII) this is a non-issue. Genuine errors (auth failures, 4xx/5xx ARM responses, invalid args) still surface normally.
 
 ### What's New in v0.7.1
 

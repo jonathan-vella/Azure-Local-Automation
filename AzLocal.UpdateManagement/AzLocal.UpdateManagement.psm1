@@ -135,7 +135,7 @@
 Set-StrictMode -Version 1.0
 
 # Module constants
-$script:ModuleVersion = '0.7.3'
+$script:ModuleVersion = '0.7.4'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.UpdateManagement'
 
@@ -243,5 +243,11 @@ Export-ModuleMember -Function @(
     # Update Schedule Tag Helpers (v0.6.5)
     'Test-AzureLocalUpdateScheduleAllowed',
     # Sideloaded Payload Workflow (v0.7.1)
-    'Reset-AzureLocalSideloadedTag'
+    'Reset-AzureLocalSideloadedTag',
+    # ITSM Connector Phase 1 (v0.7.4)
+    'Get-AzureLocalItsmConfig',
+    'Test-AzureLocalItsmConnection',
+    'New-AzureLocalIncident',
+    # Pipeline-Examples Convenience (v0.7.4)
+    'Copy-AzureLocalPipelineExample'
 )

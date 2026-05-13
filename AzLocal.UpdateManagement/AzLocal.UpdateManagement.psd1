@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.3'
+    ModuleVersion = '0.7.4'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -38,8 +38,11 @@
         'Private/ConvertTo-ScrubbedCliOutput.ps1',
         'Private/Export-ResultsToJUnitXml.ps1',
         'Private/Format-AzLocalDurationHuman.ps1',
+        'Private/Format-AzLocalIncidentBody.ps1',
         'Private/Format-AzLocalUpdateRun.ps1',
         'Private/Get-AzLocalClusterUpdateRuns.ps1',
+        'Private/Get-AzLocalItsmDedupeKey.ps1',
+        'Private/Get-AzLocalItsmTriggerDecision.ps1',
         'Private/Get-AzLocalRunEndTime.ps1',
         'Private/Get-CurrentStepPath.ps1',
         'Private/Get-ExportFormat.ps1',
@@ -51,11 +54,14 @@
         'Private/Install-AzGraphExtension.ps1',
         'Private/Invoke-AzLocalSideloadedAutoReset.ps1',
         'Private/Invoke-AzLocalSideloadedAutoResetForCluster.ps1',
+        'Private/Invoke-AzLocalItsmHttp.ps1',
+        'Private/Invoke-AzLocalServiceNowAdapter.ps1',
         'Private/Invoke-AzResourceGraphQuery.ps1',
         'Private/Invoke-AzRestJson.ps1',
         'Private/Invoke-AzureLocalUpdateApply.ps1',
         'Private/Invoke-FleetJobsInParallel.ps1',
         'Private/Invoke-FleetOpClusterAction.ps1',
+        'Private/Resolve-AzLocalItsmSecret.ps1',
         'Private/Resolve-SafeOutputPath.ps1',
         'Private/Resolve-WildcardDate.ps1',
         'Private/Resolve-WildcardDateRange.ps1',
@@ -72,6 +78,7 @@
 
         # Public exported functions
         'Public/Connect-AzureLocalServicePrincipal.ps1',
+        'Public/Copy-AzureLocalPipelineExample.ps1',
         'Public/Export-AzureLocalFleetState.ps1',
         'Public/Get-AzureLocalAvailableUpdates.ps1',
         'Public/Get-AzureLocalClusterInfo.ps1',
@@ -79,10 +86,12 @@
         'Public/Get-AzureLocalClusterUpdateReadiness.ps1',
         'Public/Get-AzureLocalFleetProgress.ps1',
         'Public/Get-AzureLocalFleetStatusData.ps1',
+        'Public/Get-AzureLocalItsmConfig.ps1',
         'Public/Get-AzureLocalUpdateRuns.ps1',
         'Public/Get-AzureLocalUpdateSummary.ps1',
         'Public/Invoke-AzureLocalFleetOperation.ps1',
         'Public/New-AzureLocalFleetStatusHtmlReport.ps1',
+        'Public/New-AzureLocalIncident.ps1',
         'Public/Reset-AzureLocalSideloadedTag.ps1',
         'Public/Resume-AzureLocalFleetUpdate.ps1',
         'Public/Set-AzureLocalClusterUpdateRingTag.ps1',
@@ -90,6 +99,7 @@
         'Public/Stop-AzureLocalFleetUpdate.ps1',
         'Public/Test-AzureLocalClusterHealth.ps1',
         'Public/Test-AzureLocalFleetHealthGate.ps1',
+        'Public/Test-AzureLocalItsmConnection.ps1',
         'Public/Test-AzureLocalUpdateScheduleAllowed.ps1'
     )
 
@@ -118,7 +128,13 @@
         # Update Schedule Tag Helpers (v0.6.4)
         'Test-AzureLocalUpdateScheduleAllowed',
         # Sideloaded Payload Workflow (v0.7.1)
-        'Reset-AzureLocalSideloadedTag'
+        'Reset-AzureLocalSideloadedTag',
+        # ITSM Connector Phase 1 (v0.7.4)
+        'Get-AzureLocalItsmConfig',
+        'Test-AzureLocalItsmConnection',
+        'New-AzureLocalIncident',
+        # Pipeline-Examples Convenience (v0.7.4)
+        'Copy-AzureLocalPipelineExample'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -134,7 +150,7 @@
     PrivateData = @{
         PSData = @{
             # Tags applied to this module. These help with module discovery in online galleries.
-            Tags = @('Azure', 'AzureLocal', 'AzureStackHCI', 'Updates', 'UpdateManager', 'HCI', 'Automation', 'CICD')
+            Tags = @('Azure', 'AzureLocal', 'AzureStackHCI', 'Updates', 'UpdateManager', 'HCI', 'Automation', 'CICD', 'Pipeline', 'ServiceNow', 'ITSM', 'Incident')
 
             # A URL to the license for this module.
             LicenseUri = 'https://github.com/NeilBird/Azure-Local/blob/main/LICENSE'
@@ -147,6 +163,41 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.4 - ITSM Connector Phase 1 (ServiceNow)
+
+### Added (Phase 1 scaffold)
+- New optional ITSM ticketing surface that lets `apply-updates` and
+  `fleet-update-status` pipelines open ServiceNow incidents when a cluster
+  needs operator action. Disabled by default; opt-in via pipeline input
+  `raise_itsm_ticket=true` plus a `./.itsm/azurelocal-itsm.yml` config file.
+- New public functions (Phase 1):
+  - `Get-AzureLocalItsmConfig`  - load + validate the YAML/JSON trigger matrix
+  - `Test-AzureLocalItsmConnection`  - dry-run probe of ITSM endpoint + adapters
+  - `New-AzureLocalIncident`  - consume JUnit results, evaluate trigger matrix,
+    open / dedupe ServiceNow incidents, return per-cluster Action/TicketId rows
+- New internal helpers (Phase 1):
+  - `Resolve-AzLocalItsmSecret`, `Get-AzLocalItsmDedupeKey`,
+    `Get-AzLocalItsmTriggerDecision`, `Format-AzLocalIncidentBody`,
+    `Invoke-AzLocalItsmHttp`, `Invoke-AzLocalServiceNowAdapter`
+- New documentation: top-level `ITSM/` folder with `README.md` setup
+  walkthrough and `ITSM/ITSM-Config-Reference.md` (full schema
+  reference), plus `Automation-Pipeline-Examples/.itsm/` sample config
+  + Mustache-style ticket-body templates.
+- Phase 2 (`Sync-AzureLocalIncident` lifecycle close-out) and Phase 3
+  (Teams / Slack mirror adapters) are **deferred to a future release**;
+  the Phase 1 surface is feature-complete on its own.
+- Secrets: ITSM credentials are referenced from Azure Key Vault
+  (`kv://<vault>/<secret>`) or native CI secrets (`env://<NAME>`). No raw
+  secret is ever written to YAML or to disk.
+
+### Added (pipeline-examples convenience)
+- New public function `Copy-AzureLocalPipelineExample` copies the bundled
+  `Automation-Pipeline-Examples/` folder out of the module install
+  location into a user-chosen destination (default: current directory).
+  Supports `-Platform GitHub | AzureDevOps | All`, `-Flatten`, `-Force`,
+  `-PassThru`, `-WhatIf` and `-Confirm`. Saves users from hunting through
+  `$module.ModuleBase` to find the YAML samples.
+
 ## Version 0.7.3 - Module renamed to AzLocal.UpdateManagement + internal refactor
 
 ### Renamed
@@ -220,71 +271,12 @@
 
 ## Version 0.7.1 - EndTime column for update runs + Sideloaded payload workflow
 
-### Enterprise-readiness review fixes (v0.7.1)
-- Security: Write-UpdateCsvLog (the diagnostic CSV path used during apply runs)
-  now sanitises every field through ConvertTo-SafeCsvField before quote-escaping,
-  closing a CSV-injection gap in the interim Update_Skipped.csv / Update_Started.csv
-  logs (the final exported results path was already protected).
-- Operational: parallel Get-AzureLocalFleetStatusData job dispatch now treats
-  Stopped and Disconnected job states as failures alongside Failed, so Stop-Job /
-  Ctrl-C / remoting-disconnect scenarios are surfaced rather than misdiagnosed as
-  "no output".
-- Performance: Get-AzureLocalUpdateSummary, Get-AzureLocalClusterUpdateReadiness,
-  Start-AzureLocalClusterUpdate, Get-AzureLocalUpdateRuns, and the private
-  Get-AzLocalClusterUpdateRuns helper now accumulate per-cluster results in a
-  [System.Collections.Generic.List[object]] (O(1) amortised .Add()) instead of an
-  Object[] with += (O(n^2) total). Measurable speed-up at fleet scale (1000+
-  clusters); no API surface change - the functions still return arrays.
-
-### Sideloaded payload workflow (new)
-- New optional cluster tag `UpdateSideloaded` (operator-set: True / False / 1 / 0,
-  case-insensitive). When set to False, Start-AzureLocalClusterUpdate blocks the
-  update with Status="SideloadedBlocked" and a clear "UpdateSideloaded == False"
-  message. Malformed values fail-closed (override with -Force).
-- New module-managed cluster tag `UpdateVersionInProgress`. Written by
-  Start-AzureLocalClusterUpdate alongside the staged update name (e.g.
-  "Solution12.2604.1003.209") to enable the auto-reset match check.
-- Fully opt-in: clusters without the `UpdateSideloaded` tag behave exactly as
-  in v0.7.0 - updates proceed through the existing schedule / health gates with
-  no behavioural change. Start-AzureLocalClusterUpdate still stamps
-  `UpdateVersionInProgress` on every started update (used as audit metadata
-  and to enable the orphan-tag cleanup path described below); on opted-out
-  clusters this tag is removed automatically the next time
-  Get-AzureLocalUpdateRuns sees a matching Succeeded run (Action=OrphanCleared).
-- Auto-reset in Get-AzureLocalUpdateRuns (default ON, opt-out via
-  -SkipSideloadedReset). Returns one of:
-  Reset (match success path - both tags flipped/cleared);
-  OrphanCleared (UpdateSideloaded absent but stale UpdateVersionInProgress
-  matched the latest succeeded run name - orphan tag cleared, UpdateSideloaded
-  never written);
-  NoTag (cluster fully outside the workflow);
-  NoRuns (UpdateSideloaded=True but no run history yet);
-  RunNotSucceeded (latest run InProgress / Failed - tag preserved);
-  Skipped (already False, malformed, version mismatch, or PATCH failure).
-- New public function Reset-AzureLocalSideloadedTag with explicit scope
-  (-ClusterNames / -ClusterResourceIds / -ScopeByUpdateRingTag) and -Force escape
-  hatch for stuck-tag recovery.
-- Set-AzLocalClusterTagsMerge is now idempotent - PATCH is skipped when the
-  merge produces no actual change against the cluster's current tags.
-- JUnit XML and CSV/HTML reporting recognise the new "SideloadedBlocked" status
-  alongside ScheduleBlocked/HealthCheckBlocked.
-- RBAC unchanged: relies on existing Microsoft.Resources/tags/read +
-  Microsoft.Resources/tags/write permissions already required by the
-  UpdateRing/UpdateWindow tag features.
-
-### EndTime column for update runs
-
-- New "EndTime" column on Get-AzureLocalUpdateRuns table output, sourced from the run's
-  properties.progress.endTimeUtc (most accurate "work finished" timestamp), falling back
-  to properties.lastUpdatedTime for older runs. Blank for InProgress runs.
-- Per-run Duration now prefers properties.duration (ARM-reported ISO-8601 timespan) when
-  present, falling back to EndTime - StartTime. Authoritative and immune to clock skew.
-- Fleet HTML report "Recent Update Run History" now includes End Time column. For the
-  aggregated multi-attempt row, EndTime reflects the latest attempt's end time.
-- JUnit XML test bodies now include Start Time and End Time lines for each cluster
-  testcase (the JUnit time= attribute is unchanged - still seconds).
-- New private helper Get-AzLocalRunEndTime centralises the EndTime resolution rule so
-  the per-run formatter and the fleet aggregator never drift.
+Summary: new optional `UpdateSideloaded` cluster tag and the auto-reset workflow
+(Reset-AzureLocalSideloadedTag), EndTime column on Get-AzureLocalUpdateRuns,
+CSV-injection sanitisation on intermediate logs, and a switch to
+`Generic.List[object]` accumulators for fleet read paths (O(n) instead of
+O(n^2)). Fully opt-in; clusters without the tag behave exactly as in v0.7.0.
+Full notes in CHANGELOG.md.
 
 ## Version 0.7.0 - Fleet-scale correctness, parallelism, and hardening
 

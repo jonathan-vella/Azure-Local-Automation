@@ -1,23 +1,24 @@
 # ITSM Connector for AzLocal.UpdateManagement - Design & Implementation Plan
 
-> Target module version: **v0.7.3**
-> Status: **Design** (this document drives the implementation work that follows)
-> Scope: All three phases delivered in v0.7.3. ServiceNow is the only live ITSM target shipping in v0.7.3; the adapter framework is intentionally generic so JSM / Azure DevOps Work Items / Generic-Webhook adapters can ship in v0.7.4 with no contract changes.
+> Target module version: **v0.7.4** (Phase 1 shipped) - this document describes the full three-phase design; Phases 2 and 3 are tracked as deferred.
+> Status: **Phase 1 - Implemented**. Phase 2 (lifecycle close-out via `Sync-AzureLocalIncident`) and Phase 3 (Teams + Slack mirror adapters) are deferred to a future release.
+> Scope shipped in v0.7.4: ServiceNow incident creation, dedupe, OAuth2 client_credentials secret resolution, config loader, connection probe. Sections marked "(Deferred)" below describe the design but are NOT yet implemented in the module code or pipelines.
+> Refactor of the monolithic `.psm1` into `Public/` + `Private/` dot-sourced files (Section 9) was completed pre-v0.7.4 and is therefore historical context, not a v0.7.4 work item.
 
 ---
 
 ## 1. Goals
 
 1. Allow `apply-updates` and `fleet-update-status` CI/CD pipelines to **optionally** open ITSM tickets when a cluster needs operator action that the module's own retries cannot resolve.
-2. **ServiceNow** is the v0.7.3 live target. The connector is built around a small adapter interface so other systems (Jira Service Management, Azure DevOps Work Items, generic webhook) can be added in v0.7.4 without changing pipeline YAML or core module code.
-3. Side-channel notifications via **Teams** and **Slack** adapters that mirror the ticket (link + summary), wired through the same matrix.
-4. **Lifecycle management**: when a previously failed cluster transitions to a healthy / succeeded state, the connector finds the open ticket(s) it opened for that cluster + update and posts a comment / transitions state (configurable).
+2. **ServiceNow** is the v0.7.4 live target. The connector is built around a small adapter interface so other systems (Jira Service Management, Azure DevOps Work Items, generic webhook) can be added in a future release without changing pipeline YAML or core module code.
+3. Side-channel notifications via **Teams** and **Slack** adapters that mirror the ticket (link + summary), wired through the same matrix. **(Deferred - design only, not shipped in v0.7.4.)**
+4. **Lifecycle management**: when a previously failed cluster transitions to a healthy / succeeded state, the connector finds the open ticket(s) it opened for that cluster + update and posts a comment / transitions state (configurable). **(Deferred - design only, not shipped in v0.7.4.)**
 5. **No raw secrets in YAML**. Azure Key Vault is the recommended source; native GitHub / Azure DevOps secrets are supported as a fallback for users without Key Vault access.
 6. Operator-configurable **trigger matrix**: which `Status` values raise tickets, at what severity, with what category - so `ScheduleBlocked` (which self-resolves) is suppressed by default but can be opted-in.
 
 ## 2. Non-goals (deferred to v0.7.4+)
 
-- Live Jira Service Management, Azure DevOps Work Items, generic-webhook adapters (framework only in v0.7.3).
+- Live Jira Service Management, Azure DevOps Work Items, generic-webhook adapters (the adapter framework is in place; additional targets remain a future-release item).
 - Bidirectional sync (ITSM state -> pipeline gating, e.g. "skip cluster if open Sev 1 ticket exists").
 - Custom ITSM workflows like change-request approval gates before update apply.
 - Email transport (deliberately omitted - Teams/Slack/ITSM cover all observability needs and email channels diverge per tenant).
@@ -59,27 +60,27 @@ Every box is a function inside the existing `AzLocal.UpdateManagement` module - 
 
 ## 4. Public surface (4 new functions)
 
-All four are exported from `AzLocal.UpdateManagement.psd1` in v0.7.3 and follow the existing module's naming convention (`Verb-AzureLocal<Noun>` for public, `Verb-AzLocal<Noun>` for private).
+Three of the four public functions are exported from `AzLocal.UpdateManagement.psd1` in v0.7.4 and follow the existing module's naming convention (`Verb-AzureLocal<Noun>` for public, `Verb-AzLocal<Noun>` for private). `Sync-AzureLocalIncident` is **deferred to a future release** - its row remains in the table below as a forward-looking design note.
 
-| Function | Phase | Purpose |
-|---|---|---|
-| `New-AzureLocalIncident` | 1 | Read a JUnit results file (and optional readiness CSV), evaluate against the trigger matrix, open / update tickets in the configured ITSM target, mirror to enabled notification adapters. Returns one row per cluster considered with `Action`, `TicketId`, `TicketUrl`, `MirrorTargets`. |
-| `Sync-AzureLocalIncident` | 2 | Find tickets opened by previous runs (by dedupe key) whose underlying cluster + update has since transitioned to a healthy / succeeded state. Post a comment, optionally transition to Resolved. Idempotent. |
-| `Get-AzureLocalItsmConfig` | 1 | Load and validate the YAML/JSON trigger matrix + adapter wiring config. Returns a strongly typed config object. Lets pipelines validate config in a separate step before secrets are mounted. |
-| `Test-AzureLocalItsmConnection` | 1 | Dry-run probe of the configured ITSM endpoint (and notification adapters) - verifies auth, custom-field presence, and rate-limit headroom. Surfaces as a step the user can run manually before enabling ticketing. |
+| Function | Phase | Status (v0.7.4) | Purpose |
+|---|---|---|---|
+| `New-AzureLocalIncident` | 1 | Implemented | Read a JUnit results file (and optional readiness CSV), evaluate against the trigger matrix, open / update tickets in the configured ITSM target. Returns one row per cluster considered with `Action`, `TicketId`, `TicketUrl`, `Severity`, `DedupeKey`. |
+| `Sync-AzureLocalIncident` | 2 | **Deferred** | Find tickets opened by previous runs (by dedupe key) whose underlying cluster + update has since transitioned to a healthy / succeeded state. Post a comment, optionally transition to Resolved. Idempotent. |
+| `Get-AzureLocalItsmConfig` | 1 | Implemented | Load and validate the YAML/JSON trigger matrix + adapter wiring config. Returns a strongly typed config object. Lets pipelines validate config in a separate step before secrets are mounted. |
+| `Test-AzureLocalItsmConnection` | 1 | Implemented | Dry-run probe of the configured ITSM endpoint. Resolves secrets, performs the OAuth token grant, and probes a one-row read against the `incident` table. Custom-field presence and rate-limit headroom checks are planned for a follow-up phase. Surfaces as a step the user can run manually before enabling ticketing. |
 
 ### Internal helpers (Private, dot-sourced)
 
-| Function | Phase | Purpose |
-|---|---|---|
-| `Resolve-AzLocalItsmSecret` | 1 | Resolve a credential reference (`kv://<vault>/<secret>` or `env://<NAME>`) to a `SecureString` / plaintext using the currently signed-in `Az` context. |
-| `Get-AzLocalItsmTriggerDecision` | 1 | Apply the trigger matrix to a JUnit row -> decision object (`ShouldTicket`, `Severity`, `Category`, `MirrorTargets`, `Reason`). |
-| `Get-AzLocalItsmDedupeKey` | 1 | Build the deterministic SHA256 hash used as the idempotency key. Default formula: `{ClusterResourceId}|{UpdateName}|{TriggerCategory}`. |
-| `Format-AzLocalIncidentBody` | 1 | Render the ticket title + description from a Mustache-style template against the JUnit + readiness + run-error context. |
-| `Invoke-AzLocalServiceNowAdapter` | 1 | All ServiceNow HTTP. POST incident, GET by `u_azlocal_dedupe_key`, attach file, add work-note, transition state. |
-| `Invoke-AzLocalTeamsAdapter` | 3 | Adaptive Card POST to a Teams Incoming Webhook. |
-| `Invoke-AzLocalSlackAdapter` | 3 | Block-Kit `chat.postMessage` to Slack (webhook or bot token). |
-| `Invoke-AzLocalItsmHttp` | 1 | Shared HTTP layer: TLS 1.2+, `Retry-After` honour, exponential backoff capped at 3 attempts, structured logging. |
+| Function | Phase | Status (v0.7.4) | Purpose |
+|---|---|---|---|
+| `Resolve-AzLocalItsmSecret` | 1 | Implemented | Resolve a credential reference (`kv://<vault>/<secret>`, `env://<NAME>`, or `literal://` with `-AllowLiteral`) to plaintext using the currently signed-in `Az` context. |
+| `Get-AzLocalItsmTriggerDecision` | 1 | Implemented | Apply the trigger matrix to a JUnit row -> decision object (`ShouldTicket`, `Severity`, `Category`, `MirrorTargets`, `Reason`). |
+| `Get-AzLocalItsmDedupeKey` | 1 | Implemented | Build the deterministic SHA256 hash used as the idempotency key. Default formula: `{ClusterResourceId}|{UpdateName}|{TriggerCategory}`. |
+| `Format-AzLocalIncidentBody` | 1 | Implemented | Render the ticket title + description from a Mustache-style template against the JUnit + readiness + run-error context. |
+| `Invoke-AzLocalServiceNowAdapter` | 1 | Implemented (subset) | ServiceNow HTTP - `GetToken`, `TestConnection`, `FindByDedupe`, `CreateIncident`. `AttachFile`, `AddWorkNote`, and `Transition` actions are reserved in the action surface but are deferred along with Phase 2 / attachments. |
+| `Invoke-AzLocalTeamsAdapter` | 3 | **Deferred** | Adaptive Card POST to a Teams Incoming Webhook. |
+| `Invoke-AzLocalSlackAdapter` | 3 | **Deferred** | Block-Kit `chat.postMessage` to Slack (webhook or bot token). |
+| `Invoke-AzLocalItsmHttp` | 1 | Implemented | Shared HTTP layer: TLS 1.2+, `Retry-After` honour, exponential backoff capped at 3 attempts, structured logging. |
 
 Naming separation:
 - `Verb-AzureLocal*` = public exported functions (this module's existing convention).
@@ -115,12 +116,12 @@ secrets:
 
 # ----- Default target -----
 defaults:
-  itsmTarget: ServiceNow           # required: 'ServiceNow' (v0.7.3)
+  itsmTarget: ServiceNow           # required: 'ServiceNow' (v0.7.4)
   mirrorTo: [Teams]                # optional list: 'Teams' | 'Slack'
   assignmentGroup: AzureLocal-Ops
   callerId: svc-azlocal-cicd@contoso.com
   category: Compute / Azure Local
-  cmdbCi: ${cluster.resourceId}    # token-substituted at runtime
+  cmdbCi: ${cluster.resourceId}    # token substitution planned for Phase 1.5; Phase 1 passes through verbatim
   templates:
     titleTemplate: "[Azure Local] {{cluster.name}} - {{trigger.category}} ({{run.updateName}})"
     bodyTemplatePath: ./.itsm/templates/incident-body.md
@@ -256,7 +257,7 @@ The pipeline service principal already has cluster-update-management RBAC; for K
 
 ### Why we did not pick OIDC -> ServiceNow direct federation
 
-ServiceNow does support inbound OAuth 2.0 JWT bearer flow which would let us avoid client_secret entirely. Adding it would require each customer's ServiceNow admin to register a JWT verifier per Azure tenant, which is non-trivial for first-time setup. v0.7.3 ships **OAuth 2.0 client credentials with the secret retrieved from Key Vault** as the recommended path; the adapter is structured so a JWT bearer path can be added in v0.7.4 without touching the pipeline YAML.
+ServiceNow does support inbound OAuth 2.0 JWT bearer flow which would let us avoid client_secret entirely. Adding it would require each customer's ServiceNow admin to register a JWT verifier per Azure tenant, which is non-trivial for first-time setup. v0.7.4 ships **OAuth 2.0 client credentials with the secret retrieved from Key Vault** as the recommended path; the adapter is structured so a JWT bearer path can be added in a future release without touching the pipeline YAML.
 
 ---
 
@@ -273,7 +274,9 @@ ServiceNow does support inbound OAuth 2.0 JWT bearer flow which would let us avo
 
 ---
 
-## 8. Lifecycle / Phase 2 detail
+## 8. Lifecycle / Phase 2 detail **(Deferred - not shipped in v0.7.4)**
+
+> The behaviour described below is design intent for `Sync-AzureLocalIncident`. The function is not implemented in v0.7.4 - pipeline YAML examples that reference it are commented out / gated until the function ships in a later release.
 
 `Sync-AzureLocalIncident` runs in two places:
 
@@ -296,7 +299,9 @@ The transitioned-state detection is **idempotent**: re-running the same workflow
 
 ---
 
-## 9. Pre-requisite module refactor
+## 9. Pre-requisite module refactor **(Historical - completed prior to v0.7.4)**
+
+> This section is preserved for context. The Public/Private dot-sourced refactor described here was completed before the v0.7.4 ITSM work began and is therefore not a v0.7.4 deliverable.
 
 Before any ITSM code lands, `AzLocal.UpdateManagement.psm1` (11,679 lines, 60 functions) is split into `Public/` + `Private/` dot-sourced files, matching the layout of `AzLocal.DeploymentAutomation` in this repo.
 
@@ -304,7 +309,7 @@ Before any ITSM code lands, `AzLocal.UpdateManagement.psm1` (11,679 lines, 60 fu
 
 ```
 AzLocal.UpdateManagement/
-  AzLocal.UpdateManagement.psd1        # bumped to 0.7.3; NestedModules lists every .ps1
+  AzLocal.UpdateManagement.psd1        # bumped to 0.7.4; NestedModules lists every .ps1
   AzLocal.UpdateManagement.psm1        # shrinks to ~100 lines: header, strict-mode,
                                        # script-scoped state, NestedModules dot-source fallback
   Public/                              # 22 files - one exported function each
@@ -328,7 +333,7 @@ AzLocal.UpdateManagement/
     New-AzureLocalFleetStatusHtmlReport.ps1
     Test-AzureLocalUpdateScheduleAllowed.ps1
     Reset-AzureLocalSideloadedTag.ps1
-    # v0.7.3 additions:
+    # v0.7.4 additions:
     New-AzureLocalIncident.ps1
     Sync-AzureLocalIncident.ps1
     Get-AzureLocalItsmConfig.ps1
@@ -374,7 +379,7 @@ AzLocal.UpdateManagement/
     Invoke-AzLocalSideloadedAutoReset.ps1
     Import-AzureLocalFleetState.ps1     # currently private-but-exported; moves to Private
     Invoke-AzureLocalUpdateApply.ps1    # currently private; stays private
-    # v0.7.3 ITSM additions:
+    # v0.7.4 ITSM additions:
     Resolve-AzLocalItsmSecret.ps1
     Get-AzLocalItsmTriggerDecision.ps1
     Get-AzLocalItsmDedupeKey.ps1
@@ -384,10 +389,11 @@ AzLocal.UpdateManagement/
     Invoke-AzLocalSlackAdapter.ps1
     Invoke-AzLocalItsmHttp.ps1
   Tests/
-  Docs/
+  ITSM/
+    README.md                          # Phase 1 deliverable: setup + configure landing page (auto-renders on GitHub)
     ITSM-Connector-Plan.md             (this file)
-    ServiceNow-AzureLocal-Setup-UpdateSet.xml   # Phase 1 deliverable
     ITSM-Config-Reference.md           # Phase 1 deliverable: full schema reference
+    ServiceNow-AzureLocal-Setup-UpdateSet.xml   # Phase 1 deliverable
   Automation-Pipeline-Examples/
     .itsm/                             # Phase 1 deliverable: example config + templates
       azurelocal-itsm.yml
@@ -471,8 +477,11 @@ New step **after** `Publish Test Results` and **before** `Summary`:
         -ExportJUnitPath ./artifacts/itsm-results.xml
     $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
 
-- name: Sync ITSM tickets (close-out on success)
-  if: ${{ inputs.raise_itsm_ticket == true }}
+- name: Sync ITSM tickets (close-out on success) - DEFERRED (Phase 2, not in v0.7.4)
+  # `Sync-AzureLocalIncident` is not implemented in v0.7.4 - this step is
+  # documented for forward compatibility only. Do not enable it until the
+  # function ships in a later release.
+  if: ${{ false }}
   shell: pwsh
   run: |
     Sync-AzureLocalIncident `
@@ -497,13 +506,13 @@ New step **after** `Publish Test Results` and **before** `Summary`:
   continue-on-error: true
 ```
 
-### 10.2 `fleet-update-status.yml`
+### 10.2 `fleet-update-status.yml` **(Deferred along with Phase 2)**
 
-Adds the same `Sync-AzureLocalIncident` step (no `New-AzureLocalIncident` - that is only for the apply pipeline). Lets a hourly / daily fleet read sweep close out tickets when a cluster recovered between apply runs.
+Adds the same `Sync-AzureLocalIncident` step (no `New-AzureLocalIncident` - that is only for the apply pipeline). Lets a hourly / daily fleet read sweep close out tickets when a cluster recovered between apply runs. Not shipped in v0.7.4.
 
 ### 10.3 Azure DevOps parity
 
-Both ADO `apply-updates.yml` and `fleet-update-status.yml` get exactly the same step structure using `task.logissue` and `PublishTestResults@2` (already in use elsewhere in those YAMLs). Inputs are declared as pipeline parameters with the same names and defaults.
+Both ADO `apply-updates.yml` and (when Phase 2 lands) `fleet-update-status.yml` get exactly the same step structure using `task.logissue` and `PublishTestResults@2` (already in use elsewhere in those YAMLs). Inputs are declared as pipeline parameters with the same names and defaults. v0.7.4 ships only the `apply-updates.yml` ITSM step on both GitHub Actions and Azure DevOps; the Sync step is deferred.
 
 ---
 
@@ -511,7 +520,7 @@ Both ADO `apply-updates.yml` and `fleet-update-status.yml` get exactly the same 
 
 - All ITSM credentials referenced through Key Vault (recommended) or native GH / ADO secrets (fallback). No raw secret in YAML or config file ever.
 - Pipeline SP needs **Key Vault Secrets User** on the configured vault; no other new RBAC.
-- HTTP layer: TLS 1.2+, default 30s timeout, `Retry-After` honoured, exponential backoff. Server cert pinning is *not* enabled by default but is exposed via `Invoke-AzLocalItsmHttp -AllowedThumbprints` for high-assurance tenants.
+- HTTP layer: TLS 1.2+, default 30s timeout, `Retry-After` honoured, exponential backoff. Server cert pinning is *not* enabled in Phase 1; an `Invoke-AzLocalItsmHttp -AllowedThumbprints` surface is planned for a later phase for high-assurance tenants.
 - All free-text fields (cluster names, tag values, error summaries) are CSV-injection-sanitised on the way in (already true in v0.7.0+) and **HTML-escaped** when rendered into ticket descriptions to defend against ITSM-side HTML injection.
 - Token cache lives only in memory of the runner; never written to disk or logs. `Write-Log` redacts anything matching `bearer\s+[\w.-]+` / `client_secret=...`.
 - Teams / Slack webhook URLs are themselves secrets - same KV / env handling.
@@ -520,23 +529,23 @@ Both ADO `apply-updates.yml` and `fleet-update-status.yml` get exactly the same 
 
 ## 12. Testing
 
-Pester additions land in `Tests/AzLocal.UpdateManagement.Tests.ps1` and split into clear `Describe` blocks per new function. Targets:
+Pester additions land in `Tests/AzLocal.UpdateManagement.Tests.ps1` and split into clear `Describe` blocks per new function. Targets below are the full three-phase plan; Phase 2 / Phase 3 rows are deferred along with their functions.
 
-| Area | Test count target |
-|---|---|
-| `Resolve-AzLocalItsmSecret` (KV path, env path, mixed, error paths) | 8 |
-| `Get-AzureLocalItsmConfig` (schema validation, missing fields, defaults) | 12 |
-| `Get-AzLocalItsmTriggerDecision` (every status, mirror override, raiseAfterN) | 15 |
-| `Get-AzLocalItsmDedupeKey` (stability across versions, collision class) | 4 |
-| `Format-AzLocalIncidentBody` (template tokens, missing context, escaping) | 8 |
-| `Invoke-AzLocalServiceNowAdapter` (POST, dedupe GET, attach, transition, 401-refresh, 429-backoff) | 18 |
-| `Invoke-AzLocalTeamsAdapter` (card render, severity filter) | 6 |
-| `Invoke-AzLocalSlackAdapter` (block render, channel override) | 6 |
-| `New-AzureLocalIncident` end-to-end (mocked adapter; JUnit -> tickets) | 10 |
-| `Sync-AzureLocalIncident` (no-change, comment-only, comment+resolve, age guard, ownership guard) | 10 |
-| `Test-AzureLocalItsmConnection` (success, bad auth, missing custom fields) | 6 |
+| Area | Phase | Test count target | Status (v0.7.4) |
+|---|---|---|---|
+| `Resolve-AzLocalItsmSecret` (KV path, env path, mixed, error paths) | 1 | 8 | Shipped |
+| `Get-AzureLocalItsmConfig` (schema validation, missing fields, defaults, YAML normalisation) | 1 | 12 | Shipped |
+| `Get-AzLocalItsmTriggerDecision` (every status, mirror override, raiseAfterN) | 1 | 15 | Shipped |
+| `Get-AzLocalItsmDedupeKey` (stability across versions, collision class) | 1 | 4 | Shipped |
+| `Format-AzLocalIncidentBody` (template tokens, missing context, escaping) | 1 | 8 | Shipped |
+| `Invoke-AzLocalServiceNowAdapter` (POST, dedupe GET, 401-refresh, 429-backoff) | 1 | ~10 | Shipped (attachment / transition tests deferred with their actions) |
+| `Invoke-AzLocalTeamsAdapter` (card render, severity filter) | 3 | 6 | **Deferred** |
+| `Invoke-AzLocalSlackAdapter` (block render, channel override) | 3 | 6 | **Deferred** |
+| `New-AzureLocalIncident` end-to-end (mocked adapter; JUnit -> tickets, DryRun dedupe, JUnit export, CSV sanitization) | 1 | 10+ | Shipped |
+| `Sync-AzureLocalIncident` (no-change, comment-only, comment+resolve, age guard, ownership guard) | 2 | 10 | **Deferred** |
+| `Test-AzureLocalItsmConnection` (success, bad auth, missing custom fields) | 1 | 6 | Shipped |
 
-Total target: ~**103 new tests**. All HTTP via `Mock Invoke-RestMethod` / `Mock Invoke-WebRequest`. No live ServiceNow contact in CI; a manual contract test against a ServiceNow Personal Developer Instance is documented for maintainers but not in the default pipeline.
+Phase 1 total shipped in v0.7.4: ~75 new ITSM tests integrated into the suite's existing 337-test baseline. All HTTP via `Mock Invoke-RestMethod` / `Mock Invoke-WebRequest`. No live ServiceNow contact in CI; a manual contract test against a ServiceNow Personal Developer Instance is documented for maintainers but not in the default pipeline.
 
 Tests use the existing safe-detached Pester pattern (`-Output None -PassThru` + summary file) - this is non-negotiable and documented in the user's memory file.
 
@@ -544,31 +553,34 @@ Tests use the existing safe-detached Pester pattern (`-Output None -PassThru` + 
 
 ## 13. Documentation deliverables
 
-All produced as part of v0.7.3:
+All produced as part of v0.7.4 (Phase 1 scope only - Phase 2/3 docs deferred):
 
 | File | Purpose |
 |---|---|
-| `Docs/ITSM-Connector-Plan.md` | This document - design + decisions log. |
-| `Docs/ITSM-Config-Reference.md` | Full schema reference for the matrix config, every field documented with type / default / examples. |
-| `Docs/ServiceNow-AzureLocal-Setup-UpdateSet.xml` | Update Set installing the five `u_azlocal_*` custom fields + the OAuth app role + a sample assignment group. |
+| `ITSM/README.md` | Landing page - setup, prerequisites, secret-source guidance, quick-start, troubleshooting. Auto-rendered on GitHub when browsing the `ITSM/` folder. |
+| `ITSM/ITSM-Connector-Plan.md` | This document - design + decisions log. |
+| `ITSM/ITSM-Config-Reference.md` | Full schema reference for the matrix config, every field documented with type / default / examples. |
+| `ITSM/ServiceNow-AzureLocal-Setup-UpdateSet.xml` | Update Set installing the five `u_azlocal_*` custom fields + the OAuth app role + a sample assignment group. |
 | `Automation-Pipeline-Examples/.itsm/azurelocal-itsm.yml` | Working example config. |
 | `Automation-Pipeline-Examples/.itsm/templates/incident-body.md` | Mustache-style template used by `Format-AzLocalIncidentBody`. |
 | `Automation-Pipeline-Examples/.itsm/templates/work-note.md` | Template used by `Sync-AzureLocalIncident` for close-out comments. |
-| `README.md` (module root) | New "## ITSM Connector (v0.7.3)" section + cross-link to Docs/. |
+| `README.md` (module root) | New "## ITSM Connector (v0.7.4)" section + cross-link to `ITSM/` folder. |
 | `Automation-Pipeline-Examples/README.md` | New "## ITSM Ticketing" section walking through KV setup, native-secret fallback, dry-run, mirror-channel setup. |
-| `CHANGELOG.md` | v0.7.3 entry covering refactor + ITSM. |
+| `CHANGELOG.md` | v0.7.4 entry covering Phase 1 ITSM connector (refactor was completed earlier). |
 
 ---
 
 ## 14. Delivery sequence
 
-1. **Refactor** the monolithic `.psm1` into `Public/` + `Private/` dot-sourced files; bump psd1/psm1 banner to `0.7.3-pre`. Run Pester to green. Commit as one or more refactor commits with no functional change.
-2. **Phase 1 implementation** (Section 4 public + Section 4 private excluding Teams/Slack). Tests, dry-run validated against ServiceNow Personal Developer Instance. Pipeline YAML updates. Docs.
-3. **Phase 2 implementation** (`Sync-AzureLocalIncident` + lifecycle wiring + `Sync` job in both pipelines + lifecycle docs). Tests.
-4. **Phase 3 implementation** (`Invoke-AzLocalTeamsAdapter`, `Invoke-AzLocalSlackAdapter`, mirror config plumbing). Tests.
-5. **Cross-cutting**: README updates, CHANGELOG, version bump to `0.7.3` final, run full Pester suite, commit, raise PR.
+| Step | Scope | Status |
+|---|---|---|
+| 1 | **Refactor** the monolithic `.psm1` into `Public/` + `Private/` dot-sourced files; bump psd1/psm1 banner. Run Pester to green. Each function lands in its own commit so any regression is bisectable. | **Completed** (pre-v0.7.4) |
+| 2 | **Phase 1 implementation** - Section 4 public + Section 4 private (excluding Teams/Slack and `Sync-AzureLocalIncident`). Tests, dry-run validated against ServiceNow Personal Developer Instance. Pipeline YAML updates. Docs. | **Shipped in v0.7.4** |
+| 3 | **Phase 2 implementation** - `Sync-AzureLocalIncident` + lifecycle wiring + `Sync` job in both pipelines + lifecycle docs. Tests. | **Deferred** (post-v0.7.4) |
+| 4 | **Phase 3 implementation** - `Invoke-AzLocalTeamsAdapter`, `Invoke-AzLocalSlackAdapter`, mirror config plumbing. Tests. | **Deferred** (post-v0.7.4) |
+| 5 | **Cross-cutting** - README updates, CHANGELOG, version bump, run full Pester suite, commit, raise PR. | **Shipped for Phase 1 in v0.7.4**; will recur for each deferred phase. |
 
-Each phase is one or more commits on the same branch off `main`; the PR is opened at the start of step 1 and incrementally reviewed.
+Each phase is one or more commits on the same branch off `main`; the PR is opened at the start of each phase and incrementally reviewed.
 
 ---
 
@@ -582,4 +594,4 @@ These are items I want to confirm before / during implementation. None block sta
 | Q2 | Should `Sync-AzureLocalIncident` also reach into `fleet-update-status.yml` results when triggered from `apply-updates.yml` (cross-pipeline visibility) or stay scoped to the run that called it? | Stay scoped. Cross-pipeline visibility added in v0.7.4 if requested. |
 | Q3 | When `lifecycle.onSuccessAction = resolve` and the ticket has an `assigned_to` set, should we still resolve? | No. Treat assigned ticket as "human owns it" and only post a work-note. (Encoded in plan above.) |
 | Q4 | Teams Adaptive Card schema version? | 1.4 (broad Teams compatibility, supports Action.OpenUrl). |
-| Q5 | Slack: webhook URL only, or also support `chat.postMessage` with bot token (richer formatting, threading)? | Webhook in v0.7.3 (simpler); bot token in v0.7.4. |
+| Q5 | Slack: webhook URL only, or also support `chat.postMessage` with bot token (richer formatting, threading)? | Webhook first (simpler), bot token later. Phase 3 itself is deferred beyond v0.7.4. |

@@ -30,9 +30,39 @@ parameters:
     type: number
     default: 4
 
+  # --- ITSM Connector (v0.7.4 Phase 1: ServiceNow) ---
+  # Opt-in ticket creation. Defaults preserve the previous pipeline behaviour
+  # (no ITSM calls). Secrets are wired via the variable group referenced below
+  # in the Raise ITSM tickets step (`env:`), never on the PowerShell command line.
+  - name: raiseItsmTicket
+    displayName: 'Open ITSM tickets (ServiceNow) for clusters needing manual action'
+    type: boolean
+    default: false
+
+  - name: itsmConfigPath
+    displayName: 'Path to ITSM matrix config (YAML or JSON)'
+    type: string
+    default: './.itsm/azurelocal-itsm.yml'
+
+  - name: itsmDryRun
+    displayName: 'ITSM: build payloads + run read-only dedupe but do NOT create tickets'
+    type: boolean
+    default: false
+
+  - name: itsmForceCreate
+    displayName: 'ITSM: bypass dedupe and always create new tickets (use with caution)'
+    type: boolean
+    default: false
+
 variables:
   - name: modulePath
     value: '$(System.DefaultWorkingDirectory)/AzLocal.UpdateManagement'
+  # ITSM connector (v0.7.4 Phase 1). Uncomment the group reference once you
+  # have created a variable group named 'AzureLocal-ITSM-Secrets' containing:
+  #   ITSM_SN_INSTANCE_URL, ITSM_SN_CLIENT_ID, ITSM_SN_CLIENT_SECRET
+  # When raiseItsmTicket=false the Raise ITSM step is skipped and these
+  # variables are not required.
+  # - group: AzureLocal-ITSM-Secrets
 
 pool:
   vmImage: 'windows-latest'
@@ -262,6 +292,96 @@ stages:
               testResultsFiles: '$(Build.ArtifactStagingDirectory)/update-results.xml'
               testRunTitle: 'Azure Local Cluster Updates - ${{ parameters.updateRing }}'
           
+          # --------------------------------------------------------------
+          # ITSM Connector (v0.7.4 Phase 1 - ServiceNow)
+          # Fully opt-in. Runs AFTER PublishTestResults so the apply stage
+          # surfaces its own results first; ITSM is strictly additive.
+          # Secrets must be wired via the 'AzureLocal-ITSM-Secrets' variable
+          # group at the top of this file (uncomment when ready).
+          # --------------------------------------------------------------
+          - task: PowerShell@2
+            displayName: 'Install powershell-yaml (ITSM config parser)'
+            condition: and(succeeded(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
+            inputs:
+              targetType: 'inline'
+              pwsh: true
+              script: |
+                if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
+                    Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+                }
+
+          - task: AzureCLI@2
+            displayName: 'Raise ITSM tickets'
+            name: itsm
+            condition: and(succeeded(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
+            env:
+              # Secrets sourced from the variable group above. Mapping them
+              # here keeps them off the PowerShell command line (no process-
+              # listing or log leakage) and lets the module pick them up via
+              # env:// references in azurelocal-itsm.yml.
+              ITSM_SN_INSTANCE_URL: $(ITSM_SN_INSTANCE_URL)
+              ITSM_SN_CLIENT_ID: $(ITSM_SN_CLIENT_ID)
+              ITSM_SN_CLIENT_SECRET: $(ITSM_SN_CLIENT_SECRET)
+            inputs:
+              azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                Import-Module "$(modulePath)/AzLocal.UpdateManagement.psd1" -Force
+
+                $configPath = "${{ parameters.itsmConfigPath }}"
+                $dryRun     = [System.Convert]::ToBoolean("${{ parameters.itsmDryRun }}")
+                $force      = [System.Convert]::ToBoolean("${{ parameters.itsmForceCreate }}")
+
+                if (-not (Test-Path $configPath)) {
+                    Write-Host "##vso[task.logissue type=warning]ITSM config not found at '$configPath' - skipping ticket creation."
+                    exit 0
+                }
+
+                $cfg = Get-AzureLocalItsmConfig -Path $configPath
+
+                $junitInput = "$(Build.ArtifactStagingDirectory)/update-results.xml"
+                if (-not (Test-Path $junitInput)) {
+                    Write-Host "##vso[task.logissue type=warning]No update-results.xml found at '$junitInput' - skipping ticket creation."
+                    exit 0
+                }
+
+                $params = @{
+                    InputArtifactPath = $junitInput
+                    Config            = $cfg
+                    RunMetadata       = @{
+                        Platform = 'azure-devops'
+                        RunId    = $env:BUILD_BUILDID
+                        RunUrl   = "$($env:SYSTEM_COLLECTIONURI)$($env:SYSTEM_TEAMPROJECT)/_build/results?buildId=$($env:BUILD_BUILDID)"
+                        Branch   = $env:BUILD_SOURCEBRANCH
+                    }
+                    DryRun            = $dryRun
+                    ForceCreate       = $force
+                    ExportPath        = "$(Build.ArtifactStagingDirectory)/itsm-results.csv"
+                    ExportJUnitPath   = "$(Build.ArtifactStagingDirectory)/itsm-results.xml"
+                }
+
+                $results = New-AzureLocalIncident @params
+                $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish ITSM Artefacts'
+            condition: and(always(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'itsm-results'
+              publishLocation: 'Container'
+            continueOnError: true
+
+          - task: PublishTestResults@2
+            displayName: 'Publish ITSM Test Results'
+            condition: and(always(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(Build.ArtifactStagingDirectory)/itsm-results.xml'
+              testRunTitle: 'ITSM Tickets - ${{ parameters.updateRing }}'
+              failTaskOnFailedTests: false
+
           - task: PowerShell@2
             displayName: 'Generate Summary'
             inputs:

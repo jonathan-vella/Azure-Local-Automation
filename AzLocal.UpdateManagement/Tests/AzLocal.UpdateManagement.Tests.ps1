@@ -34,12 +34,12 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.3' {
-            $script:ModuleInfo.Version | Should -Be '0.7.3'
+        It 'Should have version 0.7.4' {
+            $script:ModuleInfo.Version | Should -Be '0.7.4'
         }
 
-        It 'Should export exactly 20 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 20
+        It 'Should export exactly 24 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 24
         }
 
         It 'Should export the expected functions' {
@@ -68,7 +68,13 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 # Update Schedule Tag Helpers (v0.6.4)
                 'Test-AzureLocalUpdateScheduleAllowed',
                 # Sideloaded Payload Workflow (v0.7.1)
-                'Reset-AzureLocalSideloadedTag'
+                'Reset-AzureLocalSideloadedTag',
+                # ITSM Connector Phase 1 (v0.7.4)
+                'Get-AzureLocalItsmConfig',
+                'Test-AzureLocalItsmConnection',
+                'New-AzureLocalIncident',
+                # Pipeline-Examples Convenience (v0.7.4)
+                'Copy-AzureLocalPipelineExample'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -2832,4 +2838,878 @@ Describe 'Helper Function: Invoke-AzLocalSideloadedAutoResetForCluster (Internal
 }
 
 #endregion Sideloaded Payload Workflow (v0.7.1)
+
+#region ITSM Connector Phase 1 (v0.7.4)
+
+Describe 'ITSM: Get-AzLocalItsmDedupeKey' {
+    It 'Should return a 64-char lowercase hex SHA256' {
+        $key = & (Get-Module AzLocal.UpdateManagement) {
+            Get-AzLocalItsmDedupeKey -ClusterResourceId '/subs/x/rg/r/providers/Microsoft.AzureStackHCI/clusters/c1' `
+                -UpdateName '2511.0.10.0' -TriggerCategory 'Cluster update failure'
+        }
+        $key | Should -Match '^[a-f0-9]{64}$'
+    }
+
+    It 'Should be deterministic for the same inputs' {
+        $k1 = & (Get-Module AzLocal.UpdateManagement) { Get-AzLocalItsmDedupeKey -ClusterResourceId 'A' -UpdateName 'U' -TriggerCategory 'C' }
+        $k2 = & (Get-Module AzLocal.UpdateManagement) { Get-AzLocalItsmDedupeKey -ClusterResourceId 'A' -UpdateName 'U' -TriggerCategory 'C' }
+        $k1 | Should -Be $k2
+    }
+
+    It 'Should be case-insensitive on inputs' {
+        $k1 = & (Get-Module AzLocal.UpdateManagement) { Get-AzLocalItsmDedupeKey -ClusterResourceId 'ABC' -UpdateName 'U' -TriggerCategory 'C' }
+        $k2 = & (Get-Module AzLocal.UpdateManagement) { Get-AzLocalItsmDedupeKey -ClusterResourceId 'abc' -UpdateName 'u' -TriggerCategory 'c' }
+        $k1 | Should -Be $k2
+    }
+
+    It 'Should produce different keys for different categories' {
+        $k1 = & (Get-Module AzLocal.UpdateManagement) { Get-AzLocalItsmDedupeKey -ClusterResourceId 'A' -UpdateName 'U' -TriggerCategory 'Failure' }
+        $k2 = & (Get-Module AzLocal.UpdateManagement) { Get-AzLocalItsmDedupeKey -ClusterResourceId 'A' -UpdateName 'U' -TriggerCategory 'Health' }
+        $k1 | Should -Not -Be $k2
+    }
+}
+
+Describe 'ITSM: Get-AzLocalItsmTriggerDecision' {
+    BeforeAll {
+        $script:itsmTriggers = @{
+            Failed = @{ RaiseTicket = $true; Severity = 2; Category = 'Cluster update failure'; MirrorTo = @('Teams','Slack') }
+            ScheduleBlocked = @{ RaiseTicket = $false }
+            Skipped = @{ RaiseTicket = $false }
+            SideloadedBlocked = @{ RaiseTicket = $true; Severity = 4; Category = 'Operator action'; MirrorTo = @() }
+        }
+        $script:itsmDefaults = @{ MirrorTo = @('Teams') }
+    }
+
+    It 'Returns ShouldTicket=true with severity for raiseTicket status' {
+        $d = & (Get-Module AzLocal.UpdateManagement) {
+            param($t,$df) Get-AzLocalItsmTriggerDecision -Status 'Failed' -Triggers $t -Defaults $df
+        } $script:itsmTriggers $script:itsmDefaults
+        $d.ShouldTicket | Should -BeTrue
+        $d.Severity     | Should -Be 2
+        $d.Category     | Should -Be 'Cluster update failure'
+    }
+
+    It 'Returns ShouldTicket=false when raiseTicket=false' {
+        $d = & (Get-Module AzLocal.UpdateManagement) {
+            param($t,$df) Get-AzLocalItsmTriggerDecision -Status 'ScheduleBlocked' -Triggers $t -Defaults $df
+        } $script:itsmTriggers $script:itsmDefaults
+        $d.ShouldTicket | Should -BeFalse
+    }
+
+    It 'Returns ShouldTicket=false for unmapped status' {
+        $d = & (Get-Module AzLocal.UpdateManagement) {
+            param($t,$df) Get-AzLocalItsmTriggerDecision -Status 'WeirdNewStatus' -Triggers $t -Defaults $df
+        } $script:itsmTriggers $script:itsmDefaults
+        $d.ShouldTicket | Should -BeFalse
+        $d.Reason       | Should -Match 'not in the trigger matrix'
+    }
+
+    It 'Honours explicit empty MirrorTo on a trigger (suppresses mirror)' {
+        $d = & (Get-Module AzLocal.UpdateManagement) {
+            param($t,$df) Get-AzLocalItsmTriggerDecision -Status 'SideloadedBlocked' -Triggers $t -Defaults $df
+        } $script:itsmTriggers $script:itsmDefaults
+        $d.ShouldTicket           | Should -BeTrue
+        $d.MirrorTargets.Count    | Should -Be 0
+    }
+
+    It 'Falls back to default mirror list when trigger has no MirrorTo' {
+        $triggers = @{ Failed = @{ RaiseTicket = $true; Severity = 2 } }
+        $d = & (Get-Module AzLocal.UpdateManagement) {
+            param($t,$df) Get-AzLocalItsmTriggerDecision -Status 'Failed' -Triggers $t -Defaults $df
+        } $triggers $script:itsmDefaults
+        $d.MirrorTargets | Should -Contain 'Teams'
+    }
+
+    It 'Throws on invalid severity' {
+        $triggers = @{ Failed = @{ RaiseTicket = $true; Severity = 9 } }
+        {
+            & (Get-Module AzLocal.UpdateManagement) {
+                param($t) Get-AzLocalItsmTriggerDecision -Status 'Failed' -Triggers $t
+            } $triggers
+        } | Should -Throw -ExpectedMessage '*severity*'
+    }
+}
+
+Describe 'ITSM: Format-AzLocalIncidentBody' {
+    It 'Substitutes a simple top-level token' {
+        $r = & (Get-Module AzLocal.UpdateManagement) {
+            Format-AzLocalIncidentBody -Template 'Hello {{name}}' -Context @{ name = 'World' } -NoHtmlEscape
+        }
+        $r | Should -Be 'Hello World'
+    }
+
+    It 'Substitutes a nested dotted token' {
+        $r = & (Get-Module AzLocal.UpdateManagement) {
+            Format-AzLocalIncidentBody -Template '{{a.b.c}}' -Context @{ a = @{ b = @{ c = 'deep' } } } -NoHtmlEscape
+        }
+        $r | Should -Be 'deep'
+    }
+
+    It 'HTML-escapes by default' {
+        $r = & (Get-Module AzLocal.UpdateManagement) {
+            Format-AzLocalIncidentBody -Template '{{x}}' -Context @{ x = '<script>alert(1)</script>' }
+        }
+        $r | Should -Be '&lt;script&gt;alert(1)&lt;/script&gt;'
+    }
+
+    It 'Renders missing path tokens as empty strings' {
+        $r = & (Get-Module AzLocal.UpdateManagement) {
+            Format-AzLocalIncidentBody -Template '[{{a.missing}}]' -Context @{ a = @{} } -NoHtmlEscape
+        }
+        $r | Should -Be '[]'
+    }
+}
+
+Describe 'ITSM: Resolve-AzLocalItsmSecret' {
+    It 'Resolves env:// to the environment variable value' {
+        $env:AZLOCAL_TEST_SECRET = 'envValue123'
+        try {
+            $v = & (Get-Module AzLocal.UpdateManagement) {
+                Resolve-AzLocalItsmSecret -Reference 'env://AZLOCAL_TEST_SECRET'
+            }
+            $v | Should -Be 'envValue123'
+        }
+        finally {
+            Remove-Item env:AZLOCAL_TEST_SECRET -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'Throws when env:// reference points to a missing variable' {
+        Remove-Item env:AZLOCAL_TEST_MISSING -ErrorAction SilentlyContinue
+        {
+            & (Get-Module AzLocal.UpdateManagement) {
+                Resolve-AzLocalItsmSecret -Reference 'env://AZLOCAL_TEST_MISSING'
+            }
+        } | Should -Throw -ExpectedMessage '*empty environment variable*'
+    }
+
+    It 'Throws on bare name without DefaultKeyVault' {
+        {
+            & (Get-Module AzLocal.UpdateManagement) {
+                Resolve-AzLocalItsmSecret -Reference 'just-a-name'
+            }
+        } | Should -Throw -ExpectedMessage '*bare name*'
+    }
+
+    It 'Throws on literal:// without -AllowLiteral' {
+        {
+            & (Get-Module AzLocal.UpdateManagement) {
+                Resolve-AzLocalItsmSecret -Reference 'literal://hello'
+            }
+        } | Should -Throw -ExpectedMessage '*AllowLiteral*'
+    }
+
+    It 'Returns the literal value when -AllowLiteral is set' {
+        $v = & (Get-Module AzLocal.UpdateManagement) {
+            Resolve-AzLocalItsmSecret -Reference 'literal://https://corp.service-now.com' -AllowLiteral
+        }
+        $v | Should -Be 'https://corp.service-now.com'
+    }
+
+    It 'Throws on unrecognised reference form' {
+        {
+            & (Get-Module AzLocal.UpdateManagement) {
+                Resolve-AzLocalItsmSecret -Reference 'weird://nope'
+            }
+        } | Should -Throw -ExpectedMessage '*not a recognised form*'
+    }
+}
+
+Describe 'ITSM: Get-AzureLocalItsmConfig' {
+    BeforeAll {
+        $script:configDir = Join-Path $env:TEMP "itsm-cfg-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:configDir -ItemType Directory -Force | Out-Null
+    }
+    AfterAll {
+        Remove-Item -Path $script:configDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Parses a valid JSON config' {
+        $p = Join-Path $script:configDir 'ok.json'
+        @{
+            schemaVersion = 1
+            secrets = @{ source = 'keyvault'; keyvaultName = 'kv1'; servicenow = @{ clientId='ci'; clientSecret='cs'; instanceUrl='env://X' } }
+            defaults = @{ itsmTarget = 'ServiceNow' }
+            triggers = @{ Failed = @{ raiseTicket = $true; severity = 2 } }
+        } | ConvertTo-Json -Depth 8 | Set-Content -Path $p -Encoding UTF8
+        $cfg = Get-AzureLocalItsmConfig -Path $p
+        $cfg.SchemaVersion | Should -Be 1
+        $cfg.Triggers['Failed'].RaiseTicket | Should -BeTrue
+        $cfg.Triggers['Failed'].Severity    | Should -Be 2
+    }
+
+    It 'Throws on missing schemaVersion' {
+        $p = Join-Path $script:configDir 'bad-no-schema.json'
+        @{ secrets = @{ source='keyvault' }; defaults = @{ itsmTarget='ServiceNow' }; triggers = @{} } |
+            ConvertTo-Json -Depth 5 | Set-Content -Path $p -Encoding UTF8
+        { Get-AzureLocalItsmConfig -Path $p } | Should -Throw -ExpectedMessage '*schemaVersion*'
+    }
+
+    It 'Throws when itsmTarget is not ServiceNow' {
+        $p = Join-Path $script:configDir 'bad-target.json'
+        @{
+            schemaVersion = 1
+            secrets = @{ source = 'keyvault'; keyvaultName = 'kv1' }
+            defaults = @{ itsmTarget = 'Jira' }
+            triggers = @{ Failed = @{ raiseTicket = $true } }
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path $p -Encoding UTF8
+        { Get-AzureLocalItsmConfig -Path $p } | Should -Throw -ExpectedMessage '*ServiceNow*'
+    }
+
+    It 'Throws on invalid secrets.source' {
+        $p = Join-Path $script:configDir 'bad-src.json'
+        @{
+            schemaVersion = 1
+            secrets = @{ source = 'badvalue' }
+            defaults = @{ itsmTarget = 'ServiceNow' }
+            triggers = @{ Failed = @{ raiseTicket = $true } }
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path $p -Encoding UTF8
+        { Get-AzureLocalItsmConfig -Path $p } | Should -Throw -ExpectedMessage '*secrets.source*'
+    }
+
+    It 'Throws on out-of-range severity' {
+        $p = Join-Path $script:configDir 'bad-sev.json'
+        @{
+            schemaVersion = 1
+            secrets = @{ source = 'keyvault'; keyvaultName = 'kv1' }
+            defaults = @{ itsmTarget = 'ServiceNow' }
+            triggers = @{ Failed = @{ raiseTicket = $true; severity = 99 } }
+        } | ConvertTo-Json -Depth 5 | Set-Content -Path $p -Encoding UTF8
+        { Get-AzureLocalItsmConfig -Path $p } | Should -Throw -ExpectedMessage '*out of range*'
+    }
+
+    It 'Throws when the file does not exist' {
+        { Get-AzureLocalItsmConfig -Path (Join-Path $script:configDir 'nope.json') } | Should -Throw -ExpectedMessage '*not found*'
+    }
+}
+
+Describe 'ITSM: New-AzureLocalIncident' {
+    BeforeAll {
+        $script:incDir = Join-Path $env:TEMP "itsm-inc-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:incDir -ItemType Directory -Force | Out-Null
+
+        $script:junitPath = Join-Path $script:incDir 'update-results.xml'
+        $junit = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="AzLocal" tests="2">
+    <testcase classname="Update" name="cluster-a">
+      <failure type="UpdateFailed" message="apply failed">install error</failure>
+      <properties>
+        <property name="Status" value="Failed"/>
+        <property name="ClusterName" value="cluster-a"/>
+        <property name="ClusterResourceId" value="/subs/x/rg/r/providers/Microsoft.AzureStackHCI/clusters/cluster-a"/>
+        <property name="UpdateName" value="2511.0.10.0"/>
+      </properties>
+    </testcase>
+    <testcase classname="Update" name="cluster-b">
+      <properties>
+        <property name="Status" value="ScheduleBlocked"/>
+        <property name="ClusterName" value="cluster-b"/>
+        <property name="ClusterResourceId" value="/subs/x/rg/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b"/>
+        <property name="UpdateName" value="2511.0.10.0"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>
+'@
+        Set-Content -Path $script:junitPath -Value $junit -Encoding UTF8
+
+        $script:cfg = [pscustomobject]@{
+            SchemaVersion = 1
+            SourcePath    = (Join-Path $script:incDir 'fake.yml')
+            Secrets       = @{
+                keyvaultName = 'kv1'
+                servicenow   = @{ clientId='ci'; clientSecret='cs'; instanceUrl='literal://https://corp.service-now.com' }
+            }
+            Defaults      = @{
+                itsmTarget      = 'ServiceNow'
+                assignmentGroup = 'AzureLocal-Ops'
+            }
+            Triggers      = @{
+                Failed          = @{ RaiseTicket = $true; Severity = 2; Category = 'Cluster update failure' }
+                ScheduleBlocked = @{ RaiseTicket = $false }
+            }
+            Lifecycle = $null; Mirror = $null; Storage = $null; Raw = @{}
+        }
+    }
+
+    AfterAll {
+        Remove-Item -Path $script:incDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'In DryRun mode, returns one row per cluster with no HTTP calls' {
+        $results = & (Get-Module AzLocal.UpdateManagement) {
+            param($junit, $cfg)
+            New-AzureLocalIncident -InputArtifactPath $junit -Config $cfg -DryRun
+        } $script:junitPath $script:cfg
+
+        $results.Count | Should -Be 2
+
+        $a = $results | Where-Object ClusterName -eq 'cluster-a'
+        $b = $results | Where-Object ClusterName -eq 'cluster-b'
+
+        $a.Action    | Should -Be 'DryRun'
+        $a.Severity  | Should -Be 2
+        $a.DedupeKey | Should -Match '^[a-f0-9]{64}$'
+
+        $b.Action    | Should -Be 'Skipped'
+        $b.DedupeKey | Should -BeNullOrEmpty
+    }
+
+    It 'Throws when InputArtifactPath does not exist' {
+        {
+            & (Get-Module AzLocal.UpdateManagement) {
+                param($cfg) New-AzureLocalIncident -InputArtifactPath 'C:\does\not\exist.xml' -Config $cfg -DryRun
+            } $script:cfg
+        } | Should -Throw -ExpectedMessage '*not found*'
+    }
+
+    It 'Emits Skipped+Reason for rows missing ClusterResourceId (does not throw the whole batch)' {
+        # JUnit with one Failed row that has NO ClusterResourceId property
+        $brokenJunit = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="AzLocal" tests="1">
+    <testcase classname="Update" name="cluster-x">
+      <failure type="UpdateFailed" message="apply failed">install error</failure>
+      <properties>
+        <property name="Status" value="Failed"/>
+        <property name="ClusterName" value="cluster-x"/>
+        <property name="UpdateName" value="2511.0.10.0"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>
+'@
+        $brokenPath = Join-Path $script:incDir 'broken.xml'
+        Set-Content -Path $brokenPath -Value $brokenJunit -Encoding UTF8
+
+        $results = & (Get-Module AzLocal.UpdateManagement) {
+            param($p, $c) New-AzureLocalIncident -InputArtifactPath $p -Config $c -DryRun
+        } $brokenPath $script:cfg
+
+        $resultsArr = @($results)
+        $resultsArr.Count    | Should -Be 1
+        $resultsArr[0].Action| Should -Be 'Skipped'
+        $resultsArr[0].Reason| Should -Match 'missing ClusterResourceId'
+    }
+}
+
+Describe 'ITSM: Invoke-AzLocalItsmHttp' {
+    It 'Wraps Invoke-RestMethod and returns the parsed response' {
+        $r = InModuleScope AzLocal.UpdateManagement {
+            Mock Invoke-RestMethod { return [pscustomobject]@{ ok = $true; value = 42 } }
+            Invoke-AzLocalItsmHttp -Method GET -Uri 'https://example/api'
+        }
+        $r.ok    | Should -BeTrue
+        $r.value | Should -Be 42
+    }
+
+    It 'Passes byte[] bodies through unchanged (does NOT JSON-encode binary uploads)' {
+        InModuleScope AzLocal.UpdateManagement {
+            $script:capturedBody = $null
+            Mock Invoke-RestMethod {
+                param($Method, $Uri, $Headers, $Body, $ContentType, $TimeoutSec, $ErrorAction)
+                $script:capturedBody = $Body
+                return [pscustomobject]@{ ok = $true }
+            }
+            $bytes = [byte[]](1, 2, 3, 4, 5)
+            $null = Invoke-AzLocalItsmHttp -Method POST -Uri 'https://x/api' -Body $bytes -ContentType 'application/octet-stream'
+            ($script:capturedBody -is [byte[]]) | Should -BeTrue
+            $script:capturedBody.Count | Should -Be 5
+        }
+    }
+
+    It 'Passes string bodies (e.g. form-urlencoded) through unchanged' {
+        InModuleScope AzLocal.UpdateManagement {
+            $script:capturedBody = $null
+            Mock Invoke-RestMethod {
+                param($Method, $Uri, $Headers, $Body, $ContentType, $TimeoutSec, $ErrorAction)
+                $script:capturedBody = $Body
+                return [pscustomobject]@{ ok = $true }
+            }
+            $null = Invoke-AzLocalItsmHttp -Method POST -Uri 'https://x/api' -Body 'a=1&b=2' -ContentType 'application/x-www-form-urlencoded'
+            $script:capturedBody | Should -Be 'a=1&b=2'
+        }
+    }
+
+    It 'JSON-encodes hashtable bodies' {
+        InModuleScope AzLocal.UpdateManagement {
+            $script:capturedBody = $null
+            Mock Invoke-RestMethod {
+                param($Method, $Uri, $Headers, $Body, $ContentType, $TimeoutSec, $ErrorAction)
+                $script:capturedBody = $Body
+                return [pscustomobject]@{ ok = $true }
+            }
+            $null = Invoke-AzLocalItsmHttp -Method POST -Uri 'https://x/api' -Body @{ a = 1 }
+            $script:capturedBody | Should -Match '"a":1'
+        }
+    }
+}
+
+Describe 'ITSM: Invoke-AzLocalServiceNowAdapter' {
+    It 'Does not expose -Username or -Password parameters (Phase 1 = client_credentials only)' {
+        $params = InModuleScope AzLocal.UpdateManagement {
+            (Get-Command Invoke-AzLocalServiceNowAdapter).Parameters.Keys
+        }
+        $params | Should -Not -Contain 'Username'
+        $params | Should -Not -Contain 'Password'
+    }
+
+    It 'TestConnection probes the incident table (not sys_user)' {
+        InModuleScope AzLocal.UpdateManagement {
+            $script:capturedUri = $null
+            Mock Invoke-AzLocalItsmHttp {
+                param($Method, $Uri, $Headers, $Body, $ContentType, $TimeoutSec, $MaxAttempts)
+                $script:capturedUri = $Uri
+                return [pscustomobject]@{ result = @() }
+            }
+            $null = Invoke-AzLocalServiceNowAdapter -Action TestConnection `
+                -InstanceUrl 'https://corp.service-now.com' -AccessToken 'tok'
+            $script:capturedUri | Should -Match '/api/now/table/incident'
+            $script:capturedUri | Should -Not -Match '/api/now/table/sys_user'
+        }
+    }
+}
+
+Describe 'ITSM: Get-AzureLocalItsmConfig - mixed source validation' {
+    BeforeAll {
+        $script:mixedDir = Join-Path $env:TEMP "itsm-mixed-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:mixedDir -ItemType Directory -Force | Out-Null
+    }
+    AfterAll {
+        Remove-Item -Path $script:mixedDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Throws when secrets.source=mixed but secrets.keyvaultName is not set' {
+        $p = Join-Path $script:mixedDir 'mixed-no-kv.json'
+        @{
+            schemaVersion = 1
+            secrets = @{ source = 'mixed'; servicenow = @{ clientId='ci'; clientSecret='cs'; instanceUrl='env://X' } }
+            defaults = @{ itsmTarget = 'ServiceNow' }
+            triggers = @{ Failed = @{ raiseTicket = $true } }
+        } | ConvertTo-Json -Depth 8 | Set-Content -Path $p -Encoding UTF8
+        { Get-AzureLocalItsmConfig -Path $p } | Should -Throw -ExpectedMessage '*secrets.source=mixed*keyvaultName*'
+    }
+
+    It 'Accepts secrets.source=mixed when secrets.keyvaultName is set' {
+        $p = Join-Path $script:mixedDir 'mixed-ok.json'
+        @{
+            schemaVersion = 1
+            secrets = @{ source = 'mixed'; keyvaultName = 'kv1'; servicenow = @{ clientId='ci'; clientSecret='cs'; instanceUrl='env://X' } }
+            defaults = @{ itsmTarget = 'ServiceNow' }
+            triggers = @{ Failed = @{ raiseTicket = $true } }
+        } | ConvertTo-Json -Depth 8 | Set-Content -Path $p -Encoding UTF8
+        $cfg = Get-AzureLocalItsmConfig -Path $p
+        $cfg.SchemaVersion | Should -Be 1
+        $cfg.Secrets['keyvaultName'] | Should -Be 'kv1'
+    }
+}
+
+Describe 'ITSM: New-AzureLocalIncident -ExportPath CSV sanitization' {
+    BeforeAll {
+        $script:csvDir = Join-Path $env:TEMP "itsm-csv-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:csvDir -ItemType Directory -Force | Out-Null
+
+        $script:csvJunit = Join-Path $script:csvDir 'junit.xml'
+        $junit = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="AzLocal" tests="1">
+    <testcase classname="Update" name="cluster-evil">
+      <failure type="UpdateFailed" message="apply failed">install error</failure>
+      <properties>
+        <property name="Status" value="Failed"/>
+        <property name="ClusterName" value="=cmd|'/c calc'!A1"/>
+        <property name="ClusterResourceId" value="/subs/x/rg/r/providers/Microsoft.AzureStackHCI/clusters/cluster-evil"/>
+        <property name="UpdateName" value="2511.0.10.0"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>
+'@
+        Set-Content -Path $script:csvJunit -Value $junit -Encoding UTF8
+
+        $script:csvCfg = [pscustomobject]@{
+            SchemaVersion = 1
+            SourcePath    = (Join-Path $script:csvDir 'fake.yml')
+            Secrets       = @{
+                keyvaultName = 'kv1'
+                servicenow   = @{ clientId='ci'; clientSecret='cs'; instanceUrl='literal://https://corp.service-now.com' }
+            }
+            Defaults      = @{ itsmTarget = 'ServiceNow'; assignmentGroup = 'AzureLocal-Ops' }
+            Triggers      = @{ Failed = @{ RaiseTicket = $true; Severity = 2 } }
+            Lifecycle = $null; Mirror = $null; Storage = $null; Raw = @{}
+        }
+    }
+
+    AfterAll {
+        Remove-Item -Path $script:csvDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Neutralises CSV-formula-like ClusterName values in the exported file' {
+        $csvPath = Join-Path $script:csvDir 'out.csv'
+        $null = & (Get-Module AzLocal.UpdateManagement) {
+            param($junit, $cfg, $out)
+            New-AzureLocalIncident -InputArtifactPath $junit -Config $cfg -DryRun -ExportPath $out
+        } $script:csvJunit $script:csvCfg $csvPath
+
+        Test-Path $csvPath | Should -BeTrue
+        $rows = Import-Csv -Path $csvPath
+        @($rows).Count | Should -Be 1
+        # ConvertTo-SafeCsvField prefixes formula-leading values with a leading tick/space
+        # so a spreadsheet does not treat the cell as a formula. The exact prefix is the
+        # module's standard sanitization (no leading '=', '+', '-', '@', or pipe).
+        $rows[0].ClusterName | Should -Not -Match '^[=+\-@]'
+        $rows[0].ClusterName | Should -Match 'cmd'
+    }
+}
+
+Describe 'ITSM: New-AzureLocalIncident dedupe lookup runs in DryRun' {
+    BeforeAll {
+        $script:dryDir = Join-Path $env:TEMP "itsm-dry-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:dryDir -ItemType Directory -Force | Out-Null
+        $script:dryJunit = Join-Path $script:dryDir 'junit.xml'
+        @'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="AzLocal" tests="1">
+    <testcase classname="Update" name="cluster-dedupe">
+      <failure type="UpdateFailed" message="apply failed">install error</failure>
+      <properties>
+        <property name="Status" value="Failed"/>
+        <property name="ClusterName" value="cluster-dedupe"/>
+        <property name="ClusterResourceId" value="/subs/x/rg/r/providers/Microsoft.AzureStackHCI/clusters/cluster-dedupe"/>
+        <property name="UpdateName" value="2511.0.10.0"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>
+'@ | Set-Content -Path $script:dryJunit -Encoding UTF8
+
+        $script:dryCfg = [pscustomobject]@{
+            SchemaVersion = 1
+            SourcePath    = (Join-Path $script:dryDir 'fake.yml')
+            Secrets       = @{
+                keyvaultName = 'kv1'
+                servicenow   = @{
+                    clientId     = 'literal://ci'
+                    clientSecret = 'literal://cs'
+                    instanceUrl  = 'literal://https://corp.service-now.com'
+                }
+            }
+            Defaults      = @{ itsmTarget = 'ServiceNow'; assignmentGroup = 'AzureLocal-Ops' }
+            Triggers      = @{ Failed = @{ RaiseTicket = $true; Severity = 2 } }
+            Lifecycle = $null; Mirror = $null; Storage = $null; Raw = @{}
+        }
+    }
+
+    AfterAll {
+        Remove-Item -Path $script:dryDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'DryRun calls FindByDedupe and reports DedupedToExisting when an existing ticket is returned' {
+        InModuleScope AzLocal.UpdateManagement {
+            $script:dedupeCalled = $false
+            $script:createCalled = $false
+            Mock Resolve-AzLocalItsmSecret { 'literal-value' }
+            Mock Invoke-AzLocalServiceNowAdapter {
+                param($Action)
+                switch ($Action) {
+                    'GetToken'      { return [pscustomobject]@{ AccessToken = 'tok' } }
+                    'FindByDedupe'  {
+                        $script:dedupeCalled = $true
+                        return [pscustomobject]@{ sys_id = 'abc123'; number = 'INC0000999' }
+                    }
+                    'CreateIncident' {
+                        $script:createCalled = $true
+                        return [pscustomobject]@{ sys_id = 'new'; number = 'INC9999' }
+                    }
+                }
+            }
+        }
+
+        $results = & (Get-Module AzLocal.UpdateManagement) {
+            param($junit, $cfg)
+            New-AzureLocalIncident -InputArtifactPath $junit -Config $cfg -DryRun
+        } $script:dryJunit $script:dryCfg
+
+        $resultsArr = @($results)
+        $resultsArr.Count          | Should -Be 1
+        $resultsArr[0].Action      | Should -Be 'DedupedToExisting'
+        $resultsArr[0].TicketId    | Should -Be 'INC0000999'
+        $resultsArr[0].TicketSysId | Should -Be 'abc123'
+
+        InModuleScope AzLocal.UpdateManagement {
+            $script:dedupeCalled | Should -BeTrue
+            $script:createCalled | Should -BeFalse
+        }
+    }
+
+    It 'DryRun degrades gracefully when secret resolution fails (Action=DryRun, Reason annotated)' {
+        InModuleScope AzLocal.UpdateManagement {
+            Mock Resolve-AzLocalItsmSecret { throw "fake auth failure" }
+            Mock Invoke-AzLocalServiceNowAdapter { throw "should not be called" }
+        }
+
+        $results = & (Get-Module AzLocal.UpdateManagement) {
+            param($junit, $cfg)
+            New-AzureLocalIncident -InputArtifactPath $junit -Config $cfg -DryRun -WarningAction SilentlyContinue
+        } $script:dryJunit $script:dryCfg
+
+        $resultsArr = @($results)
+        $resultsArr.Count       | Should -Be 1
+        $resultsArr[0].Action   | Should -Be 'DryRun'
+        $resultsArr[0].Reason   | Should -Match 'Dedupe lookup skipped'
+    }
+}
+
+Describe 'ITSM: New-AzureLocalIncident -ExportJUnitPath' {
+    BeforeAll {
+        $script:jxDir = Join-Path $env:TEMP "itsm-jx-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:jxDir -ItemType Directory -Force | Out-Null
+        $script:jxJunit = Join-Path $script:jxDir 'junit.xml'
+        @'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="AzLocal" tests="2">
+    <testcase classname="Update" name="cluster-ok">
+      <properties>
+        <property name="Status" value="Failed"/>
+        <property name="ClusterName" value="cluster-ok"/>
+        <property name="ClusterResourceId" value="/subs/x/rg/r/providers/Microsoft.AzureStackHCI/clusters/cluster-ok"/>
+        <property name="UpdateName" value="2511.0.10.0"/>
+      </properties>
+    </testcase>
+    <testcase classname="Update" name="cluster-skip">
+      <properties>
+        <property name="Status" value="ScheduleBlocked"/>
+        <property name="ClusterName" value="cluster-skip"/>
+        <property name="ClusterResourceId" value="/subs/x/rg/r/providers/Microsoft.AzureStackHCI/clusters/cluster-skip"/>
+        <property name="UpdateName" value="2511.0.10.0"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>
+'@ | Set-Content -Path $script:jxJunit -Encoding UTF8
+
+        $script:jxCfg = [pscustomobject]@{
+            SchemaVersion = 1
+            SourcePath    = (Join-Path $script:jxDir 'fake.yml')
+            Secrets       = @{
+                keyvaultName = 'kv1'
+                servicenow   = @{
+                    clientId     = 'literal://ci'
+                    clientSecret = 'literal://cs'
+                    instanceUrl  = 'literal://https://corp.service-now.com'
+                }
+            }
+            Defaults      = @{ itsmTarget = 'ServiceNow'; assignmentGroup = 'AzureLocal-Ops' }
+            Triggers      = @{
+                Failed          = @{ RaiseTicket = $true;  Severity = 2 }
+                ScheduleBlocked = @{ RaiseTicket = $false }
+            }
+            Lifecycle = $null; Mirror = $null; Storage = $null; Raw = @{}
+        }
+    }
+
+    AfterAll {
+        Remove-Item -Path $script:jxDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Writes a parseable JUnit XML file with one testcase per result row' {
+        $junitOut = Join-Path $script:jxDir 'itsm-results.xml'
+
+        $null = & (Get-Module AzLocal.UpdateManagement) {
+            param($junit, $cfg, $out)
+            New-AzureLocalIncident -InputArtifactPath $junit -Config $cfg -DryRun -ExportJUnitPath $out -WarningAction SilentlyContinue
+        } $script:jxJunit $script:jxCfg $junitOut
+
+        Test-Path $junitOut | Should -BeTrue
+        [xml]$doc = Get-Content -Path $junitOut -Raw
+        $cases = $doc.SelectNodes('//testcase')
+        @($cases).Count | Should -Be 2
+        # Export-ResultsToJUnitXml prefixes the testcase name with "$OperationType-".
+        # So the ScheduleBlocked row appears as IncidentAction-cluster-skip and must
+        # carry a <skipped> child.
+        ($doc.SelectNodes('//testcase[@name="IncidentAction-cluster-skip"]/skipped')).Count | Should -Be 1
+        # Test suite name is the bare TestSuiteName; classname on each testcase is TestSuiteName.OperationType
+        $doc.SelectSingleNode('//testsuite').name | Should -Be 'AzureLocalItsm'
+        $doc.SelectNodes('//testcase[@classname="AzureLocalItsm.IncidentAction"]').Count | Should -Be 2
+    }
+}
+
+Describe 'ITSM: Get-AzureLocalItsmConfig normalises non-Hashtable YAML dictionaries' {
+    It 'Converts a Dictionary[object,object] from ConvertFrom-Yaml into a case-insensitive hashtable tree' {
+        $yamlPath = Join-Path $env:TEMP "itsm-norm-$([guid]::NewGuid().Guid.Substring(0,8)).yml"
+        # Content is irrelevant because we mock ConvertFrom-Yaml below; the
+        # file just has to exist so Test-Path passes.
+        Set-Content -Path $yamlPath -Value 'placeholder' -Encoding UTF8
+
+        try {
+            $cfg = InModuleScope AzLocal.UpdateManagement -Parameters @{ Path = $yamlPath } {
+                param($Path)
+
+                # Build a generic Dictionary[object,object] tree exactly like
+                # some powershell-yaml versions emit (case-SENSITIVE keys).
+                $dict = [System.Collections.Generic.Dictionary[object,object]]::new()
+                $dict['schemaVersion'] = 1
+                $secrets = [System.Collections.Generic.Dictionary[object,object]]::new()
+                $secrets['source'] = 'envvar'
+                $sn = [System.Collections.Generic.Dictionary[object,object]]::new()
+                $sn['clientId']     = 'env://X'
+                $sn['clientSecret'] = 'env://Y'
+                $sn['instanceUrl']  = 'literal://https://corp.service-now.com'
+                $secrets['servicenow'] = $sn
+                $dict['secrets'] = $secrets
+                $defaults = [System.Collections.Generic.Dictionary[object,object]]::new()
+                $defaults['itsmTarget'] = 'ServiceNow'
+                $dict['defaults'] = $defaults
+                $triggers = [System.Collections.Generic.Dictionary[object,object]]::new()
+                $failedEntry = [System.Collections.Generic.Dictionary[object,object]]::new()
+                $failedEntry['raiseTicket'] = $true
+                $failedEntry['severity']    = 2
+                $triggers['Failed'] = $failedEntry
+                $dict['triggers'] = $triggers
+
+                Mock Get-Module -ParameterFilter { $Name -eq 'powershell-yaml' -and $ListAvailable } { return [pscustomobject]@{ Name = 'powershell-yaml' } }
+                Mock Import-Module {}
+                Mock ConvertFrom-Yaml { return $dict }
+
+                Get-AzureLocalItsmConfig -Path $Path
+            }
+
+            $cfg.SchemaVersion | Should -Be 1
+            # Both PascalCase (config-time) and camelCase (YAML-native) must work
+            $cfg.Triggers['Failed']                  | Should -Not -BeNullOrEmpty
+            $cfg.Triggers['Failed'].ContainsKey('RaiseTicket') | Should -BeTrue
+            $cfg.Triggers['Failed']['raiseTicket']   | Should -BeTrue
+        }
+        finally {
+            Remove-Item -Path $yamlPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+#endregion ITSM Connector Phase 1 (v0.7.4)
+
+#region Copy-AzureLocalPipelineExample (v0.7.4)
+
+Describe 'Function: Copy-AzureLocalPipelineExample' {
+    BeforeAll {
+        # The function reads from (Get-Module AzLocal.UpdateManagement).ModuleBase
+        # which during test runs resolves to the repo module root, so the real
+        # Automation-Pipeline-Examples/ folder under the repo is the test source.
+        $script:cpDestRoot = Join-Path $env:TEMP "azlocal-cpe-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:cpDestRoot -ItemType Directory -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item $script:cpDestRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Default: copies into a child Automation-Pipeline-Examples folder under -Destination' {
+        $dest = Join-Path $script:cpDestRoot 'default'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -PassThru 6>$null
+
+        $r | Should -Not -BeNullOrEmpty
+        $r.FullName | Should -Be (Join-Path $dest 'Automation-Pipeline-Examples')
+        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'azure-devops') | Should -BeTrue
+    }
+
+    It '-Platform GitHub: copies only github-actions and skips azure-devops' {
+        $dest = Join-Path $script:cpDestRoot 'gh'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -PassThru 6>$null
+
+        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'azure-devops')   | Should -BeFalse
+        # README and .itsm/ are platform-agnostic - always copied
+        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+    }
+
+    It '-Platform AzureDevOps: copies only azure-devops and skips github-actions' {
+        $dest = Join-Path $script:cpDestRoot 'ado'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -Platform AzureDevOps -PassThru 6>$null
+
+        Test-Path (Join-Path $r.FullName 'azure-devops')   | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeFalse
+        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+    }
+
+    It '-Flatten: copies contents directly into -Destination (no parent folder)' {
+        $dest = Join-Path $script:cpDestRoot 'flat'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -Flatten -PassThru 6>$null
+
+        $r.FullName | Should -Be $dest
+        # No "Automation-Pipeline-Examples" subfolder was created
+        Test-Path (Join-Path $dest 'Automation-Pipeline-Examples') | Should -BeFalse
+        Test-Path (Join-Path $dest 'README.md') | Should -BeTrue
+        Test-Path (Join-Path $dest 'github-actions') | Should -BeTrue
+    }
+
+    It 'Throws on a non-empty existing target without -Force' {
+        $dest = Join-Path $script:cpDestRoot 'noforce'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        # First copy populates the target
+        Copy-AzureLocalPipelineExample -Destination $dest 6>$null | Out-Null
+
+        # Second copy without -Force should refuse
+        { Copy-AzureLocalPipelineExample -Destination $dest 6>$null } |
+            Should -Throw -ExpectedMessage '*Re-run with -Force*'
+    }
+
+    It 'Re-copies and succeeds when -Force is supplied' {
+        $dest = Join-Path $script:cpDestRoot 'force'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        Copy-AzureLocalPipelineExample -Destination $dest 6>$null | Out-Null
+        { Copy-AzureLocalPipelineExample -Destination $dest -Force 6>$null } | Should -Not -Throw
+    }
+
+    It '-WhatIf does not copy anything' {
+        $dest = Join-Path $script:cpDestRoot 'whatif'
+        # Note: dest does not yet exist; -WhatIf should not create it either
+        Copy-AzureLocalPipelineExample -Destination $dest -WhatIf 6>$null
+        Test-Path (Join-Path $dest 'Automation-Pipeline-Examples') | Should -BeFalse
+    }
+
+    It '-PassThru returns a DirectoryInfo; without it nothing is emitted to the pipeline' {
+        $dest = Join-Path $script:cpDestRoot 'passthru'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        $withPT = Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -PassThru 6>$null
+        $withPT | Should -BeOfType [System.IO.DirectoryInfo]
+
+        $dest2 = Join-Path $script:cpDestRoot 'nopassthru'
+        New-Item -Path $dest2 -ItemType Directory -Force | Out-Null
+        $noPT = Copy-AzureLocalPipelineExample -Destination $dest2 -Platform GitHub 6>$null
+        $noPT | Should -BeNullOrEmpty
+    }
+
+    It 'Creates -Destination when it does not already exist' {
+        $dest = Join-Path $script:cpDestRoot 'autocreate'
+        # Intentionally not creating $dest beforehand
+        Test-Path $dest | Should -BeFalse
+
+        $r = Copy-AzureLocalPipelineExample -Destination $dest -PassThru 6>$null
+
+        Test-Path $dest | Should -BeTrue
+        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+    }
+}
+
+#endregion Copy-AzureLocalPipelineExample (v0.7.4)
+
 

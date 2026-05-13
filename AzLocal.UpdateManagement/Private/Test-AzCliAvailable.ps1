@@ -46,7 +46,7 @@ function Test-AzCliAvailable {
         $installProcess = Start-Process msiexec.exe -ArgumentList "/I `"$msiPath`" /quiet" -PassThru
         if (-not $installProcess.WaitForExit(1800000)) {
             # 30 minute safety timeout - prevents indefinite hangs in automation
-            try { $installProcess.Kill() } catch { }
+            try { $installProcess.Kill() } catch { $null = $_ <# process may have just exited between WaitForExit and Kill; nothing to do #> }
             throw "Azure CLI installation timed out after 30 minutes."
         }
         if ($installProcess.ExitCode -ne 0) {
