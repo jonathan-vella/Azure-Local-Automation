@@ -11,9 +11,10 @@ function Invoke-AzLocalServiceNowAdapter {
           - Action 'AddWorkNote'    -> PATCH /api/now/table/incident/{sys_id} with work_notes
           - Action 'AttachFile'     -> POST /api/now/attachment/file?table_name=incident&table_sys_id=...
           - Action 'TransitionState'-> PATCH /api/now/table/incident/{sys_id} with state/close_code/close_notes
-          - Action 'TestConnection' -> GET /api/now/table/sys_user?sysparm_limit=1 (auth probe)
+          - Action 'TestConnection' -> GET /api/now/table/incident?sysparm_limit=1 (auth + incident-scope probe)
 
-        Tokens are cached in module-scope state for (expires_in - 60)s.
+        Phase 1 supports only the OAuth 2.0 client_credentials grant; tokens are
+        acquired per call (caching is planned for a later phase).
         All HTTP calls flow through Invoke-AzLocalItsmHttp (TLS 1.2, retry, backoff).
     #>
     [CmdletBinding()]
@@ -28,8 +29,6 @@ function Invoke-AzLocalServiceNowAdapter {
         # Auth (used by GetToken; otherwise ignored if -AccessToken supplied)
         [Parameter(Mandatory = $false)][string]$ClientId,
         [Parameter(Mandatory = $false)][string]$ClientSecret,
-        [Parameter(Mandatory = $false)][string]$Username,
-        [Parameter(Mandatory = $false)][string]$Password,
 
         # Pre-obtained bearer token (skips GetToken if supplied)
         [Parameter(Mandatory = $false)][string]$AccessToken,
@@ -58,8 +57,6 @@ function Invoke-AzLocalServiceNowAdapter {
             client_id     = $ClientId
             client_secret = $ClientSecret
         }
-        if ($Username) { $form['username'] = $Username; $form['grant_type'] = 'password' }
-        if ($Password) { $form['password'] = $Password }
 
         $bodyStr = ($form.GetEnumerator() | ForEach-Object {
             "{0}={1}" -f [Uri]::EscapeDataString($_.Key), [Uri]::EscapeDataString([string]$_.Value)
@@ -87,7 +84,7 @@ function Invoke-AzLocalServiceNowAdapter {
 
     switch ($Action) {
         'TestConnection' {
-            $uri = "$base/api/now/table/sys_user?sysparm_limit=1&sysparm_fields=sys_id"
+            $uri = "$base/api/now/table/incident?sysparm_limit=1&sysparm_fields=sys_id"
             return Invoke-AzLocalItsmHttp -Method GET -Uri $uri -Headers $authHeaders
         }
 

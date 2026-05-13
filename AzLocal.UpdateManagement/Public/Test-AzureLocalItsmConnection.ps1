@@ -87,7 +87,7 @@ function Test-AzureLocalItsmConnection {
         $null = Invoke-AzLocalServiceNowAdapter -Action TestConnection `
             -InstanceUrl $instanceUrl `
             -AccessToken $accessToken
-        Add-ProbeResult -Step 'Incident table read' -Pass $true -Message 'GET sys_user?sysparm_limit=1 succeeded.'
+        Add-ProbeResult -Step 'Incident table read' -Pass $true -Message 'GET incident?sysparm_limit=1 succeeded.'
     }
     catch {
         Add-ProbeResult -Step 'Incident table read' -Pass $false -Message $_.Exception.Message

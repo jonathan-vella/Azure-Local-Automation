@@ -46,7 +46,7 @@ storage:   { ... }   # optional (raiseAfterConsecutiveOccurrences)
 | `defaults.assignmentGroup` | string | Maps to ServiceNow `assignment_group`. |
 | `defaults.callerId` | string | Maps to ServiceNow `caller_id`. |
 | `defaults.category` | string | Cosmetic; ticket category override happens per-trigger. |
-| `defaults.cmdbCi` | string | Maps to ServiceNow `cmdb_ci`. Tokens supported (e.g. `${cluster.resourceId}`). |
+| `defaults.cmdbCi` | string | Maps to ServiceNow `cmdb_ci`. Phase 1 passes this value through verbatim; token substitution (e.g. `${cluster.resourceId}`) is planned for Phase 1.5. |
 | `defaults.templates.titleTemplate` | string | Mustache template for the ticket title. |
 | `defaults.templates.bodyTemplatePath` | string | Path to the Mustache template for the ticket body. Relative paths resolve against the config file. |
 

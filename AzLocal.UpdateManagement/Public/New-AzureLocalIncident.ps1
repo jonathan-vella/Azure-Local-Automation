@@ -267,7 +267,7 @@ function New-AzureLocalIncident {
             if ($exportDir -and -not (Test-Path -Path $exportDir)) {
                 New-Item -Path $exportDir -ItemType Directory -Force | Out-Null
             }
-            $results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8 -Force
+            $results | ConvertTo-SafeCsvCollection | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8 -Force
         }
         catch {
             Write-Warning "New-AzureLocalIncident: failed to export results to '$ExportPath': $($_.Exception.Message)"

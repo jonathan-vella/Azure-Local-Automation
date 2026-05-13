@@ -178,8 +178,8 @@ function Test-AzLocalItsmConfigShape {
     if ($src -notin $allowedSources) {
         throw "ITSM config '$SourcePath' secrets.source='$src' is invalid. Use one of: $($allowedSources -join ', ')."
     }
-    if ($src -eq 'keyvault' -and [string]::IsNullOrWhiteSpace([string]$Config['secrets']['keyvaultName'])) {
-        throw "ITSM config '$SourcePath' secrets.source=keyvault but secrets.keyvaultName is not set."
+    if ($src -in 'keyvault','mixed' -and [string]::IsNullOrWhiteSpace([string]$Config['secrets']['keyvaultName'])) {
+        throw "ITSM config '$SourcePath' secrets.source=$src but secrets.keyvaultName is not set."
     }
 
     $target = [string]$Config['defaults']['itsmTarget']

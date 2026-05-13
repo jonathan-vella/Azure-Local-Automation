@@ -36,7 +36,7 @@ function Format-AzLocalUpdateRun {
     $progress = ""
     if ($props.progress -and $props.progress.steps) {
         $steps = $props.progress.steps
-        # Wrap in @() so .Count returns 0 (not $null) when no step matches â€” previously the
+        # Wrap in @() so .Count returns 0 (not $null) when no step matches -- previously the
         # "completed" numerator rendered blank for runs that failed before any step succeeded.
         $completedSteps = @($steps | Where-Object { $_.status -eq "Success" }).Count
         $totalSteps = @($steps).Count

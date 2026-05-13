@@ -20,22 +20,22 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
+# --- Paths -------------------------------------------------------------------
 $ModuleName  = 'AzLocal.UpdateManagement'
 $SourceDir   = $PSScriptRoot                          # repo module folder
 $StagingDir  = Join-Path 'C:\Temp' $ModuleName
 
-# ── 1. Clean staging area ──────────────────────────────────────────────────────
+# --- 1. Clean staging area ---------------------------------------------------
 Write-Host "[$ModuleName] Cleaning staging folder: $StagingDir" -ForegroundColor Cyan
 if (Test-Path $StagingDir) {
     Remove-Item $StagingDir -Recurse -Force
 }
 
-# ── 2. Copy module to staging ──────────────────────────────────────────────────
+# --- 2. Copy module to staging -----------------------------------------------
 Write-Host "[$ModuleName] Copying module to staging..." -ForegroundColor Cyan
 Copy-Item -Path $SourceDir -Destination $StagingDir -Recurse -Force
 
-# ── 3. Remove files/folders not needed in published package ────────────────────
+# --- 3. Remove files/folders not needed in published package -----------------
 Write-Host "[$ModuleName] Removing files not needed for publishing..." -ForegroundColor Cyan
 
 $RemovePaths = @(
@@ -53,7 +53,7 @@ foreach ($relativePath in $RemovePaths) {
     }
 }
 
-# ── 4. Show what will be published ─────────────────────────────────────────────
+# --- 4. Show what will be published ------------------------------------------
 Write-Host ""
 Write-Host "[$ModuleName] Files to be published:" -ForegroundColor Yellow
 Get-ChildItem $StagingDir -Recurse -File | ForEach-Object {
@@ -61,14 +61,14 @@ Get-ChildItem $StagingDir -Recurse -File | ForEach-Object {
 }
 Write-Host ""
 
-# ── 5. Validate manifest ──────────────────────────────────────────────────────
+# --- 5. Validate manifest ----------------------------------------------------
 Write-Host "[$ModuleName] Validating module manifest..." -ForegroundColor Cyan
 $manifestPath = Join-Path $StagingDir "$ModuleName.psd1"
 $manifest = Test-ModuleManifest -Path $manifestPath -ErrorAction Stop
 Write-Host "  Module:  $($manifest.Name)" -ForegroundColor Green
 Write-Host "  Version: $($manifest.Version)" -ForegroundColor Green
 
-# ── 6. Prompt for API key (masked) and publish ─────────────────────────────────
+# --- 6. Prompt for API key (masked) and publish ------------------------------
 Write-Host ""
 Write-Host "Paste your PowerShell Gallery NuGet API key (input is masked, nothing will echo):" -ForegroundColor Yellow
 $secureApiKey = Read-Host -Prompt "API key" -AsSecureString

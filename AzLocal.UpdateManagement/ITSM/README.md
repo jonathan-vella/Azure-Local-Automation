@@ -163,7 +163,7 @@ Test-AzureLocalItsmConnection -Config $cfg | Format-Table Step, Pass, Message
 #   Resolve instanceUrl   True   https://yourco.service-now.com
 #   Resolve OAuth secrets True   clientId + clientSecret resolved.
 #   OAuth token grant     True   expires_in=1800s
-#   Incident table read   True   GET sys_user?sysparm_limit=1 succeeded.
+#   Incident table read   True   GET incident?sysparm_limit=1 succeeded.
 ```
 
 If any step shows `Pass=False`, fix that step before enabling the pipeline.

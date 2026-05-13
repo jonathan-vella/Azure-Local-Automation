@@ -3246,6 +3246,124 @@ Describe 'ITSM: Invoke-AzLocalItsmHttp' {
     }
 }
 
+Describe 'ITSM: Invoke-AzLocalServiceNowAdapter' {
+    It 'Does not expose -Username or -Password parameters (Phase 1 = client_credentials only)' {
+        $params = InModuleScope AzLocal.UpdateManagement {
+            (Get-Command Invoke-AzLocalServiceNowAdapter).Parameters.Keys
+        }
+        $params | Should -Not -Contain 'Username'
+        $params | Should -Not -Contain 'Password'
+    }
+
+    It 'TestConnection probes the incident table (not sys_user)' {
+        InModuleScope AzLocal.UpdateManagement {
+            $script:capturedUri = $null
+            Mock Invoke-AzLocalItsmHttp {
+                param($Method, $Uri, $Headers, $Body, $ContentType, $TimeoutSec, $MaxAttempts)
+                $script:capturedUri = $Uri
+                return [pscustomobject]@{ result = @() }
+            }
+            $null = Invoke-AzLocalServiceNowAdapter -Action TestConnection `
+                -InstanceUrl 'https://corp.service-now.com' -AccessToken 'tok'
+            $script:capturedUri | Should -Match '/api/now/table/incident'
+            $script:capturedUri | Should -Not -Match '/api/now/table/sys_user'
+        }
+    }
+}
+
+Describe 'ITSM: Get-AzureLocalItsmConfig - mixed source validation' {
+    BeforeAll {
+        $script:mixedDir = Join-Path $env:TEMP "itsm-mixed-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:mixedDir -ItemType Directory -Force | Out-Null
+    }
+    AfterAll {
+        Remove-Item -Path $script:mixedDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Throws when secrets.source=mixed but secrets.keyvaultName is not set' {
+        $p = Join-Path $script:mixedDir 'mixed-no-kv.json'
+        @{
+            schemaVersion = 1
+            secrets = @{ source = 'mixed'; servicenow = @{ clientId='ci'; clientSecret='cs'; instanceUrl='env://X' } }
+            defaults = @{ itsmTarget = 'ServiceNow' }
+            triggers = @{ Failed = @{ raiseTicket = $true } }
+        } | ConvertTo-Json -Depth 8 | Set-Content -Path $p -Encoding UTF8
+        { Get-AzureLocalItsmConfig -Path $p } | Should -Throw -ExpectedMessage '*secrets.source=mixed*keyvaultName*'
+    }
+
+    It 'Accepts secrets.source=mixed when secrets.keyvaultName is set' {
+        $p = Join-Path $script:mixedDir 'mixed-ok.json'
+        @{
+            schemaVersion = 1
+            secrets = @{ source = 'mixed'; keyvaultName = 'kv1'; servicenow = @{ clientId='ci'; clientSecret='cs'; instanceUrl='env://X' } }
+            defaults = @{ itsmTarget = 'ServiceNow' }
+            triggers = @{ Failed = @{ raiseTicket = $true } }
+        } | ConvertTo-Json -Depth 8 | Set-Content -Path $p -Encoding UTF8
+        $cfg = Get-AzureLocalItsmConfig -Path $p
+        $cfg.SchemaVersion | Should -Be 1
+        $cfg.Secrets['keyvaultName'] | Should -Be 'kv1'
+    }
+}
+
+Describe 'ITSM: New-AzureLocalIncident -ExportPath CSV sanitization' {
+    BeforeAll {
+        $script:csvDir = Join-Path $env:TEMP "itsm-csv-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:csvDir -ItemType Directory -Force | Out-Null
+
+        $script:csvJunit = Join-Path $script:csvDir 'junit.xml'
+        $junit = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="AzLocal" tests="1">
+    <testcase classname="Update" name="cluster-evil">
+      <failure type="UpdateFailed" message="apply failed">install error</failure>
+      <properties>
+        <property name="Status" value="Failed"/>
+        <property name="ClusterName" value="=cmd|'/c calc'!A1"/>
+        <property name="ClusterResourceId" value="/subs/x/rg/r/providers/Microsoft.AzureStackHCI/clusters/cluster-evil"/>
+        <property name="UpdateName" value="2511.0.10.0"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>
+'@
+        Set-Content -Path $script:csvJunit -Value $junit -Encoding UTF8
+
+        $script:csvCfg = [pscustomobject]@{
+            SchemaVersion = 1
+            SourcePath    = (Join-Path $script:csvDir 'fake.yml')
+            Secrets       = @{
+                keyvaultName = 'kv1'
+                servicenow   = @{ clientId='ci'; clientSecret='cs'; instanceUrl='literal://https://corp.service-now.com' }
+            }
+            Defaults      = @{ itsmTarget = 'ServiceNow'; assignmentGroup = 'AzureLocal-Ops' }
+            Triggers      = @{ Failed = @{ RaiseTicket = $true; Severity = 2 } }
+            Lifecycle = $null; Mirror = $null; Storage = $null; Raw = @{}
+        }
+    }
+
+    AfterAll {
+        Remove-Item -Path $script:csvDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Neutralises CSV-formula-like ClusterName values in the exported file' {
+        $csvPath = Join-Path $script:csvDir 'out.csv'
+        $null = & (Get-Module AzLocal.UpdateManagement) {
+            param($junit, $cfg, $out)
+            New-AzureLocalIncident -InputArtifactPath $junit -Config $cfg -DryRun -ExportPath $out
+        } $script:csvJunit $script:csvCfg $csvPath
+
+        Test-Path $csvPath | Should -BeTrue
+        $rows = Import-Csv -Path $csvPath
+        @($rows).Count | Should -Be 1
+        # ConvertTo-SafeCsvField prefixes formula-leading values with a leading tick/space
+        # so a spreadsheet does not treat the cell as a formula. The exact prefix is the
+        # module's standard sanitization (no leading '=', '+', '-', '@', or pipe).
+        $rows[0].ClusterName | Should -Not -Match '^[=+\-@]'
+        $rows[0].ClusterName | Should -Match 'cmd'
+    }
+}
+
 #endregion ITSM Connector Phase 1 (v0.7.4)
 
 

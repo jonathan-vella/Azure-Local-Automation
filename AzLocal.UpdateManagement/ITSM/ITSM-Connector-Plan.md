@@ -66,7 +66,7 @@ All four are exported from `AzLocal.UpdateManagement.psd1` in v0.7.3 and follow 
 | `New-AzureLocalIncident` | 1 | Read a JUnit results file (and optional readiness CSV), evaluate against the trigger matrix, open / update tickets in the configured ITSM target, mirror to enabled notification adapters. Returns one row per cluster considered with `Action`, `TicketId`, `TicketUrl`, `MirrorTargets`. |
 | `Sync-AzureLocalIncident` | 2 | Find tickets opened by previous runs (by dedupe key) whose underlying cluster + update has since transitioned to a healthy / succeeded state. Post a comment, optionally transition to Resolved. Idempotent. |
 | `Get-AzureLocalItsmConfig` | 1 | Load and validate the YAML/JSON trigger matrix + adapter wiring config. Returns a strongly typed config object. Lets pipelines validate config in a separate step before secrets are mounted. |
-| `Test-AzureLocalItsmConnection` | 1 | Dry-run probe of the configured ITSM endpoint (and notification adapters) - verifies auth, custom-field presence, and rate-limit headroom. Surfaces as a step the user can run manually before enabling ticketing. |
+| `Test-AzureLocalItsmConnection` | 1 | Dry-run probe of the configured ITSM endpoint. Phase 1 resolves secrets, performs the OAuth token grant, and probes a one-row read against the `incident` table. Custom-field presence and rate-limit headroom checks are planned for Phase 1.5. Surfaces as a step the user can run manually before enabling ticketing. |
 
 ### Internal helpers (Private, dot-sourced)
 
@@ -120,7 +120,7 @@ defaults:
   assignmentGroup: AzureLocal-Ops
   callerId: svc-azlocal-cicd@contoso.com
   category: Compute / Azure Local
-  cmdbCi: ${cluster.resourceId}    # token-substituted at runtime
+  cmdbCi: ${cluster.resourceId}    # token substitution planned for Phase 1.5; Phase 1 passes through verbatim
   templates:
     titleTemplate: "[Azure Local] {{cluster.name}} - {{trigger.category}} ({{run.updateName}})"
     bodyTemplatePath: ./.itsm/templates/incident-body.md
@@ -512,7 +512,7 @@ Both ADO `apply-updates.yml` and `fleet-update-status.yml` get exactly the same 
 
 - All ITSM credentials referenced through Key Vault (recommended) or native GH / ADO secrets (fallback). No raw secret in YAML or config file ever.
 - Pipeline SP needs **Key Vault Secrets User** on the configured vault; no other new RBAC.
-- HTTP layer: TLS 1.2+, default 30s timeout, `Retry-After` honoured, exponential backoff. Server cert pinning is *not* enabled by default but is exposed via `Invoke-AzLocalItsmHttp -AllowedThumbprints` for high-assurance tenants.
+- HTTP layer: TLS 1.2+, default 30s timeout, `Retry-After` honoured, exponential backoff. Server cert pinning is *not* enabled in Phase 1; an `Invoke-AzLocalItsmHttp -AllowedThumbprints` surface is planned for a later phase for high-assurance tenants.
 - All free-text fields (cluster names, tag values, error summaries) are CSV-injection-sanitised on the way in (already true in v0.7.0+) and **HTML-escaped** when rendered into ticket descriptions to defend against ITSM-side HTML injection.
 - Token cache lives only in memory of the runner; never written to disk or logs. `Write-Log` redacts anything matching `bearer\s+[\w.-]+` / `client_secret=...`.
 - Teams / Slack webhook URLs are themselves secrets - same KV / env handling.
