@@ -63,6 +63,12 @@ function Get-AzureLocalItsmConfig {
             catch {
                 throw "Failed to parse YAML config '$Path': $($_.Exception.Message)"
             }
+            # powershell-yaml versions return assorted dictionary types
+            # (Hashtable, OrderedDictionary, Dictionary[object,object]).
+            # Normalise to a tree of case-insensitive @{} hashtables so
+            # downstream lookups (ContainsKey, indexer) behave identically
+            # whether the source was JSON or YAML.
+            $config = ConvertTo-AzLocalItsmConfigHashtable -InputObject $config
         }
         default {
             throw "Unsupported ITSM config file extension '$ext'. Use .yml, .yaml, or .json."

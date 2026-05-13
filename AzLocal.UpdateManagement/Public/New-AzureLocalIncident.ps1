@@ -19,8 +19,12 @@ function New-AzureLocalIncident {
              metadata. Returns Action='Created' with the new sys_id.
 
         In -DryRun mode the function still parses, evaluates triggers, and
-        builds the payloads, but performs zero HTTP writes. Useful for
-        first-time matrix validation.
+        builds the payloads, but performs zero HTTP writes. It DOES perform
+        the read-only dedupe lookup (GET /api/now/table/incident) when an
+        access token can be obtained, so the returned Action correctly shows
+        DedupedToExisting / DryRun. If the OAuth grant or dedupe GET fails,
+        DryRun degrades gracefully to a fully offline payload build and
+        emits Action='DryRun' with a Reason annotation.
 
         Phase 2 (Sync-AzureLocalIncident) handles close-out on subsequent
         successful runs. Phase 3 mirrors to Teams / Slack.
@@ -46,7 +50,10 @@ function New-AzureLocalIncident {
         [switch]$ForceCreate,
 
         [Parameter(Mandatory = $false)]
-        [string]$ExportPath
+        [string]$ExportPath,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ExportJUnitPath
     )
 
     if (-not (Test-Path -Path $InputArtifactPath -PathType Leaf)) {
@@ -57,7 +64,7 @@ function New-AzureLocalIncident {
 
     # 1. Parse JUnit -> per-cluster rows ------------------------------------
     [xml]$xml = Get-Content -Path $InputArtifactPath -Raw
-    $rows = @()
+    $rows = New-Object System.Collections.ArrayList
     foreach ($tc in $xml.SelectNodes('//testcase')) {
         $status = 'Unknown'
         $message = $null
@@ -77,7 +84,7 @@ function New-AzureLocalIncident {
             $status = $props['Status']
         }
 
-        $rows += [pscustomobject]@{
+        [void]$rows.Add([pscustomobject]@{
             ClassName         = [string]$tc.classname
             Name              = [string]$tc.name
             Status            = $status
@@ -86,17 +93,22 @@ function New-AzureLocalIncident {
             ClusterResourceId = if ($props.ContainsKey('ClusterResourceId')) { $props['ClusterResourceId'] } else { '' }
             UpdateName        = if ($props.ContainsKey('UpdateName')) { $props['UpdateName'] } else { '' }
             Properties        = $props
-        }
+        })
     }
 
-    # 2. Resolve ServiceNow secrets / token (skipped in DryRun) -------------
+    # 2. Resolve ServiceNow secrets / token --------------------------------
+    # In DryRun we still attempt the (read-only) auth + dedupe lookup so the
+    # returned Action accurately reflects what would happen on a real run.
+    # If auth fails in DryRun we degrade gracefully (no throw) and skip the
+    # dedupe lookup; outside DryRun a token-grant failure is a hard error.
     $instanceUrl = $null
     $accessToken = $null
-    if (-not $DryRun) {
-        $sn = $Config.Secrets['servicenow']
-        $kv = [string]$Config.Secrets['keyvaultName']
-        if (-not $sn) { throw "New-AzureLocalIncident: config missing 'secrets.servicenow'." }
+    $authError   = $null
+    $sn = $Config.Secrets['servicenow']
+    $kv = [string]$Config.Secrets['keyvaultName']
+    if (-not $sn) { throw "New-AzureLocalIncident: config missing 'secrets.servicenow'." }
 
+    try {
         $instanceUrl  = Resolve-AzLocalItsmSecret -Reference ([string]$sn['instanceUrl'])  -DefaultKeyVault $kv -AllowLiteral
         $clientId     = Resolve-AzLocalItsmSecret -Reference ([string]$sn['clientId'])     -DefaultKeyVault $kv
         $clientSecret = Resolve-AzLocalItsmSecret -Reference ([string]$sn['clientSecret']) -DefaultKeyVault $kv
@@ -104,6 +116,13 @@ function New-AzureLocalIncident {
         $tok = Invoke-AzLocalServiceNowAdapter -Action GetToken `
             -InstanceUrl $instanceUrl -ClientId $clientId -ClientSecret $clientSecret
         $accessToken = $tok.AccessToken
+    }
+    catch {
+        $authError = $_.Exception.Message
+        if (-not $DryRun) {
+            throw
+        }
+        Write-Warning "New-AzureLocalIncident: DryRun continuing without ServiceNow auth (dedupe lookup will be skipped): $authError"
     }
 
     # 3. Evaluate triggers + create / dedupe per row ------------------------
@@ -190,15 +209,23 @@ function New-AzureLocalIncident {
         $action = 'Created'
         $sysId = $null; $ticketNumber = $null; $ticketUrl = $null
         $existing = $null
+        $extraReason = $null
 
-        if (-not $DryRun -and -not $ForceCreate) {
+        # Read-only dedupe lookup. Runs in DryRun too (read-only by definition)
+        # provided we managed to acquire a token. If the lookup itself fails,
+        # we degrade to "treat as new" with a Reason annotation.
+        if (-not $ForceCreate -and $accessToken) {
             try {
                 $existing = Invoke-AzLocalServiceNowAdapter -Action FindByDedupe `
                     -InstanceUrl $instanceUrl -AccessToken $accessToken -DedupeKey $dedupeKey
             }
             catch {
+                $extraReason = "FindByDedupe failed: $($_.Exception.Message)"
                 Write-Warning "New-AzureLocalIncident: FindByDedupe failed for $($row.ClusterName) / ${dedupeKey}: $($_.Exception.Message)"
             }
+        }
+        elseif (-not $ForceCreate -and $DryRun -and -not $accessToken) {
+            $extraReason = "Dedupe lookup skipped (DryRun, no ServiceNow auth): $authError"
         }
 
         if ($existing) {
@@ -246,6 +273,11 @@ function New-AzureLocalIncident {
             }
         }
 
+        $finalReason = $decision.Reason
+        if ($extraReason) {
+            $finalReason = "$finalReason | $extraReason"
+        }
+
         [void]$results.Add([pscustomobject]@{
             ClusterName       = $row.ClusterName
             ClusterResourceId = $row.ClusterResourceId
@@ -257,7 +289,7 @@ function New-AzureLocalIncident {
             TicketSysId       = $sysId
             TicketUrl         = $ticketUrl
             DedupeKey         = $dedupeKey
-            Reason            = $decision.Reason
+            Reason            = $finalReason
         })
     }
 
@@ -271,6 +303,51 @@ function New-AzureLocalIncident {
         }
         catch {
             Write-Warning "New-AzureLocalIncident: failed to export results to '$ExportPath': $($_.Exception.Message)"
+        }
+    }
+
+    if ($ExportJUnitPath) {
+        try {
+            $junitDir = Split-Path -Path $ExportJUnitPath -Parent
+            if ($junitDir -and -not (Test-Path -Path $junitDir)) {
+                New-Item -Path $junitDir -ItemType Directory -Force | Out-Null
+            }
+            # Project ITSM results onto the shape expected by
+            # Export-ResultsToJUnitXml: Action becomes the synthetic Status so
+            # CreateFailed -> <failure>, Skipped/WhatIf -> <skipped>, and
+            # Created / DedupedToExisting / DryRun -> success with system-out.
+            $junitRows = @($results | ForEach-Object {
+                $syntheticStatus = switch ($_.Action) {
+                    'CreateFailed'      { 'Failed' }
+                    'WhatIf'            { 'Skipped' }
+                    'Skipped'           { 'Skipped' }
+                    default             { 'Success' }
+                }
+                $msgParts = @("ITSM Action: $($_.Action)")
+                if ($_.TicketId)     { $msgParts += "Ticket: $($_.TicketId)" }
+                if ($_.TicketUrl)    { $msgParts += "Url: $($_.TicketUrl)" }
+                if ($_.Status)       { $msgParts += "ClusterStatus: $($_.Status)" }
+                if ($_.Severity)     { $msgParts += "Severity: $($_.Severity)" }
+                if ($_.DedupeKey)    { $msgParts += "DedupeKey: $($_.DedupeKey)" }
+                if ($_.Reason)       { $msgParts += "Reason: $($_.Reason)" }
+                [pscustomobject]@{
+                    ClusterName  = $_.ClusterName
+                    Status       = $syntheticStatus
+                    Message      = ($msgParts -join ' | ')
+                    UpdateName   = $_.UpdateName
+                }
+            })
+            if ($junitRows.Count -gt 0) {
+                Export-ResultsToJUnitXml -Results $junitRows -OutputPath $ExportJUnitPath `
+                    -TestSuiteName 'AzureLocalItsm' -OperationType 'IncidentAction'
+            } else {
+                # Emit an empty suite so dorny/test-reporter still consumes it cleanly.
+                $emptyJUnit = "<?xml version=`"1.0`" encoding=`"UTF-8`"?>`n<testsuites>`n  <testsuite name=`"AzureLocalItsm`" tests=`"0`" failures=`"0`" errors=`"0`" skipped=`"0`" time=`"0`" timestamp=`"$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')`"></testsuite>`n</testsuites>"
+                Set-Content -Path $ExportJUnitPath -Value $emptyJUnit -Encoding UTF8 -Force
+            }
+        }
+        catch {
+            Write-Warning "New-AzureLocalIncident: failed to export JUnit results to '$ExportJUnitPath': $($_.Exception.Message)"
         }
     }
 
