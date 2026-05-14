@@ -343,12 +343,26 @@ If you don't hold one of those roles, ask whoever does (typically a subscription
 
 **Create the role (one time per tenant):**
 
+`AssignableScopes` must contain a real subscription ID (or a list of them) - the literal `<your-subscription-id>` placeholder will be rejected by `az role definition create`. Capture the current subscription first, or hard-code the IDs you intend to manage:
+
 ```powershell
-# Option 1 - JSON file already on disk
+# Use the current az CLI subscription, or set $subId manually
+$subId = az account show --query id -o tsv
+# For multiple subscriptions, build an array of scope strings instead:
+# $scopes = @("/subscriptions/00000000-0000-0000-0000-000000000000",
+#             "/subscriptions/11111111-1111-1111-1111-111111111111")
+```
+
+```powershell
+# Option 1 - JSON file already on disk: substitute the placeholder, then create
+(Get-Content ./azlocal-update-management-custom-role.json -Raw) `
+    -replace '<your-subscription-id>', $subId |
+    Set-Content ./azlocal-update-management-custom-role.json -Encoding UTF8
+
 az role definition create --role-definition ./azlocal-update-management-custom-role.json
 
-# Option 2 - inline create with PowerShell here-string
-@'
+# Option 2 - inline create with an expanding PowerShell here-string ($subId is interpolated)
+@"
 {
   "Name": "Azure Stack HCI Update Operator",
   "IsCustom": true,
@@ -368,13 +382,15 @@ az role definition create --role-definition ./azlocal-update-management-custom-r
   "DataActions": [],
   "NotDataActions": [],
   "AssignableScopes": [
-    "/subscriptions/<your-subscription-id>"
+    "/subscriptions/$subId"
   ]
 }
-'@ | Out-File -FilePath ./azlocal-update-management-custom-role.json -Encoding UTF8
+"@ | Out-File -FilePath ./azlocal-update-management-custom-role.json -Encoding UTF8
 
 az role definition create --role-definition ./azlocal-update-management-custom-role.json
 ```
+
+> **Note**: The here-string in Option 2 uses double quotes (`@"..."@`) so PowerShell expands `$subId` into the JSON before it's written to disk. If you switch to a literal here-string (`@'...'@`), the variable is not expanded and you must substitute the placeholder yourself like in Option 1.
 
 **Assign the custom role to the pipeline identity (per subscription):**
 
