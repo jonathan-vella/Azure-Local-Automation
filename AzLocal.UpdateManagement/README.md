@@ -186,7 +186,7 @@ The following permissions are required for update operations:
 | Read update summary | `Microsoft.AzureStackHCI/clusters/updateSummaries/read` |
 | List available updates | `Microsoft.AzureStackHCI/clusters/updates/read` |
 | **Start/Apply update** | `Microsoft.AzureStackHCI/clusters/updates/apply/action` |
-| Monitor update runs | `Microsoft.AzureStackHCI/clusters/updateRuns/read` |
+| Monitor update runs | `Microsoft.AzureStackHCI/clusters/updates/updateRuns/read` |
 | Query clusters (Resource Graph) | `Microsoft.ResourceGraph/resources/read` |
 | **Read/Write tags** | `Microsoft.Resources/tags/read`, `Microsoft.Resources/tags/write` |
 
@@ -212,7 +212,7 @@ If you need a least-privilege custom role specifically for update operations:
     "Microsoft.AzureStackHCI/clusters/updateSummaries/read",
     "Microsoft.AzureStackHCI/clusters/updates/read",
     "Microsoft.AzureStackHCI/clusters/updates/apply/action",
-    "Microsoft.AzureStackHCI/clusters/updateRuns/read",
+    "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
     "Microsoft.Resources/tags/read",
@@ -229,12 +229,23 @@ If you need a least-privilege custom role specifically for update operations:
 
 Save this JSON to a file named `azlocal-update-management-custom-role.json`, then create the custom role using Azure CLI:
 
-```powershell
-# Option 1: Create the file manually, then run:
-az role definition create --role-definition azlocal-update-management-custom-role.json
+`AssignableScopes` must contain a real subscription ID - the literal `{subscription-id}` placeholder will be rejected by `az role definition create`. Capture the current subscription first, or hard-code the IDs you intend to manage:
 
-# Option 2: Create the file and role in one step using PowerShell:
-@'
+```powershell
+# Use the current az CLI subscription, or set $subId manually
+$subId = az account show --query id -o tsv
+```
+
+```powershell
+# Option 1: File already on disk - substitute the placeholder, then create
+(Get-Content ./azlocal-update-management-custom-role.json -Raw) `
+    -replace '\{subscription-id\}', $subId |
+    Set-Content ./azlocal-update-management-custom-role.json -Encoding UTF8
+
+az role definition create --role-definition ./azlocal-update-management-custom-role.json
+
+# Option 2: Create the file and role in one step using PowerShell (expanding here-string - $subId is interpolated)
+@"
 {
   "Name": "Azure Stack HCI Update Operator",
   "IsCustom": true,
@@ -244,7 +255,7 @@ az role definition create --role-definition azlocal-update-management-custom-rol
     "Microsoft.AzureStackHCI/clusters/updateSummaries/read",
     "Microsoft.AzureStackHCI/clusters/updates/read",
     "Microsoft.AzureStackHCI/clusters/updates/apply/action",
-    "Microsoft.AzureStackHCI/clusters/updateRuns/read",
+    "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
     "Microsoft.Resources/tags/read",
@@ -254,13 +265,15 @@ az role definition create --role-definition azlocal-update-management-custom-rol
   "DataActions": [],
   "NotDataActions": [],
   "AssignableScopes": [
-    "/subscriptions/{subscription-id}"
+    "/subscriptions/$subId"
   ]
 }
-'@ | Out-File -FilePath "azlocal-update-management-custom-role.json" -Encoding UTF8
+"@ | Out-File -FilePath ./azlocal-update-management-custom-role.json -Encoding UTF8
 
-az role definition create --role-definition azlocal-update-management-custom-role.json
+az role definition create --role-definition ./azlocal-update-management-custom-role.json
 ```
+
+> **Note**: Option 2 uses a double-quoted here-string (`@"..."@`) so PowerShell expands `$subId` before writing the JSON to disk. A literal here-string (`@'...'@`) would NOT expand the variable - you would have to substitute the placeholder yourself as in Option 1.
 
 ### Assigning a Role
 

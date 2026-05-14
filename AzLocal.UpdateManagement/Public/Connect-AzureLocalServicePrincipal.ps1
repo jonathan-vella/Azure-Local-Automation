@@ -86,7 +86,7 @@ function Connect-AzureLocalServicePrincipal {
         - Microsoft.AzureStackHCI/clusters/updates/read
         - Microsoft.AzureStackHCI/clusters/updates/apply/action
         - Microsoft.AzureStackHCI/clusters/updateSummaries/read
-        - Microsoft.AzureStackHCI/clusters/updateRuns/read
+        - Microsoft.AzureStackHCI/clusters/updates/updateRuns/read
         - Microsoft.Resources/subscriptions/resources/read (for Azure Resource Graph queries)
         - Tag Contributor role (for Set-AzureLocalClusterUpdateRingTag)
     #>
