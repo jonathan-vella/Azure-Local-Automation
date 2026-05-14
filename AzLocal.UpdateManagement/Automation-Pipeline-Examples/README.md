@@ -102,18 +102,39 @@ az ad app create --display-name "AzureLocal-UpdateAutomation-OIDC"
 # Note the appId from the output - this becomes AZURE_CLIENT_ID.
 ```
 
-**Step 2 - create the Service Principal and assign the role**
+**Step 2 - create the Service Principal and assign a role**
+
+First create the Service Principal:
 
 ```bash
 az ad sp create --id <appId-from-step-1>
+```
 
+Then assign **one** of the following. The custom role is recommended for production / governed estates because it grants only the actions the pipelines actually use; the built-in role is a quick-start option for lab and PoC work.
+
+**Option A (recommended) - assign the least-privilege custom role**
+
+This pattern grants the Service Principal only the actions the five pipelines need (read clusters, read/apply updates, read update runs, read/write tags, Resource Graph queries). The full JSON role definition and `az role definition create` command live in [section 4 below](#4-required-azure-permissions) - run that block once per tenant first, then assign:
+
+```bash
+az role assignment create `
+    --assignee <appId-from-step-1> `
+    --role    "Azure Stack HCI Update Operator" `
+    --scope   "/subscriptions/<your-subscription-id>"
+```
+
+**Option B (quick start) - assign the built-in Azure Stack HCI Administrator role**
+
+Use this only for lab / PoC where over-grant is acceptable. It includes broad cluster-management permissions far beyond what the pipelines exercise.
+
+```bash
 az role assignment create `
     --assignee <appId-from-step-1> `
     --role    "Azure Stack HCI Administrator" `
     --scope   "/subscriptions/<your-subscription-id>"
 ```
 
-For multi-subscription estates, run the `role assignment create` step once per subscription. Section 4 lists the lower-privilege custom-role permissions if you do not want to grant a built-in role.
+For multi-subscription estates, run the `role assignment create` step once per subscription. The custom role definition itself is created once per tenant, then assigned at each subscription scope.
 
 **Step 3 - federate the workflow**
 
@@ -173,7 +194,7 @@ Workload Identity Federation is the Azure DevOps equivalent of OIDC. ADO creates
 6. Name the connection **`AzureLocal-ServiceConnection`** so the example YAMLs work without edits. If you pick a different name, update the `azureSubscription:` value in each ADO YAML.
 7. **Save**.
 
-The first run will create the App Registration in Entra ID. Grant **`Azure Stack HCI Administrator`** (or the custom role from section 4) on the same scope you selected in step 5.
+The first run will create the App Registration in Entra ID. Grant the **`Azure Stack HCI Update Operator`** custom role from [section 4.1](#41-custom-role-azure-stack-hci-update-operator-recommended) on the same scope you selected in step 5 (or, for quick-start labs only, the built-in `Azure Stack HCI Administrator` role).
 
 ### 3.3 Self-hosted runners with Managed Identity
 
@@ -183,12 +204,18 @@ If your GitHub Actions runner or Azure DevOps agent is a VM in Azure, Managed Id
 # System-assigned managed identity on the agent VM
 az vm identity assign --name runner-vm --resource-group runners-rg
 
-# Grant the role to that identity
+# Grant the role to that identity (recommended: custom role from section 4.1)
 $principalId = az vm show -n runner-vm -g runners-rg --query identity.principalId -o tsv
 az role assignment create `
     --assignee $principalId `
-    --role    "Azure Stack HCI Administrator" `
+    --role    "Azure Stack HCI Update Operator" `
     --scope   "/subscriptions/<your-subscription-id>"
+
+# Quick-start / lab fallback - built-in role with broader privileges:
+# az role assignment create `
+#     --assignee $principalId `
+#     --role    "Azure Stack HCI Administrator" `
+#     --scope   "/subscriptions/<your-subscription-id>"
 ```
 
 In GitHub Actions, log in with:
@@ -211,11 +238,23 @@ Connect-AzureLocalServicePrincipal -UseManagedIdentity
 
 Use this **only** if OIDC and Workload Identity Federation are unavailable.
 
+Create the SP first, then assign the custom role from [section 4.1](#41-custom-role-azure-stack-hci-update-operator-recommended) (recommended) so the legacy client-secret identity is still least-privilege:
+
 ```bash
-az ad sp create-for-rbac `
-    --name   "AzureLocal-UpdateAutomation" `
-    --role   "Azure Stack HCI Administrator" `
-    --scopes "/subscriptions/<your-subscription-id>"
+# Create SP without assigning any role yet
+az ad sp create-for-rbac --name "AzureLocal-UpdateAutomation" --skip-assignment
+
+# Recommended: assign the custom role (after running the role-definition create from section 4.1)
+az role assignment create `
+    --assignee <appId-from-create-for-rbac> `
+    --role    "Azure Stack HCI Update Operator" `
+    --scope   "/subscriptions/<your-subscription-id>"
+
+# Quick-start / lab fallback - one-shot create + assign the built-in role:
+# az ad sp create-for-rbac `
+#     --name   "AzureLocal-UpdateAutomation" `
+#     --role   "Azure Stack HCI Administrator" `
+#     --scopes "/subscriptions/<your-subscription-id>"
 ```
 
 Save the `appId`, `password`, and `tenant` from the output - they go into four secrets:
@@ -240,7 +279,7 @@ If you must use client secrets:
 
 ## 4. Required Azure permissions
 
-The identity created in section 3 needs the following permissions on every subscription that contains clusters in scope. The built-in **Azure Stack HCI Administrator** role covers all of them; the custom-role list is provided for tighter-than-default deployments.
+The identity created in section 3 needs the following permissions on every subscription that contains clusters in scope. The built-in **Azure Stack HCI Administrator** role covers all of them; the custom-role definition below is the **recommended** least-privilege alternative for production / governed estates.
 
 | Permission | Used by |
 |---|---|
@@ -249,13 +288,97 @@ The identity created in section 3 needs the following permissions on every subsc
 | `Microsoft.AzureStackHCI/clusters/updates/apply/action` | Apply Updates. |
 | `Microsoft.AzureStackHCI/clusters/updateSummaries/read` | Apply Updates, Fleet Update Status. |
 | `Microsoft.AzureStackHCI/clusters/updateRuns/read` | Apply Updates, Fleet Update Status. |
-| `Microsoft.Resources/subscriptions/resources/read` | All pipelines (Resource Graph lookups). |
+| `Microsoft.ResourceGraph/resources/read` | All pipelines (Resource Graph lookups). |
+| `Microsoft.Resources/subscriptions/resourceGroups/read` | All pipelines (resolve cluster scopes). |
 | `Microsoft.Resources/tags/read` | Manage UpdateRing Tags, sideloaded workflow. |
 | `Microsoft.Resources/tags/write` | Manage UpdateRing Tags, sideloaded workflow (`UpdateSideloaded` + `UpdateVersionInProgress`). |
 
 If you opt in to the ITSM connector with Key Vault-sourced secrets, the identity additionally needs **Key Vault Secrets User** on the configured vault. No other new RBAC.
 
-To extend to additional subscriptions:
+### 4.1 Custom role: `Azure Stack HCI Update Operator` (recommended)
+
+This is the least-privilege role that supports every pipeline in this folder. The same definition is documented in the module-level [`AzLocal.UpdateManagement/README.md`](../README.md#permissions-required-for-update-operations) and is reproduced here so this folder is self-contained.
+
+**Role definition (`custom-role.json`):**
+
+```json
+{
+  "Name": "Azure Stack HCI Update Operator",
+  "IsCustom": true,
+  "Description": "Can view and apply updates on Azure Local clusters, manage UpdateRing tags",
+  "Actions": [
+    "Microsoft.AzureStackHCI/clusters/read",
+    "Microsoft.AzureStackHCI/clusters/updateSummaries/read",
+    "Microsoft.AzureStackHCI/clusters/updates/read",
+    "Microsoft.AzureStackHCI/clusters/updates/apply/action",
+    "Microsoft.AzureStackHCI/clusters/updateRuns/read",
+    "Microsoft.Resources/subscriptions/resourceGroups/read",
+    "Microsoft.ResourceGraph/resources/read",
+    "Microsoft.Resources/tags/read",
+    "Microsoft.Resources/tags/write"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/<your-subscription-id>"
+  ]
+}
+```
+
+Add every in-scope subscription ID to `AssignableScopes` before creating the role - a custom role can only be assigned at or below a scope listed here.
+
+**Create the role (one time per tenant):**
+
+```powershell
+# Option 1 - JSON file already on disk
+az role definition create --role-definition ./custom-role.json
+
+# Option 2 - inline create with PowerShell here-string
+@'
+{
+  "Name": "Azure Stack HCI Update Operator",
+  "IsCustom": true,
+  "Description": "Can view and apply updates on Azure Local clusters, manage UpdateRing tags",
+  "Actions": [
+    "Microsoft.AzureStackHCI/clusters/read",
+    "Microsoft.AzureStackHCI/clusters/updateSummaries/read",
+    "Microsoft.AzureStackHCI/clusters/updates/read",
+    "Microsoft.AzureStackHCI/clusters/updates/apply/action",
+    "Microsoft.AzureStackHCI/clusters/updateRuns/read",
+    "Microsoft.Resources/subscriptions/resourceGroups/read",
+    "Microsoft.ResourceGraph/resources/read",
+    "Microsoft.Resources/tags/read",
+    "Microsoft.Resources/tags/write"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/<your-subscription-id>"
+  ]
+}
+'@ | Out-File -FilePath ./custom-role.json -Encoding UTF8
+
+az role definition create --role-definition ./custom-role.json
+```
+
+**Assign the custom role to the pipeline identity (per subscription):**
+
+```bash
+az role assignment create `
+    --assignee <appId-or-principalId> `
+    --role    "Azure Stack HCI Update Operator" `
+    --scope   "/subscriptions/<your-subscription-id>"
+```
+
+To extend the custom role to additional subscriptions, first update `AssignableScopes` with `az role definition update`, then run the `az role assignment create` command above against each new subscription scope.
+
+> **Tip**: If you started with the built-in `Azure Stack HCI Administrator` role and want to migrate to the custom role with no downtime, assign the custom role first, verify a pipeline run succeeds, then remove the built-in assignment with `az role assignment delete`.
+
+### 4.2 Extending to additional subscriptions (built-in role)
+
+If you accepted the built-in role in section 3, extend it to additional subscriptions with:
 
 ```bash
 az role assignment create `
@@ -633,7 +756,7 @@ The report includes executive summary cards, cluster information, a status table
 
 ## 11. Security model
 
-- **Least privilege** - the role list in section 4 is the minimum. Prefer a custom role over the built-in `Azure Stack HCI Administrator` if your governance requires it.
+- **Least privilege** - the role list in section 4 is the minimum. The `Azure Stack HCI Update Operator` custom role in [section 4.1](#41-custom-role-azure-stack-hci-update-operator-recommended) is the recommended default; the built-in `Azure Stack HCI Administrator` role is a quick-start convenience that over-grants for production.
 - **OIDC / Workload Identity Federation** is the default authentication path. No client secret is stored, federated subject claims bind tokens to your repo / project, and tokens are short-lived.
 - **No raw secrets in pipeline YAML or config.** ITSM secrets (when enabled) resolve from Azure Key Vault or CI-native secrets; bearer tokens live in agent memory only.
 - **Step-level `env:` mapping** - secrets are mapped into the ITSM step's environment variables, not passed on the PowerShell command line. They never appear in process listings, rendered step inputs, or CI logs.
