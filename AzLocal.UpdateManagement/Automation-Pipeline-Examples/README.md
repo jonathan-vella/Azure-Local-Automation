@@ -402,7 +402,7 @@ To extend the custom role to additional subscriptions, first update `AssignableS
 The command and message look like this (subscription / tenant / user identifiers obfuscated):
 
 ```text
-az role definition create --role-definition "C:\Users\joe.bloggs\Dev-Scripts\ACX-Labs-Update-Automation\custom-role.json"
+az role definition create --role-definition "C:\Users\joe.bloggs\custom-role.json"
 Readonly attribute type will be ignored in class <class 'azure.mgmt.authorization.models._models_py3.RoleDefinition'>
 (AuthorizationFailed) The client 'joe.bloggs@contoso.com' with object id 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
 does not have authorization to perform action 'Microsoft.Authorization/roleDefinitions/write' over scope
