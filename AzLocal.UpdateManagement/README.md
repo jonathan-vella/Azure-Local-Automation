@@ -227,11 +227,11 @@ If you need a least-privilege custom role specifically for update operations:
 }
 ```
 
-Save this JSON to a file named `custom-role.json`, then create the custom role using Azure CLI:
+Save this JSON to a file named `azlocal-update-management-custom-role.json`, then create the custom role using Azure CLI:
 
 ```powershell
 # Option 1: Create the file manually, then run:
-az role definition create --role-definition custom-role.json
+az role definition create --role-definition azlocal-update-management-custom-role.json
 
 # Option 2: Create the file and role in one step using PowerShell:
 @'
@@ -257,9 +257,9 @@ az role definition create --role-definition custom-role.json
     "/subscriptions/{subscription-id}"
   ]
 }
-'@ | Out-File -FilePath "custom-role.json" -Encoding UTF8
+'@ | Out-File -FilePath "azlocal-update-management-custom-role.json" -Encoding UTF8
 
-az role definition create --role-definition custom-role.json
+az role definition create --role-definition azlocal-update-management-custom-role.json
 ```
 
 ### Assigning a Role
