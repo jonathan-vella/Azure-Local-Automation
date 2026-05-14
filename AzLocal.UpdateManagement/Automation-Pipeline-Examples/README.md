@@ -328,6 +328,19 @@ This is the least-privilege role that supports every pipeline in this folder. Th
 
 Add every in-scope subscription ID to `AssignableScopes` before creating the role - a custom role can only be assigned at or below a scope listed here.
 
+**Who can run these commands?**
+
+Creating a custom role definition and assigning it are **separate, privileged Azure RBAC operations** - they are not granted by the new custom role itself. The user (or automation identity) running the commands needs the underlying RBAC actions in the table below at the scope listed in `AssignableScopes`.
+
+| Operation | Required action | Built-in Azure RBAC roles that grant it |
+|---|---|---|
+| `az role definition create` / `update` | `Microsoft.Authorization/roleDefinitions/write` | **Owner**, **User Access Administrator**, **Role Based Access Control Administrator** |
+| `az role assignment create` / `delete` | `Microsoft.Authorization/roleAssignments/write` | **Owner**, **User Access Administrator**, **Role Based Access Control Administrator** |
+
+> **Note**: The Entra ID **Global Administrator** directory role is **not** by itself an Azure RBAC role and does not grant `Microsoft.Authorization/*` actions. A Global Administrator can, however, [elevate access](https://learn.microsoft.com/azure/role-based-access-control/elevate-access-global-admin) once to gain **User Access Administrator** at the tenant root (`/`) scope, then perform these operations or delegate them. For day-to-day work, grant **Role Based Access Control Administrator** on the target subscription(s) to the operator instead.
+
+If you don't hold one of those roles, ask whoever does (typically a subscription Owner or your platform team) to either run the commands for you or grant you **Role Based Access Control Administrator** scoped to the in-scope subscription(s). [`Microsoft.Authorization/roleDefinitions/write`](https://learn.microsoft.com/azure/role-based-access-control/role-definitions) is the smallest action you actually need.
+
 **Create the role (one time per tenant):**
 
 ```powershell
@@ -373,6 +386,38 @@ az role assignment create `
 ```
 
 To extend the custom role to additional subscriptions, first update `AssignableScopes` with `az role definition update`, then run the `az role assignment create` command above against each new subscription scope.
+
+**Common errors and how to fix them**
+
+| Error | Cause | Fix |
+|---|---|---|
+| `(AuthorizationFailed) ... does not have authorization to perform action 'Microsoft.Authorization/roleDefinitions/write'` | The signed-in identity is not **Owner**, **User Access Administrator**, or **Role Based Access Control Administrator** on the subscription in `AssignableScopes`. | Have a subscription Owner grant you **Role Based Access Control Administrator** on that subscription (least privilege), or ask them to run the command for you. See "Who can run these commands?" above. |
+| `(AuthorizationFailed) ... 'Microsoft.Authorization/roleAssignments/write'` | Same as above but for the assignment step. | Same fix - the same three built-in roles grant both `roleDefinitions/write` and `roleAssignments/write`, so a single role grant unblocks both commands. |
+| `RoleDefinitionWithSameNameExists` | A role definition with `Name = "Azure Stack HCI Update Operator"` already exists in the tenant. | Use `az role definition update --role-definition ./custom-role.json` instead of `create`, or pick a unique `Name`. |
+| `AssignableScopeNotUnderRoleDefinitionScope` when running `az role assignment create` | The scope you are assigning to is not listed in the role definition's `AssignableScopes`. | Update `AssignableScopes` (`az role definition update`) before re-running the assignment. |
+| `Readonly attribute type will be ignored in class ... RoleDefinition` (warning, not an error) | Cosmetic Azure CLI warning emitted by the Python SDK when it sees a read-only field in the JSON; the command still succeeds. | Safe to ignore. |
+
+**Example: AuthorizationFailed when creating the role**
+
+The command and message look like this (subscription / tenant / user identifiers obfuscated):
+
+```text
+az role definition create --role-definition "C:\Users\joe.bloggs\Dev-Scripts\ACX-Labs-Update-Automation\custom-role.json"
+Readonly attribute type will be ignored in class <class 'azure.mgmt.authorization.models._models_py3.RoleDefinition'>
+(AuthorizationFailed) The client 'joe.bloggs@contoso.com' with object id 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+does not have authorization to perform action 'Microsoft.Authorization/roleDefinitions/write' over scope
+'/subscriptions/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/providers/Microsoft.Authorization/roleDefinitions/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+or the scope is invalid. If access was recently granted, please refresh your credentials.
+Code: AuthorizationFailed
+```
+
+The fix is **not** to escalate to Global Administrator (an Entra ID role, see note above). The fix is to temporarily give the identity running this command an Azure RBAC role on the subscription that grants `Microsoft.Authorization/roleDefinitions/write` - **Role Based Access Control Administrator** is the most narrowly-scoped built-in option. Alternatively, ask another person / administrator who has the permissions in your tenant to run this one-time setup command on your behalf.
+
+You can verify your effective access on the target subscription with:
+
+```powershell
+az role assignment list --assignee <upn-or-objectId> --scope "/subscriptions/<your-subscription-id>" -o table
+```
 
 > **Tip**: If you started with the built-in `Azure Stack HCI Administrator` role and want to migrate to the custom role with no downtime, assign the custom role first, verify a pipeline run succeeds, then remove the built-in assignment with `az role assignment delete`.
 
