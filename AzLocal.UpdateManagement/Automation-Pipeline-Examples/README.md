@@ -429,6 +429,54 @@ Code: AuthorizationFailed
 
 The fix is **not** to escalate to Global Administrator (an Entra ID role, see note above). The fix is to temporarily give the identity running this command an Azure RBAC role on the subscription that grants `Microsoft.Authorization/roleDefinitions/write` - **Role Based Access Control Administrator** is the most narrowly-scoped built-in option. Alternatively, ask another person / administrator who has the permissions in your tenant to run this one-time setup command on your behalf.
 
+**Example: AuthorizationFailed when assigning the role**
+
+The role definition can be created successfully (often by a platform / RBAC admin) but the **assignment** step then fails for a less-privileged operator. The two operations require different RBAC actions, so passing the `create` step does **not** guarantee `assignment create` will work:
+
+```text
+az role assignment create `
+    --assignee xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx `
+    --role    "Azure Stack HCI Update Operator" `
+    --scope   "/subscriptions/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+(AuthorizationFailed) The client 'joe.bloggs@contoso.com' with object id 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+does not have authorization to perform action 'Microsoft.Authorization/roleAssignments/write' over scope
+'/subscriptions/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/providers/Microsoft.Authorization/roleAssignments/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+or the scope is invalid. If access was recently granted, please refresh your credentials.
+Code: AuthorizationFailed
+```
+
+Same remediation as the create case: have a subscription Owner grant the operator **Role Based Access Control Administrator** on the target subscription (least privilege - covers both `roleDefinitions/write` and `roleAssignments/write`), or have that admin run the `az role assignment create` step on the operator's behalf. **Role Based Access Control Administrator** can additionally be scoped with [conditions](https://learn.microsoft.com/azure/role-based-access-control/role-assignments-conditions-overview) that restrict which roles the holder can assign (e.g. "only `Azure Stack HCI Update Operator`"), which is the cleanest way to delegate this single role grant without handing out broader RBAC powers.
+
+**Tip - delegate via a security group (recommended for >1 identity)**
+
+For larger environments, instead of running `az role assignment create` once per identity, assign the custom role to an Entra ID **security group** (a standard one - not Microsoft 365, not role-assignable), then add the pipeline's service principal (the Enterprise Application in Entra ID) plus any other user / SP that needs the same access as members. This shifts ongoing grants from an Azure RBAC operation to a group-membership operation, which is much easier to delegate and audit:
+
+- The expensive RBAC operation (`Microsoft.Authorization/roleAssignments/write`) runs **once per subscription**, against the group.
+- Subsequent grants become **group membership changes** - delegated to the group's owner (or to your Identity Governance / access-package workflow), with no Azure RBAC role required on the operator.
+- Compatible with [PIM for Groups](https://learn.microsoft.com/entra/id-governance/privileged-identity-management/concept-pim-for-groups) if you want just-in-time activation of update-operator access.
+
+```bash
+# 1. Create the security group (once per tenant)
+$groupId = az ad group create `
+    --display-name  "AzureLocal-UpdateAutomation-Operators" `
+    --mail-nickname "az-local-upd-ops" `
+    --query id -o tsv
+
+# 2. Assign the custom role to the GROUP (once per subscription, requires RBAC Admin)
+az role assignment create `
+    --assignee-object-id      $groupId `
+    --assignee-principal-type Group `
+    --role  "Azure Stack HCI Update Operator" `
+    --scope "/subscriptions/$subId"
+
+# 3. Add the pipeline's SP (and any other identities) to the group - the only ongoing op.
+# For an Enterprise Application, --member-id is the SP object ID, NOT the appId.
+$spObjectId = az ad sp show --id <appId> --query id -o tsv
+az ad group member add --group $groupId --member-id $spObjectId
+```
+
+> **Note**: only **security groups** can have service principals as members - Microsoft 365 groups cannot. Avoid setting `isAssignableToRole = true` on the group unless you actually need it for Entra ID directory-role assignment; it is a stricter group type with extra constraints on who can manage membership and is not required for assigning Azure RBAC roles.
+
 You can verify your effective access on the target subscription with:
 
 ```powershell
