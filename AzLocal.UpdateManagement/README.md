@@ -186,7 +186,7 @@ The following permissions are required for update operations:
 | Read update summary | `Microsoft.AzureStackHCI/clusters/updateSummaries/read` |
 | List available updates | `Microsoft.AzureStackHCI/clusters/updates/read` |
 | **Start/Apply update** | `Microsoft.AzureStackHCI/clusters/updates/apply/action` |
-| Monitor update runs | `Microsoft.AzureStackHCI/clusters/updateRuns/read` |
+| Monitor update runs | `Microsoft.AzureStackHCI/clusters/updates/updateRuns/read` |
 | Query clusters (Resource Graph) | `Microsoft.ResourceGraph/resources/read` |
 | **Read/Write tags** | `Microsoft.Resources/tags/read`, `Microsoft.Resources/tags/write` |
 
@@ -212,7 +212,7 @@ If you need a least-privilege custom role specifically for update operations:
     "Microsoft.AzureStackHCI/clusters/updateSummaries/read",
     "Microsoft.AzureStackHCI/clusters/updates/read",
     "Microsoft.AzureStackHCI/clusters/updates/apply/action",
-    "Microsoft.AzureStackHCI/clusters/updateRuns/read",
+    "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
     "Microsoft.Resources/tags/read",
@@ -255,7 +255,7 @@ az role definition create --role-definition ./azlocal-update-management-custom-r
     "Microsoft.AzureStackHCI/clusters/updateSummaries/read",
     "Microsoft.AzureStackHCI/clusters/updates/read",
     "Microsoft.AzureStackHCI/clusters/updates/apply/action",
-    "Microsoft.AzureStackHCI/clusters/updateRuns/read",
+    "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
     "Microsoft.Resources/tags/read",

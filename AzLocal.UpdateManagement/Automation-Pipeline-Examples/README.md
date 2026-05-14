@@ -287,7 +287,7 @@ The identity created in section 3 needs the following permissions on every subsc
 | `Microsoft.AzureStackHCI/clusters/updates/read` | Apply Updates, Fleet Update Status. |
 | `Microsoft.AzureStackHCI/clusters/updates/apply/action` | Apply Updates. |
 | `Microsoft.AzureStackHCI/clusters/updateSummaries/read` | Apply Updates, Fleet Update Status. |
-| `Microsoft.AzureStackHCI/clusters/updateRuns/read` | Apply Updates, Fleet Update Status. |
+| `Microsoft.AzureStackHCI/clusters/updates/updateRuns/read` | Apply Updates, Fleet Update Status. |
 | `Microsoft.ResourceGraph/resources/read` | All pipelines (Resource Graph lookups). |
 | `Microsoft.Resources/subscriptions/resourceGroups/read` | All pipelines (resolve cluster scopes). |
 | `Microsoft.Resources/tags/read` | Manage UpdateRing Tags, sideloaded workflow. |
@@ -311,7 +311,7 @@ This is the least-privilege role that supports every pipeline in this folder. Th
     "Microsoft.AzureStackHCI/clusters/updateSummaries/read",
     "Microsoft.AzureStackHCI/clusters/updates/read",
     "Microsoft.AzureStackHCI/clusters/updates/apply/action",
-    "Microsoft.AzureStackHCI/clusters/updateRuns/read",
+    "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
     "Microsoft.Resources/tags/read",
@@ -372,7 +372,7 @@ az role definition create --role-definition ./azlocal-update-management-custom-r
     "Microsoft.AzureStackHCI/clusters/updateSummaries/read",
     "Microsoft.AzureStackHCI/clusters/updates/read",
     "Microsoft.AzureStackHCI/clusters/updates/apply/action",
-    "Microsoft.AzureStackHCI/clusters/updateRuns/read",
+    "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
     "Microsoft.Resources/tags/read",
