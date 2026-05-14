@@ -299,7 +299,7 @@ If you opt in to the ITSM connector with Key Vault-sourced secrets, the identity
 
 This is the least-privilege role that supports every pipeline in this folder. The same definition is documented in the module-level [`AzLocal.UpdateManagement/README.md`](../README.md#permissions-required-for-update-operations) and is reproduced here so this folder is self-contained.
 
-**Role definition (`custom-role.json`):**
+**Role definition (`azlocal-update-management-custom-role.json`):**
 
 ```json
 {
@@ -345,7 +345,7 @@ If you don't hold one of those roles, ask whoever does (typically a subscription
 
 ```powershell
 # Option 1 - JSON file already on disk
-az role definition create --role-definition ./custom-role.json
+az role definition create --role-definition ./azlocal-update-management-custom-role.json
 
 # Option 2 - inline create with PowerShell here-string
 @'
@@ -371,9 +371,9 @@ az role definition create --role-definition ./custom-role.json
     "/subscriptions/<your-subscription-id>"
   ]
 }
-'@ | Out-File -FilePath ./custom-role.json -Encoding UTF8
+'@ | Out-File -FilePath ./azlocal-update-management-custom-role.json -Encoding UTF8
 
-az role definition create --role-definition ./custom-role.json
+az role definition create --role-definition ./azlocal-update-management-custom-role.json
 ```
 
 **Assign the custom role to the pipeline identity (per subscription):**
@@ -393,7 +393,7 @@ To extend the custom role to additional subscriptions, first update `AssignableS
 |---|---|---|
 | `(AuthorizationFailed) ... does not have authorization to perform action 'Microsoft.Authorization/roleDefinitions/write'` | The signed-in identity is not **Owner**, **User Access Administrator**, or **Role Based Access Control Administrator** on the subscription in `AssignableScopes`. | Have a subscription Owner grant you **Role Based Access Control Administrator** on that subscription (least privilege), or ask them to run the command for you. See "Who can run these commands?" above. |
 | `(AuthorizationFailed) ... 'Microsoft.Authorization/roleAssignments/write'` | Same as above but for the assignment step. | Same fix - the same three built-in roles grant both `roleDefinitions/write` and `roleAssignments/write`, so a single role grant unblocks both commands. |
-| `RoleDefinitionWithSameNameExists` | A role definition with `Name = "Azure Stack HCI Update Operator"` already exists in the tenant. | Use `az role definition update --role-definition ./custom-role.json` instead of `create`, or pick a unique `Name`. |
+| `RoleDefinitionWithSameNameExists` | A role definition with `Name = "Azure Stack HCI Update Operator"` already exists in the tenant. | Use `az role definition update --role-definition ./azlocal-update-management-custom-role.json` instead of `create`, or pick a unique `Name`. |
 | `AssignableScopeNotUnderRoleDefinitionScope` when running `az role assignment create` | The scope you are assigning to is not listed in the role definition's `AssignableScopes`. | Update `AssignableScopes` (`az role definition update`) before re-running the assignment. |
 | `Readonly attribute type will be ignored in class ... RoleDefinition` (warning, not an error) | Cosmetic Azure CLI warning emitted by the Python SDK when it sees a read-only field in the JSON; the command still succeeds. | Safe to ignore. |
 
@@ -402,7 +402,7 @@ To extend the custom role to additional subscriptions, first update `AssignableS
 The command and message look like this (subscription / tenant / user identifiers obfuscated):
 
 ```text
-az role definition create --role-definition "C:\Users\joe.bloggs\Dev-Scripts\ACX-Labs-Update-Automation\custom-role.json"
+az role definition create --role-definition "C:\Users\joe.bloggs\azlocal-update-management-custom-role.json"
 Readonly attribute type will be ignored in class <class 'azure.mgmt.authorization.models._models_py3.RoleDefinition'>
 (AuthorizationFailed) The client 'joe.bloggs@contoso.com' with object id 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
 does not have authorization to perform action 'Microsoft.Authorization/roleDefinitions/write' over scope
