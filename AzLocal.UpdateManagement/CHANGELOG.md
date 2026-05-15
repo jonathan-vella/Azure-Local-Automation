@@ -5,7 +5,7 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.5] - 2026-05-15
+## [0.7.50] - 2026-05-15
 
 ### Changed
 
@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `-Platform GitHub` now copies ONLY the `*.yml` workflow files from the source `github-actions/` folder directly into `-Destination` (flat - no wrapper folder, no README, no `.itsm/`). The canonical call is `Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`.
   - `-Platform AzureDevOps` behaves the same way against the source `azure-devops/` folder (flat into `-Destination`, no README, no `.itsm/`).
   - `-Platform All` (the default) is unchanged - copies the full source tree under a `.\Automation-Pipeline-Examples\` child folder for browsing.
-  - **Controlled refresh via `-Update`** (new in v0.7.5): the function still refuses to overwrite by default and lists every conflict in the error message - but the error now points at the `-Update` switch instead of asking the user to `Remove-Item` first. With `-Update` the function emits a per-file `ShouldContinue` prompt (`Y` / `A` / `N` / `L` / `S` / `?`) before each overwrite; `Yes-to-All` and `No-to-All` survive across iterations. Pair with `-Confirm:$false` to suppress the prompts entirely (the documented automation / CI bypass). `-WhatIf` overrides everything and only prints what would change. Pipeline files are expected to live under git source control so `git diff` is the second safety net after `ShouldContinue`. There is **deliberately no `-Force`**: that flag's previous semantics were too broad and it had been removed mid-v0.7.5 development - `-Update` is the narrower, more explicit replacement.
+  - **Controlled refresh via `-Update`** (new in v0.7.50): the function still refuses to overwrite by default and lists every conflict in the error message - but the error now points at the `-Update` switch instead of asking the user to `Remove-Item` first. With `-Update` the function emits a per-file `ShouldContinue` prompt (`Y` / `A` / `N` / `L` / `S` / `?`) before each overwrite; `Yes-to-All` and `No-to-All` survive across iterations. Pair with `-Confirm:$false` to suppress the prompts entirely (the documented automation / CI bypass). `-WhatIf` overrides everything and only prints what would change. Pipeline files are expected to live under git source control so `git diff` is the second safety net after `ShouldContinue`. There is **deliberately no `-Force`**: that flag's previous semantics were too broad and it had been removed mid-v0.7.50 development - `-Update` is the narrower, more explicit replacement.
   - Pre-existing unrelated files in `-Destination` (e.g. your repo's own `build.yml`, `codeql.yml`) are now left untouched; the function only writes the files it is bringing over from the source tree.
   - **Next-steps output** is now platform-aware and detects when `-Destination` is already `.github\workflows\` ("you're done, commit and push") vs. somewhere else ("move the YAMLs into `.github\workflows\`"). For both platform-specific values the output now points at `auth-smoke-test.yml` as the recommended first run (see sections 5.1 and 5.2 of the Automation-Pipeline-Examples README) so the user validates the auth chain before wiring the other five workflows.
 

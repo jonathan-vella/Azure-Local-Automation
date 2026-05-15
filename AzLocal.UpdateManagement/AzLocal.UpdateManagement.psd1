@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.5'
+    ModuleVersion = '0.7.50'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -164,7 +164,7 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.5 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update
+## Version 0.7.50 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update
 
 ### Added
 - Pipeline examples (5 GitHub Actions + 5 Azure DevOps YAMLs) now

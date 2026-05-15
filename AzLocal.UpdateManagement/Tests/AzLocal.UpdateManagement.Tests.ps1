@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.5' {
-            $script:ModuleInfo.Version | Should -Be '0.7.5'
+        It 'Should have version 0.7.50' {
+            $script:ModuleInfo.Version | Should -Be '0.7.50'
         }
 
         It 'Should export exactly 24 functions' {
@@ -3667,7 +3667,7 @@ Describe 'ITSM: Get-AzureLocalItsmConfig normalises non-Hashtable YAML dictionar
 
 #endregion ITSM Connector Phase 1 (v0.7.4)
 
-#region Copy-AzureLocalPipelineExample (v0.7.4, updated in v0.7.5)
+#region Copy-AzureLocalPipelineExample (v0.7.4, updated in v0.7.50)
 
 Describe 'Function: Copy-AzureLocalPipelineExample' {
     BeforeAll {
@@ -3789,14 +3789,14 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         (Get-Content -LiteralPath $target -Raw) | Should -Not -Match 'SENTINEL'
     }
 
-    It '-Update is exposed as a [switch] parameter in v0.7.5' {
+    It '-Update is exposed as a [switch] parameter in v0.7.50' {
         $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
         $cmd.Parameters.ContainsKey('Update') | Should -BeTrue
         $cmd.Parameters['Update'].ParameterType | Should -Be ([switch])
     }
 
-    It 'No-to-All only suppresses overwrites, not brand-new files (v0.7.5 regression guard)' {
-        # Background: In an early v0.7.5 pass the per-file loop's top guard was
+    It 'No-to-All only suppresses overwrites, not brand-new files (v0.7.50 regression guard)' {
+        # Background: In an early v0.7.50 pass the per-file loop's top guard was
         #     if ($noToAll) { $skippedCount++; continue }
         # which skipped EVERY remaining file once the user chose No-to-All,
         # even files that did not already exist at the destination (no prompt
@@ -3829,14 +3829,14 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         (Get-Content -LiteralPath $target -Raw) | Should -Match 'WHATIF SENTINEL'
     }
 
-    It '-Force parameter has been removed in v0.7.5' {
+    It '-Force parameter has been removed in v0.7.50' {
         # Inspect the function's parameter metadata directly - more robust than
         # relying on the engine's FQErrorID, which differs across PS editions.
         $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
         $cmd.Parameters.ContainsKey('Force') | Should -BeFalse
     }
 
-    It '-Flatten parameter has been removed in v0.7.5' {
+    It '-Flatten parameter has been removed in v0.7.50' {
         $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
         $cmd.Parameters.ContainsKey('Flatten') | Should -BeFalse
     }
@@ -3874,6 +3874,6 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
     }
 }
 
-#endregion Copy-AzureLocalPipelineExample (v0.7.4, updated in v0.7.5)
+#endregion Copy-AzureLocalPipelineExample (v0.7.4, updated in v0.7.50)
 
 

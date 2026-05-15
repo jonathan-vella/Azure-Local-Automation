@@ -125,7 +125,7 @@ function Copy-AzureLocalPipelineExample {
         Author      : Neil Bird, Microsoft
         Module      : AzLocal.UpdateManagement
         Added in    : v0.7.4
-        Changed in  : v0.7.5 - removed `-Flatten` and `-Force` switches.
+        Changed in  : v0.7.50 - removed `-Flatten` and `-Force` switches.
                       Platform-specific copies now drop YAMLs directly into
                       `-Destination` (no intermediate `github-actions\` or
                       `azure-devops\` subfolder), and the function refuses
