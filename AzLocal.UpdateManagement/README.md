@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.60 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.60)
+**Latest Version:** v0.7.61 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.61)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,6 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
+- [What's New in v0.7.61](#whats-new-in-v0761)
 - [What's New in v0.7.60](#whats-new-in-v0760)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
@@ -138,6 +139,20 @@ If you are new to this module, work through these in order from a regular PowerS
 | **Recover from emergency** | `Stop-AzureLocalFleetUpdate` -> `Test-AzureLocalClusterHealth` (assess) -> `Resume-AzureLocalFleetUpdate -RetryFailed` |
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
+
+## What's New in v0.7.61
+
+- **Readiness now blocks `ReadyForUpdate` when the cluster is not reachable or has Critical-severity health checks.** Both [`Get-AzureLocalClusterUpdateReadiness`](Public/Get-AzureLocalClusterUpdateReadiness.ps1) and [`Get-AzureLocalFleetStatusData`](Public/Get-AzureLocalFleetStatusData.ps1) (driving the fleet HTML report) downgrade `ReadyForUpdate` to `False` and record the reason on a new **`BlockingReasons`** CSV column whenever either of these is true:
+  - **Connectivity gate** - `ClusterState` is not `'ConnectedRecently'` (e.g. `NotConnectedRecently`, `Disconnected`). ARM cannot reliably push an update to a cluster that has missed its heartbeat.
+  - **Critical health gate** - `HealthCheckFailures` contains at least one `[Critical]` severity entry. These must be cleared before any solution upgrade is started.
+
+  Values on `BlockingReasons` are semicolon-joined (e.g. `CriticalHealthCheck`, `CriticalHealthCheck; NotConnectedRecently`). The per-cluster console output now shows `Blocked (<reasons>)` in red, and the summary footer reports `Blocked by Readiness Gate: N` alongside the existing `Blocked by SBE Prereq` count. **The CSV column is additive** - existing consumers that parse by header name keep working.
+
+- **`Start-AzureLocalClusterUpdate` defence-in-depth: new `Step 1b` connectivity gate.** Immediately after cluster lookup, any cluster whose `properties.status` is not `'ConnectedRecently'` is skipped before any update is attempted. A row is recorded in `Update_Skipped.csv` with the message *"Update not started - cluster status is '<status>' (ARM cannot reach the cluster)"*, and the in-process `$results` list gets a `Status='NotConnected'` row. Complements the existing `Step 3b` critical-health gate. No new flags - the gate is always on.
+
+- **Fixed - JUnit XML `Status` column from `Get-AzureLocalClusterUpdateReadiness` was always `Skipped`** for Ready clusters (long-standing bool/string comparison bug `$_.ReadyForUpdate -eq 'Yes'` against `[bool]$true`). JUnit `Status` now correctly emits `Ready`, `Blocked`, `Failed`, or `Skipped`. The CSV `ReadyForUpdate` column (a real `[bool]`) was unaffected; only JUnit XML readability in CI/CD test summaries was wrong.
+
+- **Module version pin bumped to 0.7.61 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading.
 
 ## What's New in v0.7.60
 
@@ -2156,6 +2171,11 @@ This code is provided as-is for educational and reference purposes.
 ---
 
 ## Release History
+
+### What's New in v0.7.60
+
+- **GitHub Actions sample workflows refreshed for Node 24.** All five workflow YAMLs under [`Automation-Pipeline-Examples/github-actions/`](Automation-Pipeline-Examples/github-actions/) now pin Node 24-compatible major versions: `actions/checkout @v4 -> @v5`, `actions/upload-artifact @v4 -> @v6`, `azure/login @v2 -> @v3`, `dorny/test-reporter @v1 -> @v3`. Removes the "Node.js 20 actions are deprecated" warning banner ahead of the Sept 16 2026 Node.js 20 hard-removal. No input/output surface changes.
+- **Fixed - `dorny/test-reporter` 403 on `apply-updates.yml`.** Both jobs (`check-readiness` and `apply-updates`) now grant `checks: write` in their `permissions:` block so the Check Run that publishes JUnit results can be created on `workflow_dispatch` runs. Sibling workflows already declared this from v0.7.50.
 
 ### What's New in v0.7.50
 

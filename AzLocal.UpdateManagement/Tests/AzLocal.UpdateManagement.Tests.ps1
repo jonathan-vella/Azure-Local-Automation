@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.60' {
-            $script:ModuleInfo.Version | Should -Be '0.7.60'
+        It 'Should have version 0.7.61' {
+            $script:ModuleInfo.Version | Should -Be '0.7.61'
         }
 
         It 'Should export exactly 25 functions' {
@@ -2591,6 +2591,196 @@ Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)
 }
 
 #endregion Integration: Get-AzureLocalClusterUpdateReadiness parallel dispatch
+
+#region Readiness gates (v0.7.61: ClusterState + Critical health checks)
+
+Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' {
+
+    Context 'BlockingReasons column and ReadyForUpdate gating' {
+
+        It 'Should downgrade ReadyForUpdate to False when ClusterState is NotConnectedRecently' {
+            InModuleScope AzLocal.UpdateManagement {
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                Mock Test-AzCliAvailable { return $true }
+
+                Mock Invoke-AzRestJson {
+                    param($Uri)
+                    $global:LASTEXITCODE = 0
+                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
+                        return [PSCustomObject]@{
+                            Ok = $true
+                            Data = [PSCustomObject]@{
+                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$($matches[1])"
+                                name = $matches[1]
+                                properties = [PSCustomObject]@{ status = 'NotConnectedRecently' }
+                                tags = $null
+                            }
+                        }
+                    }
+                    return [PSCustomObject]@{ Ok = $true; Data = $null }
+                }
+                Mock Get-AzureLocalUpdateSummary {
+                    return [PSCustomObject]@{
+                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
+                    }
+                }
+                Mock Get-AzureLocalAvailableUpdates {
+                    return @([PSCustomObject]@{
+                        name = '10.2506.0.28'
+                        properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                    })
+                }
+                Mock Get-HealthCheckFailureSummary { return '' }
+
+                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-conn')
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+
+                $results | Should -HaveCount 1
+                $row = $results[0]
+                $row.ReadyForUpdate | Should -BeFalse
+                $row.PSObject.Properties.Name | Should -Contain 'BlockingReasons'
+                $row.BlockingReasons | Should -Match 'NotConnectedRecently'
+                $row.ClusterState | Should -Be 'NotConnectedRecently'
+            }
+        }
+
+        It 'Should downgrade ReadyForUpdate to False when HealthCheckFailures contains [Critical]' {
+            InModuleScope AzLocal.UpdateManagement {
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                Mock Test-AzCliAvailable { return $true }
+
+                Mock Invoke-AzRestJson {
+                    param($Uri)
+                    $global:LASTEXITCODE = 0
+                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
+                        return [PSCustomObject]@{
+                            Ok = $true
+                            Data = [PSCustomObject]@{
+                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$($matches[1])"
+                                name = $matches[1]
+                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                                tags = $null
+                            }
+                        }
+                    }
+                    return [PSCustomObject]@{ Ok = $true; Data = $null }
+                }
+                Mock Get-AzureLocalUpdateSummary {
+                    return [PSCustomObject]@{
+                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Failure' }
+                    }
+                }
+                Mock Get-AzureLocalAvailableUpdates {
+                    return @([PSCustomObject]@{
+                        name = '10.2506.0.28'
+                        properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                    })
+                }
+                Mock Get-HealthCheckFailureSummary { return '[Critical] Storage Services Health Check (NodeA)' }
+
+                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-health')
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+
+                $results | Should -HaveCount 1
+                $row = $results[0]
+                $row.ReadyForUpdate | Should -BeFalse
+                $row.BlockingReasons | Should -Match 'CriticalHealthCheck'
+                $row.HealthCheckFailures | Should -Match '\[Critical\]'
+            }
+        }
+
+        It 'Should combine both reasons when both gates fire' {
+            InModuleScope AzLocal.UpdateManagement {
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                Mock Test-AzCliAvailable { return $true }
+
+                Mock Invoke-AzRestJson {
+                    param($Uri)
+                    $global:LASTEXITCODE = 0
+                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
+                        return [PSCustomObject]@{
+                            Ok = $true
+                            Data = [PSCustomObject]@{
+                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$($matches[1])"
+                                name = $matches[1]
+                                properties = [PSCustomObject]@{ status = 'NotConnectedRecently' }
+                                tags = $null
+                            }
+                        }
+                    }
+                    return [PSCustomObject]@{ Ok = $true; Data = $null }
+                }
+                Mock Get-AzureLocalUpdateSummary {
+                    return [PSCustomObject]@{
+                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Failure' }
+                    }
+                }
+                Mock Get-AzureLocalAvailableUpdates {
+                    return @([PSCustomObject]@{
+                        name = '10.2506.0.28'
+                        properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                    })
+                }
+                Mock Get-HealthCheckFailureSummary { return '[Critical] Storage Services Health Check (NodeA)' }
+
+                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-both')
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+
+                $results | Should -HaveCount 1
+                $row = $results[0]
+                $row.ReadyForUpdate | Should -BeFalse
+                $row.BlockingReasons | Should -Match 'CriticalHealthCheck'
+                $row.BlockingReasons | Should -Match 'NotConnectedRecently'
+            }
+        }
+
+        It 'Should leave ReadyForUpdate True when Connected and no Critical health checks' {
+            InModuleScope AzLocal.UpdateManagement {
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                Mock Test-AzCliAvailable { return $true }
+
+                Mock Invoke-AzRestJson {
+                    param($Uri)
+                    $global:LASTEXITCODE = 0
+                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
+                        return [PSCustomObject]@{
+                            Ok = $true
+                            Data = [PSCustomObject]@{
+                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$($matches[1])"
+                                name = $matches[1]
+                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                                tags = $null
+                            }
+                        }
+                    }
+                    return [PSCustomObject]@{ Ok = $true; Data = $null }
+                }
+                Mock Get-AzureLocalUpdateSummary {
+                    return [PSCustomObject]@{
+                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
+                    }
+                }
+                Mock Get-AzureLocalAvailableUpdates {
+                    return @([PSCustomObject]@{
+                        name = '10.2506.0.28'
+                        properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                    })
+                }
+                Mock Get-HealthCheckFailureSummary { return '' }
+
+                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/happy')
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+
+                $results | Should -HaveCount 1
+                $row = $results[0]
+                $row.ReadyForUpdate | Should -BeTrue
+                $row.BlockingReasons | Should -Be ''
+            }
+        }
+    }
+}
+
+#endregion Readiness gates (v0.7.61: ClusterState + Critical health checks)
 
 #region Integration: Get-AzureLocalUpdateRuns parallel dispatch
 

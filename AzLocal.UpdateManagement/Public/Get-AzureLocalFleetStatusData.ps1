@@ -345,6 +345,7 @@ function Get-AzureLocalFleetStatusData {
                         ReadyForUpdate = $false; AvailableUpdates = ""; ReadyUpdates = ""
                         HasPrerequisiteUpdates = ""; SBEDependency = ""
                         RecommendedUpdate = ""; HealthCheckFailures = ""
+                        BlockingReasons = ""
                         UpdateWindow = ""; UpdateExclusions = ""
                     }) | Out-Null
                     $clusterDetails.Add([PSCustomObject]@{
@@ -436,6 +437,18 @@ function Get-AzureLocalFleetStatusData {
                     $healthCheckFailures = Get-HealthCheckFailureSummary -UpdateSummary $updateSummary
                 }
 
+                # Apply readiness gates (mirror Get-AzureLocalClusterUpdateReadiness).
+                $blockingReasons = @()
+                if ($healthCheckFailures -and ($healthCheckFailures -match '\[Critical\]')) {
+                    $blockingReasons += 'CriticalHealthCheck'
+                }
+                if ($clusterState -and $clusterState -ne 'ConnectedRecently') {
+                    $blockingReasons += $clusterState
+                }
+                if ($isReady -and $blockingReasons.Count -gt 0) {
+                    $isReady = $false
+                }
+
                 $readiness.Add([PSCustomObject]@{
                     ClusterName = $clusterName; ResourceGroup = $rgName; SubscriptionId = $subId
                     ClusterState = $clusterState; UpdateState = $updateState; HealthState = $healthState
@@ -443,6 +456,7 @@ function Get-AzureLocalFleetStatusData {
                     ReadyUpdates = $readyUpdateNames; HasPrerequisiteUpdates = $prereqUpdateNames
                     SBEDependency = $sbeDependencyInfo; RecommendedUpdate = $recommendedUpdate
                     HealthCheckFailures = $healthCheckFailures
+                    BlockingReasons = ($blockingReasons -join '; ')
                     UpdateWindow = if ($clusterInfo.tags -and $clusterInfo.tags.$($script:UpdateWindowTagName)) { $clusterInfo.tags.$($script:UpdateWindowTagName) } else { "" }
                     UpdateExclusions = if ($clusterInfo.tags -and $clusterInfo.tags.$($script:UpdateExclusionsTagName)) { $clusterInfo.tags.$($script:UpdateExclusionsTagName) } else { "" }
                 }) | Out-Null
@@ -594,6 +608,7 @@ function Get-AzureLocalFleetStatusData {
                     ReadyForUpdate = $false; AvailableUpdates = ""; ReadyUpdates = ""
                     HasPrerequisiteUpdates = ""; SBEDependency = ""
                     RecommendedUpdate = ""; HealthCheckFailures = $_.Exception.Message
+                    BlockingReasons = ""
                     UpdateWindow = ""; UpdateExclusions = ""
                 }) | Out-Null
                 $clusterDetails.Add([PSCustomObject]@{

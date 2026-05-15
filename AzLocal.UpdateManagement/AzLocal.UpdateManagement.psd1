@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.60'
+    ModuleVersion = '0.7.61'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -167,6 +167,37 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.61 - Readiness gates: ClusterState + Critical health checks now block ReadyForUpdate
+
+### Changed
+
+- Get-AzureLocalClusterUpdateReadiness and Get-AzureLocalFleetStatusData
+  now downgrade ReadyForUpdate to $false when either of these is true,
+  even if ARM otherwise reports a Ready update:
+  - ClusterState is not 'ConnectedRecently' (e.g. NotConnectedRecently,
+    Disconnected) - ARM cannot reliably push an update to a cluster it
+    has not heard from recently.
+  - HealthCheckFailures contains at least one [Critical] severity entry.
+  Both functions emit a new BlockingReasons CSV column listing the
+  reason(s) (e.g. "NotConnectedRecently", "CriticalHealthCheck",
+  "CriticalHealthCheck; NotConnectedRecently") so operators can see why
+  an otherwise-ready cluster was held back.
+- Start-AzureLocalClusterUpdate gains a connectivity gate (Step 1b)
+  immediately after cluster lookup: clusters whose properties.status is
+  not 'ConnectedRecently' are skipped with Status='NotConnected' and a
+  row written to Update_Skipped.csv before any update is attempted.
+  Complements the existing Step 3b critical-health gate.
+- Console summary on Get-AzureLocalClusterUpdateReadiness now reports
+  "Blocked by Readiness Gate: N" alongside SBE-prereq blocks. The
+  per-cluster console line shows "Blocked (<reason>)" in red.
+
+### Fixed
+
+- Get-AzureLocalClusterUpdateReadiness JUnit XML export was emitting
+  Status='Skipped' for every Ready cluster due to a boolean/string
+  comparison bug (`$_.ReadyForUpdate -eq 'Yes'` against a [bool]).
+  Status now correctly reports 'Ready' / 'Blocked' / 'Failed' / 'Skipped'.
+
 ## Version 0.7.60 - GitHub Actions samples refreshed for Node 24 + checks:write fix on apply-updates
 
 ### Changed
@@ -217,73 +248,31 @@ adopted at removal time. Full notes in CHANGELOG.md.
 
 ## Version 0.7.41 - Hotfix: parallel fleet reads broken by v0.7.3 NestedModules refactor
 
-### Fixed
-- HIGH: every fleet read function that dispatches through
-  Invoke-FleetJobsInParallel (Get-AzureLocalUpdateRuns,
-  Get-AzureLocalUpdateSummary, Get-AzureLocalClusterUpdateReadiness,
-  Get-AzureLocalAvailableUpdates, Get-AzureLocalFleetProgress,
-  Invoke-AzureLocalFleetOperation, Test-AzureLocalClusterHealth, and
-  Start-AzureLocalClusterUpdate's parallel path) failed for every
-  cluster when invoked with -ThrottleLimit > 1 against the PSGallery-
-  installed v0.7.4, returning State=Error: "Cannot use '&' to invoke in
-  the context of module 'Invoke-FleetJobsInParallel' because it is not
-  imported." Inline (-ThrottleLimit 1) was unaffected. Root cause: the
-  v0.7.3 NestedModules refactor changed $PSCommandPath inside
-  Invoke-FleetJobsInParallel.ps1 to point at the helper's own .ps1, not
-  the root manifest. Per-batch Start-Job scriptblocks then imported only
-  that .ps1 in the child runspace, so & $mod { ... } against private
-  helpers always failed.
-- HIGH: New-AzureLocalFleetStatusHtmlReport -ThrottleLimit > 1 (via
-  Get-AzureLocalFleetStatusData) threw at start-up: "Parallel collection
-  requires module path '...\Public\AzLocal.UpdateManagement.psm1' to be
-  reachable by background jobs, but it does not exist." Same class of
-  regression but a separate code path: Get-AzureLocalFleetStatusData was
-  using Join-Path $PSScriptRoot 'AzLocal.UpdateManagement.psm1', and
-  after v0.7.3 $PSScriptRoot resolves to Public/, not the module root.
-  New-AzureLocalFleetStatusHtmlReport's footer fallback had the same flaw.
-- Centralised the resolution in a new private helper
-  Get-AzLocalModuleRootManifestPath, used by all three sites. It prefers
-  the loaded module's .Path (.psd1 over .psm1) and falls back to walking
-  up from the caller, so it is correct from any Public/ or Private/ file.
-- Added Pester regression tests for the helper and for the trailing
-  $ModulePath argument that Invoke-FleetJobsInParallel passes to per-
-  batch scriptblocks. Existing tests only exercised the inline
-  -ThrottleLimit 1 fast-path and silently masked the v0.7.4 regression.
+Summary: hotfix for every fleet read/write function that dispatched
+through Invoke-FleetJobsInParallel (and for
+New-AzureLocalFleetStatusHtmlReport / Get-AzureLocalFleetStatusData).
+Under -ThrottleLimit > 1 against PSGallery-installed v0.7.4, per-batch
+Start-Job scriptblocks could not see module-private helpers, returning
+State=Error: "Cannot use '&' to invoke in the context of module ...
+because it is not imported." Inline (-ThrottleLimit 1) was unaffected.
+Centralised resolution in a new private helper
+Get-AzLocalModuleRootManifestPath; added regression Pester tests for
+the parallel path. Full notes in CHANGELOG.md.
 
 ## Version 0.7.4 - ITSM Connector Phase 1 (ServiceNow)
 
-### Added (Phase 1 scaffold)
-- New optional ITSM ticketing surface that lets `apply-updates` and
-  `fleet-update-status` pipelines open ServiceNow incidents when a cluster
-  needs operator action. Disabled by default; opt-in via pipeline input
-  `raise_itsm_ticket=true` plus a `./.itsm/azurelocal-itsm.yml` config file.
-- New public functions (Phase 1):
-  - `Get-AzureLocalItsmConfig`  - load + validate the YAML/JSON trigger matrix
-  - `Test-AzureLocalItsmConnection`  - dry-run probe of ITSM endpoint + adapters
-  - `New-AzureLocalIncident`  - consume JUnit results, evaluate trigger matrix,
-    open / dedupe ServiceNow incidents, return per-cluster Action/TicketId rows
-- New internal helpers (Phase 1):
-  - `Resolve-AzLocalItsmSecret`, `Get-AzLocalItsmDedupeKey`,
-    `Get-AzLocalItsmTriggerDecision`, `Format-AzLocalIncidentBody`,
-    `Invoke-AzLocalItsmHttp`, `Invoke-AzLocalServiceNowAdapter`
-- New documentation: top-level `ITSM/` folder with `README.md` setup
-  walkthrough and `ITSM/ITSM-Config-Reference.md` (full schema
-  reference), plus `Automation-Pipeline-Examples/.itsm/` sample config
-  + Mustache-style ticket-body templates.
-- Phase 2 (`Sync-AzureLocalIncident` lifecycle close-out) and Phase 3
-  (Teams / Slack mirror adapters) are **deferred to a future release**;
-  the Phase 1 surface is feature-complete on its own.
-- Secrets: ITSM credentials are referenced from Azure Key Vault
-  (`kv://<vault>/<secret>`) or native CI secrets (`env://<NAME>`). No raw
-  secret is ever written to YAML or to disk.
-
-### Added (pipeline-examples convenience)
-- New public function `Copy-AzureLocalPipelineExample` copies the bundled
-  `Automation-Pipeline-Examples/` folder out of the module install
-  location into a user-chosen destination (default: current directory).
-  Supports `-Platform GitHub | AzureDevOps | All`, `-Flatten`, `-Force`,
-  `-PassThru`, `-WhatIf` and `-Confirm`. Saves users from hunting through
-  `$module.ModuleBase` to find the YAML samples.
+Summary: new optional ITSM ticketing surface that lets apply-updates and
+fleet-update-status pipelines open ServiceNow incidents when a cluster
+needs operator action. Disabled by default; opt-in via pipeline input
+raise_itsm_ticket=true plus a ./.itsm/azurelocal-itsm.yml config file.
+New public functions: Get-AzureLocalItsmConfig,
+Test-AzureLocalItsmConnection, New-AzureLocalIncident. Secrets are
+referenced from Azure Key Vault (kv://...) or CI secrets (env://...) -
+never written to YAML or disk. New documentation: top-level ITSM/
+folder with setup walkthrough and config reference. Also new:
+Copy-AzureLocalPipelineExample (later reshaped in v0.7.50). Phase 2/3
+(lifecycle close-out, Teams/Slack mirrors) deferred. Full notes in
+CHANGELOG.md.
 
 ## Version 0.7.3 - Module renamed to AzLocal.UpdateManagement + internal refactor
 
