@@ -788,12 +788,25 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 > Install-Module -Name AzLocal.UpdateManagement -Scope CurrentUser
 > Import-Module AzLocal.UpdateManagement
 >
-> # Copy everything to the current folder (creates .\Automation-Pipeline-Examples\)
-> Copy-AzureLocalPipelineExample
+> # IMPORTANT: cd into the root of YOUR consumer repo first - all paths below
+> # are relative to the current working directory.
+> Set-Location 'C:\path\to\your\repo'
 >
-> # Or only the GitHub Actions YAML straight into .github\workflows\ in your repo
+> # OPTIONAL - copy EVERYTHING (both platforms + shared README + .itsm/) into
+> # .\Automation-Pipeline-Examples\ in the current folder. Useful for browsing
+> # before you commit to a layout. Skip this if you already know which platform
+> # you're targeting and just want the YAMLs in their final location.
+> # Copy-AzureLocalPipelineExample
+>
+> # For a GitHub Actions repo: copy ONLY the GitHub YAML straight into
+> # .github\workflows\ - relative to the repo root you cd'd into above.
 > New-Item -ItemType Directory .\.github\workflows -Force | Out-Null
 > Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Flatten -Force
+>
+> # For an Azure DevOps repo: copy ONLY the ADO YAML into a pipelines folder
+> # of your choice (ADO has no fixed-path convention like .github\workflows\).
+> New-Item -ItemType Directory .\pipelines -Force | Out-Null
+> Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Flatten -Force
 > ```
 >
 > The function prints a short "next steps" summary pointing at the copied README and the platform-specific YAML folder. Supports `-Platform GitHub | AzureDevOps | All`, `-Flatten`, `-Force`, `-PassThru`, `-WhatIf`, `-Confirm`.
