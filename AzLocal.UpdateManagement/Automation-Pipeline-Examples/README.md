@@ -267,7 +267,7 @@ You can add the secrets via the **GitHub UI** (**Settings -> Secrets and variabl
 >
 > `gh` reuses the credentials of the signed-in account, so it can write secrets to any repo that account can write to. No personal access token needed for interactive use.
 
-**Script the secrets (recommended)** - reads back the values you set up in earlier steps and writes them to the repo (and the `Production` environment) in one block. Substitute `<owner>/<repo>` for your target repo:
+**Script the secrets and environments (recommended)** - end-to-end: creates the GitHub environments your federated credentials reference, writes the three repo-level secrets, and (optionally) pins `AZURE_CLIENT_ID` at each environment. Substitute `<owner>/<repo>` for your target repo:
 
 ```powershell
 # Inputs - reuse the variables from the federation step where you can
@@ -275,24 +275,52 @@ $repo     = '<owner>/<repo>'                                 # e.g. contoso/azlo
 $clientId = '<appId-from-step-1>'                            # GUID printed by az ad app create (from step 1)
 $subId    = (az account show --query id       -o tsv)        # current az subscription
 $tenantId = (az account show --query tenantId -o tsv)        # current az tenant
+$envs     = 'DevTest','PreProduction','Production'           # match the names in your federated credentials
 
-# 1. Repository-level secrets (visible to every workflow run in the repo)
+# 0. Preflight - confirm gh is signed in as the right account and can write to $repo.
+#    Skipping this is the most common cause of opaque HTTP 404s in step 1.
+gh auth status                                              # check signed-in account + token scopes
+gh repo view $repo                                          # must print repo details, confirm as you expect
+#    If gh repo view returns 404 or shows a "Repository setup required" prompt:
+#      - the repo path is wrong (typo in $repo), OR
+#      - your gh account doesn't have admin on it (org owner / repo admin only), OR
+#      - the org enforces SAML SSO and your OAuth grant is not yet authorised.
+#    Fix before proceeding:
+#      gh auth refresh -h github.com -s admin:org,repo,workflow
+#    Then visit https://github.com/$repo in a browser to accept any pending
+#    invitation / SSO consent. Re-run 'gh repo view $repo' until it succeeds.
+
+# 1. Create the GitHub environments (idempotent - PUT creates if missing, no-op if it exists).
+#    The federated credentials in step 3 only succeed at workflow run time if these exist.
+#    No 'gh env create' command exists - use the REST API via gh api.
+foreach ($envName in $envs) {
+    Write-Host "Ensuring environment '$envName' exists in $repo..."
+    gh api `
+        --method PUT `
+        -H "Accept: application/vnd.github+json" `
+        "/repos/$repo/environments/$envName" | Out-Null
+}
+
+# 2. Repository-level secrets (visible to every workflow run in the repo)
 gh secret set AZURE_CLIENT_ID       --body $clientId  --repo $repo
 gh secret set AZURE_TENANT_ID       --body $tenantId  --repo $repo
 gh secret set AZURE_SUBSCRIPTION_ID --body $subId     --repo $repo
 
-# 2. Optional - also pin AZURE_CLIENT_ID at each environment, so a future repo-level
+# 3. Optional - also pin AZURE_CLIENT_ID at each environment, so a future repo-level
 #    rotation does not silently apply to Production without re-approval.
-foreach ($envName in 'DevTest','PreProduction','Production') {
+foreach ($envName in $envs) {
     gh secret set AZURE_CLIENT_ID --body $clientId --env $envName --repo $repo
 }
 
 # Verify (lists names only, never the values - secret values are write-only in GitHub)
 gh secret list --repo $repo
 gh secret list --env  Production --repo $repo
+gh api "/repos/$repo/environments" --jq '.environments[].name'
 ```
 
 > **Note**: `gh secret list` shows only the secret **names** and last-updated timestamps - GitHub never returns the secret values back, even to admins. If you need to confirm what's there, the names + dates are the only signal; to verify a value you must overwrite with the same `gh secret set` command.
+
+> **Protection rules are not set by this block.** `gh api PUT /environments/<name>` with no body creates a plain environment with no required reviewers, no deployment-branch policy, and no wait timer. For Production you almost certainly want at least required reviewers - the simplest path is to set those in the UI (**Settings -> Environments -> Production -> Configure**), or extend the `gh api` call with a JSON body per the [REST API reference](https://docs.github.com/en/rest/deployments/environments#create-or-update-an-environment). Required-reviewer values must be user/team **IDs**, not names, which is why the UI is often easier here.
 
 </details>
 
