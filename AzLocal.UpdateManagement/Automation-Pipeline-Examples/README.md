@@ -216,6 +216,7 @@ Subject-claim patterns for other trigger types:
 >
 >     $body = $body -replace '"', '\"'
 >
+>     Write-Host "Creating federated credential for $envName environment..."
 >     az ad app federated-credential create `
 >         --id <appId-from-step-1> `
 >         --parameters $body
