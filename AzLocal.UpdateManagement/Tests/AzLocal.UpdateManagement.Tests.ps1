@@ -38,8 +38,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo.Version | Should -Be '0.7.50'
         }
 
-        It 'Should export exactly 24 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 24
+        It 'Should export exactly 25 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 25
         }
 
         It 'Should export the expected functions' {
@@ -74,7 +74,9 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 'Test-AzureLocalItsmConnection',
                 'New-AzureLocalIncident',
                 # Pipeline-Examples Convenience (v0.7.4)
-                'Copy-AzureLocalPipelineExample'
+                'Copy-AzureLocalPipelineExample',
+                # ITSM Sample Convenience (v0.7.50)
+                'Copy-AzureLocalItsmSample'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -3875,5 +3877,123 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
 }
 
 #endregion Copy-AzureLocalPipelineExample (v0.7.4, updated in v0.7.50)
+
+#region Copy-AzureLocalItsmSample (v0.7.50)
+
+Describe 'Function: Copy-AzureLocalItsmSample' {
+    BeforeAll {
+        $script:itsmDestRoot = Join-Path $env:TEMP "azlocal-itsm-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:itsmDestRoot -ItemType Directory -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item $script:itsmDestRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Is exported by the module' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalItsmSample' -Module 'AzLocal.UpdateManagement' -ErrorAction Stop
+        $cmd | Should -Not -BeNullOrEmpty
+        $cmd.CommandType | Should -Be 'Function'
+    }
+
+    It 'Default -Destination ends in .itsm' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalItsmSample' -ErrorAction Stop
+        # Look at the default value embedded in the function source
+        $src = $cmd.ScriptBlock.ToString()
+        $src | Should -Match "Join-Path\s+-Path\s+\`$PWD\.Path\s+-ChildPath\s+'\.itsm'"
+    }
+
+    It '-WhatIf does not copy anything' {
+        $dest = Join-Path $script:itsmDestRoot 'whatif'
+        # Note: dest does not yet exist; -WhatIf should not create file contents either
+        Copy-AzureLocalItsmSample -Destination $dest -WhatIf 6>$null
+        # No YAML should have been written even if the directory was created
+        Test-Path (Join-Path $dest 'azurelocal-itsm.yml') | Should -BeFalse
+    }
+
+    It 'Default copy: writes azurelocal-itsm.yml and templates/incident-body.md' {
+        $dest = Join-Path $script:itsmDestRoot 'default'
+        $r = Copy-AzureLocalItsmSample -Destination $dest -PassThru 6>$null
+
+        $r | Should -BeOfType [System.IO.DirectoryInfo]
+        $r.FullName | Should -Be $dest
+        Test-Path (Join-Path $dest 'azurelocal-itsm.yml') | Should -BeTrue
+        Test-Path (Join-Path $dest 'templates\incident-body.md') | Should -BeTrue
+    }
+
+    It 'Refuses to overwrite an existing file by default and points at -Update' {
+        $dest = Join-Path $script:itsmDestRoot 'no-overwrite'
+        Copy-AzureLocalItsmSample -Destination $dest 6>$null | Out-Null
+
+        { Copy-AzureLocalItsmSample -Destination $dest 6>$null } |
+            Should -Throw -ExpectedMessage '*refusing to overwrite*'
+        { Copy-AzureLocalItsmSample -Destination $dest 6>$null } |
+            Should -Throw -ExpectedMessage '*-Update*'
+    }
+
+    It '-Update -Confirm:$false overwrites existing files without prompting (automation path)' {
+        $dest = Join-Path $script:itsmDestRoot 'update-confirm-false'
+        Copy-AzureLocalItsmSample -Destination $dest 6>$null | Out-Null
+
+        $target = Join-Path $dest 'azurelocal-itsm.yml'
+        $sentinel = '# SENTINEL - if this survives, -Update did not overwrite'
+        Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
+        (Get-Content -LiteralPath $target -Raw) | Should -Match 'SENTINEL'
+
+        { Copy-AzureLocalItsmSample -Destination $dest -Update -Confirm:$false 6>$null } |
+            Should -Not -Throw
+
+        (Get-Content -LiteralPath $target -Raw) | Should -Not -Match 'SENTINEL'
+    }
+
+    It '-Update -WhatIf does not modify any existing files' {
+        $dest = Join-Path $script:itsmDestRoot 'update-whatif'
+        Copy-AzureLocalItsmSample -Destination $dest 6>$null | Out-Null
+
+        $target = Join-Path $dest 'azurelocal-itsm.yml'
+        $sentinel = '# WHATIF SENTINEL - -WhatIf must preserve this'
+        Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
+
+        Copy-AzureLocalItsmSample -Destination $dest -Update -WhatIf 6>$null
+
+        (Get-Content -LiteralPath $target -Raw) | Should -Match 'WHATIF SENTINEL'
+    }
+
+    It '-Update is exposed as a [switch] parameter' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalItsmSample' -ErrorAction Stop
+        $cmd.Parameters.ContainsKey('Update') | Should -BeTrue
+        $cmd.Parameters['Update'].ParameterType | Should -Be ([switch])
+    }
+
+    It 'Has the No-to-All only-when-destExists regression guard (matches Copy-AzureLocalPipelineExample fix)' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalItsmSample' -ErrorAction Stop
+        $src = $cmd.ScriptBlock.ToString()
+        $src | Should -Match 'if\s*\(\s*\$noToAll\s+-and\s+\$destExists\s*\)'
+    }
+
+    It '-PassThru returns a DirectoryInfo; without it nothing is emitted to the pipeline' {
+        $dest = Join-Path $script:itsmDestRoot 'passthru'
+        $withPT = Copy-AzureLocalItsmSample -Destination $dest -PassThru 6>$null
+        $withPT | Should -BeOfType [System.IO.DirectoryInfo]
+        $withPT.FullName | Should -Be $dest
+
+        $dest2 = Join-Path $script:itsmDestRoot 'nopassthru'
+        $noPT = Copy-AzureLocalItsmSample -Destination $dest2 6>$null
+        $noPT | Should -BeNullOrEmpty
+    }
+
+    It 'Creates -Destination (including templates subfolder) when it does not already exist' {
+        $dest = Join-Path $script:itsmDestRoot 'autocreate'
+        Test-Path $dest | Should -BeFalse
+
+        Copy-AzureLocalItsmSample -Destination $dest 6>$null | Out-Null
+
+        Test-Path $dest | Should -BeTrue
+        Test-Path (Join-Path $dest 'templates') | Should -BeTrue
+        Test-Path (Join-Path $dest 'templates\incident-body.md') | Should -BeTrue
+    }
+}
+
+#endregion Copy-AzureLocalItsmSample (v0.7.50)
 
 

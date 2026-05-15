@@ -79,6 +79,7 @@
 
         # Public exported functions
         'Public/Connect-AzureLocalServicePrincipal.ps1',
+        'Public/Copy-AzureLocalItsmSample.ps1',
         'Public/Copy-AzureLocalPipelineExample.ps1',
         'Public/Export-AzureLocalFleetState.ps1',
         'Public/Get-AzureLocalAvailableUpdates.ps1',
@@ -135,7 +136,9 @@
         'Test-AzureLocalItsmConnection',
         'New-AzureLocalIncident',
         # Pipeline-Examples Convenience (v0.7.4)
-        'Copy-AzureLocalPipelineExample'
+        'Copy-AzureLocalPipelineExample',
+        # ITSM Sample Convenience (v0.7.50)
+        'Copy-AzureLocalItsmSample'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -164,7 +167,7 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.50 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update
+## Version 0.7.50 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update + new Copy-AzureLocalItsmSample
 
 ### Added
 - Pipeline examples (5 GitHub Actions + 5 Azure DevOps YAMLs) now
@@ -179,6 +182,15 @@
   refresh of an existing destination. Per-file ShouldContinue prompts
   with -Confirm:$false bypass for unattended use; -WhatIf supported. No
   -Force switch by design - git diff after the copy is the rollback.
+- New public function Copy-AzureLocalItsmSample copies the bundled ITSM
+  connector sample (azurelocal-itsm.yml + templates/incident-body.md)
+  out of the module install location into a user-chosen destination
+  (default: .\.itsm, matching the workflow defaults that look for
+  ./.itsm/azurelocal-itsm.yml at job runtime). The ITSM YAML is CI-
+  platform-agnostic; both GitHub Actions and Azure DevOps consume it
+  identically, only the secret source differs. Same overwrite semantics
+  as Copy-AzureLocalPipelineExample: refuses by default, -Update with
+  per-file ShouldContinue + -Confirm:$false bypass, -WhatIf preview.
 
 ### Changed
 - Copy-AzureLocalPipelineExample: removed v0.7.4 -Flatten and -Force
@@ -264,28 +276,19 @@
 
 ## Version 0.7.3 - Module renamed to AzLocal.UpdateManagement + internal refactor
 
-### Renamed
-- The module has been renamed from `AzStackHci.ManageUpdates` to `AzLocal.UpdateManagement`
-  to align with the Azure Local product name (Microsoft retired the `Azure Stack HCI`
-  brand in late 2024). The module GUID is preserved across the rename so anyone who has
-  the previous version installed will see this as the same module identity.
-  - **Migration**: `Uninstall-Module AzStackHci.ManageUpdates -AllVersions; Install-Module AzLocal.UpdateManagement`
-  - All previously-published `AzStackHci.ManageUpdates` versions have been unlisted from PSGallery.
-  - A transitional `AzStackHci.ManageUpdates` v0.7.3 stub is published once for users who
-    have automation that runs `Install-Module AzStackHci.ManageUpdates`; importing it
-    emits a warning pointing to the new name and exports no functions.
-  - Default log folder path moved from `C:\ProgramData\AzStackHci.ManageUpdates\` to
-    `C:\ProgramData\AzLocal.UpdateManagement\`. The old folder is not migrated; remove
-    it manually after upgrading if desired.
-  - Repository folder renamed `AzStackHci.ManageUpdates/` to `AzLocal.UpdateManagement/`;
-    pipeline YAML examples and `Import-Module` paths updated accordingly.
-
-### Refactored
-- The monolithic 11,679-line `.psm1` is split into Public/Private dot-sourced files,
-  matching the layout of `AzLocal.DeploymentAutomation` in this repo. 20 exported
-  functions live under `Public/`, 40 internal helpers under `Private/`. The manifest
-  enumerates every file in `NestedModules` (Private first, then Public, alphabetical
-  within each). No functional change; the full Pester suite (299 tests) remains green.
+Summary: module renamed from `AzStackHci.ManageUpdates` to
+`AzLocal.UpdateManagement` to align with the Azure Local product name
+(the `Azure Stack HCI` brand was retired in late 2024). Module GUID is
+preserved across the rename. Migration:
+`Uninstall-Module AzStackHci.ManageUpdates -AllVersions; Install-Module AzLocal.UpdateManagement`.
+A transitional `AzStackHci.ManageUpdates` v0.7.3 stub is published once
+for users with automation that runs `Install-Module
+AzStackHci.ManageUpdates`; importing it emits a warning pointing at the
+new name. Default log folder moved to
+`C:\ProgramData\AzLocal.UpdateManagement\` (old folder not migrated;
+remove manually). Also refactored: monolithic 11,679-line `.psm1` split
+into Public/Private dot-sourced files (NestedModules), matching
+`AzLocal.DeploymentAutomation`. Full notes in CHANGELOG.md.
 
 ## Version 0.7.2 - Fleet read paths fixed under -ThrottleLimit > 1
 

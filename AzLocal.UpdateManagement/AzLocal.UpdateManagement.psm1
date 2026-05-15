@@ -249,5 +249,7 @@ Export-ModuleMember -Function @(
     'Test-AzureLocalItsmConnection',
     'New-AzureLocalIncident',
     # Pipeline-Examples Convenience (v0.7.4)
-    'Copy-AzureLocalPipelineExample'
+    'Copy-AzureLocalPipelineExample',
+    # ITSM Sample Convenience (v0.7.50)
+    'Copy-AzureLocalItsmSample'
 )
