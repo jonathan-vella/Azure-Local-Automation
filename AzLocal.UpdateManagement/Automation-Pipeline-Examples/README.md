@@ -186,44 +186,44 @@ Subject-claim patterns for other trigger types:
 | Environment | `repo:<owner>/<repo>:environment:<env>` |
 | Tag | `repo:<owner>/<repo>:ref:refs/tags/<tag>` |
 
-> **PowerShell 5.1 / Windows PowerShell users**: passing the `--parameters` JSON as a single-quoted inline string (as shown above) fails on Windows PowerShell with `Failed to parse string as JSON: ... Expecting property name enclosed in double quotes`. Windows PowerShell strips the inner double quotes before `az` ever sees them. Build the JSON with PowerShell instead and escape the inner double quotes so `az` receives valid JSON:
+> **PowerShell on Windows**: passing the `--parameters` JSON as an inline string (as shown above) fails on Windows PowerShell - and on PowerShell 7+ on Windows - with `Failed to parse string as JSON: ... Expecting property name enclosed in double quotes`. The `az` CLI on Windows is a `.cmd` shim, and cmd.exe strips the inner double quotes from the JSON before `az` ever sees them. Microsoft's [quoting guidance](https://learn.microsoft.com/cli/azure/use-azure-cli-successfully-quoting#json-strings) recommends bypassing the shell entirely by writing the JSON to a file and passing it with the `@<filepath>` prefix - this is the universally safe pattern and works on Linux/macOS too:
 >
 > ```powershell
-> # Branch-scoped credential
-> $body = @{
+> # Reusable temp file for all federated-credential payloads in this section
+> $paramsFile = Join-Path $env:TEMP 'fed-cred.json'
+>
+> # Branch-scoped credential (for default-branch / scheduled runs)
+> @{
 >     name      = 'GitHubActions-main'
 >     issuer    = 'https://token.actions.githubusercontent.com'
 >     subject   = 'repo:<owner>/<repo>:ref:refs/heads/main'
 >     audiences = @('api://AzureADTokenExchange')
-> } | ConvertTo-Json -Compress
->
-> # Escape inner double-quotes so PowerShell hands az a real JSON string
-> $body = $body -replace '"', '\"'
+> } | ConvertTo-Json | Out-File -FilePath $paramsFile -Encoding utf8 -Force
 >
 > az ad app federated-credential create `
 >     --id <appId-from-step-1> `
->     --parameters $body
+>     --parameters "@$paramsFile"
 >
 > # Environment-scoped credentials - one per GitHub environment (names are case-sensitive
 > # and must match the environments that will exist in your repo at workflow run time)
 > foreach ($envName in 'DevTest','PreProduction','Production') {
->     $body = @{
+>     @{
 >         name      = "GitHubActions-$envName"
 >         issuer    = 'https://token.actions.githubusercontent.com'
 >         subject   = "repo:<owner>/<repo>:environment:$envName"
 >         audiences = @('api://AzureADTokenExchange')
->     } | ConvertTo-Json -Compress
->
->     $body = $body -replace '"', '\"'
+>     } | ConvertTo-Json | Out-File -FilePath $paramsFile -Encoding utf8 -Force
 >
 >     Write-Host "Creating federated credential for $envName environment..."
 >     az ad app federated-credential create `
 >         --id <appId-from-step-1> `
->         --parameters $body
+>         --parameters "@$paramsFile"
 > }
+>
+> Remove-Item $paramsFile
 > ```
 >
-> Add or remove names from the loop to match the environments you actually created. Repeat the same JSON-build-and-escape pattern for any other subject claims you need (pull_request, tag, additional branches). PowerShell 7+ on Linux/macOS does not need this workaround.
+> The `@` in `"@$paramsFile"` is the **az CLI's** "read from file" prefix (not PowerShell splatting). The surrounding double quotes ensure PowerShell expands `$paramsFile` and passes `az` a single literal string like `@C:\Users\...\Temp\fed-cred.json`. Add or remove names from the `foreach` to match the environments you actually created. Repeat the same build-file-then-pass pattern for any other subject claims you need (`pull_request`, tag, additional branches).
 
 **Step 4 - add the (three) GitHub secrets**
 
@@ -836,7 +836,27 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    gh run watch --repo $repo
    ```
 
-   **What success looks like** (excerpt from the run log):
+   **What success looks like.** Two layers of output, both should be green.
+
+   At the `gh` CLI level, `gh run watch` shows the run summary as the steps complete (`gh` actually renders these as Unicode check marks; reproduced here in ASCII):
+
+   ```text
+   ? Select a workflow run * Auth Smoke Test, Auth Smoke Test [main] 12s ago
+   [OK] main Auth Smoke Test - <run-id>
+   Triggered via workflow_dispatch less than a minute ago
+
+   JOBS
+   [OK] Validate OIDC + RBAC in 32s (ID <job-id>)
+     [OK] Set up job
+     [OK] Azure login (OIDC)
+     [OK] Confirm identity, RBAC, and cluster reachability
+     [OK] Post Azure login (OIDC)
+     [OK] Complete job
+
+   [OK] Run Auth Smoke Test (<run-id>) completed with 'success'
+   ```
+
+   Inside the `Confirm identity, RBAC, and cluster reachability` step, the run log shows:
 
    ```text
    Login successful.
@@ -853,6 +873,8 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    -------------  ----------------------  ----------------
    <cluster-1>    <rg-1>                  <sub-guid>
    ```
+
+   You may see two informational annotations in the run that are **not** failures and need no action from you: a Node.js 20 deprecation warning for `azure/login@v2` (the action's maintainers will publish an updated version before the GitHub Actions cutoff) and a `windows-latest` -> `windows-2025-vs2026` migration notice (does not apply - the workflows use `ubuntu-latest`).
 
    **If it fails**, the most likely causes (and what to check) are:
 
