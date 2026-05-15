@@ -64,7 +64,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.50'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.60'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -81,11 +81,11 @@ jobs:
     
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
     
     # OIDC Authentication - recommended
     - name: Azure CLI Login (OIDC)
-      uses: azure/login@v2
+      uses: azure/login@v3
       with:
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -368,7 +368,7 @@ jobs:
         }
     
     - name: Upload Fleet Status Reports
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: fleet-status-reports
         path: ./reports/
@@ -376,7 +376,7 @@ jobs:
     
     # Publish JUnit test results for visualization in GitHub Actions
     - name: Publish Test Results
-      uses: dorny/test-reporter@v1
+      uses: dorny/test-reporter@v3
       if: always()
       with:
         name: Fleet Update Status Report

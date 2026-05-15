@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.50'
+    ModuleVersion = '0.7.60'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -167,42 +167,53 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.50 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update + new Copy-AzureLocalItsmSample
-
-### Added
-- Pipeline examples (5 GitHub Actions + 5 Azure DevOps YAMLs) now
-  install AzLocal.UpdateManagement from PSGallery at runtime instead of
-  importing a vendored copy. Default: install latest. Optional pin via
-  REQUIRED_MODULE_VERSION (workflow_dispatch input or repo variable on
-  GH; queue-time pipeline parameter on ADO). Each install step compares
-  installed / generated / latest and warns when the YAML is stale or a
-  newer release is on PSGallery. See Automation-Pipeline-Examples README
-  section 5.3.
-- Copy-AzureLocalPipelineExample: new -Update switch for controlled
-  refresh of an existing destination. Per-file ShouldContinue prompts
-  with -Confirm:$false bypass for unattended use; -WhatIf supported. No
-  -Force switch by design - git diff after the copy is the rollback.
-- New public function Copy-AzureLocalItsmSample copies the bundled ITSM
-  connector sample (azurelocal-itsm.yml + templates/incident-body.md)
-  out of the module install location into a user-chosen destination
-  (default: .\.itsm, matching the workflow defaults that look for
-  ./.itsm/azurelocal-itsm.yml at job runtime). The ITSM YAML is CI-
-  platform-agnostic; both GitHub Actions and Azure DevOps consume it
-  identically, only the secret source differs. Same overwrite semantics
-  as Copy-AzureLocalPipelineExample: refuses by default, -Update with
-  per-file ShouldContinue + -Confirm:$false bypass, -WhatIf preview.
+## Version 0.7.60 - GitHub Actions samples refreshed for Node 24 + checks:write fix on apply-updates
 
 ### Changed
-- Copy-AzureLocalPipelineExample: removed v0.7.4 -Flatten and -Force
-  switches (neither survived first real-world use). -Platform GitHub
-  copies only *.yml from github-actions/ flat into -Destination (no
-  wrapper folder, no README, no .itsm/); -Platform AzureDevOps mirrors
-  this against azure-devops/; -Platform All (default) unchanged. Without
-  -Update the function refuses to overwrite any pre-existing destination
-  file, listing every conflict in the error message. Pre-existing
-  unrelated files (e.g. your repo's own build.yml) are left untouched.
-  Not flagged as breaking: the v0.7.4 surface had not been adopted at
-  removal time.
+
+- All five GitHub Actions sample workflows under
+  Automation-Pipeline-Examples/github-actions/ refreshed to use the
+  current Node 24-compatible major versions of the third-party actions
+  they pin. This removes the "Node.js 20 actions are deprecated" warning
+  banner that started appearing on workflow_dispatch runs after the GH
+  Actions runner began surfacing the upcoming Sept 2026 Node 20 hard-
+  removal. No input/output surface changes for any of the bumped
+  actions:
+  - actions/checkout         @v4 -> @v5  (Node 24 default since v5.0.0)
+  - actions/upload-artifact  @v4 -> @v6  (v6 = Node 24 default; v5 still defaulted to Node 20)
+  - azure/login              @v2 -> @v3  (v3.0.0 = Node 24)
+  - dorny/test-reporter      @v1 -> @v3  (v3 = Node 24)
+  Already-deployed pipelines will keep working on @v4/@v2/@v1 until the
+  Sept 16 2026 hard-removal date; running `Copy-AzureLocalPipelineExample
+  -Update` after upgrading to v0.7.60 pulls the refreshed YAMLs.
+
+### Fixed
+
+- apply-updates.yml (GitHub Actions sample): both jobs now grant
+  `checks: write` in their `permissions:` block. The `dorny/test-reporter`
+  step needs that permission to create the Check Run that publishes
+  JUnit results; without it the step failed with
+  `HttpError: Resource not accessible by integration` on every
+  workflow_dispatch run (workflow_dispatch contexts have no PR check
+  context to write back to by default). Sibling workflows
+  (assess-update-readiness.yml, fleet-update-status.yml) already had
+  the permission; only apply-updates.yml was missing it. The run itself
+  was unaffected - this only restored the Check Run summary surface.
+
+## Version 0.7.50 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update + new Copy-AzureLocalItsmSample
+
+Summary: pipeline examples (5 GitHub Actions + 5 Azure DevOps YAMLs)
+now install the module from PSGallery at runtime instead of importing
+a vendored copy (default latest, optional pin via REQUIRED_MODULE_VERSION).
+Copy-AzureLocalPipelineExample reshaped: -Flatten and -Force removed
+(neither survived first real-world use), replaced by -Update for
+controlled refresh with per-file ShouldContinue prompts and
+-Confirm:$false bypass for unattended use. New public function
+Copy-AzureLocalItsmSample copies the bundled ITSM connector sample
+(azurelocal-itsm.yml + templates/incident-body.md) into a user-chosen
+destination (default .\.itsm, matching the workflow defaults). Not
+flagged as breaking: the v0.7.4 -Flatten/-Force surface had not been
+adopted at removal time. Full notes in CHANGELOG.md.
 
 ## Version 0.7.41 - Hotfix: parallel fleet reads broken by v0.7.3 NestedModules refactor
 

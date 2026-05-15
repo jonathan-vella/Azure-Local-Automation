@@ -963,10 +963,10 @@ If your change-control process requires you to pin the module version (so a rele
 
 ```bash
 # Set an estate-wide pin (applies to every scheduled / event-triggered run):
-gh variable set REQUIRED_MODULE_VERSION --body '0.7.50' --repo <owner>/<repo>
+gh variable set REQUIRED_MODULE_VERSION --body '0.7.60' --repo <owner>/<repo>
 
 # Override for a single manual run, leaving the estate-wide pin untouched:
-gh workflow run fleet-update-status.yml -f module_version=0.7.50
+gh workflow run fleet-update-status.yml -f module_version=0.7.60
 
 # Clear the estate-wide pin to return to latest:
 gh variable delete REQUIRED_MODULE_VERSION --repo <owner>/<repo>
