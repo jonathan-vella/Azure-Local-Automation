@@ -153,6 +153,10 @@ If you are new to this module, work through these in order from a regular PowerS
 
 - **Module version pin bumped to 0.7.60 in all 10 sample workflow YAMLs.** `GENERATED_AGAINST_MODULE_VERSION` is the value the in-pipeline install step compares the actually-installed module version against, then warns if your local copy of the YAML is stale (see [Automation-Pipeline-Examples/README.md section 5.3](Automation-Pipeline-Examples/README.md#53-version-pinning--staleness-warnings)). All five GitHub Actions YAMLs and all five Azure DevOps YAMLs have been bumped in lock-step.
 
+**What a successful `apply-updates.yml` run looks like** (dry-run against the Prod ring on a 9-cluster sandbox - 4 ready, 5 skipped, zero failures):
+
+![apply-updates.yml run Summary tab: target UpdateRing Prod, dry-run, Readiness section showing Total Clusters 9 / Ready for Update 4, Results section showing Updates Started 0 / Skipped 5 / Failed 0 / Health Blocked 0 / Schedule Blocked 0 / Sideloaded Blocked 0](docs/images/apply-updates-summary.png)
+
 > Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
 ## Files
