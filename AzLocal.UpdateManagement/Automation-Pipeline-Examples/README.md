@@ -237,7 +237,10 @@ No `AZURE_CLIENT_SECRET` is needed.
 
 For public repositories, prefer [environment secrets with required reviewers](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#environment-secrets) over repository-level secrets - they restrict who can run the workflow against production identities.
 
-You can add the secrets via the GitHub UI (**Settings -> Secrets and variables -> Actions -> New repository secret**, then **Settings -> Environments -> `<env>` -> Add secret** for environment-scoped values), or scripted via the **GitHub CLI** (`gh`).
+You can add the secrets via the **GitHub UI** (**Settings -> Secrets and variables -> Actions -> New repository secret**, then **Settings -> Environments -> `<env>` -> Add secret** for environment-scoped values), or scripted via the **GitHub CLI** (`gh`) - expand the section below.
+
+<details>
+<summary><b>Show GitHub CLI (<code>gh</code>) scripted setup</b></summary>
 
 > **Install the GitHub CLI (`gh`)** - one-time setup. Pick whichever applies on your workstation; all options give you the same `gh` binary:
 >
@@ -291,11 +294,15 @@ gh secret list --env  Production --repo $repo
 
 > **Note**: `gh secret list` shows only the secret **names** and last-updated timestamps - GitHub never returns the secret values back, even to admins. If you need to confirm what's there, the names + dates are the only signal; to verify a value you must overwrite with the same `gh secret set` command.
 
+</details>
+
 Microsoft Learn reference: [Use GitHub Actions with OpenID Connect](https://learn.microsoft.com/azure/developer/github/connect-from-azure-openid-connect).
 
 ### 3.2 Azure DevOps with Workload Identity Federation (recommended)
 
-Workload Identity Federation is the Azure DevOps equivalent of OIDC. ADO creates the App Registration and federated credential for you.
+Workload Identity Federation is the Azure DevOps equivalent of OIDC. ADO creates the App Registration and federated credential for you, and unlike GitHub Actions there are **no `AZURE_*` secrets to manage** - the service connection itself is the auth wiring (`clientId`, `tenantId`, `subscriptionId`, and the federated identity are all stored on the connection). Pipeline tasks like `AzureCLI@2` just reference it by name (`azureSubscription: 'AzureLocal-ServiceConnection'`).
+
+**UI flow (one-off setup)**:
 
 1. Open your Azure DevOps project.
 2. **Project Settings -> Service connections -> New service connection**.
@@ -305,7 +312,80 @@ Workload Identity Federation is the Azure DevOps equivalent of OIDC. ADO creates
 6. Name the connection **`AzureLocal-ServiceConnection`** so the example YAMLs work without edits. If you pick a different name, update the `azureSubscription:` value in each ADO YAML.
 7. **Save**.
 
-The first run will create the App Registration in Entra ID. Grant the **`Azure Stack HCI Update Operator`** custom role from [section 4.1](#41-custom-role-azure-stack-hci-update-operator-recommended) on the same scope you selected in step 5 (or, for quick-start labs only, the built-in `Azure Stack HCI Administrator` role).
+**Scripted alternative (optional)** - use the `azure-devops` extension for the Azure CLI. There is no Azure DevOps equivalent of the GitHub CLI; ADO scripting is done through `az devops` and `az pipelines`. Expand the section below.
+
+<details>
+<summary><b>Show Azure DevOps CLI (<code>az devops</code>) scripted setup</b></summary>
+
+> **Install the `azure-devops` `az` extension** - one-time:
+>
+> ```powershell
+> # Adds the 'az devops' / 'az pipelines' / 'az repos' / 'az boards' command groups
+> az extension add --name azure-devops
+>
+> # Cache org + project defaults so later commands don't repeat them
+> az devops configure --defaults `
+>     organization=https://dev.azure.com/<your-org> `
+>     project='<your-project>'
+> ```
+>
+> No separate auth step is needed - the extension reuses your existing `az login` token.
+
+```powershell
+# Inputs - reuse variables from the federation steps where you can
+$subId    = (az account show --query id           -o tsv)
+$tenantId = (az account show --query tenantId     -o tsv)
+$subName  = (az account show --query name         -o tsv)
+
+# 1. Create the service connection with automatic workload identity federation.
+#    ADO creates the App Registration + federated credential for you.
+az devops service-endpoint azurerm create `
+    --name                        'AzureLocal-ServiceConnection' `
+    --azure-rm-service-principal-id '' `                                # auto-create the SP
+    --azure-rm-subscription-id     $subId `
+    --azure-rm-subscription-name   $subName `
+    --azure-rm-tenant-id           $tenantId `
+    --service-principal-tenantid   $tenantId `
+    --workload-identity-federation-issuer ''                            # auto
+
+# 2. Verify the connection was created and is workload-identity-federated.
+az devops service-endpoint list `
+    --query "[?name=='AzureLocal-ServiceConnection'].{name:name, authorizationScheme:authorization.scheme, isReady:isReady}" `
+    -o table
+
+# 3. Grab the auto-created App Registration's appId so you can grant it the role.
+#    The App Registration display name will match the connection name.
+$adoSpAppId = az ad sp list `
+    --display-name 'AzureLocal-ServiceConnection' `
+    --query '[0].appId' -o tsv
+```
+
+Then grant the **`Azure Stack HCI Update Operator`** custom role from [section 4.1](#41-custom-role-azure-stack-hci-update-operator-recommended) on the same scope you selected in step 5 (or, for quick-start labs only, the built-in `Azure Stack HCI Administrator` role). Re-use the security-group pattern from 4.1 if you prefer:
+
+```powershell
+# Direct assignment to the auto-created SP
+az role assignment create `
+    --assignee $adoSpAppId `
+    --role    "Azure Stack HCI Update Operator" `
+    --scope   "/subscriptions/$subId"
+
+# OR (recommended): add it to the operators security group so the group's role is inherited
+$spObjectId = az ad sp show --id $adoSpAppId --query id -o tsv
+az ad group member add --group <operators-group-objectId> --member-id $spObjectId
+```
+
+> **ADO variable groups (if you use them)**: the only `AZURE_*` value you might still want to pin as a pipeline variable is the **subscription id** for read-only display in run logs - there's no `AZURE_CLIENT_SECRET` to protect. If you do want one, the equivalent of `gh secret set` is:
+>
+> ```powershell
+> az pipelines variable-group create `
+>     --name        'AzureLocal-PipelineVars' `
+>     --variables   AZURE_SUBSCRIPTION_ID=$subId `
+>     --authorize   true
+> ```
+>
+> The service connection still does the heavy lifting; variable groups are optional metadata.
+
+</details>
 
 ### 3.3 Self-hosted runners with Managed Identity
 
