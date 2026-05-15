@@ -534,11 +534,32 @@ az ad group member add --group $groupId --member-id $spObjectId
 
 > **Note**: only **security groups** can have service principals as members - Microsoft 365 groups cannot. Avoid setting `isAssignableToRole = true` on the group unless you actually need it for Entra ID directory-role assignment; it is a stricter group type with extra constraints on who can manage membership and is not required for assigning Azure RBAC roles.
 
-You can verify your effective access on the target subscription with:
+**Verify the grant**
+
+Two independent probes - run them both. The first one works even if your interactive sign-in lacks `Microsoft.Authorization/roleAssignments/read` (common when your RBAC Admin / Owner role is held just-in-time via PIM and the activation window has expired - see note below):
 
 ```powershell
-az role assignment list --assignee <upn-or-objectId> --scope "/subscriptions/<your-subscription-id>" -o table
+# Resolve the SP's OBJECT id from its APP id (clientId). They are different GUIDs.
+# Use the appId you noted from "az ad app create" in section 3.1, step 1.
+$spObjectId = az ad sp show --id <appId> --query id -o tsv
+
+# 1. Is the SP a member of the operators group?
+#    Returns { "value": true } if membership is in place.
+az ad group member check `
+    --group     $groupId `
+    --member-id $spObjectId
+
+# 2. Does the group hold the custom role at the subscription scope?
+#    Lists every role assignment scoped to the subscription where the group is the principal.
+az role assignment list `
+    --scope "/subscriptions/$subId" `
+    --query "[?principalId=='$groupId'].{Role:roleDefinitionName, PrincipalType:principalType, Scope:scope}" `
+    -o table
 ```
+
+If (1) returns `true` and (2) shows one row with `Azure Stack HCI Update Operator` / `Group` / your subscription scope, the chain is wired correctly and the pipeline SP has the role via the group.
+
+> **PIM gotcha - empty list output**: `az role assignment list` requires `Microsoft.Authorization/roleAssignments/read` on the scope. If you originally received `Owner` / `User Access Administrator` / `Role Based Access Control Administrator` via PIM and the activation window has lapsed, the `list` calls **return nothing silently** (no 403) - and the (1) `group member check` call still works because it goes through Microsoft Graph, not Azure RBAC. If (1) is `true` but (2) is empty, you have **not** lost the grant - you have lost your own read permission. Re-activate the PIM role (Portal: **Entra ID -> Identity Governance -> Privileged Identity Management -> My roles -> Azure resources -> Activate** against the subscription) and the list calls will repopulate. The pipeline SP is unaffected either way - the first workflow run is the real end-to-end test.
 
 > **Tip**: If you started with the built-in `Azure Stack HCI Administrator` role and want to migrate to the custom role with no downtime, assign the custom role first, verify a pipeline run succeeds, then remove the built-in assignment with `az role assignment delete`.
 
