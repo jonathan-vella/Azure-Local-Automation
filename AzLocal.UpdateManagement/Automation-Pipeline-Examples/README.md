@@ -21,6 +21,7 @@ It is written in the same step-by-step style as [`ITSM/README.md`](../ITSM/READM
 5. [Wire the pipeline files into your repo](#5-wire-the-pipeline-files-into-your-repo)
    - [5.1 GitHub Actions](#51-github-actions)
    - [5.2 Azure DevOps](#52-azure-devops)
+   - [5.3 Optional configuration (not recommended): pin the module version](#53-optional-configuration-not-recommended-pin-the-module-version)
 6. [End-to-end runbook: bring an estate online](#6-end-to-end-runbook-bring-an-estate-online)
    - [6.1 Inventory the estate](#61-inventory-the-estate)
    - [6.2 Plan update rings, windows, and exclusions](#62-plan-update-rings-windows-and-exclusions)
@@ -94,6 +95,8 @@ There are three supported authentication patterns, listed from **most to least s
 
 OIDC has the workflow request a short-lived token from Azure at runtime, with no stored secret. Subject claim binding ensures only **your** repository's workflows can mint the token.
 
+> **Before you start - you need a GitHub repository**: the federated credential subjects below reference `<owner>/<repo>` (case-sensitive) and must match the exact path of the repo that will host the workflows. If you don't have one, create it first at **github.com -> New repository**; for Azure Local fleet-update automation a **private** repository is strongly recommended so the cluster inventory CSV, tag metadata, and any pipeline state are not publicly readable. An empty repo is fine - the workflow files are added later in [section 5.1](#51-github-actions). Note: `az ad app federated-credential create` does **not** validate `<owner>/<repo>` against GitHub - a typo here surfaces only at workflow run time as `AADSTS70021: No matching federated identity record found`.
+
 **Step 1 - create the App Registration**
 
 ```bash
@@ -138,7 +141,22 @@ For multi-subscription estates, run the `role assignment create` step once per s
 
 **Step 3 - federate the workflow**
 
+> **Plan your GitHub environments now**: environment-scoped subjects (`...:environment:<name>`) only succeed at workflow run time if a GitHub environment with the exact same name exists in the repo (names are **case-sensitive**). The `az` command will accept any string you put in `subject` - Entra ID does **not** validate it against GitHub - but a missing or mistyped environment fails the OIDC exchange at runtime with `AADSTS70021: No matching federated identity record found`. The create order does not technically matter, but it is easiest to decide on environment names now (and ideally create them up-front under **your repo -> Settings -> Environments -> New environment**) so the strings you put into the federated credentials definitely match what GitHub will later send in the token. For the ring-based rollout pattern this guide describes, three are recommended:
+>
+> | Environment | Purpose | Suggested protection rules |
+> |---|---|---|
+> | `DevTest` | Pilot ring - first cluster(s) to receive a new build. | Required reviewers: 0-1 (auto-promote acceptable). |
+> | `PreProduction` | Wave2 ring - broader validation before fleet-wide rollout. | Required reviewers: 1. |
+> | `Production` | Final ring - the bulk of the fleet. | Required reviewers: 2. Deployment branches: `main` only. Optional wait timer. |
+>
+> Each environment becomes **one** federated credential, one `environment:` line in the workflow job, and one independent approval gate. A single app registration supports up to 20 federated credentials, so this comfortably scales if you later add more rings.
+>
+> The names `DevTest`, `PreProduction`, and `Production` are just suggestions to match the ring pattern in this guide - **pick whatever names suit your organisation** (e.g. `Pilot`, `Wave2`, `Prod`, `Ring0`, `Ring1`, `Ring2`). Whatever you choose, use the **same name** in (a) the GitHub environment, (b) the federated credential `subject`, and (c) the `environment:` line of the workflow job that targets that ring.
+>
+> **GitHub environments and `UpdateRing` tag values are independent.** The `UpdateRing` tag lives on the cluster ARM resource and is what the PowerShell functions filter on (`-UpdateRing Wave1`). A GitHub environment is just an approval gate and federated credential subject. They do **not** have to share names, and the mapping is many-to-many: one GitHub environment can run updates across multiple `UpdateRing` values (different workflow runs pass different `-UpdateRing` parameters under the same approval gate), and multiple environments can target the same `UpdateRing` (e.g. a `PreProductionDryRun` environment that runs with `-WhatIf` against the `Production` ring). The workflow YAML decides which ring tag a given environment-gated run applies to.
+
 ```bash
+# Branch-scoped credential (for default-branch / scheduled runs).
 az ad app federated-credential create `
     --id <appId-from-step-1> `
     --parameters '{
@@ -148,13 +166,14 @@ az ad app federated-credential create `
         "audiences": ["api://AzureADTokenExchange"]
     }'
 
-# For manually-triggered workflow_dispatch runs from a protected environment:
+# Environment-scoped credential - one per GitHub environment (DevTest, PreProduction, Production).
+# Repeat this command three times, substituting both `name` and `subject` to match each environment.
 az ad app federated-credential create `
     --id <appId-from-step-1> `
     --parameters '{
-        "name": "GitHubActions-production",
+        "name": "GitHubActions-Production",
         "issuer": "https://token.actions.githubusercontent.com",
-        "subject": "repo:<owner>/<repo>:environment:production",
+        "subject": "repo:<owner>/<repo>:environment:Production",
         "audiences": ["api://AzureADTokenExchange"]
     }'
 ```
@@ -168,6 +187,45 @@ Subject-claim patterns for other trigger types:
 | Environment | `repo:<owner>/<repo>:environment:<env>` |
 | Tag | `repo:<owner>/<repo>:ref:refs/tags/<tag>` |
 
+> **PowerShell on Windows**: passing the `--parameters` JSON as an inline string (as shown above) fails on Windows PowerShell - and on PowerShell 7+ on Windows - with `Failed to parse string as JSON: ... Expecting property name enclosed in double quotes`. The `az` CLI on Windows is a `.cmd` shim, and cmd.exe strips the inner double quotes from the JSON before `az` ever sees them. Microsoft's [quoting guidance](https://learn.microsoft.com/cli/azure/use-azure-cli-successfully-quoting#json-strings) recommends bypassing the shell entirely by writing the JSON to a file and passing it with the `@<filepath>` prefix - this is the universally safe pattern and works on Linux/macOS too:
+>
+> ```powershell
+> # Reusable temp file for all federated-credential payloads in this section
+> $paramsFile = Join-Path $env:TEMP 'fed-cred.json'
+>
+> # Branch-scoped credential (for default-branch / scheduled runs)
+> @{
+>     name      = 'GitHubActions-main'
+>     issuer    = 'https://token.actions.githubusercontent.com'
+>     subject   = 'repo:<owner>/<repo>:ref:refs/heads/main'
+>     audiences = @('api://AzureADTokenExchange')
+> } | ConvertTo-Json | Out-File -FilePath $paramsFile -Encoding utf8 -Force
+>
+> az ad app federated-credential create `
+>     --id <appId-from-step-1> `
+>     --parameters "@$paramsFile"
+>
+> # Environment-scoped credentials - one per GitHub environment (names are case-sensitive
+> # and must match the environments that will exist in your repo at workflow run time)
+> foreach ($envName in 'DevTest','PreProduction','Production') {
+>     @{
+>         name      = "GitHubActions-$envName"
+>         issuer    = 'https://token.actions.githubusercontent.com'
+>         subject   = "repo:<owner>/<repo>:environment:$envName"
+>         audiences = @('api://AzureADTokenExchange')
+>     } | ConvertTo-Json | Out-File -FilePath $paramsFile -Encoding utf8 -Force
+>
+>     Write-Host "Creating federated credential for $envName environment..."
+>     az ad app federated-credential create `
+>         --id <appId-from-step-1> `
+>         --parameters "@$paramsFile"
+> }
+>
+> Remove-Item $paramsFile
+> ```
+>
+> The `@` in `"@$paramsFile"` is the **az CLI's** "read from file" prefix (not PowerShell splatting). The surrounding double quotes ensure PowerShell expands `$paramsFile` and passes `az` a single literal string like `@C:\Users\...\Temp\fed-cred.json`. Add or remove names from the `foreach` to match the environments you actually created. Repeat the same build-file-then-pass pattern for any other subject claims you need (`pull_request`, tag, additional branches).
+
 **Step 4 - add the (three) GitHub secrets**
 
 | Secret name | Value |
@@ -180,11 +238,140 @@ No `AZURE_CLIENT_SECRET` is needed.
 
 For public repositories, prefer [environment secrets with required reviewers](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#environment-secrets) over repository-level secrets - they restrict who can run the workflow against production identities.
 
+You can add the secrets via the **GitHub UI** (**Settings -> Secrets and variables -> Actions -> New repository secret**, then **Settings -> Environments -> `<env>` -> Add secret** for environment-scoped values), or scripted via the **GitHub CLI** (`gh`) - expand the section below.
+
+<details>
+<summary><b>Show GitHub CLI (<code>gh</code>) scripted setup</b></summary>
+
+> **Install the GitHub CLI (`gh`)** - one-time setup. Pick whichever applies on your workstation; all options give you the same `gh` binary:
+>
+> ```powershell
+> # Windows - winget (recommended on Windows 10/11)
+> winget install --id GitHub.cli
+>
+> # Windows - Chocolatey alternative
+> choco install gh
+>
+> # macOS - Homebrew
+> brew install gh
+>
+> # Linux - see https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+> ```
+>
+> Then authenticate once (opens a browser, asks you to sign in to GitHub and grant the CLI permission):
+>
+> ```powershell
+> gh auth login
+> # Choose: GitHub.com -> HTTPS -> Login with a web browser
+> # Confirm with: gh auth status
+> ```
+>
+> `gh` reuses the credentials of the signed-in account, so it can write secrets to any repo that account can write to. No personal access token needed for interactive use.
+
+**Script the secrets and environments (recommended)** - end-to-end: creates the GitHub environments your federated credentials reference, writes the three repo-level secrets, and (optionally) pins `AZURE_CLIENT_ID` at each environment. Substitute `<owner>/<repo>` for your target repo:
+
+```powershell
+# Inputs - reuse the variables from the federation step where you can
+$repo     = '<owner>/<repo>'                                 # e.g. contoso/azlocal-update-automation (your GitHub repo)
+$clientId = '<appId-from-step-1>'                            # GUID printed by az ad app create (from step 1)
+$subId    = (az account show --query id       -o tsv)        # current az subscription
+$tenantId = (az account show --query tenantId -o tsv)        # current az tenant
+$envs     = 'DevTest','PreProduction','Production'           # match the names in your federated credentials
+
+# 0. Preflight - confirm gh is signed in as the right account and can write to $repo.
+#    Skipping this is the most common cause of opaque HTTP 404s in step 1.
+gh auth status                                              # check signed-in account + token scopes
+gh repo view $repo                                          # must print repo details, confirm as you expect
+gh api "/repos/$repo" --jq '.permissions'                   # must show "admin": true - env creation is admin-only
+#    If gh repo view returns 404 or shows a "Repository setup required" prompt:
+#      - the repo path is wrong (typo in $repo), OR
+#      - your gh account doesn't have access at all (org owner / repo admin only), OR
+#      - the org enforces SAML SSO and your OAuth grant is not yet authorised.
+#    Fix before proceeding:
+#      gh auth refresh -h github.com -s admin:org,repo,workflow
+#    Then visit https://github.com/$repo in a browser to accept any pending
+#    invitation / SSO consent. Re-run 'gh repo view $repo' until it succeeds.
+#
+#    If gh repo view succeeds but '.permissions' shows '"admin": false':
+#      - you have read/push but NOT admin on the repo.
+#      - 'gh api PUT /environments/...' (and 'gh secret set') require admin.
+#      - Ask a repo admin to either run this block, or grant your account the
+#        Admin role under repo Settings -> Collaborators and teams.
+
+# 1. Create the GitHub environments (idempotent - PUT creates if missing, no-op if it exists).
+#    The federated credentials in step 3 only succeed at workflow run time if these exist.
+#    No 'gh env create' command exists - use the REST API via gh api.
+foreach ($envName in $envs) {
+    Write-Host "Ensuring environment '$envName' exists in $repo..."
+    gh api `
+        --method PUT `
+        -H "Accept: application/vnd.github+json" `
+        "/repos/$repo/environments/$envName" | Out-Null
+}
+
+# 2. Repository-level secrets (REQUIRED - visible to every workflow run in the repo).
+#    All three are needed for OIDC: AZURE_CLIENT_ID identifies the app registration,
+#    AZURE_TENANT_ID + AZURE_SUBSCRIPTION_ID tell 'azure/login' where to authenticate.
+gh secret set AZURE_CLIENT_ID       --body $clientId  --repo $repo
+gh secret set AZURE_TENANT_ID       --body $tenantId  --repo $repo
+gh secret set AZURE_SUBSCRIPTION_ID --body $subId     --repo $repo
+
+# 3. Optional, additive on top of step 2 (NOT a replacement) - pin AZURE_CLIENT_ID
+#    at each environment scope. GitHub resolves secrets env-first then repo-first,
+#    so an env-scoped value shadows the repo-level one for jobs targeting that env.
+#    Use this if you want a future repo-level CLIENT_ID rotation to require an
+#    explicit per-env update before it applies to Production. Skip if you're happy
+#    with the single repo-level value (the common case for first-time setup).
+foreach ($envName in $envs) {
+    gh secret set AZURE_CLIENT_ID --body $clientId --env $envName --repo $repo
+}
+
+# Verify (lists names only, never the values - secret values are write-only in GitHub)
+gh secret list --repo $repo
+gh secret list --env  Production --repo $repo
+gh api "/repos/$repo/environments" --jq '.environments[].name'
+```
+
+**What success looks like.** With step 3 skipped (the common first-time-setup path), expect output along these lines (timestamps and order may vary):
+
+```text
+# gh secret set AZURE_CLIENT_ID ...
+[OK] Set Actions secret AZURE_CLIENT_ID for <owner>/<repo>
+[OK] Set Actions secret AZURE_TENANT_ID for <owner>/<repo>
+[OK] Set Actions secret AZURE_SUBSCRIPTION_ID for <owner>/<repo>
+
+# gh secret list --repo $repo
+NAME                   UPDATED
+AZURE_CLIENT_ID        about 1 minute ago
+AZURE_SUBSCRIPTION_ID  about 1 minute ago
+AZURE_TENANT_ID        about 1 minute ago
+
+# gh secret list --env Production --repo $repo
+no secrets found
+
+# gh api "/repos/$repo/environments" --jq '.environments[].name'
+DevTest
+PreProduction
+Production
+```
+
+The key signals are: three repo-level secrets present, and all three environments listed. The blank env-scoped secret list is **expected** and confirms OIDC is working as designed - see the next note.
+
+> **`no secrets found` at env scope is expected with OIDC + federated credentials.** When you authenticate with OIDC, the `azure/login` action does not need a stored client secret; the three repo-level secrets in step 2 carry only public identifiers (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`), and the federated-credential `subject` claim (which includes the environment name) is what restricts who can mint a token. Env-scoped secrets in step 3 are only needed if you want to pin a different `AZURE_CLIENT_ID` per environment (e.g. one App Registration per ring). The empty `gh secret list --env Production` output is the correct steady state, not a misconfiguration.
+
+> **Note**: `gh secret list` shows only the secret **names** and last-updated timestamps - GitHub never returns the secret values back, even to admins. If you need to confirm what's there, the names + dates are the only signal; to verify a value you must overwrite with the same `gh secret set` command.
+
+> **Protection rules are not set by this block.** `gh api PUT /environments/<name>` with no body creates a plain environment with no required reviewers, no deployment-branch policy, and no wait timer. For Production you almost certainly want at least required reviewers - the simplest path is to set those in the UI (**Settings -> Environments -> Production -> Configure**), or extend the `gh api` call with a JSON body per the [REST API reference](https://docs.github.com/en/rest/deployments/environments#create-or-update-an-environment). Required-reviewer values must be user/team **IDs**, not names, which is why the UI is often easier here.
+
+</details>
+
 Microsoft Learn reference: [Use GitHub Actions with OpenID Connect](https://learn.microsoft.com/azure/developer/github/connect-from-azure-openid-connect).
 
 ### 3.2 Azure DevOps with Workload Identity Federation (recommended)
 
-Workload Identity Federation is the Azure DevOps equivalent of OIDC. ADO creates the App Registration and federated credential for you.
+Workload Identity Federation is the Azure DevOps equivalent of OIDC. ADO creates the App Registration and federated credential for you, and unlike GitHub Actions there are **no `AZURE_*` secrets to manage** - the service connection itself is the auth wiring (`clientId`, `tenantId`, `subscriptionId`, and the federated identity are all stored on the connection). Pipeline tasks like `AzureCLI@2` just reference it by name (`azureSubscription: 'AzureLocal-ServiceConnection'`).
+
+**UI flow (one-off setup)**:
 
 1. Open your Azure DevOps project.
 2. **Project Settings -> Service connections -> New service connection**.
@@ -194,7 +381,80 @@ Workload Identity Federation is the Azure DevOps equivalent of OIDC. ADO creates
 6. Name the connection **`AzureLocal-ServiceConnection`** so the example YAMLs work without edits. If you pick a different name, update the `azureSubscription:` value in each ADO YAML.
 7. **Save**.
 
-The first run will create the App Registration in Entra ID. Grant the **`Azure Stack HCI Update Operator`** custom role from [section 4.1](#41-custom-role-azure-stack-hci-update-operator-recommended) on the same scope you selected in step 5 (or, for quick-start labs only, the built-in `Azure Stack HCI Administrator` role).
+**Scripted alternative (optional)** - use the `azure-devops` extension for the Azure CLI. There is no Azure DevOps equivalent of the GitHub CLI; ADO scripting is done through `az devops` and `az pipelines`. Expand the section below.
+
+<details>
+<summary><b>Show Azure DevOps CLI (<code>az devops</code>) scripted setup</b></summary>
+
+> **Install the `azure-devops` `az` extension** - one-time:
+>
+> ```powershell
+> # Adds the 'az devops' / 'az pipelines' / 'az repos' / 'az boards' command groups
+> az extension add --name azure-devops
+>
+> # Cache org + project defaults so later commands don't repeat them
+> az devops configure --defaults `
+>     organization=https://dev.azure.com/<your-org> `
+>     project='<your-project>'
+> ```
+>
+> No separate auth step is needed - the extension reuses your existing `az login` token.
+
+```powershell
+# Inputs - reuse variables from the federation steps where you can
+$subId    = (az account show --query id           -o tsv)
+$tenantId = (az account show --query tenantId     -o tsv)
+$subName  = (az account show --query name         -o tsv)
+
+# 1. Create the service connection with automatic workload identity federation.
+#    ADO creates the App Registration + federated credential for you.
+az devops service-endpoint azurerm create `
+    --name                        'AzureLocal-ServiceConnection' `
+    --azure-rm-service-principal-id '' `                                # auto-create the SP
+    --azure-rm-subscription-id     $subId `
+    --azure-rm-subscription-name   $subName `
+    --azure-rm-tenant-id           $tenantId `
+    --service-principal-tenantid   $tenantId `
+    --workload-identity-federation-issuer ''                            # auto
+
+# 2. Verify the connection was created and is workload-identity-federated.
+az devops service-endpoint list `
+    --query "[?name=='AzureLocal-ServiceConnection'].{name:name, authorizationScheme:authorization.scheme, isReady:isReady}" `
+    -o table
+
+# 3. Grab the auto-created App Registration's appId so you can grant it the role.
+#    The App Registration display name will match the connection name.
+$adoSpAppId = az ad sp list `
+    --display-name 'AzureLocal-ServiceConnection' `
+    --query '[0].appId' -o tsv
+```
+
+Then grant the **`Azure Stack HCI Update Operator`** custom role from [section 4.1](#41-custom-role-azure-stack-hci-update-operator-recommended) on the same scope you selected in step 5 (or, for quick-start labs only, the built-in `Azure Stack HCI Administrator` role). Re-use the security-group pattern from 4.1 if you prefer:
+
+```powershell
+# Direct assignment to the auto-created SP
+az role assignment create `
+    --assignee $adoSpAppId `
+    --role    "Azure Stack HCI Update Operator" `
+    --scope   "/subscriptions/$subId"
+
+# OR (recommended): add it to the operators security group so the group's role is inherited
+$spObjectId = az ad sp show --id $adoSpAppId --query id -o tsv
+az ad group member add --group <operators-group-objectId> --member-id $spObjectId
+```
+
+> **ADO variable groups (if you use them)**: the only `AZURE_*` value you might still want to pin as a pipeline variable is the **subscription id** for read-only display in run logs - there's no `AZURE_CLIENT_SECRET` to protect. If you do want one, the equivalent of `gh secret set` is:
+>
+> ```powershell
+> az pipelines variable-group create `
+>     --name        'AzureLocal-PipelineVars' `
+>     --variables   AZURE_SUBSCRIPTION_ID=$subId `
+>     --authorize   true
+> ```
+>
+> The service connection still does the heavy lifting; variable groups are optional metadata.
+
+</details>
 
 ### 3.3 Self-hosted runners with Managed Identity
 
@@ -477,11 +737,32 @@ az ad group member add --group $groupId --member-id $spObjectId
 
 > **Note**: only **security groups** can have service principals as members - Microsoft 365 groups cannot. Avoid setting `isAssignableToRole = true` on the group unless you actually need it for Entra ID directory-role assignment; it is a stricter group type with extra constraints on who can manage membership and is not required for assigning Azure RBAC roles.
 
-You can verify your effective access on the target subscription with:
+**Verify the grant**
+
+Two independent probes - run them both. The first one works even if your interactive sign-in lacks `Microsoft.Authorization/roleAssignments/read` (common when your RBAC Admin / Owner role is held just-in-time via PIM and the activation window has expired - see note below):
 
 ```powershell
-az role assignment list --assignee <upn-or-objectId> --scope "/subscriptions/<your-subscription-id>" -o table
+# Resolve the SP's OBJECT id from its APP id (clientId). They are different GUIDs.
+# Use the appId you noted from "az ad app create" in section 3.1, step 1.
+$spObjectId = az ad sp show --id <appId> --query id -o tsv
+
+# 1. Is the SP a member of the operators group?
+#    Returns { "value": true } if membership is in place.
+az ad group member check `
+    --group     $groupId `
+    --member-id $spObjectId
+
+# 2. Does the group hold the custom role at the subscription scope?
+#    Lists every role assignment scoped to the subscription where the group is the principal.
+az role assignment list `
+    --scope "/subscriptions/$subId" `
+    --query "[?principalId=='$groupId'].{Role:roleDefinitionName, PrincipalType:principalType, Scope:scope}" `
+    -o table
 ```
+
+If (1) returns `true` and (2) shows one row with `Azure Stack HCI Update Operator` / `Group` / your subscription scope, the chain is wired correctly and the pipeline SP has the role via the group.
+
+> **PIM gotcha - empty list output**: `az role assignment list` requires `Microsoft.Authorization/roleAssignments/read` on the scope. If you originally received `Owner` / `User Access Administrator` / `Role Based Access Control Administrator` via PIM and the activation window has lapsed, the `list` calls **return nothing silently** (no 403) - and the (1) `group member check` call still works because it goes through Microsoft Graph, not Azure RBAC. If (1) is `true` but (2) is empty, you have **not** lost the grant - you have lost your own read permission. Re-activate the PIM role (Portal: **Entra ID -> Identity Governance -> Privileged Identity Management -> My roles -> Azure resources -> Activate** against the subscription) and the list calls will repopulate. The pipeline SP is unaffected either way - the first workflow run is the real end-to-end test.
 
 > **Tip**: If you started with the built-in `Azure Stack HCI Administrator` role and want to migrate to the custom role with no downtime, assign the custom role first, verify a pipeline run succeeds, then remove the built-in assignment with `az role assignment delete`.
 
@@ -508,19 +789,106 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 > Install-Module -Name AzLocal.UpdateManagement -Scope CurrentUser
 > Import-Module AzLocal.UpdateManagement
 >
-> # Copy everything to the current folder (creates .\Automation-Pipeline-Examples\)
-> Copy-AzureLocalPipelineExample
+> # IMPORTANT: cd into the root of YOUR consumer repo first - all paths below
+> # are relative to the current working directory.
+> Set-Location 'C:\path\to\your\repo'
 >
-> # Or only the GitHub Actions YAML straight into .github\workflows\ in your repo
+> # OPTIONAL - copy EVERYTHING (both platforms + shared README + .itsm/) into
+> # .\Automation-Pipeline-Examples\ in the current folder. Useful for browsing
+> # before you commit to a layout. Skip this if you already know which platform
+> # you're targeting and just want the YAMLs in their final location.
+> # Copy-AzureLocalPipelineExample
+>
+> # For a GitHub Actions repo: copy ONLY the GitHub workflow YAML files straight
+> # into .github\workflows\ - relative to the repo root you cd'd into above.
 > New-Item -ItemType Directory .\.github\workflows -Force | Out-Null
-> Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Flatten -Force
+> Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+>
+> # For an Azure DevOps repo: copy ONLY the ADO pipeline YAML files into a
+> # pipelines folder of your choice (ADO has no fixed-path convention like
+> # .github\workflows\).
+> New-Item -ItemType Directory .\pipelines -Force | Out-Null
+> Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps
 > ```
 >
-> The function prints a short "next steps" summary pointing at the copied README and the platform-specific YAML folder. Supports `-Platform GitHub | AzureDevOps | All`, `-Flatten`, `-Force`, `-PassThru`, `-WhatIf`, `-Confirm`.
+> The function prints a short "next steps" summary pointing at the copied YAML location with the recommended workflow / pipeline to run first (the auth smoke test - see sections 5.1 and 5.2 below). Supports `-Platform GitHub | AzureDevOps | All`, `-PassThru`, `-WhatIf`, `-Confirm`.
+>
+> **Refusing to overwrite**: the function will refuse to overwrite any file that already exists in `-Destination`, listing the conflicts in the error message. To refresh after a module upgrade, delete the existing copies first (`Remove-Item .\.github\workflows\*.yml`) and re-run.
 
 ### 5.1 GitHub Actions
 
-1. Copy every file from [`github-actions/`](./github-actions/) into `.github/workflows/` in your repo:
+1. **Smoke-test auth first (strongly recommended).** Before exercising all five workflows, validate that the App Registration, federated credentials, GitHub secrets, environments, and RBAC role assignment all line up by running a one-shot **auth smoke test** workflow. This narrows any failure to *one* small YAML file instead of debugging five interacting workflows simultaneously.
+
+   The smoke-test workflow ships with the module at [`github-actions/auth-smoke-test.yml`](./github-actions/auth-smoke-test.yml).
+
+   - **If you used the `Copy-AzureLocalPipelineExample` shortcut above**: the file is already in `.github/workflows/` alongside the other five workflow YAMLs - those will ride along on the commit but stay dormant until you trigger them manually (`gh workflow run`) or their schedules fire. Commit and push to the default branch, then run the trigger commands below.
+   - **If you didn't use the shortcut**: copy just that one file into your repo's `.github/workflows/`, commit, and push to the default branch.
+
+   Then trigger it twice - once branch-scoped, once environment-scoped - to prove **both** federated credential types work end-to-end:
+
+   ```powershell
+   # 1. Branch-scoped run - exercises the 'GitHubActions-main' federated credential.
+   gh workflow run auth-smoke-test.yml --repo $repo
+
+   # 2. Environment-scoped run - exercises the 'GitHubActions-DevTest' federated credential.
+   gh workflow run auth-smoke-test.yml --repo $repo -f environment=DevTest
+
+   # Watch the most recent run live (Ctrl+C to stop watching, run continues).
+   gh run watch --repo $repo
+   ```
+
+   **What success looks like.** Two layers of output, both should be green.
+
+   At the `gh` CLI level, `gh run watch` shows the run summary as the steps complete (`gh` actually renders these as Unicode check marks; reproduced here in ASCII):
+
+   ```text
+   ? Select a workflow run * Auth Smoke Test, Auth Smoke Test [main] 12s ago
+   [OK] main Auth Smoke Test - <run-id>
+   Triggered via workflow_dispatch less than a minute ago
+
+   JOBS
+   [OK] Validate OIDC + RBAC in 32s (ID <job-id>)
+     [OK] Set up job
+     [OK] Azure login (OIDC)
+     [OK] Confirm identity, RBAC, and cluster reachability
+     [OK] Post Azure login (OIDC)
+     [OK] Complete job
+
+   [OK] Run Auth Smoke Test (<run-id>) completed with 'success'
+   ```
+
+   Inside the `Confirm identity, RBAC, and cluster reachability` step, the run log shows:
+
+   ```text
+   Login successful.
+   --- az account show ---
+   Name                     SubscriptionId    TenantId         User
+   -----------------------  ----------------  ---------------  ------------------------------------
+   <your-subscription>      <sub-guid>        <tenant-guid>    <appId>@<tenant-domain>
+   --- role assignments for AZURE_CLIENT_ID ---
+   Principal              Role                              Scope
+   ---------------------  --------------------------------  -------------------------------------
+   <appId>                Azure Stack HCI Update Operator   /subscriptions/<sub-guid>
+   --- can the SP list Azure Local clusters? ---
+   Name           ResourceGroup           SubscriptionId
+   -------------  ----------------------  ----------------
+   <cluster-1>    <rg-1>                  <sub-guid>
+   ```
+
+   You may see two informational annotations in the run that are **not** failures and need no action from you: a Node.js 20 deprecation warning for `azure/login@v2` (the action's maintainers will publish an updated version before the GitHub Actions cutoff) and a `windows-latest` -> `windows-2025-vs2026` migration notice (does not apply - the workflows use `ubuntu-latest`).
+
+   **If it fails**, the most likely causes (and what to check) are:
+
+   | Failure signature | Likely cause | Fix |
+   |---|---|---|
+   | `AADSTS70021: No matching federated identity record found` | The OIDC token's `sub` claim does not match any `subject` on the App Registration's federated credentials. | Check the actual `sub` in the run log (set `ACTIONS_STEP_DEBUG=true` to see it), then compare against `az ad app federated-credential list --id <appId>`. Mismatched env-name casing is the single most common cause. |
+   | `AuthorizationFailed` on `az graph query` (but `az account show` succeeded) | Auth works, but the role assignment is missing, scoped wrong, or not yet propagated. | Re-check section 3.1 step 2 ran against the correct subscription, then re-run the smoke test - role propagation can take 1-2 minutes. |
+   | `Error: Could not fetch access token for Azure` (no AADSTS code) | The workflow lacks `permissions: id-token: write` or the secrets are missing/misspelt. | Confirm the `permissions:` block is present and run `gh secret list --repo $repo` shows all three `AZURE_*` secrets. |
+   | Environment-scoped run hangs in **Waiting for review** | The environment has required-reviewers protection (good!) and is waiting for you to approve. | Approve in the **Actions** tab, or remove required reviewers from the smoke-test run via the environment settings. |
+
+   Once both runs are green, delete `auth-smoke-test.yml` (it has no purpose after validation). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other five workflows are already on the default branch - skip to step 4 to run them. Otherwise, proceed to step 2 to copy the remaining workflow files.
+
+2. Copy every file from [`github-actions/`](./github-actions/) into `.github/workflows/` in your repo:
     ```text
     .github/
       workflows/
@@ -530,17 +898,110 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
         apply-updates.yml
         fleet-update-status.yml
     ```
-2. Commit and push. The workflows appear in the **Actions** tab.
-3. Each workflow exposes its inputs via the **Run workflow** button (workflow_dispatch). The scheduled triggers (e.g. fleet-update-status.yml runs daily at 06:00 UTC) activate automatically once the file is on the default branch.
+3. Commit and push. The workflows appear in the **Actions** tab.
+4. Each workflow exposes its inputs via the **Run workflow** button (workflow_dispatch). The scheduled triggers (e.g. fleet-update-status.yml runs daily at 06:00 UTC) activate automatically once the file is on the default branch.
 
 ### 5.2 Azure DevOps
 
-1. Copy every file from [`azure-devops/`](./azure-devops/) into your repository at a path of your choice (the README assumes the same folder layout as this repo).
-2. **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file**, then point at the path of each file. Repeat for all five.
-3. After the pipeline is created, click **Save** (not **Run**) until you are ready to execute.
-4. Each pipeline references a service connection named `AzureLocal-ServiceConnection`. Either name your service connection to match, or change `azureSubscription:` in each YAML.
+1. **Smoke-test auth first (strongly recommended).** Before importing all five pipelines, validate that the service connection (Workload Identity Federation), App Registration, and RBAC role assignment all line up by running a one-shot **auth smoke test** pipeline. This narrows any failure to *one* small YAML file instead of debugging five interacting pipelines simultaneously.
+
+   The smoke-test pipeline ships with the module at [`azure-devops/auth-smoke-test.yml`](./azure-devops/auth-smoke-test.yml). If you used the `Copy-AzureLocalPipelineExample` shortcut above, the file is already in your chosen pipelines folder alongside the other five pipeline YAMLs - those YAMLs sit dormant until you import each one as a pipeline, so they're harmless at rest. Otherwise, copy just that one file into your repo. Either way, import it as a new pipeline:
+
+   - **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file -> `/azure-devops/auth-smoke-test.yml`**.
+   - **Save and run**. If your service connection has a name other than `AzureLocal-ServiceConnection`, edit `azureSubscription:` in the YAML first (the only configurable line).
+
+   Unlike GitHub Actions, ADO does **not** have environment-scoped federated credentials at the auth layer - the service connection itself is the federation, so a single pipeline run validates everything. ADO **Environments** (Pipelines -> Environments) are approval gates only, layered on top of the service connection, and are not exercised by the smoke test.
+
+   **What success looks like** (excerpt from the run log):
+
+   ```text
+   --- 1. az account show ---
+   Name                     SubscriptionId    TenantId         User
+   -----------------------  ----------------  ---------------  ------------------------------------
+   <your-subscription>      <sub-guid>        <tenant-guid>    <appId>
+   --- 2. role assignments ---
+   Principal              Role                              Scope
+   ---------------------  --------------------------------  -------------------------------------
+   <appId>                Azure Stack HCI Update Operator   /subscriptions/<sub-guid>
+   --- 3. Resource Graph ---
+   Name           ResourceGroup           SubscriptionId
+   -------------  ----------------------  ----------------
+   <cluster-1>    <rg-1>                  <sub-guid>
+   ```
+
+   **If it fails**, the most likely causes (and what to check) are:
+
+   | Failure signature | Likely cause | Fix |
+   |---|---|---|
+   | `There was a resource authorization issue: 'The pipeline is not valid. Job ... has authorization issues.'` | First-run pipeline approval is pending - ADO requires explicit consent to use a service connection from a new pipeline. | Open the run, click **View** next to the warning, and grant permission. |
+   | `AADSTS700024: Client assertion is not within its valid time range` | Workload-identity-federation issuer is misconfigured on the auto-generated App Registration, or system clocks are skewed. | Re-create the service connection (UI flow in section 3.2) - ADO regenerates the federated credential cleanly. |
+   | `AuthorizationFailed` on `az graph query` (but `az account show` succeeded) | Auth works, but the role assignment is missing, scoped wrong, or not yet propagated. | Re-check section 3.2 ran against the correct subscription, then re-run the smoke test - role propagation can take 1-2 minutes. |
+   | `(InvalidScope) The scope '/subscriptions/<id>' is not valid` from `az role assignment list` | The service connection scope is set narrower than the role assignment, e.g. resource-group-scoped. | Widen the service connection scope to the subscription, or pass `--scope` explicitly to `az role assignment list`. |
+
+   Once the run is green, delete `auth-smoke-test.yml` (and its imported pipeline). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other five YAML files are already in your repo - skip to step 3 to import each as a pipeline. Otherwise, proceed to step 2 to copy the remaining pipeline files.
+
+2. Copy every file from [`azure-devops/`](./azure-devops/) into your repository at a path of your choice (the README assumes the same folder layout as this repo).
+3. **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file**, then point at the path of each file. Repeat for all five.
+4. After the pipeline is created, click **Save** (not **Run**) until you are ready to execute.
+5. Each pipeline references a service connection named `AzureLocal-ServiceConnection`. Either name your service connection to match, or change `azureSubscription:` in each YAML.
 
 Optional: create a variable group named **`AzureLocal-Config`** in **Pipelines -> Library** for default values (e.g. the default `UpdateRing` for your most-common rollout). The example YAMLs do not require it.
+
+### 5.3 Optional configuration (_not recommended_): pin the module version
+
+Every example pipeline installs `AzLocal.UpdateManagement` from PSGallery at runtime instead of importing a vendored copy from the repo. By default the install step pulls the **latest** version on each run - this is the recommended "fix-forward" posture: bug fixes and new safety gates land on your fleet without you having to touch the YAML again.
+
+If your change-control process requires you to pin the module version (so a release on PSGallery cannot change what runs in production without an explicit promotion), set `REQUIRED_MODULE_VERSION`. The install step pins to that exact version when set, and falls back to "latest" when empty.
+
+**Note**: Pinning shifts ongoing maintenance onto you. With a pin in place you are responsible for: (1) periodically checking PowerShell Gallery for new `AzLocal.UpdateManagement` releases; (2) refreshing the pipeline YAMLs in your repository when a new version ships (run `Copy-AzureLocalPipelineExample -Update` - see further below); and (3) bumping `REQUIRED_MODULE_VERSION` to match the version those refreshed YAMLs were generated against. If the three drift apart, the drift-notice warnings (see below) lose most of their value.
+
+**GitHub Actions** - resolution order (first non-empty wins):
+
+1. Manual `workflow_dispatch` input `module_version` (per-run override).
+2. Repository variable `REQUIRED_MODULE_VERSION` (estate-wide default).
+3. Empty (install latest).
+
+```bash
+# Set an estate-wide pin (applies to every scheduled / event-triggered run):
+gh variable set REQUIRED_MODULE_VERSION --body '0.7.50' --repo <owner>/<repo>
+
+# Override for a single manual run, leaving the estate-wide pin untouched:
+gh workflow run fleet-update-status.yml -f module_version=0.7.50
+
+# Clear the estate-wide pin to return to latest:
+gh variable delete REQUIRED_MODULE_VERSION --repo <owner>/<repo>
+```
+
+**Azure DevOps** - resolution order (first non-empty wins):
+
+1. Queue-time override of the `moduleVersion` pipeline parameter.
+2. The pipeline parameter's default (defaults to empty / latest in the shipped YAMLs).
+
+To set an estate-wide pin in ADO, either change the `moduleVersion` parameter default in each YAML, or wrap it in a variable group / template parameter and reference it from each pipeline.
+
+**Drift notices.** Each install step compares three versions and emits a warning annotation (`::notice` in GitHub Actions, `##vso[task.logissue type=warning]` in Azure DevOps) when:
+
+| Situation | What you see | What it means |
+|---|---|---|
+| `installed > generated` | "Pipeline YAML was generated against AzLocal.UpdateManagement v<X> but the agent installed v<Y>." | Your committed YAML is older than the module on the agent. Pipeline steps may have been improved since - re-run `Copy-AzureLocalPipelineExample -Update` to refresh. |
+| `latest > installed` | "AzLocal.UpdateManagement v<L> is available on PSGallery; this run installed v<I>." | A newer module is on PSGallery than the one the pipeline pinned to. Review the [module CHANGELOG](../CHANGELOG.md) before bumping `REQUIRED_MODULE_VERSION` (or clear the pin to install the latest automatically). |
+
+Both annotations are warnings, not failures - your pipeline still passes.
+
+**Refreshing pipeline YAMLs after a module upgrade.** When the drift notice fires (or you want to pick up new pipeline features that ship in a module release), re-run the copy command with `-Update`:
+
+```powershell
+# Interactive (prompts per file with Y / A / N / L / S / ? options):
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update
+
+# Unattended (for automation - overwrites every file without prompting):
+Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update -Confirm:$false
+
+# Preview which files would change without writing anything:
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update -WhatIf
+```
+
+The destination folders are under git, so `git diff` after the refresh shows exactly which lines changed - giving you a final review gate before commit. `Copy-AzureLocalPipelineExample` deliberately does not expose a `-Force` switch; `-Update` (with optional `-Confirm:$false`) is the only path to overwrite, and git remains the rollback.
 
 ---
 
@@ -699,12 +1160,18 @@ The connector reads the JUnit results the Apply Updates pipeline already publish
 
 This README does not duplicate the setup - it is a single-source-of-truth in [`../ITSM/README.md`](../ITSM/README.md). Here is the high-level wiring you'll do over there:
 
+> **Shortcut for getting the sample into your repo**: from the repo root, run
+> ```powershell
+> Copy-AzureLocalItsmSample
+> ```
+> This copies `azurelocal-itsm.yml` + `templates/incident-body.md` from the installed module into `.\.itsm\` - the exact relative path that `apply-updates.yml` looks for at job runtime (`itsm_config_path` / `itsmConfigPath` default `./.itsm/azurelocal-itsm.yml`). The sample is CI-platform-agnostic; both GitHub Actions and Azure DevOps consume the same YAML, only the secret source differs. To refresh the sample after a module upgrade, re-run with `-Update` (per-file `ShouldContinue` prompt) or `-Update -Confirm:$false` (unattended). See [`Copy-AzureLocalItsmSample` reference](../Public/Copy-AzureLocalItsmSample.ps1).
+
 | Step | Where it's documented |
 |---|---|
 | Register a ServiceNow OAuth application + technical user with the `itil` role | [ITSM/README.md section 3](../ITSM/README.md#3-servicenow-one-time-setup) |
 | Add the five `u_azlocal_*` custom fields to the `incident` table (manual procedure in v0.7.4) | [ITSM/README.md section 3.2](../ITSM/README.md#32-add-the-five-custom-fields-on-the-incident-table) |
 | Pick a secret source (Azure Key Vault recommended, environment-variable fallback) | [ITSM/README.md section 4](../ITSM/README.md#4-pick-a-secret-source) |
-| Author the trigger matrix at `./.itsm/azurelocal-itsm.yml` (a ready-to-copy version ships in [`./.itsm/`](./.itsm/)) | [ITSM/README.md section 5](../ITSM/README.md#5-author-the-trigger-matrix) |
+| Author the trigger matrix at `./.itsm/azurelocal-itsm.yml` (a ready-to-copy version ships in [`./.itsm/`](./.itsm/) - use `Copy-AzureLocalItsmSample` to drop it into your repo) | [ITSM/README.md section 5](../ITSM/README.md#5-author-the-trigger-matrix) |
 | Validate end-to-end with `Test-AzureLocalItsmConnection` before flipping the pipeline switch | [ITSM/README.md section 6](../ITSM/README.md#6-validate-before-you-wire-it-into-a-pipeline) |
 
 Once the ServiceNow side is set up, the pipeline-side change is **already in `apply-updates.yml`** in this folder. You enable it by:

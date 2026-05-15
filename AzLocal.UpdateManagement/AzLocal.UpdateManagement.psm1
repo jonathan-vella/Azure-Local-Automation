@@ -135,7 +135,7 @@
 Set-StrictMode -Version 1.0
 
 # Module constants
-$script:ModuleVersion = '0.7.4'
+$script:ModuleVersion = '0.7.50'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.UpdateManagement'
 
@@ -249,5 +249,7 @@ Export-ModuleMember -Function @(
     'Test-AzureLocalItsmConnection',
     'New-AzureLocalIncident',
     # Pipeline-Examples Convenience (v0.7.4)
-    'Copy-AzureLocalPipelineExample'
+    'Copy-AzureLocalPipelineExample',
+    # ITSM Sample Convenience (v0.7.50)
+    'Copy-AzureLocalItsmSample'
 )

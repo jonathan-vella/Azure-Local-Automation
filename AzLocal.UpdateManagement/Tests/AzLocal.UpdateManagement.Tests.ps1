@@ -34,12 +34,12 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.41' {
-            $script:ModuleInfo.Version | Should -Be '0.7.41'
+        It 'Should have version 0.7.50' {
+            $script:ModuleInfo.Version | Should -Be '0.7.50'
         }
 
-        It 'Should export exactly 24 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 24
+        It 'Should export exactly 25 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 25
         }
 
         It 'Should export the expected functions' {
@@ -74,7 +74,9 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 'Test-AzureLocalItsmConnection',
                 'New-AzureLocalIncident',
                 # Pipeline-Examples Convenience (v0.7.4)
-                'Copy-AzureLocalPipelineExample'
+                'Copy-AzureLocalPipelineExample',
+                # ITSM Sample Convenience (v0.7.50)
+                'Copy-AzureLocalItsmSample'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -3667,7 +3669,7 @@ Describe 'ITSM: Get-AzureLocalItsmConfig normalises non-Hashtable YAML dictionar
 
 #endregion ITSM Connector Phase 1 (v0.7.4)
 
-#region Copy-AzureLocalPipelineExample (v0.7.4)
+#region Copy-AzureLocalPipelineExample (v0.7.4, updated in v0.7.50)
 
 Describe 'Function: Copy-AzureLocalPipelineExample' {
     BeforeAll {
@@ -3682,7 +3684,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         Remove-Item $script:cpDestRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    It 'Default: copies into a child Automation-Pipeline-Examples folder under -Destination' {
+    It 'Default (-Platform All): copies the full source tree into a child Automation-Pipeline-Examples folder under -Destination' {
         $dest = Join-Path $script:cpDestRoot 'default'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
 
@@ -3695,60 +3697,150 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         Test-Path (Join-Path $r.FullName 'azure-devops') | Should -BeTrue
     }
 
-    It '-Platform GitHub: copies only github-actions and skips azure-devops' {
+    It '-Platform GitHub: copies *.yml files DIRECTLY into -Destination (no wrapper folder, no README, no .itsm)' {
         $dest = Join-Path $script:cpDestRoot 'gh'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
 
         $r = Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -PassThru 6>$null
 
-        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeTrue
-        Test-Path (Join-Path $r.FullName 'azure-devops')   | Should -BeFalse
-        # README and .itsm/ are platform-agnostic - always copied
-        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+        # Target root IS -Destination, not a child of it
+        $r.FullName | Should -Be $dest
+
+        # YAMLs landed directly in $dest
+        $yamls = @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File)
+        $yamls.Count | Should -BeGreaterThan 0
+        $yamls.Name | Should -Contain 'auth-smoke-test.yml'
+
+        # No platform-named subfolder, no Automation-Pipeline-Examples wrapper
+        Test-Path (Join-Path $dest 'github-actions') | Should -BeFalse
+        Test-Path (Join-Path $dest 'azure-devops')   | Should -BeFalse
+        Test-Path (Join-Path $dest 'Automation-Pipeline-Examples') | Should -BeFalse
+
+        # README and .itsm are NOT copied with -Platform GitHub
+        Test-Path (Join-Path $dest 'README.md') | Should -BeFalse
+        Test-Path (Join-Path $dest '.itsm')     | Should -BeFalse
     }
 
-    It '-Platform AzureDevOps: copies only azure-devops and skips github-actions' {
+    It '-Platform AzureDevOps: copies *.yml files DIRECTLY into -Destination (no wrapper folder, no README, no .itsm)' {
         $dest = Join-Path $script:cpDestRoot 'ado'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
 
         $r = Copy-AzureLocalPipelineExample -Destination $dest -Platform AzureDevOps -PassThru 6>$null
 
-        Test-Path (Join-Path $r.FullName 'azure-devops')   | Should -BeTrue
-        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeFalse
-        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
-    }
-
-    It '-Flatten: copies contents directly into -Destination (no parent folder)' {
-        $dest = Join-Path $script:cpDestRoot 'flat'
-        New-Item -Path $dest -ItemType Directory -Force | Out-Null
-
-        $r = Copy-AzureLocalPipelineExample -Destination $dest -Flatten -PassThru 6>$null
-
         $r.FullName | Should -Be $dest
-        # No "Automation-Pipeline-Examples" subfolder was created
+
+        $yamls = @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File)
+        $yamls.Count | Should -BeGreaterThan 0
+        $yamls.Name | Should -Contain 'auth-smoke-test.yml'
+
+        Test-Path (Join-Path $dest 'azure-devops')   | Should -BeFalse
+        Test-Path (Join-Path $dest 'github-actions') | Should -BeFalse
         Test-Path (Join-Path $dest 'Automation-Pipeline-Examples') | Should -BeFalse
-        Test-Path (Join-Path $dest 'README.md') | Should -BeTrue
-        Test-Path (Join-Path $dest 'github-actions') | Should -BeTrue
+        Test-Path (Join-Path $dest 'README.md') | Should -BeFalse
+        Test-Path (Join-Path $dest '.itsm')     | Should -BeFalse
     }
 
-    It 'Throws on a non-empty existing target without -Force' {
-        $dest = Join-Path $script:cpDestRoot 'noforce'
+    It '-Platform GitHub: peacefully co-exists with unrelated pre-existing files in -Destination' {
+        $dest = Join-Path $script:cpDestRoot 'gh-coexist'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
+        # Simulate the realistic case: .github\workflows\ already contains an
+        # unrelated user-authored workflow. The function must NOT refuse to copy
+        # just because the destination is non-empty.
+        Set-Content -Path (Join-Path $dest 'my-other-build.yml') -Value 'name: my-other-build' -Encoding ASCII
 
-        # First copy populates the target
-        Copy-AzureLocalPipelineExample -Destination $dest 6>$null | Out-Null
+        { Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null } | Should -Not -Throw
 
-        # Second copy without -Force should refuse
-        { Copy-AzureLocalPipelineExample -Destination $dest 6>$null } |
-            Should -Throw -ExpectedMessage '*Re-run with -Force*'
+        # Original file untouched
+        Test-Path (Join-Path $dest 'my-other-build.yml') | Should -BeTrue
+        # Module YAMLs alongside it
+        @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File).Count | Should -BeGreaterThan 1
     }
 
-    It 'Re-copies and succeeds when -Force is supplied' {
-        $dest = Join-Path $script:cpDestRoot 'force'
+    It 'Refuses to overwrite an existing file by default and lists the conflicts (no -Update)' {
+        $dest = Join-Path $script:cpDestRoot 'no-overwrite'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
 
-        Copy-AzureLocalPipelineExample -Destination $dest 6>$null | Out-Null
-        { Copy-AzureLocalPipelineExample -Destination $dest -Force 6>$null } | Should -Not -Throw
+        # First copy populates the target with module YAMLs
+        Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
+
+        # Second copy must refuse: ALL the same files now exist as conflicts.
+        # The error message must hint at the -Update escape hatch.
+        { Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null } |
+            Should -Throw -ExpectedMessage '*refusing to overwrite*'
+        { Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null } |
+            Should -Throw -ExpectedMessage '*-Update*'
+    }
+
+    It '-Update -Confirm:$false overwrites existing files without prompting (automation path)' {
+        $dest = Join-Path $script:cpDestRoot 'update-confirm-false'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        # Seed the destination so every file is a conflict
+        Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
+
+        # Mutate one destination file so we can prove it gets overwritten
+        $target = Join-Path $dest 'auth-smoke-test.yml'
+        $sentinel = '# SENTINEL - if this comment survives, -Update did not overwrite'
+        Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
+        (Get-Content -LiteralPath $target -Raw) | Should -Match 'SENTINEL'
+
+        # -Update -Confirm:$false must NOT throw and must overwrite the sentinel
+        { Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -Update -Confirm:$false 6>$null } |
+            Should -Not -Throw
+
+        (Get-Content -LiteralPath $target -Raw) | Should -Not -Match 'SENTINEL'
+    }
+
+    It '-Update is exposed as a [switch] parameter in v0.7.50' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
+        $cmd.Parameters.ContainsKey('Update') | Should -BeTrue
+        $cmd.Parameters['Update'].ParameterType | Should -Be ([switch])
+    }
+
+    It 'No-to-All only suppresses overwrites, not brand-new files (v0.7.50 regression guard)' {
+        # Background: In an early v0.7.50 pass the per-file loop's top guard was
+        #     if ($noToAll) { $skippedCount++; continue }
+        # which skipped EVERY remaining file once the user chose No-to-All,
+        # even files that did not already exist at the destination (no prompt
+        # would have been raised for them). The corrected semantics match
+        # PowerShell's canonical No-to-All meaning ("answer No to all remaining
+        # prompts") rather than "halt all subsequent operations". This test
+        # asserts the corrected source pattern is present so the bug cannot
+        # silently re-appear.
+        $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
+        $src = $cmd.ScriptBlock.ToString()
+        # Corrected guard: skip only when there is an existing file to overwrite.
+        $src | Should -Match 'if\s*\(\s*\$noToAll\s+-and\s+\$destExists\s*\)'
+        # The bare-noToAll early-continue must NOT reappear at the top of the loop.
+        $src | Should -Not -Match 'foreach\s*\(\s*\$pair\s+in\s+\$copyPairs\s*\)\s*\{\s*if\s*\(\s*\$noToAll\s*\)\s*\{\s*\$skippedCount\+\+\s*;?\s*continue'
+    }
+
+    It '-Update -WhatIf does not modify any existing files' {
+        $dest = Join-Path $script:cpDestRoot 'update-whatif'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        # Seed and then mutate
+        Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
+        $target = Join-Path $dest 'auth-smoke-test.yml'
+        $sentinel = '# WHATIF SENTINEL - -WhatIf must preserve this'
+        Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
+
+        # -Update -WhatIf must NOT modify the file
+        Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -Update -WhatIf 6>$null
+
+        (Get-Content -LiteralPath $target -Raw) | Should -Match 'WHATIF SENTINEL'
+    }
+
+    It '-Force parameter has been removed in v0.7.50' {
+        # Inspect the function's parameter metadata directly - more robust than
+        # relying on the engine's FQErrorID, which differs across PS editions.
+        $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
+        $cmd.Parameters.ContainsKey('Force') | Should -BeFalse
+    }
+
+    It '-Flatten parameter has been removed in v0.7.50' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
+        $cmd.Parameters.ContainsKey('Flatten') | Should -BeFalse
     }
 
     It '-WhatIf does not copy anything' {
@@ -3764,6 +3856,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
 
         $withPT = Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -PassThru 6>$null
         $withPT | Should -BeOfType [System.IO.DirectoryInfo]
+        $withPT.FullName | Should -Be $dest
 
         $dest2 = Join-Path $script:cpDestRoot 'nopassthru'
         New-Item -Path $dest2 -ItemType Directory -Force | Out-Null
@@ -3783,6 +3876,124 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
     }
 }
 
-#endregion Copy-AzureLocalPipelineExample (v0.7.4)
+#endregion Copy-AzureLocalPipelineExample (v0.7.4, updated in v0.7.50)
+
+#region Copy-AzureLocalItsmSample (v0.7.50)
+
+Describe 'Function: Copy-AzureLocalItsmSample' {
+    BeforeAll {
+        $script:itsmDestRoot = Join-Path $env:TEMP "azlocal-itsm-$([guid]::NewGuid().Guid.Substring(0,8))"
+        New-Item -Path $script:itsmDestRoot -ItemType Directory -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item $script:itsmDestRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Is exported by the module' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalItsmSample' -Module 'AzLocal.UpdateManagement' -ErrorAction Stop
+        $cmd | Should -Not -BeNullOrEmpty
+        $cmd.CommandType | Should -Be 'Function'
+    }
+
+    It 'Default -Destination ends in .itsm' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalItsmSample' -ErrorAction Stop
+        # Look at the default value embedded in the function source
+        $src = $cmd.ScriptBlock.ToString()
+        $src | Should -Match "Join-Path\s+-Path\s+\`$PWD\.Path\s+-ChildPath\s+'\.itsm'"
+    }
+
+    It '-WhatIf does not copy anything' {
+        $dest = Join-Path $script:itsmDestRoot 'whatif'
+        # Note: dest does not yet exist; -WhatIf should not create file contents either
+        Copy-AzureLocalItsmSample -Destination $dest -WhatIf 6>$null
+        # No YAML should have been written even if the directory was created
+        Test-Path (Join-Path $dest 'azurelocal-itsm.yml') | Should -BeFalse
+    }
+
+    It 'Default copy: writes azurelocal-itsm.yml and templates/incident-body.md' {
+        $dest = Join-Path $script:itsmDestRoot 'default'
+        $r = Copy-AzureLocalItsmSample -Destination $dest -PassThru 6>$null
+
+        $r | Should -BeOfType [System.IO.DirectoryInfo]
+        $r.FullName | Should -Be $dest
+        Test-Path (Join-Path $dest 'azurelocal-itsm.yml') | Should -BeTrue
+        Test-Path (Join-Path $dest 'templates\incident-body.md') | Should -BeTrue
+    }
+
+    It 'Refuses to overwrite an existing file by default and points at -Update' {
+        $dest = Join-Path $script:itsmDestRoot 'no-overwrite'
+        Copy-AzureLocalItsmSample -Destination $dest 6>$null | Out-Null
+
+        { Copy-AzureLocalItsmSample -Destination $dest 6>$null } |
+            Should -Throw -ExpectedMessage '*refusing to overwrite*'
+        { Copy-AzureLocalItsmSample -Destination $dest 6>$null } |
+            Should -Throw -ExpectedMessage '*-Update*'
+    }
+
+    It '-Update -Confirm:$false overwrites existing files without prompting (automation path)' {
+        $dest = Join-Path $script:itsmDestRoot 'update-confirm-false'
+        Copy-AzureLocalItsmSample -Destination $dest 6>$null | Out-Null
+
+        $target = Join-Path $dest 'azurelocal-itsm.yml'
+        $sentinel = '# SENTINEL - if this survives, -Update did not overwrite'
+        Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
+        (Get-Content -LiteralPath $target -Raw) | Should -Match 'SENTINEL'
+
+        { Copy-AzureLocalItsmSample -Destination $dest -Update -Confirm:$false 6>$null } |
+            Should -Not -Throw
+
+        (Get-Content -LiteralPath $target -Raw) | Should -Not -Match 'SENTINEL'
+    }
+
+    It '-Update -WhatIf does not modify any existing files' {
+        $dest = Join-Path $script:itsmDestRoot 'update-whatif'
+        Copy-AzureLocalItsmSample -Destination $dest 6>$null | Out-Null
+
+        $target = Join-Path $dest 'azurelocal-itsm.yml'
+        $sentinel = '# WHATIF SENTINEL - -WhatIf must preserve this'
+        Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
+
+        Copy-AzureLocalItsmSample -Destination $dest -Update -WhatIf 6>$null
+
+        (Get-Content -LiteralPath $target -Raw) | Should -Match 'WHATIF SENTINEL'
+    }
+
+    It '-Update is exposed as a [switch] parameter' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalItsmSample' -ErrorAction Stop
+        $cmd.Parameters.ContainsKey('Update') | Should -BeTrue
+        $cmd.Parameters['Update'].ParameterType | Should -Be ([switch])
+    }
+
+    It 'Has the No-to-All only-when-destExists regression guard (matches Copy-AzureLocalPipelineExample fix)' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalItsmSample' -ErrorAction Stop
+        $src = $cmd.ScriptBlock.ToString()
+        $src | Should -Match 'if\s*\(\s*\$noToAll\s+-and\s+\$destExists\s*\)'
+    }
+
+    It '-PassThru returns a DirectoryInfo; without it nothing is emitted to the pipeline' {
+        $dest = Join-Path $script:itsmDestRoot 'passthru'
+        $withPT = Copy-AzureLocalItsmSample -Destination $dest -PassThru 6>$null
+        $withPT | Should -BeOfType [System.IO.DirectoryInfo]
+        $withPT.FullName | Should -Be $dest
+
+        $dest2 = Join-Path $script:itsmDestRoot 'nopassthru'
+        $noPT = Copy-AzureLocalItsmSample -Destination $dest2 6>$null
+        $noPT | Should -BeNullOrEmpty
+    }
+
+    It 'Creates -Destination (including templates subfolder) when it does not already exist' {
+        $dest = Join-Path $script:itsmDestRoot 'autocreate'
+        Test-Path $dest | Should -BeFalse
+
+        Copy-AzureLocalItsmSample -Destination $dest 6>$null | Out-Null
+
+        Test-Path $dest | Should -BeTrue
+        Test-Path (Join-Path $dest 'templates') | Should -BeTrue
+        Test-Path (Join-Path $dest 'templates\incident-body.md') | Should -BeTrue
+    }
+}
+
+#endregion Copy-AzureLocalItsmSample (v0.7.50)
 
 

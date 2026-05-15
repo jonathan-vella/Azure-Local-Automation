@@ -54,9 +54,23 @@ parameters:
     type: boolean
     default: false
 
+  - name: moduleVersion
+    displayName: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
+    type: string
+    default: ''
+
 variables:
-  - name: modulePath
-    value: '$(System.DefaultWorkingDirectory)/AzLocal.UpdateManagement'
+  # Module version this YAML was generated against. The install step compares this to
+  # the version actually installed and to the latest on PSGallery, and emits a warning
+  # log if the YAML appears stale - prompting you to refresh via
+  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  - name: GENERATED_AGAINST_MODULE_VERSION
+    value: '0.7.50'
+  # Resolution order for the module version pin (leave all unset to install the latest,
+  # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
+  # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
+  - name: REQUIRED_MODULE_VERSION
+    value: '${{ parameters.moduleVersion }}'
   # ITSM connector (v0.7.4 Phase 1). Uncomment the group reference once you
   # have created a variable group named 'AzureLocal-ITSM-Secrets' containing:
   #   ITSM_SN_INSTANCE_URL, ITSM_SN_CLIENT_ID, ITSM_SN_CLIENT_SECRET
@@ -88,6 +102,44 @@ stages:
               inlineScript: |
                 az extension add --name resource-graph --yes
           
+          - task: PowerShell@2
+            displayName: 'Install AzLocal.UpdateManagement from PSGallery'
+            env:
+              REQUIRED_MODULE_VERSION: $(REQUIRED_MODULE_VERSION)
+              GENERATED_AGAINST_MODULE_VERSION: $(GENERATED_AGAINST_MODULE_VERSION)
+            inputs:
+              targetType: 'inline'
+              pwsh: true
+              script: |
+                $ErrorActionPreference = 'Stop'
+                $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
+                if ($env:REQUIRED_MODULE_VERSION) {
+                    $installArgs.RequiredVersion = $env:REQUIRED_MODULE_VERSION
+                    Write-Host "REQUIRED_MODULE_VERSION is set - pinning install to v$($env:REQUIRED_MODULE_VERSION)."
+                } else {
+                    Write-Host "REQUIRED_MODULE_VERSION is empty - installing the latest version from PSGallery (default fix-forward behaviour)."
+                }
+                Install-Module @installArgs
+                Import-Module AzLocal.UpdateManagement -Force
+                $installed = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+                $generated = [version]$env:GENERATED_AGAINST_MODULE_VERSION
+                $latest    = (Find-Module -Name AzLocal.UpdateManagement -Repository PSGallery -ErrorAction SilentlyContinue).Version
+                Write-Host ""
+                Write-Host "Module version summary"
+                Write-Host "  Installed on agent        : $installed"
+                Write-Host "  YAML generated against    : $generated"
+                Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
+                Write-Host ""
+                Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
+                if ($installed -gt $generated) {
+                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+                    Write-Host "##vso[task.logissue type=warning]$msg"
+                }
+                if ($latest -and ($latest -gt $installed)) {
+                    $msg = "AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed. Review the module CHANGELOG before bumping REQUIRED_MODULE_VERSION (or clear the pin to install the latest automatically)."
+                    Write-Host "##vso[task.logissue type=warning]$msg"
+                }
+          
           - task: AzureCLI@2
             displayName: 'Check Cluster Readiness'
             name: readiness
@@ -96,7 +148,7 @@ stages:
               scriptType: 'pscore'
               scriptLocation: 'inlineScript'
               inlineScript: |
-                Import-Module "$(modulePath)/AzLocal.UpdateManagement.psd1" -Force
+                Import-Module AzLocal.UpdateManagement -Force
                 
                 $updateRing = "${{ parameters.updateRing }}"
                 $throttle = [int]"${{ parameters.throttleLimit }}"; if ($throttle -lt 1) { $throttle = 4 }
@@ -192,6 +244,44 @@ stages:
               inlineScript: |
                 az extension add --name resource-graph --yes
           
+          - task: PowerShell@2
+            displayName: 'Install AzLocal.UpdateManagement from PSGallery'
+            env:
+              REQUIRED_MODULE_VERSION: $(REQUIRED_MODULE_VERSION)
+              GENERATED_AGAINST_MODULE_VERSION: $(GENERATED_AGAINST_MODULE_VERSION)
+            inputs:
+              targetType: 'inline'
+              pwsh: true
+              script: |
+                $ErrorActionPreference = 'Stop'
+                $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
+                if ($env:REQUIRED_MODULE_VERSION) {
+                    $installArgs.RequiredVersion = $env:REQUIRED_MODULE_VERSION
+                    Write-Host "REQUIRED_MODULE_VERSION is set - pinning install to v$($env:REQUIRED_MODULE_VERSION)."
+                } else {
+                    Write-Host "REQUIRED_MODULE_VERSION is empty - installing the latest version from PSGallery (default fix-forward behaviour)."
+                }
+                Install-Module @installArgs
+                Import-Module AzLocal.UpdateManagement -Force
+                $installed = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+                $generated = [version]$env:GENERATED_AGAINST_MODULE_VERSION
+                $latest    = (Find-Module -Name AzLocal.UpdateManagement -Repository PSGallery -ErrorAction SilentlyContinue).Version
+                Write-Host ""
+                Write-Host "Module version summary"
+                Write-Host "  Installed on agent        : $installed"
+                Write-Host "  YAML generated against    : $generated"
+                Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
+                Write-Host ""
+                Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
+                if ($installed -gt $generated) {
+                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+                    Write-Host "##vso[task.logissue type=warning]$msg"
+                }
+                if ($latest -and ($latest -gt $installed)) {
+                    $msg = "AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed. Review the module CHANGELOG before bumping REQUIRED_MODULE_VERSION (or clear the pin to install the latest automatically)."
+                    Write-Host "##vso[task.logissue type=warning]$msg"
+                }
+          
           - task: AzureCLI@2
             displayName: 'Apply Updates'
             name: applyUpdates
@@ -200,7 +290,7 @@ stages:
               scriptType: 'pscore'
               scriptLocation: 'inlineScript'
               inlineScript: |
-                Import-Module "$(modulePath)/AzLocal.UpdateManagement.psd1" -Force
+                Import-Module AzLocal.UpdateManagement -Force
                 
                 $updateRing = "${{ parameters.updateRing }}"
                 $updateName = "${{ parameters.updateName }}"
@@ -327,7 +417,7 @@ stages:
               scriptType: 'pscore'
               scriptLocation: 'inlineScript'
               inlineScript: |
-                Import-Module "$(modulePath)/AzLocal.UpdateManagement.psd1" -Force
+                Import-Module AzLocal.UpdateManagement -Force
 
                 $configPath = "${{ parameters.itsmConfigPath }}"
                 $dryRun     = [System.Convert]::ToBoolean("${{ parameters.itsmDryRun }}")

@@ -1,0 +1,84 @@
+# Auth Smoke Test - one-shot OIDC + RBAC validation for the AzLocal.UpdateManagement pipelines.
+#
+# PURPOSE:
+#   Run this BEFORE adding the five real workflows (inventory, tags, readiness, apply,
+#   status). It narrows any failure to one small workflow rather than five interacting
+#   workflows, by probing the four things that can be misconfigured independently:
+#       1. azure/login OIDC token exchange (App Registration + federated credential).
+#       2. Repository / environment secrets (AZURE_CLIENT_ID, _TENANT_ID, _SUBSCRIPTION_ID).
+#       3. Azure RBAC on the App Registration's service principal.
+#       4. Resource Graph reachability (proves the SP can actually see clusters).
+#
+# HOW TO TRIGGER (after the file is committed to the default branch):
+#   # Branch-scoped run - exercises the 'GitHubActions-main' federated credential.
+#   gh workflow run auth-smoke-test.yml --repo <owner>/<repo>
+#
+#   # Environment-scoped run - exercises the env-scoped federated credentials.
+#   gh workflow run auth-smoke-test.yml --repo <owner>/<repo> -f environment=DevTest
+#
+#   # Watch the most recent run live.
+#   gh run watch --repo <owner>/<repo>
+#
+# DELETE THIS FILE once both runs are green - it has no purpose after validation.
+# See Automation-Pipeline-Examples/README.md, section 5.1, for the full setup story.
+
+name: Auth Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'GitHub environment to test (leave blank to test the branch-scoped federated credential).'
+        required: false
+        type: choice
+        default: ''
+        options:
+          - ''
+          - DevTest
+          - PreProduction
+          - Production
+
+# OIDC token exchange requires id-token: write. contents: read is the GitHub default
+# for workflow_dispatch and is harmless here; the smoke test does not push commits.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  smoke:
+    name: Validate OIDC + RBAC
+    runs-on: windows-latest
+    # When `environment` is blank, this resolves to no environment and uses the
+    # branch-scoped federated credential. When set, GitHub injects environment-scoped
+    # secrets (if any) and signs the OIDC token with `environment:<name>` in the sub claim.
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Confirm identity, RBAC, and cluster reachability
+        shell: pwsh
+        run: |
+          Write-Host '--- 1. az account show (proves OIDC token exchange + sub-id secret) ---'
+          az account show `
+              --query '{subscription:name, subscriptionId:id, tenantId:tenantId, user:user.name}' `
+              -o table
+
+          Write-Host ''
+          Write-Host '--- 2. role assignments for AZURE_CLIENT_ID (proves RBAC grant) ---'
+          az role assignment list `
+              --assignee '${{ secrets.AZURE_CLIENT_ID }}' `
+              --all `
+              -o table
+
+          Write-Host ''
+          Write-Host '--- 3. Resource Graph query (proves cluster reachability) ---'
+          az extension add --name resource-graph --yes --only-show-errors | Out-Null
+          az graph query `
+              -q "resources | where type =~ 'microsoft.azurestackhci/clusters' | project name, resourceGroup, subscriptionId | take 5" `
+              -o table

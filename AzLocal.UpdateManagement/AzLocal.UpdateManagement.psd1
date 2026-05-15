@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.41'
+    ModuleVersion = '0.7.50'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -79,6 +79,7 @@
 
         # Public exported functions
         'Public/Connect-AzureLocalServicePrincipal.ps1',
+        'Public/Copy-AzureLocalItsmSample.ps1',
         'Public/Copy-AzureLocalPipelineExample.ps1',
         'Public/Export-AzureLocalFleetState.ps1',
         'Public/Get-AzureLocalAvailableUpdates.ps1',
@@ -135,7 +136,9 @@
         'Test-AzureLocalItsmConnection',
         'New-AzureLocalIncident',
         # Pipeline-Examples Convenience (v0.7.4)
-        'Copy-AzureLocalPipelineExample'
+        'Copy-AzureLocalPipelineExample',
+        # ITSM Sample Convenience (v0.7.50)
+        'Copy-AzureLocalItsmSample'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -164,6 +167,43 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.50 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update + new Copy-AzureLocalItsmSample
+
+### Added
+- Pipeline examples (5 GitHub Actions + 5 Azure DevOps YAMLs) now
+  install AzLocal.UpdateManagement from PSGallery at runtime instead of
+  importing a vendored copy. Default: install latest. Optional pin via
+  REQUIRED_MODULE_VERSION (workflow_dispatch input or repo variable on
+  GH; queue-time pipeline parameter on ADO). Each install step compares
+  installed / generated / latest and warns when the YAML is stale or a
+  newer release is on PSGallery. See Automation-Pipeline-Examples README
+  section 5.3.
+- Copy-AzureLocalPipelineExample: new -Update switch for controlled
+  refresh of an existing destination. Per-file ShouldContinue prompts
+  with -Confirm:$false bypass for unattended use; -WhatIf supported. No
+  -Force switch by design - git diff after the copy is the rollback.
+- New public function Copy-AzureLocalItsmSample copies the bundled ITSM
+  connector sample (azurelocal-itsm.yml + templates/incident-body.md)
+  out of the module install location into a user-chosen destination
+  (default: .\.itsm, matching the workflow defaults that look for
+  ./.itsm/azurelocal-itsm.yml at job runtime). The ITSM YAML is CI-
+  platform-agnostic; both GitHub Actions and Azure DevOps consume it
+  identically, only the secret source differs. Same overwrite semantics
+  as Copy-AzureLocalPipelineExample: refuses by default, -Update with
+  per-file ShouldContinue + -Confirm:$false bypass, -WhatIf preview.
+
+### Changed
+- Copy-AzureLocalPipelineExample: removed v0.7.4 -Flatten and -Force
+  switches (neither survived first real-world use). -Platform GitHub
+  copies only *.yml from github-actions/ flat into -Destination (no
+  wrapper folder, no README, no .itsm/); -Platform AzureDevOps mirrors
+  this against azure-devops/; -Platform All (default) unchanged. Without
+  -Update the function refuses to overwrite any pre-existing destination
+  file, listing every conflict in the error message. Pre-existing
+  unrelated files (e.g. your repo's own build.yml) are left untouched.
+  Not flagged as breaking: the v0.7.4 surface had not been adopted at
+  removal time.
+
 ## Version 0.7.41 - Hotfix: parallel fleet reads broken by v0.7.3 NestedModules refactor
 
 ### Fixed
@@ -236,55 +276,31 @@
 
 ## Version 0.7.3 - Module renamed to AzLocal.UpdateManagement + internal refactor
 
-### Renamed
-- The module has been renamed from `AzStackHci.ManageUpdates` to `AzLocal.UpdateManagement`
-  to align with the Azure Local product name (Microsoft retired the `Azure Stack HCI`
-  brand in late 2024). The module GUID is preserved across the rename so anyone who has
-  the previous version installed will see this as the same module identity.
-  - **Migration**: `Uninstall-Module AzStackHci.ManageUpdates -AllVersions; Install-Module AzLocal.UpdateManagement`
-  - All previously-published `AzStackHci.ManageUpdates` versions have been unlisted from PSGallery.
-  - A transitional `AzStackHci.ManageUpdates` v0.7.3 stub is published once for users who
-    have automation that runs `Install-Module AzStackHci.ManageUpdates`; importing it
-    emits a warning pointing to the new name and exports no functions.
-  - Default log folder path moved from `C:\ProgramData\AzStackHci.ManageUpdates\` to
-    `C:\ProgramData\AzLocal.UpdateManagement\`. The old folder is not migrated; remove
-    it manually after upgrading if desired.
-  - Repository folder renamed `AzStackHci.ManageUpdates/` to `AzLocal.UpdateManagement/`;
-    pipeline YAML examples and `Import-Module` paths updated accordingly.
-
-### Refactored
-- The monolithic 11,679-line `.psm1` is split into Public/Private dot-sourced files,
-  matching the layout of `AzLocal.DeploymentAutomation` in this repo. 20 exported
-  functions live under `Public/`, 40 internal helpers under `Private/`. The manifest
-  enumerates every file in `NestedModules` (Private first, then Public, alphabetical
-  within each). No functional change; the full Pester suite (299 tests) remains green.
+Summary: module renamed from `AzStackHci.ManageUpdates` to
+`AzLocal.UpdateManagement` to align with the Azure Local product name
+(the `Azure Stack HCI` brand was retired in late 2024). Module GUID is
+preserved across the rename. Migration:
+`Uninstall-Module AzStackHci.ManageUpdates -AllVersions; Install-Module AzLocal.UpdateManagement`.
+A transitional `AzStackHci.ManageUpdates` v0.7.3 stub is published once
+for users with automation that runs `Install-Module
+AzStackHci.ManageUpdates`; importing it emits a warning pointing at the
+new name. Default log folder moved to
+`C:\ProgramData\AzLocal.UpdateManagement\` (old folder not migrated;
+remove manually). Also refactored: monolithic 11,679-line `.psm1` split
+into Public/Private dot-sourced files (NestedModules), matching
+`AzLocal.DeploymentAutomation`. Full notes in CHANGELOG.md.
 
 ## Version 0.7.2 - Fleet read paths fixed under -ThrottleLimit > 1
 
-### Bug fixes
-- Get-AzureLocalUpdateRuns / Get-AzureLocalUpdateSummary /
-  Get-AzureLocalClusterUpdateReadiness no longer fail when invoked with
-  -ThrottleLimit greater than 1. Previously the per-cluster scriptblock
-  dispatched via Start-Job called module-private helpers directly. After
-  Import-Module in the child runspace those helpers were not visible at
-  script command-resolution scope, so every cluster reported
-  "The term 'Get-AzLocalClusterUpdateRuns' is not recognized..." (or the
-  equivalent). Inline (-ThrottleLimit 1) execution was unaffected. Fix:
-  each affected scriptblock now resolves the loaded module reference
-  (Import-Module -PassThru) and invokes the helper via & $module { ... }
-  so calls execute against the module's own session state and resolve
-  all transitive private references. Reported against a 9-cluster Prod
-  fleet. (See also v0.7.41 which catches a different manifestation of
-  this class.)
-- cp1252 encoding warnings no longer leak into JSON parsing. On Windows
-  hosts where the console code page is cp1252, az rest / az graph query
-  emitted "WARNING: Unable to encode the output with cp1252 encoding..."
-  for ARM responses containing non-cp1252 characters; captured via 2>&1
-  that warning broke ConvertFrom-Json. PYTHONIOENCODING=utf-8 is
-  ineffective because az.cmd launches python with -I (isolated). Fix:
-  pass --only-show-errors to every az rest and az graph query call site
-  (Azure CLI maintainer's recommended workaround per azure-cli #14426).
-  See CHANGELOG.md for full detail.
+Summary: fix for Get-AzureLocalUpdateRuns / Get-AzureLocalUpdateSummary /
+Get-AzureLocalClusterUpdateReadiness which previously failed under
+-ThrottleLimit > 1 because child Start-Job runspaces could not see module-
+private helpers; per-cluster scriptblocks now resolve the loaded module
+(Import-Module -PassThru) and invoke helpers via `& $module { ... }`.
+Inline (-ThrottleLimit 1) execution was unaffected. Also suppresses cp1252
+encoding warnings from az rest / az graph query by passing
+--only-show-errors at every call site (per azure-cli #14426). See also
+v0.7.41 for a related manifestation. Full notes in CHANGELOG.md.
 
 ## Version 0.7.1 - EndTime column for update runs + Sideloaded payload workflow
 

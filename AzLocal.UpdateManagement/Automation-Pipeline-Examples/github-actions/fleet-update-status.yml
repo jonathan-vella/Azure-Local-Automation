@@ -54,9 +54,21 @@ on:
         description: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16. Raise for large fleets.'
         required: false
         default: '4'
+      module_version:
+        description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
+        required: false
+        default: ''
 
 env:
-  MODULE_PATH: './AzLocal.UpdateManagement'
+  # Module version this workflow YAML was generated against. The install step compares
+  # this to the version actually installed and to the latest on PSGallery, and emits a
+  # ::notice annotation if the YAML appears stale - prompting you to refresh via
+  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.50'
+  # Resolution order for the module version pin (leave all unset to install the latest,
+  # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
+  # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
+  REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
   fleet-status:
@@ -84,6 +96,38 @@ jobs:
       run: |
         az extension add --name resource-graph --yes
     
+    - name: Install AzLocal.UpdateManagement from PSGallery
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
+        if ($env:REQUIRED_MODULE_VERSION) {
+            $installArgs.RequiredVersion = $env:REQUIRED_MODULE_VERSION
+            Write-Host "REQUIRED_MODULE_VERSION is set - pinning install to v$($env:REQUIRED_MODULE_VERSION)."
+        } else {
+            Write-Host "REQUIRED_MODULE_VERSION is empty - installing the latest version from PSGallery (default fix-forward behaviour)."
+        }
+        Install-Module @installArgs
+        Import-Module AzLocal.UpdateManagement -Force
+        $installed = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+        $generated = [version]$env:GENERATED_AGAINST_MODULE_VERSION
+        $latest    = (Find-Module -Name AzLocal.UpdateManagement -Repository PSGallery -ErrorAction SilentlyContinue).Version
+        Write-Host ""
+        Write-Host "Module version summary"
+        Write-Host "  Installed on runner       : $installed"
+        Write-Host "  YAML generated against    : $generated"
+        Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
+        Write-Host ""
+        Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
+        if ($installed -gt $generated) {
+            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+            Write-Host "::notice title=Workflow YAML may be stale::$msg"
+        }
+        if ($latest -and ($latest -gt $installed)) {
+            $msg = "AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed. Review the module CHANGELOG before bumping REQUIRED_MODULE_VERSION (or clear the pin to install the latest automatically)."
+            Write-Host "::notice title=Newer AzLocal.UpdateManagement version available on PSGallery::$msg"
+        }
+    
     - name: Collect Fleet Update Status
       shell: pwsh
       id: fleet-status
@@ -93,7 +137,7 @@ jobs:
         INPUT_INCLUDE_UPDATE_RUNS: ${{ github.event.inputs.include_update_runs || 'true' }}
         INPUT_THROTTLE_LIMIT: ${{ github.event.inputs.throttle_limit || '4' }}
       run: |
-        Import-Module "${{ env.MODULE_PATH }}/AzLocal.UpdateManagement.psd1" -Force
+        Import-Module AzLocal.UpdateManagement -Force
         
         # Create output directory
         $outputDir = "./reports"
