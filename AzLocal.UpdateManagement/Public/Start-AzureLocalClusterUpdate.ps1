@@ -441,6 +441,38 @@ function Start-AzureLocalClusterUpdate {
                 Write-Log -Message "Found cluster: $($clusterInfo.id)" -Level Success
                 Write-Log -Message "Cluster Status: $($clusterInfo.properties.status)" -Level Info
 
+                # Step 1b: Connectivity gate
+                # ARM cannot reliably push an update to a cluster it has not heard from
+                # recently. Skip any cluster whose properties.status is not
+                # 'ConnectedRecently' (e.g. NotConnectedRecently, Disconnected) and log
+                # to Update_Skipped.csv so an operator can chase the heartbeat first.
+                $clusterStatus = if ($clusterInfo.properties.PSObject.Properties['status']) { [string]$clusterInfo.properties.status } else { '' }
+                if ($clusterStatus -and $clusterStatus -ne 'ConnectedRecently') {
+                    Write-Log -Message "Cluster '$clusterName' is not connected to Azure (status: $clusterStatus). Skipping update - restore the Arc-enabled cluster heartbeat first." -Level Error
+                    $clusterRgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                    $clusterSubId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+                    Write-UpdateCsvLog -LogType Skipped `
+                        -ClusterName $clusterName `
+                        -ResourceGroup $clusterRgName `
+                        -SubscriptionId $clusterSubId `
+                        -Message "Update not started - cluster status is '$clusterStatus' (ARM cannot reach the cluster)" `
+                        -UpdateState 'Unknown' `
+                        -HealthState 'Unknown' `
+                        -HealthCheckFailures '' `
+                        -LastUpdateErrorStep '' `
+                        -LastUpdateErrorMessage ''
+                    $results.Add([PSCustomObject]@{
+                        ClusterName   = $clusterName
+                        Status        = "NotConnected"
+                        Message       = "Cluster status: $clusterStatus"
+                        UpdateName    = $null
+                        StartTime     = $clusterStartTime
+                        EndTime       = Get-Date
+                        Duration      = $null
+                    }) | Out-Null
+                    continue
+                }
+
                 # Step 2: Get update summaries to check if updates are available
                 Write-Log -Message "Step 2: Retrieving update summary..." -Level Info
                 $updateSummary = $null

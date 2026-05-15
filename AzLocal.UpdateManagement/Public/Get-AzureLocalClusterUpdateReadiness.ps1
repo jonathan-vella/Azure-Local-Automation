@@ -275,6 +275,7 @@ function Get-AzureLocalClusterUpdateReadiness {
                         SBEDependency                = ''
                         RecommendedUpdate            = ''
                         HealthCheckFailures          = ''
+                        BlockingReasons              = ''
                         UpdateWindow                 = ''
                         UpdateExclusions             = ''
                         __DisplayTag                 = 'NotFound'
@@ -345,6 +346,27 @@ function Get-AzureLocalClusterUpdateReadiness {
                     $healthCheckFailures = Get-HealthCheckFailureSummary -UpdateSummary $updateSummary
                 }
 
+                # Apply readiness gates: even when ARM reports the cluster as having a
+                # Ready update, downgrade ReadyForUpdate to $false if (a) the cluster is
+                # not currently reachable from ARM (anything other than ConnectedRecently
+                # - e.g. NotConnectedRecently, Disconnected) or (b) any [Critical]
+                # severity health check is failing. Record the trigger(s) in
+                # BlockingReasons so the readiness CSV explains the downgrade.
+                $blockingReasons = @()
+                if ($healthCheckFailures -and ($healthCheckFailures -match '\[Critical\]')) {
+                    $blockingReasons += 'CriticalHealthCheck'
+                }
+                $clusterStatus = if ($clusterInfo.properties.PSObject.Properties['status']) { [string]$clusterInfo.properties.status } else { '' }
+                if ($clusterStatus -and $clusterStatus -ne 'ConnectedRecently') {
+                    $blockingReasons += $clusterStatus
+                }
+                if ($isReady -and $blockingReasons.Count -gt 0) {
+                    $isReady = $false
+                    # Drop the recommendedUpdate tally so blocked clusters do not skew
+                    # the "most common applicable update" summary.
+                    $counted = $null
+                }
+
                 # Installed solution/SBE versions are already present in $updateSummary;
                 # surface them on the readiness row so operators can triage without a
                 # separate Get-AzureLocalUpdateSummary call.
@@ -383,7 +405,8 @@ function Get-AzureLocalClusterUpdateReadiness {
 
                 # Choose a display tag; actual Write-Host runs in the parent.
                 $tag =
-                    if ($isReady) { "Ready:$recommendedUpdate" }
+                    if ($blockingReasons.Count -gt 0) { "Blocked:$($blockingReasons -join ',')" }
+                    elseif ($isReady) { "Ready:$recommendedUpdate" }
                     elseif ($allInstalled) { 'UpToDate' }
                     elseif ($prereqUpdates.Count -gt 0 -and $readyUpdates.Count -eq 0) { 'HasPrerequisite' }
                     elseif ($updateState -eq 'UpdateInProgress') { 'UpdateInProgress' }
@@ -410,6 +433,7 @@ function Get-AzureLocalClusterUpdateReadiness {
                     SBEDependency                = $sbeDependencyInfo
                     RecommendedUpdate            = $recommendedUpdate
                     HealthCheckFailures          = $healthCheckFailures
+                    BlockingReasons              = ($blockingReasons -join '; ')
                     UpdateWindow                 = if ($uw) { $uw } else { '' }
                     UpdateExclusions             = if ($ue) { $ue } else { '' }
                     __DisplayTag                 = $tag
@@ -433,6 +457,7 @@ function Get-AzureLocalClusterUpdateReadiness {
                     SBEDependency                = ''
                     RecommendedUpdate            = ''
                     HealthCheckFailures          = $_.Exception.Message
+                    BlockingReasons              = ''
                     UpdateWindow                 = ''
                     UpdateExclusions             = ''
                     __DisplayTag                 = "Error:$($_.Exception.Message)"
@@ -482,6 +507,7 @@ function Get-AzureLocalClusterUpdateReadiness {
                     SBEDependency                = ''
                     RecommendedUpdate            = ''
                     HealthCheckFailures          = "Batch job failed: $($jr.Error)"
+                    BlockingReasons              = ''
                     UpdateWindow                 = ''
                     UpdateExclusions             = ''
                     __DisplayTag                 = "Error:Batch job failed: $($jr.Error)"
@@ -505,6 +531,7 @@ function Get-AzureLocalClusterUpdateReadiness {
         switch -Regex ($tag) {
             '^NotFound$'           { Write-Host ' Not Found' -ForegroundColor Red }
             '^Ready:(.*)'          { Write-Host " Ready ($($matches[1]))" -ForegroundColor Green }
+            '^Blocked:(.*)'        { Write-Host " Blocked ($($matches[1]))" -ForegroundColor Red }
             '^HasPrerequisite$'    { Write-Host ' Has Prerequisite (SBE update required)' -ForegroundColor Yellow }
             '^UpdateInProgress$'   { Write-Host ' Update In Progress' -ForegroundColor Yellow }
             '^Downloading$'        { Write-Host ' Updates Downloading' -ForegroundColor Yellow }
@@ -543,12 +570,16 @@ function Get-AzureLocalClusterUpdateReadiness {
     $notReadyClusters = $totalClusters - $readyClusters
     $inProgressClusters = @($results | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
     $prereqClusters = @($results | Where-Object { $_.HasPrerequisiteUpdates -ne "" }).Count
+    $blockedClusters = @($results | Where-Object { $_.PSObject.Properties['BlockingReasons'] -and $_.BlockingReasons -ne "" }).Count
 
     Write-Log -Message "" -Level Info
     Write-Log -Message "Total Clusters Assessed:    $totalClusters" -Level Info
     Write-Log -Message "Ready for Update:           $readyClusters" -Level Success
     Write-Log -Message "Not Ready / Other State:    $notReadyClusters" -Level $(if ($notReadyClusters -gt 0) { "Warning" } else { "Info" })
     Write-Log -Message "Update In Progress:         $inProgressClusters" -Level $(if ($inProgressClusters -gt 0) { "Warning" } else { "Info" })
+    if ($blockedClusters -gt 0) {
+        Write-Log -Message "Blocked by Readiness Gate:  $blockedClusters (see BlockingReasons column)" -Level Error
+    }
     if ($prereqClusters -gt 0) {
         Write-Log -Message "Blocked by SBE Prereq:     $prereqClusters" -Level Warning
     }
@@ -627,10 +658,19 @@ function Get-AzureLocalClusterUpdateReadiness {
             
             # Transform results for JUnit-compatible format
             $junitResults = $results | ForEach-Object {
+                $statusVal = if ($_.ReadyForUpdate -eq $true) {
+                    'Ready'
+                } elseif ($_.PSObject.Properties['BlockingReasons'] -and $_.BlockingReasons -ne '') {
+                    'Blocked'
+                } elseif ($_.HealthState -eq 'Failure') {
+                    'Failed'
+                } else {
+                    'Skipped'
+                }
                 [PSCustomObject]@{
                     ClusterName  = $_.ClusterName
-                    Status       = if ($_.ReadyForUpdate -eq "Yes") { "Ready" } elseif ($_.HealthState -eq "Failure") { "Failed" } else { "Skipped" }
-                    Message      = "CurrentVersion: $($_.CurrentVersion), CurrentSbeVersion: $($_.CurrentSbeVersion), UpdateState: $($_.UpdateState), HealthState: $($_.HealthState), RecommendedUpdate: $($_.RecommendedUpdate)"
+                    Status       = $statusVal
+                    Message      = "CurrentVersion: $($_.CurrentVersion), CurrentSbeVersion: $($_.CurrentSbeVersion), UpdateState: $($_.UpdateState), HealthState: $($_.HealthState), RecommendedUpdate: $($_.RecommendedUpdate), BlockingReasons: $($_.BlockingReasons)"
                     UpdateName   = $_.RecommendedUpdate
                     CurrentState = $_.UpdateState
                 }

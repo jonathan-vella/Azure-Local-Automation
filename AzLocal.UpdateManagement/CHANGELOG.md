@@ -5,6 +5,24 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.61] - 2026-05-15
+
+### Changed
+
+- **Readiness assessment now applies two new gates that downgrade `ReadyForUpdate` to `False` even when Azure Resource Manager (ARM) reports a Ready update for the cluster.** Both [`Get-AzureLocalClusterUpdateReadiness`](Public/Get-AzureLocalClusterUpdateReadiness.ps1) and [`Get-AzureLocalFleetStatusData`](Public/Get-AzureLocalFleetStatusData.ps1) (used by `New-AzureLocalFleetStatusHtmlReport`) now block readiness when either of these is true:
+  - **Connectivity:** `ClusterState` is not `'ConnectedRecently'` (e.g. `NotConnectedRecently`, `Disconnected`). ARM cannot reliably push an update to a cluster it has not heard from recently.
+  - **Critical health:** `HealthCheckFailures` contains at least one `[Critical]` severity entry. Critical-severity health checks must be cleared before any solution upgrade is started.
+
+  A new **`BlockingReasons`** column on the readiness CSV lists the gate(s) that triggered the downgrade. Values are semicolon-joined - for example `CriticalHealthCheck` or `CriticalHealthCheck; NotConnectedRecently`. Clusters that pass both gates have an empty `BlockingReasons` value, exactly as in v0.7.60.
+
+  The per-cluster console output now shows **`Blocked (<reasons>)`** in red for any cluster held back by these gates, and the summary footer now reports **`Blocked by Readiness Gate: N`** alongside the existing `Blocked by SBE Prereq` count.
+
+- **`Start-AzureLocalClusterUpdate` gains a defence-in-depth connectivity gate (`Step 1b`).** Immediately after cluster lookup, clusters whose `properties.status` is not `'ConnectedRecently'` are skipped before any update is attempted. The cluster is recorded in `Update_Skipped.csv` with the message *"Update not started - cluster status is '\<status\>' (ARM cannot reach the cluster)"*, and the in-process `$results` collection gets a `Status='NotConnected'` row. Complements the existing `Step 3b` critical-health gate.
+
+### Fixed
+
+- **JUnit XML export from `Get-AzureLocalClusterUpdateReadiness` was emitting `Status='Skipped'` for every Ready cluster** due to a long-standing boolean-vs-string comparison bug at the JUnit transform step: `$_.ReadyForUpdate -eq 'Yes'` was tested against the `[bool]` value `$true`, which is always `$false`. JUnit `Status` now correctly reports `'Ready'`, `'Blocked'`, `'Failed'`, or `'Skipped'`. The CSV `ReadyForUpdate` column (a real `[bool]`) was unaffected; only the JUnit XML readability of CI/CD test summaries was wrong.
+
 ## [0.7.60] - 2026-05-15
 
 ### Changed
