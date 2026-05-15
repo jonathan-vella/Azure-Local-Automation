@@ -5,6 +5,20 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-05-15
+
+### Changed
+
+- **`Copy-AzureLocalPipelineExample` - simpler, safer copy semantics.** First real-world run of the v0.7.4 surface revealed two issues with the GitHub Actions path: (1) `-Platform GitHub -Flatten` left an intermediate `github-actions\` subfolder, so workflows landed at `.github\workflows\github-actions\*.yml` where the GitHub Actions runner cannot see them (the runner only scans `.github/workflows/*.yml`, non-recursively); (2) the `-Force` flag's directory-level pre-flight refused to copy whenever `.github\workflows\` contained any unrelated user workflow, effectively making `-Force` mandatory and meaningless. Both flags have been removed and the function reshaped around the user's actual intent:
+  - `-Platform GitHub` now copies ONLY the `*.yml` workflow files from the source `github-actions/` folder directly into `-Destination` (flat - no wrapper folder, no README, no `.itsm/`). The canonical call is `Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`.
+  - `-Platform AzureDevOps` behaves the same way against the source `azure-devops/` folder (flat into `-Destination`, no README, no `.itsm/`).
+  - `-Platform All` (the default) is unchanged - copies the full source tree under a `.\Automation-Pipeline-Examples\` child folder for browsing.
+  - **No -Force escape hatch**: the function now refuses to overwrite any pre-existing destination file, listing every conflict in the error message. To refresh after a module upgrade, delete the existing copies first (e.g. `Remove-Item .\.github\workflows\auth-smoke-test.yml,.\.github\workflows\apply-updates.yml,...`) and re-run. This trades convenience for safety - there is no way for the function to clobber an edited workflow.
+  - Pre-existing unrelated files in `-Destination` (e.g. your repo's own `build.yml`, `codeql.yml`) are now left untouched; the function only writes the files it is bringing over from the source tree.
+  - **Next-steps output** is now platform-aware and detects when `-Destination` is already `.github\workflows\` ("you're done, commit and push") vs. somewhere else ("move the YAMLs into `.github\workflows\`"). For both platform-specific values the output now points at `auth-smoke-test.yml` as the recommended first run (see sections 5.1 and 5.2 of the Automation-Pipeline-Examples README) so the user validates the auth chain before wiring the other five workflows.
+
+  Note: this is **not** marked as a breaking change because the v0.7.4 surface had not been adopted by any consumer at the time of removal (the feature shipped on 2026-05-13 and was found broken on first real-world use).
+
 ## [0.7.41] - 2026-05-13
 
 ### Fixed

@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.41' {
-            $script:ModuleInfo.Version | Should -Be '0.7.41'
+        It 'Should have version 0.7.5' {
+            $script:ModuleInfo.Version | Should -Be '0.7.5'
         }
 
         It 'Should export exactly 24 functions' {
@@ -3667,7 +3667,7 @@ Describe 'ITSM: Get-AzureLocalItsmConfig normalises non-Hashtable YAML dictionar
 
 #endregion ITSM Connector Phase 1 (v0.7.4)
 
-#region Copy-AzureLocalPipelineExample (v0.7.4)
+#region Copy-AzureLocalPipelineExample (v0.7.4, updated in v0.7.5)
 
 Describe 'Function: Copy-AzureLocalPipelineExample' {
     BeforeAll {
@@ -3682,7 +3682,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         Remove-Item $script:cpDestRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    It 'Default: copies into a child Automation-Pipeline-Examples folder under -Destination' {
+    It 'Default (-Platform All): copies the full source tree into a child Automation-Pipeline-Examples folder under -Destination' {
         $dest = Join-Path $script:cpDestRoot 'default'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
 
@@ -3695,60 +3695,89 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         Test-Path (Join-Path $r.FullName 'azure-devops') | Should -BeTrue
     }
 
-    It '-Platform GitHub: copies only github-actions and skips azure-devops' {
+    It '-Platform GitHub: copies *.yml files DIRECTLY into -Destination (no wrapper folder, no README, no .itsm)' {
         $dest = Join-Path $script:cpDestRoot 'gh'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
 
         $r = Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -PassThru 6>$null
 
-        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeTrue
-        Test-Path (Join-Path $r.FullName 'azure-devops')   | Should -BeFalse
-        # README and .itsm/ are platform-agnostic - always copied
-        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
+        # Target root IS -Destination, not a child of it
+        $r.FullName | Should -Be $dest
+
+        # YAMLs landed directly in $dest
+        $yamls = @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File)
+        $yamls.Count | Should -BeGreaterThan 0
+        $yamls.Name | Should -Contain 'auth-smoke-test.yml'
+
+        # No platform-named subfolder, no Automation-Pipeline-Examples wrapper
+        Test-Path (Join-Path $dest 'github-actions') | Should -BeFalse
+        Test-Path (Join-Path $dest 'azure-devops')   | Should -BeFalse
+        Test-Path (Join-Path $dest 'Automation-Pipeline-Examples') | Should -BeFalse
+
+        # README and .itsm are NOT copied with -Platform GitHub
+        Test-Path (Join-Path $dest 'README.md') | Should -BeFalse
+        Test-Path (Join-Path $dest '.itsm')     | Should -BeFalse
     }
 
-    It '-Platform AzureDevOps: copies only azure-devops and skips github-actions' {
+    It '-Platform AzureDevOps: copies *.yml files DIRECTLY into -Destination (no wrapper folder, no README, no .itsm)' {
         $dest = Join-Path $script:cpDestRoot 'ado'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
 
         $r = Copy-AzureLocalPipelineExample -Destination $dest -Platform AzureDevOps -PassThru 6>$null
 
-        Test-Path (Join-Path $r.FullName 'azure-devops')   | Should -BeTrue
-        Test-Path (Join-Path $r.FullName 'github-actions') | Should -BeFalse
-        Test-Path (Join-Path $r.FullName 'README.md') | Should -BeTrue
-    }
-
-    It '-Flatten: copies contents directly into -Destination (no parent folder)' {
-        $dest = Join-Path $script:cpDestRoot 'flat'
-        New-Item -Path $dest -ItemType Directory -Force | Out-Null
-
-        $r = Copy-AzureLocalPipelineExample -Destination $dest -Flatten -PassThru 6>$null
-
         $r.FullName | Should -Be $dest
-        # No "Automation-Pipeline-Examples" subfolder was created
+
+        $yamls = @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File)
+        $yamls.Count | Should -BeGreaterThan 0
+        $yamls.Name | Should -Contain 'auth-smoke-test.yml'
+
+        Test-Path (Join-Path $dest 'azure-devops')   | Should -BeFalse
+        Test-Path (Join-Path $dest 'github-actions') | Should -BeFalse
         Test-Path (Join-Path $dest 'Automation-Pipeline-Examples') | Should -BeFalse
-        Test-Path (Join-Path $dest 'README.md') | Should -BeTrue
-        Test-Path (Join-Path $dest 'github-actions') | Should -BeTrue
+        Test-Path (Join-Path $dest 'README.md') | Should -BeFalse
+        Test-Path (Join-Path $dest '.itsm')     | Should -BeFalse
     }
 
-    It 'Throws on a non-empty existing target without -Force' {
-        $dest = Join-Path $script:cpDestRoot 'noforce'
+    It '-Platform GitHub: peacefully co-exists with unrelated pre-existing files in -Destination' {
+        $dest = Join-Path $script:cpDestRoot 'gh-coexist'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
+        # Simulate the realistic case: .github\workflows\ already contains an
+        # unrelated user-authored workflow. The function must NOT refuse to copy
+        # just because the destination is non-empty.
+        Set-Content -Path (Join-Path $dest 'my-other-build.yml') -Value 'name: my-other-build' -Encoding ASCII
 
-        # First copy populates the target
-        Copy-AzureLocalPipelineExample -Destination $dest 6>$null | Out-Null
+        { Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null } | Should -Not -Throw
 
-        # Second copy without -Force should refuse
-        { Copy-AzureLocalPipelineExample -Destination $dest 6>$null } |
-            Should -Throw -ExpectedMessage '*Re-run with -Force*'
+        # Original file untouched
+        Test-Path (Join-Path $dest 'my-other-build.yml') | Should -BeTrue
+        # Module YAMLs alongside it
+        @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File).Count | Should -BeGreaterThan 1
     }
 
-    It 'Re-copies and succeeds when -Force is supplied' {
-        $dest = Join-Path $script:cpDestRoot 'force'
+    It 'Refuses to overwrite an existing file (no -Force escape hatch) and lists the conflicts' {
+        $dest = Join-Path $script:cpDestRoot 'no-overwrite'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
 
-        Copy-AzureLocalPipelineExample -Destination $dest 6>$null | Out-Null
-        { Copy-AzureLocalPipelineExample -Destination $dest -Force 6>$null } | Should -Not -Throw
+        # First copy populates the target with module YAMLs
+        Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
+
+        # Second copy must refuse: ALL the same files now exist as conflicts.
+        # -Force does not exist as a parameter any more, so the user has no
+        # in-band way to override.
+        { Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null } |
+            Should -Throw -ExpectedMessage '*refusing to overwrite*'
+    }
+
+    It '-Force parameter has been removed in v0.7.5' {
+        # Inspect the function's parameter metadata directly - more robust than
+        # relying on the engine's FQErrorID, which differs across PS editions.
+        $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
+        $cmd.Parameters.ContainsKey('Force') | Should -BeFalse
+    }
+
+    It '-Flatten parameter has been removed in v0.7.5' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
+        $cmd.Parameters.ContainsKey('Flatten') | Should -BeFalse
     }
 
     It '-WhatIf does not copy anything' {
@@ -3764,6 +3793,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
 
         $withPT = Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -PassThru 6>$null
         $withPT | Should -BeOfType [System.IO.DirectoryInfo]
+        $withPT.FullName | Should -Be $dest
 
         $dest2 = Join-Path $script:cpDestRoot 'nopassthru'
         New-Item -Path $dest2 -ItemType Directory -Force | Out-Null
@@ -3783,6 +3813,6 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
     }
 }
 
-#endregion Copy-AzureLocalPipelineExample (v0.7.4)
+#endregion Copy-AzureLocalPipelineExample (v0.7.4, updated in v0.7.5)
 
 

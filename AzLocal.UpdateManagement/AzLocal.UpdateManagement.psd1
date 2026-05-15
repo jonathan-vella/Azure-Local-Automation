@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.41'
+    ModuleVersion = '0.7.5'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -164,6 +164,32 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.5 - Copy-AzureLocalPipelineExample: simpler, safer copy semantics
+
+### Changed
+- Copy-AzureLocalPipelineExample: removed `-Flatten` and `-Force` switches
+  (v0.7.4 introduced both; neither survived first real-world use).
+  - `-Platform GitHub` now copies ONLY *.yml files from the source
+    `github-actions/` folder directly into -Destination (flat - no
+    wrapper folder, no README, no .itsm/). Canonical call:
+    `Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`
+  - `-Platform AzureDevOps` behaves the same way against the source
+    `azure-devops/` folder.
+  - `-Platform All` (default) unchanged - copies the full source tree
+    under a `.\Automation-Pipeline-Examples\` child folder for browsing.
+  - No `-Force` escape hatch: the function refuses to overwrite any
+    pre-existing destination file, listing every conflict in the error
+    message. Delete the existing copies first to refresh.
+  - Pre-existing unrelated files in -Destination (your repo's own
+    workflows like build.yml) are now left untouched.
+  - Next-steps output is platform-aware and detects when -Destination
+    is already `.github\workflows\` (commit-and-push guidance) vs.
+    somewhere else (move-to guidance). Both platform-specific values
+    point at `auth-smoke-test.yml` as the recommended first run before
+    wiring the other five workflows.
+- Not marked as a breaking change: the v0.7.4 surface had not been
+  adopted by any consumer at the time of removal.
+
 ## Version 0.7.41 - Hotfix: parallel fleet reads broken by v0.7.3 NestedModules refactor
 
 ### Fixed

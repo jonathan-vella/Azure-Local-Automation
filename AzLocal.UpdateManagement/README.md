@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.41 - [Published is PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.41)
+**Latest Version:** v0.7.5 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.5)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.41](#whats-new-in-v0741)
+- [What's New in v0.7.5](#whats-new-in-v075)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -139,13 +139,16 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.41
+## What's New in v0.7.5
 
-- **Hotfix - parallel fleet reads broken by the v0.7.3 NestedModules refactor**: v0.7.41 fixes two related regressions that surfaced on the PSGallery-installed v0.7.4 build whenever **`-ThrottleLimit > 1`** was used.
-  - **Bug 1**: every fleet read dispatched through `Invoke-FleetJobsInParallel` (`Get-AzureLocalUpdateRuns`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalClusterUpdateReadiness`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalFleetProgress`, `Invoke-AzureLocalFleetOperation`, `Test-AzureLocalClusterHealth`, and `Start-AzureLocalClusterUpdate`'s parallel path) returned `State = Error` for every cluster with the message *"Cannot use '&' to invoke in the context of module 'Invoke-FleetJobsInParallel' because it is not imported."* Inline (`-ThrottleLimit 1`) execution was unaffected. Root cause: the v0.7.3 refactor that split the monolithic `.psm1` into `NestedModules` changed the meaning of `$PSCommandPath` inside `Invoke-FleetJobsInParallel.ps1` - it now resolves to that helper's own `.ps1`, **not** to the root `AzLocal.UpdateManagement.psd1`. Each per-batch `Start-Job` scriptblock then imported only that single `.ps1` in the child runspace as a transient module, so subsequent `& $module { Get-AzLocalClusterUpdateRuns ... }` calls resolved against a session state that contained none of the private helpers.
-  - **Bug 2**: `New-AzureLocalFleetStatusHtmlReport -ThrottleLimit > 1` (via `Get-AzureLocalFleetStatusData`) threw at start-up: *"Parallel collection requires module path '...\\Public\\AzLocal.UpdateManagement.psm1' to be reachable by background jobs, but it does not exist."* Same class of regression but a separate code path: `Get-AzureLocalFleetStatusData` computed its own module path using `Join-Path $PSScriptRoot 'AzLocal.UpdateManagement.psm1'`, which under the post-v0.7.3 layout resolves to the `Public/` subfolder - one level too deep. `New-AzureLocalFleetStatusHtmlReport`'s footer manifest-fallback had the same flaw.
-- **Centralised module-root resolution**: introduced a new private helper [`Get-AzLocalModuleRootManifestPath`](Private/Get-AzLocalModuleRootManifestPath.ps1) used by all three sites. It prefers the loaded module's `.Path` (`.psd1` over `.psm1`) and falls back to walking up from the caller's `$PSCommandPath`, so it returns the correct root manifest path from any file under `Public/` or `Private/`. Future helpers won't reintroduce the same "`$PSScriptRoot` is module root" assumption.
-- **Regression coverage**: existing parallelisation tests only exercised the inline `-ThrottleLimit 1` fast-path, which reuses the parent runspace and so could not reproduce either bug. v0.7.41 adds Pester tests that (a) assert `Invoke-FleetJobsInParallel` passes the **root manifest path** (`.psd1`/`.psm1`) as the trailing `ModulePath` argument and **not** the helper's own `.ps1`, and (b) directly exercise `Get-AzLocalModuleRootManifestPath` with synthetic caller paths under `Public/` and `Private/`. Full suite: **354/354 green**.
+- **`Copy-AzureLocalPipelineExample` - simpler, safer copy semantics.** First real-world run of the v0.7.4 surface exposed two issues with the GitHub Actions path: (1) `-Platform GitHub -Flatten` left an intermediate `github-actions\` subfolder, so workflows landed at `.github\workflows\github-actions\*.yml` where the GitHub Actions runner cannot see them (the runner only scans `.github/workflows/*.yml`, non-recursively); (2) the `-Force` flag's directory-level pre-flight refused to copy whenever `.github\workflows\` contained any unrelated user workflow, making `-Force` effectively mandatory and meaningless. Both flags have been removed and the function has been reshaped around the user's actual intent:
+  - `-Platform GitHub` now copies ONLY the `*.yml` workflow files from the source `github-actions/` folder directly into `-Destination` (flat - no wrapper folder, no README, no `.itsm/`). Canonical call: `Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`.
+  - `-Platform AzureDevOps` behaves the same way against the source `azure-devops/` folder.
+  - `-Platform All` (the default) is unchanged - copies the full source tree under a `.\Automation-Pipeline-Examples\` child folder for browsing.
+  - **No `-Force` escape hatch**: the function now refuses to overwrite any pre-existing destination file, listing every conflict in the error message. To refresh after a module upgrade, delete the existing copies first and re-run. This trades convenience for safety - there is no way for the function to clobber an edited workflow.
+  - Pre-existing unrelated files in `-Destination` (e.g. your repo's own `build.yml`, `codeql.yml`) are now left untouched; the function only writes the files it is bringing over from the source tree.
+  - **Next-steps output** is now platform-aware and detects when `-Destination` is already `.github\workflows\` ("you're done, commit and push") vs. somewhere else ("move the YAMLs into `.github\workflows\`"). For both platform-specific values the output points at `auth-smoke-test.yml` as the recommended first run (see sections 5.1 and 5.2 of the [Automation-Pipeline-Examples README](Automation-Pipeline-Examples/README.md)) so the user validates the auth chain before wiring the other five workflows.
+  - Note: this is **not** marked as a breaking change because the v0.7.4 surface had not been adopted by any consumer at the time of removal (the feature shipped on 2026-05-13 and was found broken on first real-world use).
 
 > Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
@@ -698,20 +701,26 @@ Copies the bundled `Automation-Pipeline-Examples/` folder (GitHub Actions YAML, 
 **Examples:**
 
 ```powershell
-# Default: copies into .\Automation-Pipeline-Examples\ under the current directory
+# Default (-Platform All): copies the full sample tree into
+# .\Automation-Pipeline-Examples\ under the current directory (browse mode)
 Copy-AzureLocalPipelineExample
 
-# Only the GitHub Actions YAML, into a target folder of your choice
-Copy-AzureLocalPipelineExample -Destination C:\repos\my-fleet -Platform GitHub
-
-# Drop the GitHub Actions YAML directly into .github\workflows (no parent folder), overwriting
+# Drop the GitHub Actions workflow YAML files DIRECTLY into .github\workflows\
+# (no wrapper folder, no README, no .itsm). This is the canonical layout for a
+# GitHub Actions runner, which only scans .github/workflows/*.yml non-recursively.
 New-Item -ItemType Directory .\.github\workflows -Force | Out-Null
-Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Flatten -Force
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+
+# Same idea for Azure DevOps (ADO has no fixed-path convention)
+New-Item -ItemType Directory .\pipelines -Force | Out-Null
+Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps
 
 # Capture the destination and cd into it
 $dest = Copy-AzureLocalPipelineExample -Destination C:\repos\fleet -PassThru
 Set-Location $dest
 ```
+
+> The function refuses to overwrite any file that already exists in the destination - all conflicts are listed in the error message and the copy is aborted. To refresh after a module upgrade, delete the existing copies first (e.g. `Remove-Item .\.github\workflows\*.yml`) and re-run.
 
 ---
 
@@ -2132,6 +2141,14 @@ This code is provided as-is for educational and reference purposes.
 ---
 
 ## Release History
+
+### What's New in v0.7.41
+
+- **Hotfix - parallel fleet reads broken by the v0.7.3 NestedModules refactor**: v0.7.41 fixes two related regressions that surfaced on the PSGallery-installed v0.7.4 build whenever **`-ThrottleLimit > 1`** was used.
+  - **Bug 1**: every fleet read dispatched through `Invoke-FleetJobsInParallel` (`Get-AzureLocalUpdateRuns`, `Get-AzureLocalUpdateSummary`, `Get-AzureLocalClusterUpdateReadiness`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalFleetProgress`, `Invoke-AzureLocalFleetOperation`, `Test-AzureLocalClusterHealth`, and `Start-AzureLocalClusterUpdate`'s parallel path) returned `State = Error` for every cluster with the message *"Cannot use '&' to invoke in the context of module 'Invoke-FleetJobsInParallel' because it is not imported."* Inline (`-ThrottleLimit 1`) execution was unaffected. Root cause: the v0.7.3 refactor that split the monolithic `.psm1` into `NestedModules` changed the meaning of `$PSCommandPath` inside `Invoke-FleetJobsInParallel.ps1` - it now resolves to that helper's own `.ps1`, **not** to the root `AzLocal.UpdateManagement.psd1`. Each per-batch `Start-Job` scriptblock then imported only that single `.ps1` in the child runspace as a transient module, so subsequent `& $module { Get-AzLocalClusterUpdateRuns ... }` calls resolved against a session state that contained none of the private helpers.
+  - **Bug 2**: `New-AzureLocalFleetStatusHtmlReport -ThrottleLimit > 1` (via `Get-AzureLocalFleetStatusData`) threw at start-up: *"Parallel collection requires module path '...\\Public\\AzLocal.UpdateManagement.psm1' to be reachable by background jobs, but it does not exist."* Same class of regression but a separate code path: `Get-AzureLocalFleetStatusData` computed its own module path using `Join-Path $PSScriptRoot 'AzLocal.UpdateManagement.psm1'`, which under the post-v0.7.3 layout resolves to the `Public/` subfolder - one level too deep. `New-AzureLocalFleetStatusHtmlReport`'s footer manifest-fallback had the same flaw.
+- **Centralised module-root resolution**: introduced a new private helper [`Get-AzLocalModuleRootManifestPath`](Private/Get-AzLocalModuleRootManifestPath.ps1) used by all three sites. It prefers the loaded module's `.Path` (`.psd1` over `.psm1`) and falls back to walking up from the caller's `$PSCommandPath`, so it returns the correct root manifest path from any file under `Public/` or `Private/`. Future helpers won't reintroduce the same "`$PSScriptRoot` is module root" assumption.
+- **Regression coverage**: existing parallelisation tests only exercised the inline `-ThrottleLimit 1` fast-path, which reuses the parent runspace and so could not reproduce either bug. v0.7.41 adds Pester tests that (a) assert `Invoke-FleetJobsInParallel` passes the **root manifest path** (`.psd1`/`.psm1`) as the trailing `ModulePath` argument and **not** the helper's own `.ps1`, and (b) directly exercise `Get-AzLocalModuleRootManifestPath` with synthetic caller paths under `Public/` and `Private/`. Full suite: **354/354 green**.
 
 ### What's New in v0.7.4
 

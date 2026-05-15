@@ -798,18 +798,21 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 > # you're targeting and just want the YAMLs in their final location.
 > # Copy-AzureLocalPipelineExample
 >
-> # For a GitHub Actions repo: copy ONLY the GitHub YAML straight into
-> # .github\workflows\ - relative to the repo root you cd'd into above.
+> # For a GitHub Actions repo: copy ONLY the GitHub workflow YAML files straight
+> # into .github\workflows\ - relative to the repo root you cd'd into above.
 > New-Item -ItemType Directory .\.github\workflows -Force | Out-Null
-> Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Flatten -Force
+> Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
 >
-> # For an Azure DevOps repo: copy ONLY the ADO YAML into a pipelines folder
-> # of your choice (ADO has no fixed-path convention like .github\workflows\).
+> # For an Azure DevOps repo: copy ONLY the ADO pipeline YAML files into a
+> # pipelines folder of your choice (ADO has no fixed-path convention like
+> # .github\workflows\).
 > New-Item -ItemType Directory .\pipelines -Force | Out-Null
-> Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Flatten -Force
+> Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps
 > ```
 >
-> The function prints a short "next steps" summary pointing at the copied README and the platform-specific YAML folder. Supports `-Platform GitHub | AzureDevOps | All`, `-Flatten`, `-Force`, `-PassThru`, `-WhatIf`, `-Confirm`.
+> The function prints a short "next steps" summary pointing at the copied YAML location with the recommended workflow / pipeline to run first (the auth smoke test - see sections 5.1 and 5.2 below). Supports `-Platform GitHub | AzureDevOps | All`, `-PassThru`, `-WhatIf`, `-Confirm`.
+>
+> **Refusing to overwrite**: the function will refuse to overwrite any file that already exists in `-Destination`, listing the conflicts in the error message. To refresh after a module upgrade, delete the existing copies first (`Remove-Item .\.github\workflows\*.yml`) and re-run.
 
 ### 5.1 GitHub Actions
 
