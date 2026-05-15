@@ -1,0 +1,72 @@
+# Auth Smoke Test - one-shot Workload-Identity-Federation + RBAC validation for the
+# AzLocal.UpdateManagement pipelines.
+#
+# PURPOSE:
+#   Run this BEFORE importing the five real pipelines (inventory, tags, readiness,
+#   apply, status). It narrows any failure to one small pipeline rather than five
+#   interacting pipelines, by probing the four things that can be misconfigured
+#   independently:
+#       1. AzureCLI@2 task auth against the service connection (Workload Identity
+#          Federation auto-managed by ADO).
+#       2. Service-connection -> App Registration -> subscription wiring.
+#       3. Azure RBAC on the App Registration's service principal.
+#       4. Resource Graph reachability (proves the SP can actually see clusters).
+#
+#   Unlike the GitHub Actions twin (auth-smoke-test.yml in github-actions/), ADO does
+#   not expose env-scoped federated credentials at the auth layer - the service
+#   connection IS the federation. So this pipeline only validates one auth path.
+#   Environment approval gates (Pipelines -> Environments) are a separate concern
+#   and are not exercised here.
+#
+# HOW TO RUN (after the file is committed and the pipeline is imported):
+#   Pipelines -> Auth Smoke Test -> Run pipeline.
+#
+# DELETE THIS FILE once the run is green - it has no purpose after validation.
+# See Automation-Pipeline-Examples/README.md, section 5.2, for the full setup story.
+
+trigger: none
+
+# No parameters - this pipeline is deliberately fixed: one service connection,
+# one identity, three probes. If the service connection name does not match your
+# environment, update `azureSubscription` below.
+
+pool:
+  vmImage: 'windows-latest'
+
+stages:
+  - stage: Smoke
+    displayName: 'Validate Workload Identity Federation + RBAC'
+    jobs:
+      - job: SmokeTest
+        displayName: 'Run auth and RBAC probes'
+
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Confirm identity, RBAC, and cluster reachability'
+            inputs:
+              azureSubscription: 'AzureLocal-ServiceConnection'  # Update if your service connection has a different name.
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                Write-Host '--- 1. az account show (proves service-connection auth) ---'
+                az account show `
+                    --query '{subscription:name, subscriptionId:id, tenantId:tenantId, user:user.name}' `
+                    -o table
+
+                Write-Host ''
+                Write-Host '--- 2. role assignments for the service connection identity (proves RBAC grant) ---'
+                # Resolve the service connection's appId from the live token, so this
+                # works whether the SP was auto-created by ADO or pre-existing.
+                $appId = az account show --query user.name -o tsv
+                Write-Host "Service connection identity (appId): $appId"
+                az role assignment list `
+                    --assignee $appId `
+                    --all `
+                    -o table
+
+                Write-Host ''
+                Write-Host '--- 3. Resource Graph query (proves cluster reachability) ---'
+                az extension add --name resource-graph --yes --only-show-errors | Out-Null
+                az graph query `
+                    -q "resources | where type =~ 'microsoft.azurestackhci/clusters' | project name, resourceGroup, subscriptionId | take 5" `
+                    -o table
