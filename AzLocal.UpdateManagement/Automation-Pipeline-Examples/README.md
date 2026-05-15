@@ -237,6 +237,60 @@ No `AZURE_CLIENT_SECRET` is needed.
 
 For public repositories, prefer [environment secrets with required reviewers](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#environment-secrets) over repository-level secrets - they restrict who can run the workflow against production identities.
 
+You can add the secrets via the GitHub UI (**Settings -> Secrets and variables -> Actions -> New repository secret**, then **Settings -> Environments -> `<env>` -> Add secret** for environment-scoped values), or scripted via the **GitHub CLI** (`gh`).
+
+> **Install the GitHub CLI (`gh`)** - one-time setup. Pick whichever applies on your workstation; all options give you the same `gh` binary:
+>
+> ```powershell
+> # Windows - winget (recommended on Windows 10/11)
+> winget install --id GitHub.cli
+>
+> # Windows - Chocolatey alternative
+> choco install gh
+>
+> # macOS - Homebrew
+> brew install gh
+>
+> # Linux - see https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+> ```
+>
+> Then authenticate once (opens a browser, asks you to sign in to GitHub and grant the CLI permission):
+>
+> ```powershell
+> gh auth login
+> # Choose: GitHub.com -> HTTPS -> Login with a web browser
+> # Confirm with: gh auth status
+> ```
+>
+> `gh` reuses the credentials of the signed-in account, so it can write secrets to any repo that account can write to. No personal access token needed for interactive use.
+
+**Script the secrets (recommended)** - reads back the values you set up in earlier steps and writes them to the repo (and the `Production` environment) in one block. Substitute `<owner>/<repo>` for your target repo:
+
+```powershell
+# Inputs - reuse the variables from the federation step where you can
+$repo     = '<owner>/<repo>'                                 # e.g. contoso/azlocal-update-automation (your GitHub repo)
+$clientId = '<appId-from-step-1>'                            # GUID printed by az ad app create (from step 1)
+$subId    = (az account show --query id       -o tsv)        # current az subscription
+$tenantId = (az account show --query tenantId -o tsv)        # current az tenant
+
+# 1. Repository-level secrets (visible to every workflow run in the repo)
+gh secret set AZURE_CLIENT_ID       --body $clientId  --repo $repo
+gh secret set AZURE_TENANT_ID       --body $tenantId  --repo $repo
+gh secret set AZURE_SUBSCRIPTION_ID --body $subId     --repo $repo
+
+# 2. Optional - also pin AZURE_CLIENT_ID at each environment, so a future repo-level
+#    rotation does not silently apply to Production without re-approval.
+foreach ($envName in 'DevTest','PreProduction','Production') {
+    gh secret set AZURE_CLIENT_ID --body $clientId --env $envName --repo $repo
+}
+
+# Verify (lists names only, never the values - secret values are write-only in GitHub)
+gh secret list --repo $repo
+gh secret list --env  Production --repo $repo
+```
+
+> **Note**: `gh secret list` shows only the secret **names** and last-updated timestamps - GitHub never returns the secret values back, even to admins. If you need to confirm what's there, the names + dates are the only signal; to verify a value you must overwrite with the same `gh secret set` command.
+
 Microsoft Learn reference: [Use GitHub Actions with OpenID Connect](https://learn.microsoft.com/azure/developer/github/connect-from-azure-openid-connect).
 
 ### 3.2 Azure DevOps with Workload Identity Federation (recommended)
