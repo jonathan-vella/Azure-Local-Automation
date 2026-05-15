@@ -141,11 +141,8 @@ jobs:
             exit 1
         }
     
-    - name: Apply UpdateRing Tags
+    - name: Install AzLocal.UpdateManagement from PSGallery
       shell: pwsh
-      env:
-        INPUT_FORCE_OVERWRITE: ${{ github.event.inputs.force_overwrite }}
-        INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
       run: |
         $ErrorActionPreference = 'Stop'
         $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
@@ -175,6 +172,15 @@ jobs:
             $msg = "AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed. Review the module CHANGELOG before bumping REQUIRED_MODULE_VERSION (or clear the pin to install the latest automatically)."
             Write-Host "::notice title=Newer AzLocal.UpdateManagement version available on PSGallery::$msg"
         }
+    
+    - name: Apply UpdateRing Tags
+      shell: pwsh
+      env:
+        INPUT_FORCE_OVERWRITE: ${{ github.event.inputs.force_overwrite }}
+        INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Import-Module AzLocal.UpdateManagement -Force
         
         $csvPath = "${{ steps.csv-path.outputs.CSV_PATH }}"
         $forceOverwrite = $env:INPUT_FORCE_OVERWRITE -eq "true"

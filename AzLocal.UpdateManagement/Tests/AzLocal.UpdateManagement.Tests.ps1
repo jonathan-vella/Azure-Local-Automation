@@ -3795,6 +3795,24 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         $cmd.Parameters['Update'].ParameterType | Should -Be ([switch])
     }
 
+    It 'No-to-All only suppresses overwrites, not brand-new files (v0.7.5 regression guard)' {
+        # Background: In an early v0.7.5 pass the per-file loop's top guard was
+        #     if ($noToAll) { $skippedCount++; continue }
+        # which skipped EVERY remaining file once the user chose No-to-All,
+        # even files that did not already exist at the destination (no prompt
+        # would have been raised for them). The corrected semantics match
+        # PowerShell's canonical No-to-All meaning ("answer No to all remaining
+        # prompts") rather than "halt all subsequent operations". This test
+        # asserts the corrected source pattern is present so the bug cannot
+        # silently re-appear.
+        $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
+        $src = $cmd.ScriptBlock.ToString()
+        # Corrected guard: skip only when there is an existing file to overwrite.
+        $src | Should -Match 'if\s*\(\s*\$noToAll\s+-and\s+\$destExists\s*\)'
+        # The bare-noToAll early-continue must NOT reappear at the top of the loop.
+        $src | Should -Not -Match 'foreach\s*\(\s*\$pair\s+in\s+\$copyPairs\s*\)\s*\{\s*if\s*\(\s*\$noToAll\s*\)\s*\{\s*\$skippedCount\+\+\s*;?\s*continue'
+    }
+
     It '-Update -WhatIf does not modify any existing files' {
         $dest = Join-Path $script:cpDestRoot 'update-whatif'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null

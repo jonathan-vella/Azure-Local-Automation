@@ -293,12 +293,19 @@ function Copy-AzureLocalPipelineExample {
     $copiedCount = 0
     $skippedCount = 0
     foreach ($pair in $copyPairs) {
-        if ($noToAll) {
+        $destExists = Test-Path -LiteralPath $pair.Destination -PathType Leaf
+
+        # No-to-All only suppresses OVERWRITES; a brand-new file (no existing
+        # destination) is still copied, because ShouldContinue would never
+        # have prompted for it in the first place. This matches PowerShell's
+        # canonical No-to-All semantics ("answer No to all remaining prompts")
+        # rather than "halt all subsequent operations".
+        if ($noToAll -and $destExists) {
+            Write-Verbose ("Copy-AzureLocalPipelineExample: skipped (No-to-All overwrite suppression): {0}" -f $pair.Destination)
             $skippedCount++
             continue
         }
 
-        $destExists = Test-Path -LiteralPath $pair.Destination -PathType Leaf
         if ($destExists -and -not $confirmExplicitlyDisabled -and -not $yesToAll) {
             # ShouldContinue is independent of $ConfirmPreference. It always
             # prompts unless the caller has explicitly passed -Confirm:$false
@@ -310,7 +317,7 @@ function Copy-AzureLocalPipelineExample {
                 [ref]$noToAll
             )
             if ($noToAll) {
-                Write-Verbose "Copy-AzureLocalPipelineExample: user chose No-to-All - skipping remaining file(s)."
+                Write-Verbose "Copy-AzureLocalPipelineExample: user chose No-to-All - remaining overwrites will be skipped (new files will still be copied)."
                 $skippedCount++
                 continue
             }

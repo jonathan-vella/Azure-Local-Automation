@@ -21,7 +21,7 @@ It is written in the same step-by-step style as [`ITSM/README.md`](../ITSM/READM
 5. [Wire the pipeline files into your repo](#5-wire-the-pipeline-files-into-your-repo)
    - [5.1 GitHub Actions](#51-github-actions)
    - [5.2 Azure DevOps](#52-azure-devops)
-   - [5.3 Optional configuration: pin the module version](#53-optional-configuration-pin-the-module-version)
+   - [5.3 Optional configuration (not recommended): pin the module version](#53-optional-configuration-not-recommended-pin-the-module-version)
 6. [End-to-end runbook: bring an estate online](#6-end-to-end-runbook-bring-an-estate-online)
    - [6.1 Inventory the estate](#61-inventory-the-estate)
    - [6.2 Plan update rings, windows, and exclusions](#62-plan-update-rings-windows-and-exclusions)
@@ -953,7 +953,7 @@ Every example pipeline installs `AzLocal.UpdateManagement` from PSGallery at run
 
 If your change-control process requires you to pin the module version (so a release on PSGallery cannot change what runs in production without an explicit promotion), set `REQUIRED_MODULE_VERSION`. The install step pins to that exact version when set, and falls back to "latest" when empty.
 
-**Note**: If you pin a specific module version, you would be responsible to periodically check PowerShell Gallery for updated AzLocal.UpdateManagement module versions and update the YML files in your Git source control manually, and update the CI/CD 'REQUIRED_MODULE_VERSION' variable manually.
+**Note**: Pinning shifts ongoing maintenance onto you. With a pin in place you are responsible for: (1) periodically checking PowerShell Gallery for new `AzLocal.UpdateManagement` releases; (2) refreshing the pipeline YAMLs in your repository when a new version ships (run `Copy-AzureLocalPipelineExample -Update` - see further below); and (3) bumping `REQUIRED_MODULE_VERSION` to match the version those refreshed YAMLs were generated against. If the three drift apart, the drift-notice warnings (see below) lose most of their value.
 
 **GitHub Actions** - resolution order (first non-empty wins):
 
