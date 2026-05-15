@@ -281,14 +281,21 @@ $envs     = 'DevTest','PreProduction','Production'           # match the names i
 #    Skipping this is the most common cause of opaque HTTP 404s in step 1.
 gh auth status                                              # check signed-in account + token scopes
 gh repo view $repo                                          # must print repo details, confirm as you expect
+gh api "/repos/$repo" --jq '.permissions'                   # must show "admin": true - env creation is admin-only
 #    If gh repo view returns 404 or shows a "Repository setup required" prompt:
 #      - the repo path is wrong (typo in $repo), OR
-#      - your gh account doesn't have admin on it (org owner / repo admin only), OR
+#      - your gh account doesn't have access at all (org owner / repo admin only), OR
 #      - the org enforces SAML SSO and your OAuth grant is not yet authorised.
 #    Fix before proceeding:
 #      gh auth refresh -h github.com -s admin:org,repo,workflow
 #    Then visit https://github.com/$repo in a browser to accept any pending
 #    invitation / SSO consent. Re-run 'gh repo view $repo' until it succeeds.
+#
+#    If gh repo view succeeds but '.permissions' shows '"admin": false':
+#      - you have read/push but NOT admin on the repo.
+#      - 'gh api PUT /environments/...' (and 'gh secret set') require admin.
+#      - Ask a repo admin to either run this block, or grant your account the
+#        Admin role under repo Settings -> Collaborators and teams.
 
 # 1. Create the GitHub environments (idempotent - PUT creates if missing, no-op if it exists).
 #    The federated credentials in step 3 only succeed at workflow run time if these exist.
