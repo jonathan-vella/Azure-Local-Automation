@@ -3754,7 +3754,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File).Count | Should -BeGreaterThan 1
     }
 
-    It 'Refuses to overwrite an existing file (no -Force escape hatch) and lists the conflicts' {
+    It 'Refuses to overwrite an existing file by default and lists the conflicts (no -Update)' {
         $dest = Join-Path $script:cpDestRoot 'no-overwrite'
         New-Item -Path $dest -ItemType Directory -Force | Out-Null
 
@@ -3762,10 +3762,53 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
 
         # Second copy must refuse: ALL the same files now exist as conflicts.
-        # -Force does not exist as a parameter any more, so the user has no
-        # in-band way to override.
+        # The error message must hint at the -Update escape hatch.
         { Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null } |
             Should -Throw -ExpectedMessage '*refusing to overwrite*'
+        { Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null } |
+            Should -Throw -ExpectedMessage '*-Update*'
+    }
+
+    It '-Update -Confirm:$false overwrites existing files without prompting (automation path)' {
+        $dest = Join-Path $script:cpDestRoot 'update-confirm-false'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        # Seed the destination so every file is a conflict
+        Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
+
+        # Mutate one destination file so we can prove it gets overwritten
+        $target = Join-Path $dest 'auth-smoke-test.yml'
+        $sentinel = '# SENTINEL - if this comment survives, -Update did not overwrite'
+        Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
+        (Get-Content -LiteralPath $target -Raw) | Should -Match 'SENTINEL'
+
+        # -Update -Confirm:$false must NOT throw and must overwrite the sentinel
+        { Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -Update -Confirm:$false 6>$null } |
+            Should -Not -Throw
+
+        (Get-Content -LiteralPath $target -Raw) | Should -Not -Match 'SENTINEL'
+    }
+
+    It '-Update is exposed as a [switch] parameter in v0.7.5' {
+        $cmd = Get-Command -Name 'Copy-AzureLocalPipelineExample' -ErrorAction Stop
+        $cmd.Parameters.ContainsKey('Update') | Should -BeTrue
+        $cmd.Parameters['Update'].ParameterType | Should -Be ([switch])
+    }
+
+    It '-Update -WhatIf does not modify any existing files' {
+        $dest = Join-Path $script:cpDestRoot 'update-whatif'
+        New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+        # Seed and then mutate
+        Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
+        $target = Join-Path $dest 'auth-smoke-test.yml'
+        $sentinel = '# WHATIF SENTINEL - -WhatIf must preserve this'
+        Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
+
+        # -Update -WhatIf must NOT modify the file
+        Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub -Update -WhatIf 6>$null
+
+        (Get-Content -LiteralPath $target -Raw) | Should -Match 'WHATIF SENTINEL'
     }
 
     It '-Force parameter has been removed in v0.7.5' {

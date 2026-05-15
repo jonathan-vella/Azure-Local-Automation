@@ -35,10 +35,15 @@ function Copy-AzureLocalPipelineExample {
                                convention, so any folder works.
 
         The function is read-only relative to the module install (it never
-        modifies anything under `$module.ModuleBase`). It also REFUSES to
-        overwrite any file that already exists at the destination - all
-        conflicts are listed in the error message and the copy is aborted.
-        To refresh after a module upgrade, delete the existing copies first.
+        modifies anything under `$module.ModuleBase`). By default it also
+        REFUSES to overwrite any file that already exists at the destination
+        - all conflicts are listed in the error message and the copy is
+        aborted. To refresh after a module upgrade pass `-Update`: you will
+        be prompted per file (Y / A / N / L / S / ?) before each overwrite.
+        Pair with `-Confirm:$false` to bypass the prompts (useful in CI).
+        Use `-WhatIf` to preview without changing anything. Pipeline files
+        are expected to live under git source control, so any overwrites
+        can be reviewed via `git diff` before commit.
         Supports `-WhatIf` and `-Confirm`.
 
     .PARAMETER Destination
@@ -61,6 +66,15 @@ function Copy-AzureLocalPipelineExample {
     .PARAMETER PassThru
         Return the [System.IO.DirectoryInfo] of the destination folder. By
         default the function writes only informational messages.
+
+    .PARAMETER Update
+        Allow overwriting destination files that already exist. Without this
+        switch the function aborts with a list of conflicting files. With
+        `-Update` you are prompted per file (`ShouldContinue` Y/A/N/L/S/?)
+        before each overwrite - independent of `$ConfirmPreference`. Pass
+        `-Confirm:$false` to suppress the prompts and overwrite
+        unconditionally (suitable for scripted / CI refresh). `-WhatIf`
+        overrides everything and only prints what would change.
 
     .OUTPUTS
         [System.IO.DirectoryInfo] when -PassThru is specified. Nothing
@@ -94,6 +108,19 @@ function Copy-AzureLocalPipelineExample {
 
         Copy the full sample tree and cd into the destination folder.
 
+    .EXAMPLE
+        Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update
+
+        Refresh the GitHub Actions workflow YAMLs from a (newer) installed
+        module. You are prompted per file (Y / A / N / L / S / ?) before
+        each overwrite. Review the result with `git diff` before committing.
+
+    .EXAMPLE
+        Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update -Confirm:$false
+
+        Same as above but without per-file prompts - suitable for scripted /
+        CI refresh, typically after a `git diff` review against a fresh copy.
+
     .NOTES
         Author      : Neil Bird, Microsoft
         Module      : AzLocal.UpdateManagement
@@ -101,9 +128,13 @@ function Copy-AzureLocalPipelineExample {
         Changed in  : v0.7.5 - removed `-Flatten` and `-Force` switches.
                       Platform-specific copies now drop YAMLs directly into
                       `-Destination` (no intermediate `github-actions\` or
-                      `azure-devops\` subfolder), and the function refuses to
-                      overwrite any pre-existing destination file. To refresh
-                      a copy, delete the existing files first.
+                      `azure-devops\` subfolder), and the function refuses
+                      to overwrite any pre-existing destination file by
+                      default. Added `-Update` with per-file ShouldContinue
+                      prompts (and `-Confirm:$false` bypass) as the
+                      controlled refresh path - files are expected to be
+                      under git source control so `git diff` provides the
+                      safety net.
     #>
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     [OutputType([System.IO.DirectoryInfo])]
@@ -114,6 +145,11 @@ function Copy-AzureLocalPipelineExample {
 
         [ValidateSet('All', 'GitHub', 'AzureDevOps')]
         [string]$Platform = 'All',
+
+        # Allow overwriting destination files that already exist. Without
+        # -Update, conflicts cause the function to abort. With -Update,
+        # ShouldContinue prompts per file (bypassable via -Confirm:$false).
+        [switch]$Update,
 
         [switch]$PassThru
     )
@@ -215,38 +251,88 @@ function Copy-AzureLocalPipelineExample {
     }
 
     # ------------------------------------------------------------------
-    # 4. Pre-flight check: refuse to overwrite. Collect every destination
-    #    that already exists as a file, list them all in one error, and
-    #    abort. There is no -Force escape hatch by design - if the user
-    #    wants to refresh, they must delete the existing files first.
+    # 4. Pre-flight check on existing destinations. Default behaviour is
+    #    to refuse the operation entirely. -Update opts into per-file
+    #    overwrite prompts (ShouldContinue, see step 5). Either way we
+    #    collect every conflicting destination so the user sees the full
+    #    list up front rather than discovering them one at a time.
     # ------------------------------------------------------------------
     $conflicts = @($copyPairs | Where-Object { Test-Path -LiteralPath $_.Destination -PathType Leaf })
     if ($conflicts.Count -gt 0) {
         $conflictList = ($conflicts | ForEach-Object { "  - $($_.Destination)" }) -join [Environment]::NewLine
-        throw ("Copy-AzureLocalPipelineExample: refusing to overwrite {0} existing file(s) under '{1}'. Delete them manually if you want to refresh the copy.`n{2}" -f $conflicts.Count, $targetRoot, $conflictList)
+        if (-not $Update) {
+            throw ("Copy-AzureLocalPipelineExample: refusing to overwrite {0} existing file(s) under '{1}'. Pass -Update to refresh (you will be prompted per file unless you also pass -Confirm:`$false). Pipeline files are expected to be under git source control so 'git diff' shows exactly what changed.`n{2}" -f $conflicts.Count, $targetRoot, $conflictList)
+        }
+        Write-Verbose ("Copy-AzureLocalPipelineExample: -Update specified; {0} existing file(s) may be overwritten - will prompt per file unless -Confirm:`$false is set.{1}{2}" -f $conflicts.Count, [Environment]::NewLine, $conflictList)
     }
 
     # ------------------------------------------------------------------
     # 5. Perform the copy. One ShouldProcess gate at the operation level
     #    rather than per file - the per-platform filter already limits
-    #    scope, and per-file -Confirm would be unusably chatty. Parent
-    #    folders for each destination file are created on demand.
+    #    scope, and per-file -Confirm would be unusably chatty for the
+    #    routine "first install" case. Per-file ShouldContinue prompts
+    #    are emitted only when overwriting an existing file under
+    #    -Update (see below). Parent folders for each destination file
+    #    are created on demand.
     # ------------------------------------------------------------------
-    $copyDescription = "Copy {0} file(s) from '{1}' to '{2}' (Platform='{3}')" -f `
-        $copyPairs.Count, $sourceRoot, $targetRoot, $Platform
+    $copyDescription = "Copy {0} file(s) from '{1}' to '{2}' (Platform='{3}'{4})" -f `
+        $copyPairs.Count, $sourceRoot, $targetRoot, $Platform, $(if ($Update) { '; -Update' } else { '' })
     if (-not $PSCmdlet.ShouldProcess($targetRoot, $copyDescription)) {
         return
     }
 
+    # ShouldContinue state: Yes-to-All / No-to-All flags survive across
+    # iterations so the user can pick a fleet-wide choice once. They are
+    # only consulted when -Update is set AND a destination file exists.
+    $yesToAll = $false
+    $noToAll  = $false
+    # -Confirm:$false (explicit) suppresses the per-file ShouldContinue
+    # prompts entirely. This is the documented automation bypass.
+    $confirmExplicitlyDisabled = $PSBoundParameters.ContainsKey('Confirm') -and -not [bool]$PSBoundParameters['Confirm']
+
+    $copiedCount = 0
+    $skippedCount = 0
     foreach ($pair in $copyPairs) {
+        if ($noToAll) {
+            $skippedCount++
+            continue
+        }
+
+        $destExists = Test-Path -LiteralPath $pair.Destination -PathType Leaf
+        if ($destExists -and -not $confirmExplicitlyDisabled -and -not $yesToAll) {
+            # ShouldContinue is independent of $ConfirmPreference. It always
+            # prompts unless the caller has explicitly passed -Confirm:$false
+            # (handled above) or the user has already chosen Yes-to-All.
+            $shouldOverwrite = $PSCmdlet.ShouldContinue(
+                ("Overwrite existing file '{0}'?" -f $pair.Destination),
+                'Confirm pipeline example overwrite',
+                [ref]$yesToAll,
+                [ref]$noToAll
+            )
+            if ($noToAll) {
+                Write-Verbose "Copy-AzureLocalPipelineExample: user chose No-to-All - skipping remaining file(s)."
+                $skippedCount++
+                continue
+            }
+            if (-not $shouldOverwrite) {
+                Write-Verbose ("Copy-AzureLocalPipelineExample: skipped (user declined overwrite): {0}" -f $pair.Destination)
+                $skippedCount++
+                continue
+            }
+        }
+
         $destDir = Split-Path -Parent $pair.Destination
         if (-not (Test-Path -LiteralPath $destDir)) {
             $null = New-Item -ItemType Directory -Path $destDir -Force -ErrorAction Stop
         }
-        Copy-Item -LiteralPath $pair.Source -Destination $pair.Destination -ErrorAction Stop
+        # -Force lets Copy-Item replace files even when they're marked read-only.
+        # Safe here because step 4 already gated overwrites behind -Update and
+        # the loop above gated each overwrite behind ShouldContinue.
+        Copy-Item -LiteralPath $pair.Source -Destination $pair.Destination -Force -ErrorAction Stop
+        $copiedCount++
     }
 
-    Write-Verbose "Copied $($copyPairs.Count) file(s) from '$sourceRoot' to '$targetRoot'."
+    Write-Verbose "Copied $copiedCount file(s) from '$sourceRoot' to '$targetRoot' (skipped: $skippedCount)."
 
     # ------------------------------------------------------------------
     # 6. Friendly "what now" summary so the user does not have to open
@@ -260,7 +346,10 @@ function Copy-AzureLocalPipelineExample {
     Write-Host ("  Source      : {0}" -f $sourceRoot)
     Write-Host ("  Destination : {0}" -f $targetRoot)
     Write-Host ("  Platform    : {0}" -f $Platform)
-    Write-Host ("  Files copied: {0}" -f $copyPairs.Count)
+    Write-Host ("  Files copied: {0}" -f $copiedCount)
+    if ($skippedCount -gt 0) {
+        Write-Host ("  Files skipped: {0} (user declined overwrite or -WhatIf)" -f $skippedCount) -ForegroundColor Yellow
+    }
     Write-Host ""
     Write-Host "Next steps:" -ForegroundColor Cyan
     switch ($Platform) {

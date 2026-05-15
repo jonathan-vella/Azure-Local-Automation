@@ -145,7 +145,7 @@ If you are new to this module, work through these in order from a regular PowerS
   - `-Platform GitHub` now copies ONLY the `*.yml` workflow files from the source `github-actions/` folder directly into `-Destination` (flat - no wrapper folder, no README, no `.itsm/`). Canonical call: `Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`.
   - `-Platform AzureDevOps` behaves the same way against the source `azure-devops/` folder.
   - `-Platform All` (the default) is unchanged - copies the full source tree under a `.\Automation-Pipeline-Examples\` child folder for browsing.
-  - **No `-Force` escape hatch**: the function now refuses to overwrite any pre-existing destination file, listing every conflict in the error message. To refresh after a module upgrade, delete the existing copies first and re-run. This trades convenience for safety - there is no way for the function to clobber an edited workflow.
+  - **Controlled refresh via `-Update`** (new in v0.7.5): the function still refuses to overwrite by default and lists every conflict in the error message - but the error now points at the `-Update` switch instead of asking the user to `Remove-Item` first. With `-Update` the function emits a per-file `ShouldContinue` prompt (`Y` / `A` / `N` / `L` / `S` / `?`) before each overwrite. Pair with `-Confirm:$false` to suppress the prompts entirely (the documented automation / CI bypass), or use `-WhatIf` to preview without changing anything. Pipeline files are expected to live under git source control so `git diff` is the second safety net after `ShouldContinue`. There is **deliberately no `-Force`**: `-Update` is the narrower, more explicit replacement.
   - Pre-existing unrelated files in `-Destination` (e.g. your repo's own `build.yml`, `codeql.yml`) are now left untouched; the function only writes the files it is bringing over from the source tree.
   - **Next-steps output** is now platform-aware and detects when `-Destination` is already `.github\workflows\` ("you're done, commit and push") vs. somewhere else ("move the YAMLs into `.github\workflows\`"). For both platform-specific values the output points at `auth-smoke-test.yml` as the recommended first run (see sections 5.1 and 5.2 of the [Automation-Pipeline-Examples README](Automation-Pipeline-Examples/README.md)) so the user validates the auth chain before wiring the other five workflows.
   - Note: this is **not** marked as a breaking change because the v0.7.4 surface had not been adopted by any consumer at the time of removal (the feature shipped on 2026-05-13 and was found broken on first real-world use).
@@ -720,7 +720,15 @@ $dest = Copy-AzureLocalPipelineExample -Destination C:\repos\fleet -PassThru
 Set-Location $dest
 ```
 
-> The function refuses to overwrite any file that already exists in the destination - all conflicts are listed in the error message and the copy is aborted. To refresh after a module upgrade, delete the existing copies first (e.g. `Remove-Item .\.github\workflows\*.yml`) and re-run.
+> By default the function refuses to overwrite any file that already exists in the destination - all conflicts are listed in the error message and the copy is aborted. To refresh after a module upgrade, pass `-Update`: you will be prompted per file (`Y` / `A` / `N` / `L` / `S` / `?`) before each overwrite. Use `-Update -Confirm:$false` to bypass the prompts in scripted / CI scenarios, or `-Update -WhatIf` to preview the changes. Pipeline files are expected to be under git source control so `git diff` gives you the post-overwrite safety net.
+>
+> ```powershell
+> # Interactive refresh - prompt per file
+> Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update
+>
+> # Scripted / CI refresh - no prompts, review afterwards with 'git diff'
+> Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update -Confirm:$false
+> ```
 
 ---
 

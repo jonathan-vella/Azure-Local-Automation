@@ -164,31 +164,33 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.5 - Copy-AzureLocalPipelineExample: simpler, safer copy semantics
+## Version 0.7.5 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update
+
+### Added
+- Pipeline examples (5 GitHub Actions + 5 Azure DevOps YAMLs) now
+  install AzLocal.UpdateManagement from PSGallery at runtime instead of
+  importing a vendored copy. Default: install latest. Optional pin via
+  REQUIRED_MODULE_VERSION (workflow_dispatch input or repo variable on
+  GH; queue-time pipeline parameter on ADO). Each install step compares
+  installed / generated / latest and warns when the YAML is stale or a
+  newer release is on PSGallery. See Automation-Pipeline-Examples README
+  section 5.3.
+- Copy-AzureLocalPipelineExample: new -Update switch for controlled
+  refresh of an existing destination. Per-file ShouldContinue prompts
+  with -Confirm:$false bypass for unattended use; -WhatIf supported. No
+  -Force switch by design - git diff after the copy is the rollback.
 
 ### Changed
-- Copy-AzureLocalPipelineExample: removed `-Flatten` and `-Force` switches
-  (v0.7.4 introduced both; neither survived first real-world use).
-  - `-Platform GitHub` now copies ONLY *.yml files from the source
-    `github-actions/` folder directly into -Destination (flat - no
-    wrapper folder, no README, no .itsm/). Canonical call:
-    `Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`
-  - `-Platform AzureDevOps` behaves the same way against the source
-    `azure-devops/` folder.
-  - `-Platform All` (default) unchanged - copies the full source tree
-    under a `.\Automation-Pipeline-Examples\` child folder for browsing.
-  - No `-Force` escape hatch: the function refuses to overwrite any
-    pre-existing destination file, listing every conflict in the error
-    message. Delete the existing copies first to refresh.
-  - Pre-existing unrelated files in -Destination (your repo's own
-    workflows like build.yml) are now left untouched.
-  - Next-steps output is platform-aware and detects when -Destination
-    is already `.github\workflows\` (commit-and-push guidance) vs.
-    somewhere else (move-to guidance). Both platform-specific values
-    point at `auth-smoke-test.yml` as the recommended first run before
-    wiring the other five workflows.
-- Not marked as a breaking change: the v0.7.4 surface had not been
-  adopted by any consumer at the time of removal.
+- Copy-AzureLocalPipelineExample: removed v0.7.4 -Flatten and -Force
+  switches (neither survived first real-world use). -Platform GitHub
+  copies only *.yml from github-actions/ flat into -Destination (no
+  wrapper folder, no README, no .itsm/); -Platform AzureDevOps mirrors
+  this against azure-devops/; -Platform All (default) unchanged. Without
+  -Update the function refuses to overwrite any pre-existing destination
+  file, listing every conflict in the error message. Pre-existing
+  unrelated files (e.g. your repo's own build.yml) are left untouched.
+  Not flagged as breaking: the v0.7.4 surface had not been adopted at
+  removal time.
 
 ## Version 0.7.41 - Hotfix: parallel fleet reads broken by v0.7.3 NestedModules refactor
 
@@ -287,30 +289,15 @@
 
 ## Version 0.7.2 - Fleet read paths fixed under -ThrottleLimit > 1
 
-### Bug fixes
-- Get-AzureLocalUpdateRuns / Get-AzureLocalUpdateSummary /
-  Get-AzureLocalClusterUpdateReadiness no longer fail when invoked with
-  -ThrottleLimit greater than 1. Previously the per-cluster scriptblock
-  dispatched via Start-Job called module-private helpers directly. After
-  Import-Module in the child runspace those helpers were not visible at
-  script command-resolution scope, so every cluster reported
-  "The term 'Get-AzLocalClusterUpdateRuns' is not recognized..." (or the
-  equivalent). Inline (-ThrottleLimit 1) execution was unaffected. Fix:
-  each affected scriptblock now resolves the loaded module reference
-  (Import-Module -PassThru) and invokes the helper via & $module { ... }
-  so calls execute against the module's own session state and resolve
-  all transitive private references. Reported against a 9-cluster Prod
-  fleet. (See also v0.7.41 which catches a different manifestation of
-  this class.)
-- cp1252 encoding warnings no longer leak into JSON parsing. On Windows
-  hosts where the console code page is cp1252, az rest / az graph query
-  emitted "WARNING: Unable to encode the output with cp1252 encoding..."
-  for ARM responses containing non-cp1252 characters; captured via 2>&1
-  that warning broke ConvertFrom-Json. PYTHONIOENCODING=utf-8 is
-  ineffective because az.cmd launches python with -I (isolated). Fix:
-  pass --only-show-errors to every az rest and az graph query call site
-  (Azure CLI maintainer's recommended workaround per azure-cli #14426).
-  See CHANGELOG.md for full detail.
+Summary: fix for Get-AzureLocalUpdateRuns / Get-AzureLocalUpdateSummary /
+Get-AzureLocalClusterUpdateReadiness which previously failed under
+-ThrottleLimit > 1 because child Start-Job runspaces could not see module-
+private helpers; per-cluster scriptblocks now resolve the loaded module
+(Import-Module -PassThru) and invoke helpers via `& $module { ... }`.
+Inline (-ThrottleLimit 1) execution was unaffected. Also suppresses cp1252
+encoding warnings from az rest / az graph query by passing
+--only-show-errors at every call site (per azure-cli #14426). See also
+v0.7.41 for a related manifestation. Full notes in CHANGELOG.md.
 
 ## Version 0.7.1 - EndTime column for update runs + Sideloaded payload workflow
 

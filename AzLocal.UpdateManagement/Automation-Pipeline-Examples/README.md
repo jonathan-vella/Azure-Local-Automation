@@ -21,6 +21,7 @@ It is written in the same step-by-step style as [`ITSM/README.md`](../ITSM/READM
 5. [Wire the pipeline files into your repo](#5-wire-the-pipeline-files-into-your-repo)
    - [5.1 GitHub Actions](#51-github-actions)
    - [5.2 Azure DevOps](#52-azure-devops)
+   - [5.3 Optional configuration: pin the module version](#53-optional-configuration-pin-the-module-version)
 6. [End-to-end runbook: bring an estate online](#6-end-to-end-runbook-bring-an-estate-online)
    - [6.1 Inventory the estate](#61-inventory-the-estate)
    - [6.2 Plan update rings, windows, and exclusions](#62-plan-update-rings-windows-and-exclusions)
@@ -945,6 +946,62 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 5. Each pipeline references a service connection named `AzureLocal-ServiceConnection`. Either name your service connection to match, or change `azureSubscription:` in each YAML.
 
 Optional: create a variable group named **`AzureLocal-Config`** in **Pipelines -> Library** for default values (e.g. the default `UpdateRing` for your most-common rollout). The example YAMLs do not require it.
+
+### 5.3 Optional configuration (_not recommended_): pin the module version
+
+Every example pipeline installs `AzLocal.UpdateManagement` from PSGallery at runtime instead of importing a vendored copy from the repo. By default the install step pulls the **latest** version on each run - this is the recommended "fix-forward" posture: bug fixes and new safety gates land on your fleet without you having to touch the YAML again.
+
+If your change-control process requires you to pin the module version (so a release on PSGallery cannot change what runs in production without an explicit promotion), set `REQUIRED_MODULE_VERSION`. The install step pins to that exact version when set, and falls back to "latest" when empty.
+
+**Note**: If you pin a specific module version, you would be responsible to periodically check PowerShell Gallery for updated AzLocal.UpdateManagement module versions and update the YML files in your Git source control manually, and update the CI/CD 'REQUIRED_MODULE_VERSION' variable manually.
+
+**GitHub Actions** - resolution order (first non-empty wins):
+
+1. Manual `workflow_dispatch` input `module_version` (per-run override).
+2. Repository variable `REQUIRED_MODULE_VERSION` (estate-wide default).
+3. Empty (install latest).
+
+```bash
+# Set an estate-wide pin (applies to every scheduled / event-triggered run):
+gh variable set REQUIRED_MODULE_VERSION --body '0.7.5' --repo <owner>/<repo>
+
+# Override for a single manual run, leaving the estate-wide pin untouched:
+gh workflow run fleet-update-status.yml -f module_version=0.7.5
+
+# Clear the estate-wide pin to return to latest:
+gh variable delete REQUIRED_MODULE_VERSION --repo <owner>/<repo>
+```
+
+**Azure DevOps** - resolution order (first non-empty wins):
+
+1. Queue-time override of the `moduleVersion` pipeline parameter.
+2. The pipeline parameter's default (defaults to empty / latest in the shipped YAMLs).
+
+To set an estate-wide pin in ADO, either change the `moduleVersion` parameter default in each YAML, or wrap it in a variable group / template parameter and reference it from each pipeline.
+
+**Drift notices.** Each install step compares three versions and emits a warning annotation (`::notice` in GitHub Actions, `##vso[task.logissue type=warning]` in Azure DevOps) when:
+
+| Situation | What you see | What it means |
+|---|---|---|
+| `installed > generated` | "Pipeline YAML was generated against AzLocal.UpdateManagement v<X> but the agent installed v<Y>." | Your committed YAML is older than the module on the agent. Pipeline steps may have been improved since - re-run `Copy-AzureLocalPipelineExample -Update` to refresh. |
+| `latest > installed` | "AzLocal.UpdateManagement v<L> is available on PSGallery; this run installed v<I>." | A newer module is on PSGallery than the one the pipeline pinned to. Review the [module CHANGELOG](../CHANGELOG.md) before bumping `REQUIRED_MODULE_VERSION` (or clear the pin to install the latest automatically). |
+
+Both annotations are warnings, not failures - your pipeline still passes.
+
+**Refreshing pipeline YAMLs after a module upgrade.** When the drift notice fires (or you want to pick up new pipeline features that ship in a module release), re-run the copy command with `-Update`:
+
+```powershell
+# Interactive (prompts per file with Y / A / N / L / S / ? options):
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update
+
+# Unattended (for automation - overwrites every file without prompting):
+Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update -Confirm:$false
+
+# Preview which files would change without writing anything:
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update -WhatIf
+```
+
+The destination folders are under git, so `git diff` after the refresh shows exactly which lines changed - giving you a final review gate before commit. `Copy-AzureLocalPipelineExample` deliberately does not expose a `-Force` switch; `-Update` (with optional `-Confirm:$false`) is the only path to overwrite, and git remains the rollback.
 
 ---
 
