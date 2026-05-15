@@ -877,7 +877,7 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 
    ![Auth Smoke Test - Validate OIDC + RBAC job, showing the `Confirm identity, RBAC, and cluster reachability` step expanded with `az account show`, role assignments, and Resource Graph cluster count](../docs/images/auth-smoke-test-validate-oidc.png)
 
-   You may see one informational `windows-latest` -> `windows-2025-vs2026` migration notice in the run annotations. That does not apply here - the workflows pin `runs-on: ubuntu-latest`. As of v0.7.60 the previously-seen Node.js 20 deprecation banner (against `actions/checkout@v4`, `azure/login@v2`, `actions/upload-artifact@v4`, `dorny/test-reporter@v1`) is gone: the sample workflows have been refreshed to Node 24-compatible majors (`@v5`, `@v3`, `@v6`, `@v3` respectively).
+   You may see one informational `windows-latest` -> `windows-2025-vs2026` migration notice in the run annotations. The sample workflows pin `runs-on: windows-latest` (the module is a Windows-side PowerShell module), and GitHub will retarget the alias to the new image automatically when it becomes the default - no action required on your part. As of v0.7.60 the previously-seen Node.js 20 deprecation banner (against `actions/checkout@v4`, `azure/login@v2`, `actions/upload-artifact@v4`, `dorny/test-reporter@v1`) is gone: the sample workflows have been refreshed to Node 24-compatible majors (`@v5`, `@v3`, `@v6`, `@v3` respectively).
 
    **If it fails**, the most likely causes (and what to check) are:
 
