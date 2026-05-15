@@ -5,6 +5,22 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.60] - 2026-05-15
+
+### Changed
+
+- **GitHub Actions sample workflows refreshed for Node 24.** All five workflow YAMLs under [`Automation-Pipeline-Examples/github-actions/`](Automation-Pipeline-Examples/github-actions) now pin Node 24-compatible major versions of the third-party actions they use. This removes the "Node.js 20 actions are deprecated" warning banner that started appearing on `workflow_dispatch` runs after the GitHub Actions runner began surfacing the upcoming September 16 2026 Node.js 20 hard-removal. No input/output surface changes for any of the bumped actions, so refreshed pipelines continue to work without any other edits:
+  - `actions/checkout` &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`@v4` -> `@v5` &nbsp;(Node 24 default since v5.0.0, released Aug 2025)
+  - `actions/upload-artifact` &nbsp;`@v4` -> `@v6` &nbsp;(v6 = Node 24 default; v5 still defaulted to Node 20)
+  - `azure/login` &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`@v2` -> `@v3` &nbsp;(v3.0.0 = Node 24)
+  - `dorny/test-reporter` &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`@v1` -> `@v3` &nbsp;(v3 = Node 24)
+
+  Already-deployed pipelines will continue working on the older majors until the Sept 16 2026 hard-removal date. Running `Copy-AzureLocalPipelineExample -Update` after upgrading to v0.7.60 pulls the refreshed YAMLs into your existing `.github\workflows\` folder.
+
+### Fixed
+
+- **`apply-updates.yml` (GitHub Actions sample): `dorny/test-reporter` could not publish Check Run results on `workflow_dispatch` runs.** Both jobs (`check-readiness` and `apply-updates`) only granted `id-token: write` + `contents: read` in their `permissions:` block, missing the `checks: write` permission that `dorny/test-reporter@v3` (and earlier) needs to create the Check Run that publishes JUnit results. Symptom: the test-reporter step failed with `HttpError: Resource not accessible by integration` (HTTP 403) on every run triggered by `workflow_dispatch`, because `workflow_dispatch` contexts have no PR check-run context to write back to by default. The run itself was unaffected - the readiness assessment and any subsequent apply still completed - this only restored the Check Run summary surface so the JUnit XML actually shows up in the GitHub UI. Sibling workflows (`assess-update-readiness.yml`, `fleet-update-status.yml`) already declared `checks: write` from v0.7.50; only `apply-updates.yml` was missing the permission. Refresh via `Copy-AzureLocalPipelineExample -Update -Platform GitHub` after upgrading.
+
 ## [0.7.50] - 2026-05-15
 
 ### Added

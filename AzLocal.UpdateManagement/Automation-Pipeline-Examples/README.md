@@ -875,7 +875,9 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    <cluster-1>    <rg-1>                  <sub-guid>
    ```
 
-   You may see two informational annotations in the run that are **not** failures and need no action from you: a Node.js 20 deprecation warning for `azure/login@v2` (the action's maintainers will publish an updated version before the GitHub Actions cutoff) and a `windows-latest` -> `windows-2025-vs2026` migration notice (does not apply - the workflows use `ubuntu-latest`).
+   ![Auth Smoke Test - Validate OIDC + RBAC job, showing the `Confirm identity, RBAC, and cluster reachability` step expanded with `az account show`, role assignments, and Resource Graph cluster count](../docs/images/auth-smoke-test-validate-oidc.png)
+
+   You may see one informational `windows-latest` -> `windows-2025-vs2026` migration notice in the run annotations. The sample workflows pin `runs-on: windows-latest` (the module is a Windows-side PowerShell module), and GitHub will retarget the alias to the new image automatically when it becomes the default - no action required on your part. As of v0.7.60 the previously-seen Node.js 20 deprecation banner (against `actions/checkout@v4`, `azure/login@v2`, `actions/upload-artifact@v4`, `dorny/test-reporter@v1`) is gone: the sample workflows have been refreshed to Node 24-compatible majors (`@v5`, `@v3`, `@v6`, `@v3` respectively).
 
    **If it fails**, the most likely causes (and what to check) are:
 
@@ -963,10 +965,10 @@ If your change-control process requires you to pin the module version (so a rele
 
 ```bash
 # Set an estate-wide pin (applies to every scheduled / event-triggered run):
-gh variable set REQUIRED_MODULE_VERSION --body '0.7.50' --repo <owner>/<repo>
+gh variable set REQUIRED_MODULE_VERSION --body '0.7.60' --repo <owner>/<repo>
 
 # Override for a single manual run, leaving the estate-wide pin untouched:
-gh workflow run fleet-update-status.yml -f module_version=0.7.50
+gh workflow run fleet-update-status.yml -f module_version=0.7.60
 
 # Clear the estate-wide pin to return to latest:
 gh variable delete REQUIRED_MODULE_VERSION --repo <owner>/<repo>
@@ -1041,6 +1043,10 @@ Run **Inventory Clusters** with no parameters. It exports a CSV with one row per
 - **Azure DevOps**: *Pipelines -> Inventory Clusters -> Run pipeline*.
 
 Download `cluster-inventory.csv` from the run artifacts. It contains `SubscriptionId`, `ResourceGroupName`, `ClusterName`, `ResourceId`, `UpdateRing`, `UpdateWindow`, `UpdateExclusions`, and the sideloaded-workflow columns added in v0.7.1.
+
+**What a successful inventory run looks like.** The `Run Cluster Inventory` step prints the discovery summary, the absolute path of the exported CSV under the run artifacts, the `UpdateRing` tag distribution across all clusters, and a "Next Steps" block that points at `Set-AzureLocalClusterUpdateRingTag` for the next workflow:
+
+![inventory-clusters.yml run: Run Cluster Inventory step expanded, showing Inventory Summary with Total Clusters 20 / Clusters with UpdateRing tag 19 / 1 cluster without UpdateRing tag (warning), UpdateRing Distribution Canary=3 / Prod=9 / Ring1=3 / Ring2=4, CSV export path under the artifacts folder, and the Next Steps block guiding the operator to populate the UpdateRing column and then run Set-AzureLocalClusterUpdateRingTag](../docs/images/inventory-clusters-run-output.png)
 
 > If you would rather skip the inventory pipeline entirely, the same operation runs from a local PowerShell session: `Import-Module ./AzLocal.UpdateManagement.psd1; Get-AzureLocalClusterInventory -ExportPath ./cluster-inventory.csv`. This is the same code path the pipeline uses.
 
