@@ -94,6 +94,8 @@ There are three supported authentication patterns, listed from **most to least s
 
 OIDC has the workflow request a short-lived token from Azure at runtime, with no stored secret. Subject claim binding ensures only **your** repository's workflows can mint the token.
 
+> **Before you start - you need a GitHub repository**: the federated credential subjects below reference `<owner>/<repo>` (case-sensitive) and must match the exact path of the repo that will host the workflows. If you don't have one, create it first at **github.com -> New repository**; for Azure Local fleet-update automation a **private** repository is strongly recommended so the cluster inventory CSV, tag metadata, and any pipeline state are not publicly readable. An empty repo is fine - the workflow files are added later in [section 5.1](#51-github-actions). Note: `az ad app federated-credential create` does **not** validate `<owner>/<repo>` against GitHub - a typo here surfaces only at workflow run time as `AADSTS70021: No matching federated identity record found`.
+
 **Step 1 - create the App Registration**
 
 ```bash
@@ -138,7 +140,22 @@ For multi-subscription estates, run the `role assignment create` step once per s
 
 **Step 3 - federate the workflow**
 
+> **Plan your GitHub environments now**: environment-scoped subjects (`...:environment:<name>`) only succeed at workflow run time if a GitHub environment with the exact same name exists in the repo (names are **case-sensitive**). The `az` command will accept any string you put in `subject` - Entra ID does **not** validate it against GitHub - but a missing or mistyped environment fails the OIDC exchange at runtime with `AADSTS70021: No matching federated identity record found`. The create order does not technically matter, but it is easiest to decide on environment names now (and ideally create them up-front under **your repo -> Settings -> Environments -> New environment**) so the strings you put into the federated credentials definitely match what GitHub will later send in the token. For the ring-based rollout pattern this guide describes, three are recommended:
+>
+> | Environment | Purpose | Suggested protection rules |
+> |---|---|---|
+> | `DevTest` | Pilot ring - first cluster(s) to receive a new build. | Required reviewers: 0-1 (auto-promote acceptable). |
+> | `PreProduction` | Wave2 ring - broader validation before fleet-wide rollout. | Required reviewers: 1. |
+> | `Production` | Final ring - the bulk of the fleet. | Required reviewers: 2. Deployment branches: `main` only. Optional wait timer. |
+>
+> Each environment becomes **one** federated credential, one `environment:` line in the workflow job, and one independent approval gate. A single app registration supports up to 20 federated credentials, so this comfortably scales if you later add more rings.
+>
+> The names `DevTest`, `PreProduction`, and `Production` are just suggestions to match the ring pattern in this guide - **pick whatever names suit your organisation** (e.g. `Pilot`, `Wave2`, `Prod`, `Ring0`, `Ring1`, `Ring2`). Whatever you choose, use the **same name** in (a) the GitHub environment, (b) the federated credential `subject`, and (c) the `environment:` line of the workflow job that targets that ring.
+>
+> **GitHub environments and `UpdateRing` tag values are independent.** The `UpdateRing` tag lives on the cluster ARM resource and is what the PowerShell functions filter on (`-UpdateRing Wave1`). A GitHub environment is just an approval gate and federated credential subject. They do **not** have to share names, and the mapping is many-to-many: one GitHub environment can run updates across multiple `UpdateRing` values (different workflow runs pass different `-UpdateRing` parameters under the same approval gate), and multiple environments can target the same `UpdateRing` (e.g. a `PreProductionDryRun` environment that runs with `-WhatIf` against the `Production` ring). The workflow YAML decides which ring tag a given environment-gated run applies to.
+
 ```bash
+# Branch-scoped credential (for default-branch / scheduled runs).
 az ad app federated-credential create `
     --id <appId-from-step-1> `
     --parameters '{
@@ -148,13 +165,14 @@ az ad app federated-credential create `
         "audiences": ["api://AzureADTokenExchange"]
     }'
 
-# For manually-triggered workflow_dispatch runs from a protected environment:
+# Environment-scoped credential - one per GitHub environment (DevTest, PreProduction, Production).
+# Repeat this command three times, substituting both `name` and `subject` to match each environment.
 az ad app federated-credential create `
     --id <appId-from-step-1> `
     --parameters '{
-        "name": "GitHubActions-production",
+        "name": "GitHubActions-Production",
         "issuer": "https://token.actions.githubusercontent.com",
-        "subject": "repo:<owner>/<repo>:environment:production",
+        "subject": "repo:<owner>/<repo>:environment:Production",
         "audiences": ["api://AzureADTokenExchange"]
     }'
 ```
@@ -167,6 +185,44 @@ Subject-claim patterns for other trigger types:
 | Pull request | `repo:<owner>/<repo>:pull_request` |
 | Environment | `repo:<owner>/<repo>:environment:<env>` |
 | Tag | `repo:<owner>/<repo>:ref:refs/tags/<tag>` |
+
+> **PowerShell 5.1 / Windows PowerShell users**: passing the `--parameters` JSON as a single-quoted inline string (as shown above) fails on Windows PowerShell with `Failed to parse string as JSON: ... Expecting property name enclosed in double quotes`. Windows PowerShell strips the inner double quotes before `az` ever sees them. Build the JSON with PowerShell instead and escape the inner double quotes so `az` receives valid JSON:
+>
+> ```powershell
+> # Branch-scoped credential
+> $body = @{
+>     name      = 'GitHubActions-main'
+>     issuer    = 'https://token.actions.githubusercontent.com'
+>     subject   = 'repo:<owner>/<repo>:ref:refs/heads/main'
+>     audiences = @('api://AzureADTokenExchange')
+> } | ConvertTo-Json -Compress
+>
+> # Escape inner double-quotes so PowerShell hands az a real JSON string
+> $body = $body -replace '"', '\"'
+>
+> az ad app federated-credential create `
+>     --id <appId-from-step-1> `
+>     --parameters $body
+>
+> # Environment-scoped credentials - one per GitHub environment (names are case-sensitive
+> # and must match the environments that will exist in your repo at workflow run time)
+> foreach ($envName in 'DevTest','PreProduction','Production') {
+>     $body = @{
+>         name      = "GitHubActions-$envName"
+>         issuer    = 'https://token.actions.githubusercontent.com'
+>         subject   = "repo:<owner>/<repo>:environment:$envName"
+>         audiences = @('api://AzureADTokenExchange')
+>     } | ConvertTo-Json -Compress
+>
+>     $body = $body -replace '"', '\"'
+>
+>     az ad app federated-credential create `
+>         --id <appId-from-step-1> `
+>         --parameters $body
+> }
+> ```
+>
+> Add or remove names from the loop to match the environments you actually created. Repeat the same JSON-build-and-escape pattern for any other subject claims you need (pull_request, tag, additional branches). PowerShell 7+ on Linux/macOS does not need this workaround.
 
 **Step 4 - add the (three) GitHub secrets**
 
