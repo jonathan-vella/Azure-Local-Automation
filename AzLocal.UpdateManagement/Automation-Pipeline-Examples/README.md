@@ -816,9 +816,12 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 
 ### 5.1 GitHub Actions
 
-1. **Smoke-test auth first (strongly recommended).** Before adding all five workflows, validate that the App Registration, federated credentials, GitHub secrets, environments, and RBAC role assignment all line up by running a one-shot **auth smoke test** workflow. This narrows any failure to *one* small YAML file instead of debugging five interacting workflows simultaneously.
+1. **Smoke-test auth first (strongly recommended).** Before exercising all five workflows, validate that the App Registration, federated credentials, GitHub secrets, environments, and RBAC role assignment all line up by running a one-shot **auth smoke test** workflow. This narrows any failure to *one* small YAML file instead of debugging five interacting workflows simultaneously.
 
-   The smoke-test workflow ships with the module at [`github-actions/auth-smoke-test.yml`](./github-actions/auth-smoke-test.yml). Copy just that one file into your repo's `.github/workflows/` (the `Copy-AzureLocalPipelineExample` shortcut above already includes it), commit, and push to the default branch.
+   The smoke-test workflow ships with the module at [`github-actions/auth-smoke-test.yml`](./github-actions/auth-smoke-test.yml).
+
+   - **If you used the `Copy-AzureLocalPipelineExample` shortcut above**: the file is already in `.github/workflows/` alongside the other five workflow YAMLs - those will ride along on the commit but stay dormant until you trigger them manually (`gh workflow run`) or their schedules fire. Commit and push to the default branch, then run the trigger commands below.
+   - **If you didn't use the shortcut**: copy just that one file into your repo's `.github/workflows/`, commit, and push to the default branch.
 
    Then trigger it twice - once branch-scoped, once environment-scoped - to prove **both** federated credential types work end-to-end:
 
@@ -860,7 +863,7 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    | `Error: Could not fetch access token for Azure` (no AADSTS code) | The workflow lacks `permissions: id-token: write` or the secrets are missing/misspelt. | Confirm the `permissions:` block is present and run `gh secret list --repo $repo` shows all three `AZURE_*` secrets. |
    | Environment-scoped run hangs in **Waiting for review** | The environment has required-reviewers protection (good!) and is waiting for you to approve. | Approve in the **Actions** tab, or remove required reviewers from the smoke-test run via the environment settings. |
 
-   Once both runs are green, delete `auth-smoke-test.yml` (it has no purpose after validation) and proceed to step 2 to wire the real workflows.
+   Once both runs are green, delete `auth-smoke-test.yml` (it has no purpose after validation). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other five workflows are already on the default branch - skip to step 4 to run them. Otherwise, proceed to step 2 to copy the remaining workflow files.
 
 2. Copy every file from [`github-actions/`](./github-actions/) into `.github/workflows/` in your repo:
     ```text
@@ -879,7 +882,7 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 
 1. **Smoke-test auth first (strongly recommended).** Before importing all five pipelines, validate that the service connection (Workload Identity Federation), App Registration, and RBAC role assignment all line up by running a one-shot **auth smoke test** pipeline. This narrows any failure to *one* small YAML file instead of debugging five interacting pipelines simultaneously.
 
-   The smoke-test pipeline ships with the module at [`azure-devops/auth-smoke-test.yml`](./azure-devops/auth-smoke-test.yml). Copy just that one file into your repo (the `Copy-AzureLocalPipelineExample` shortcut above already includes it), then import it as a new pipeline:
+   The smoke-test pipeline ships with the module at [`azure-devops/auth-smoke-test.yml`](./azure-devops/auth-smoke-test.yml). If you used the `Copy-AzureLocalPipelineExample` shortcut above, the file is already in your chosen pipelines folder alongside the other five pipeline YAMLs - those YAMLs sit dormant until you import each one as a pipeline, so they're harmless at rest. Otherwise, copy just that one file into your repo. Either way, import it as a new pipeline:
 
    - **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file -> `/azure-devops/auth-smoke-test.yml`**.
    - **Save and run**. If your service connection has a name other than `AzureLocal-ServiceConnection`, edit `azureSubscription:` in the YAML first (the only configurable line).
@@ -912,7 +915,7 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    | `AuthorizationFailed` on `az graph query` (but `az account show` succeeded) | Auth works, but the role assignment is missing, scoped wrong, or not yet propagated. | Re-check section 3.2 ran against the correct subscription, then re-run the smoke test - role propagation can take 1-2 minutes. |
    | `(InvalidScope) The scope '/subscriptions/<id>' is not valid` from `az role assignment list` | The service connection scope is set narrower than the role assignment, e.g. resource-group-scoped. | Widen the service connection scope to the subscription, or pass `--scope` explicitly to `az role assignment list`. |
 
-   Once the run is green, delete `auth-smoke-test.yml` (and its imported pipeline) and proceed to step 2 to wire the real pipelines.
+   Once the run is green, delete `auth-smoke-test.yml` (and its imported pipeline). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other five YAML files are already in your repo - skip to step 3 to import each as a pipeline. Otherwise, proceed to step 2 to copy the remaining pipeline files.
 
 2. Copy every file from [`azure-devops/`](./azure-devops/) into your repository at a path of your choice (the README assumes the same folder layout as this repo).
 3. **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file**, then point at the path of each file. Repeat for all five.
