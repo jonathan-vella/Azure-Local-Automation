@@ -359,7 +359,7 @@ stages:
           Write-Host "##vso[task.setvariable variable=hasPrerequisite;isOutput=true]$hasPrerequisite"
           
           if ($failures -gt 0) {
-              Write-Warning "âš ï¸ $failures cluster(s) have update failures or health issues!"
+              Write-Warning "⚠️ $failures cluster(s) have update failures or health issues!"
           }
       name: collect
     
@@ -395,7 +395,7 @@ stages:
         Write-Host "##vso[task.uploadsummary]Fleet Status: $total clusters, $upToDate up-to-date, $inProgress in-progress, $ready ready, $failures failures, $hasPrerequisite SBE-blocked"
         
         $summary = @"
-        ## ðŸ“Š Fleet Update Status Summary
+        ## 📊 Fleet Update Status Summary
         
         | Metric | Count |
         |--------|-------|

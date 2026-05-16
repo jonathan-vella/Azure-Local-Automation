@@ -499,7 +499,7 @@ jobs:
         Write-Host "" >> $env:GITHUB_STEP_SUMMARY
         
         if ($dryRun) {
-            Write-Host "âš ï¸ **This was a dry run. No updates were applied.**" >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "⚠️ **This was a dry run. No updates were applied.**" >> $env:GITHUB_STEP_SUMMARY
             Write-Host "" >> $env:GITHUB_STEP_SUMMARY
         }
         
@@ -515,12 +515,12 @@ jobs:
         Write-Host "" >> $env:GITHUB_STEP_SUMMARY
         Write-Host "| Status | Count |" >> $env:GITHUB_STEP_SUMMARY
         Write-Host "|--------|-------|" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| âœ… Updates Started | $succeeded |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| â­ï¸ Skipped | $skipped |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| âŒ Failed | $failed |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| ðŸ¥ Health Blocked | $healthBlocked |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| ðŸ• Schedule Blocked | $scheduleBlocked |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| ðŸ“¦ Sideloaded Blocked | $sideloadedBlocked |" >> $env:GITHUB_STEP_SUMMARY
+        Write-Host "| ✅ Updates Started | $succeeded |" >> $env:GITHUB_STEP_SUMMARY
+        Write-Host "| ⏭️ Skipped | $skipped |" >> $env:GITHUB_STEP_SUMMARY
+        Write-Host "| ❌ Failed | $failed |" >> $env:GITHUB_STEP_SUMMARY
+        Write-Host "| 🏥 Health Blocked | $healthBlocked |" >> $env:GITHUB_STEP_SUMMARY
+        Write-Host "| 🕐 Schedule Blocked | $scheduleBlocked |" >> $env:GITHUB_STEP_SUMMARY
+        Write-Host "| 📦 Sideloaded Blocked | $sideloadedBlocked |" >> $env:GITHUB_STEP_SUMMARY
         
         # Actions Required section - summarize what needs manual attention
         $actionsNeeded = @()
@@ -531,7 +531,7 @@ jobs:
         
         if ($actionsNeeded.Count -gt 0) {
             Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "### âš ï¸ Actions Required" >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "### ⚠️ Actions Required" >> $env:GITHUB_STEP_SUMMARY
             Write-Host "" >> $env:GITHUB_STEP_SUMMARY
             foreach ($action in $actionsNeeded) {
                 Write-Host $action >> $env:GITHUB_STEP_SUMMARY
@@ -560,9 +560,9 @@ jobs:
         Write-Host "" >> $env:GITHUB_STEP_SUMMARY
         
         if ($totalCount -eq 0) {
-            Write-Host "âš ï¸ No clusters found with UpdateRing tag value '$updateRing'" >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "⚠️ No clusters found with UpdateRing tag value '$updateRing'" >> $env:GITHUB_STEP_SUMMARY
         } else {
-            Write-Host "âš ï¸ Found $totalCount cluster(s) with UpdateRing='$updateRing', but none are ready for updates." >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "⚠️ Found $totalCount cluster(s) with UpdateRing='$updateRing', but none are ready for updates." >> $env:GITHUB_STEP_SUMMARY
             Write-Host "" >> $env:GITHUB_STEP_SUMMARY
             Write-Host "Possible reasons:" >> $env:GITHUB_STEP_SUMMARY
             Write-Host "- Clusters may already be up to date" >> $env:GITHUB_STEP_SUMMARY

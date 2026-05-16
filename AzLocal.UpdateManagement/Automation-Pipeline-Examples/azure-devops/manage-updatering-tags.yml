@@ -222,7 +222,7 @@ stages:
                 "@
                 
                 if ($dryRun) {
-                    $summary += "`n`nâš ï¸ **This was a dry run. No changes were applied.**"
+                    $summary += "`n`n⚠️ **This was a dry run. No changes were applied.**"
                     $summary += "`n`nRe-run the pipeline with 'Preview changes' set to false to apply changes."
                 }
                 
