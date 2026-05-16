@@ -421,13 +421,13 @@ jobs:
         $summary += @"
         
         ### Reports Available
-        - 📄 `readiness-status.csv` - Detailed cluster status for spreadsheet analysis
-        - 📄 `readiness-status.json` - Machine-readable format for integrations
-        - 📄 `readiness-status.xml` - JUnit XML for CI/CD visualization
-        - 📄 `cluster-inventory.csv` - Full cluster inventory
-        - 📄 `update-summaries.csv` - Fleet-wide update state summaries
-        - 📄 `available-updates.csv` - All available updates across fleet
-        - 📄 `update-runs.csv` - Recent update run history (if enabled)
+        - 📄 ``readiness-status.csv`` - Detailed cluster status for spreadsheet analysis
+        - 📄 ``readiness-status.json`` - Machine-readable format for integrations
+        - 📄 ``readiness-status.xml`` - JUnit XML for CI/CD visualization
+        - 📄 ``cluster-inventory.csv`` - Full cluster inventory
+        - 📄 ``update-summaries.csv`` - Fleet-wide update state summaries
+        - 📄 ``available-updates.csv`` - All available updates across fleet
+        - 📄 ``update-runs.csv`` - Recent update run history (if enabled)
         
         *Generated at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")*
         "@

@@ -420,13 +420,13 @@ stages:
         $summary += @"
         
         ### Reports Available in Artifacts
-        - `readiness-status.csv` - Detailed cluster status
-        - `readiness-status.json` - Machine-readable format
-        - `readiness-status.xml` - JUnit XML (see Tests tab)
-        - `cluster-inventory.csv` - Full cluster inventory
-        - `update-summaries.csv` - Fleet-wide update state summaries
-        - `available-updates.csv` - All available updates across fleet
-        - `update-runs.csv` - Recent update run history
+        - ``readiness-status.csv`` - Detailed cluster status
+        - ``readiness-status.json`` - Machine-readable format
+        - ``readiness-status.xml`` - JUnit XML (see Tests tab)
+        - ``cluster-inventory.csv`` - Full cluster inventory
+        - ``update-summaries.csv`` - Fleet-wide update state summaries
+        - ``available-updates.csv`` - All available updates across fleet
+        - ``update-runs.csv`` - Recent update run history
         "@
         
         Write-Host $summary
