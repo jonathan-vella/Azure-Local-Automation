@@ -5,6 +5,30 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.62] - 2026-05-15
+
+### Fixed (critical)
+
+- **`Start-AzureLocalClusterUpdate` Step 3b critical-health gate was being silently bypassed.** The caller invoked [`Test-AzureLocalClusterHealth`](Public/Test-AzureLocalClusterHealth.ps1) without `-PassThru`; without that switch the function writes all output via `Write-Log` to the host stream and returns `$null`, so the predicate `$healthResults[0].CriticalCount -gt 0` always evaluated false even when the function had just logged `BLOCKED (N critical)`. Apply would then write *"No critical health issues found - cluster is eligible for update"* and proceed to PATCH the update despite critical health failures. Two additional call sites in [`Get-AzureLocalUpdateRuns`](Public/Get-AzureLocalUpdateRuns.ps1) (failed-run health detail and affected-cluster health detail) had the same omission. All three now pass `-PassThru`.
+- **[`Set-AzLocalClusterTagsMerge`](Private/Set-AzLocalClusterTagsMerge.ps1) rewritten to use the ARM tags subresource** (`PATCH .../providers/Microsoft.Resources/tags/default?api-version=2021-04-01`) instead of patching the full cluster resource. This narrows the required RBAC from `microsoft.azurestackhci/clusters/write` to `Microsoft.Resources/tags/write` (the built-in **Tag Contributor** role), matching the documented behaviour. The function emits up to 2 PATCHes per call: one with `operation=Merge` for keys being set, one with `operation=Delete` for keys whose input value is `$null`. Idempotent: skips keys whose value already matches and Delete keys that are not present.
+- **`Export-ResultsToJUnitXml` Status mapping fixed.** Status values `NotReady`, `NotConnected`, `NoUpdatesAvailable`, and `NoReadyUpdates` previously fell through to `<system-out>` (rendered as passed in `dorny/test-reporter`), producing misleading "all green" CI summaries when apply had actually skipped clusters. They now render as `<skipped>`. `UpdateNotFound` now renders as `<error type="UpdateNotFound">` instead of `<system-out>`. The summary `<testsuite tests/failures/errors/skipped/>` counts and the per-testcase element now agree.
+
+### Changed
+
+- **`apply-updates` pipeline samples (GitHub Actions + Azure DevOps) now consume the readiness CSV** from the `check-readiness` job instead of re-discovering clusters by `UpdateRing` tag. The apply step downloads the `readiness-report` artifact, filters rows where `ReadyForUpdate=True`, and invokes `Start-AzureLocalClusterUpdate -ClusterResourceIds @(...)` against that exact list. Apply still re-validates each cluster (Step 1b connectivity, Step 3b health, Step 3c schedule, Step 3b1 sideloaded) as defence in depth. This guarantees the readiness gate's decision is **enforced** rather than advisory: a cluster flagged Blocked in readiness will not be touched by apply even if its tag still matches the ring.
+- **`Get-AzureLocalClusterUpdateReadiness` output (and the readiness CSV) gains a `ClusterResourceId` column** containing the full ARM resource ID, so the apply step can pass it straight to `Start-AzureLocalClusterUpdate -ClusterResourceIds` without a second Resource Graph query. Populated on every row, including `NotFound`/`Error` rows (set from the input cluster's `ResourceId` where known).
+
+### Pipeline migration
+
+If you have copied `apply-updates.yml` into your repo, refresh both sample files via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub     -Update
+Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+```
+
+The pipeline install step's drift detector will also emit a `::notice`/warning log pointing at this once you bump `REQUIRED_MODULE_VERSION` to `0.7.62`.
+
 ## [0.7.61] - 2026-05-15
 
 ### Changed

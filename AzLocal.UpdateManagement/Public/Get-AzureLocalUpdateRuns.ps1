@@ -195,7 +195,10 @@ function Get-AzureLocalUpdateRuns {
             if ($latestRun.State -eq "Failed" -and $latestRun.CurrentStep -match "health check") {
                 Write-Log -Message "The latest update run was blocked by health check failures." -Level Warning
                 Write-Log -Message "Querying current health check status..." -Level Info
-                $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($clusterInfo.id) -BlockingOnly
+                # -PassThru is required to receive the [PSCustomObject] result rows;
+                # without it Test-AzureLocalClusterHealth logs to the host only and
+                # returns $null (v0.7.62 fix).
+                $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($clusterInfo.id) -BlockingOnly -PassThru
                 if ($healthResults -and $healthResults[0].CriticalCount -gt 0) {
                     Write-Log -Message "" -Level Info
                     Write-Log -Message "The following critical health issues must be resolved before this update can proceed:" -Level Error
@@ -620,7 +623,8 @@ function Get-AzureLocalUpdateRuns {
             $rid = $clusterEntry.ResourceId
             if (-not $rid) { continue }
             
-            $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($rid) -BlockingOnly
+            # -PassThru required (v0.7.62 fix); see Step 3b in Start-AzureLocalClusterUpdate.
+            $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($rid) -BlockingOnly -PassThru
             if ($healthResults -and $healthResults[0].CriticalCount -gt 0) {
                 Write-Log -Message "" -Level Info
                 Write-Log -Message "Critical health issues blocking updates on '$affectedCluster':" -Level Error

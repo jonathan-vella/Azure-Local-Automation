@@ -39,9 +39,15 @@ function Export-ResultsToJUnitXml {
 
     # Calculate summary statistics
     $totalTests = $Results.Count
-    $failures = @($Results | Where-Object { $_.Status -in @("Failed", "Error") }).Count
-    $skipped = @($Results | Where-Object { $_.Status -eq "Skipped" }).Count
-    $errors = @($Results | Where-Object { $_.Status -eq "NotFound" }).Count
+    # v0.7.62: summary <testsuite tests/failures/errors/skipped/> attributes must
+    # match the per-testcase elements emitted by the switch below; previously the
+    # summary said "0 failures" while individual rows had <failure>, and "0 errors"
+    # while UpdateNotFound rows had <error>. Tools like dorny/test-reporter use the
+    # summary attributes for the headline numbers, so the discrepancy produced
+    # misleading "all green" CI summaries.
+    $failures = @($Results | Where-Object { $_.Status -in @("Failed", "Error", "HealthCheckBlocked", "ScheduleBlocked", "SideloadedBlocked") }).Count
+    $skipped  = @($Results | Where-Object { $_.Status -in @("Skipped", "NotReady", "NotConnected", "NoUpdatesAvailable", "NoReadyUpdates") }).Count
+    $errors   = @($Results | Where-Object { $_.Status -in @("NotFound", "UpdateNotFound") }).Count
     $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
     
     # Calculate total time if Duration is available
@@ -138,7 +144,19 @@ function Export-ResultsToJUnitXml {
                 [void]$xmlBuilder.AppendLine("Message: $message")
                 [void]$xmlBuilder.AppendLine("      </error>")
             }
-            "Skipped" {
+            "UpdateNotFound" {
+                # v0.7.62: requested update version not present on the cluster -
+                # treat as an error so the CI summary surfaces it, not a silent pass.
+                $message = ConvertTo-XmlSafeString ($result.Message)
+                [void]$xmlBuilder.AppendLine("      <error message=`"$message`" type=`"UpdateNotFound`">")
+                [void]$xmlBuilder.AppendLine("Cluster: $clusterName")
+                [void]$xmlBuilder.AppendLine("Message: $message")
+                [void]$xmlBuilder.AppendLine("      </error>")
+            }
+            { $_ -in @("Skipped", "NotReady", "NotConnected", "NoUpdatesAvailable", "NoReadyUpdates") } {
+                # v0.7.62: previously only literal "Skipped" rendered as <skipped>; the
+                # other "did not apply, but not a failure" Status values fell through to
+                # <system-out>, producing misleading "all green" CI summaries.
                 $message = ConvertTo-XmlSafeString ($result.Message)
                 [void]$xmlBuilder.AppendLine("      <skipped message=`"$message`" />")
             }

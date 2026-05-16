@@ -65,7 +65,7 @@ variables:
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
-    value: '0.7.61'
+    value: '0.7.62'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -282,6 +282,17 @@ stages:
                     Write-Host "##vso[task.logissue type=warning]$msg"
                 }
           
+          # v0.7.62: Download the readiness CSV produced by the CheckReadiness stage
+          # so the apply step operates on the readiness gate's decision rather than
+          # re-discovering clusters by tag. Apply still re-validates each cluster
+          # (defence in depth) - this just enforces the upstream gate exactly.
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Readiness Report'
+            inputs:
+              source: 'current'
+              artifact: 'readiness-report'
+              path: '$(Build.ArtifactStagingDirectory)'
+          
           - task: AzureCLI@2
             displayName: 'Apply Updates'
             name: applyUpdates
@@ -300,10 +311,40 @@ stages:
                 $outputDir = "$(Build.ArtifactStagingDirectory)"
                 $junitPath = Join-Path $outputDir "update-results.xml"
                 
-                # Build parameters
+                # v0.7.62: Read the readiness CSV from the CheckReadiness stage and
+                # extract the ARM resource IDs of clusters marked ReadyForUpdate=True.
+                # The ClusterResourceId column was added to
+                # Get-AzureLocalClusterUpdateReadiness output in v0.7.62 specifically
+                # to make this hand-off explicit and exact (no second tag query,
+                # no drift between the two stages' scopes).
+                $readinessCsv = Join-Path $outputDir 'readiness-report.csv'
+                if (-not (Test-Path $readinessCsv)) {
+                    throw "Readiness CSV not found at '$readinessCsv'. The CheckReadiness stage did not publish a readiness-report artifact - cannot determine which clusters to apply."
+                }
+                $readinessRows = @(Import-Csv -Path $readinessCsv)
+                if ($readinessRows.Count -gt 0 -and -not ($readinessRows[0].PSObject.Properties.Name -contains 'ClusterResourceId')) {
+                    throw "Readiness CSV at '$readinessCsv' is missing the 'ClusterResourceId' column. This column was added in AzLocal.UpdateManagement v0.7.62. Re-run CheckReadiness with v0.7.62+ or refresh this pipeline YAML via Copy-AzureLocalPipelineExample -Update."
+                }
+                $readyResourceIds = @($readinessRows |
+                    Where-Object { $_.ReadyForUpdate -eq 'True' -and $_.ClusterResourceId } |
+                    ForEach-Object { $_.ClusterResourceId })
+                Write-Host "Readiness CSV: $($readinessRows.Count) row(s), $($readyResourceIds.Count) marked ReadyForUpdate=True."
+                if ($readyResourceIds.Count -eq 0) {
+                    Write-Host "##vso[task.logissue type=warning]Readiness CSV reports zero clusters with ReadyForUpdate=True - nothing to apply."
+                    Write-Host "##vso[task.setvariable variable=Succeeded;isOutput=true]0"
+                    Write-Host "##vso[task.setvariable variable=Skipped;isOutput=true]0"
+                    Write-Host "##vso[task.setvariable variable=Failed;isOutput=true]0"
+                    Write-Host "##vso[task.setvariable variable=HealthBlocked;isOutput=true]0"
+                    Write-Host "##vso[task.setvariable variable=ScheduleBlocked;isOutput=true]0"
+                    Write-Host "##vso[task.setvariable variable=SideloadedBlocked;isOutput=true]0"
+                    exit 0
+                }
+                
+                # Build parameters - use -ClusterResourceIds (the readiness gate's
+                # decision) rather than -ScopeByUpdateRingTag (which would re-discover
+                # the full ring and force apply to re-evaluate already-blocked clusters).
                 $params = @{
-                    ScopeByUpdateRingTag = $true
-                    UpdateRingValue = $updateRing
+                    ClusterResourceIds = $readyResourceIds
                     Force = $true
                     LogFolderPath = $outputDir
                     ExportResultsPath = $junitPath
@@ -322,6 +363,7 @@ stages:
                 Write-Host ""
                 Write-Host "========================================" -ForegroundColor Cyan
                 Write-Host "Applying Updates to UpdateRing: $updateRing" -ForegroundColor Cyan
+                Write-Host "  Clusters (from readiness CSV): $($readyResourceIds.Count)" -ForegroundColor Cyan
                 Write-Host "========================================" -ForegroundColor Cyan
                 
                 # Run updates
@@ -496,7 +538,7 @@ stages:
                 "@
                 
                 if ($dryRun) {
-                    $summary += "`n`n⚠️ **This was a dry run. No updates were applied.**"
+                    $summary += "`n`nâš ï¸ **This was a dry run. No updates were applied.**"
                     $summary += "`n`nRe-run the pipeline with 'Preview' set to false to apply updates."
                 }
                 else {
@@ -513,7 +555,7 @@ stages:
                     if ([int]$sideloadedBlocked -gt 0) { $actionsRequired += "- **$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False** - Operator must stage the sideloaded payload and flip the tag to True (or run Reset-AzureLocalSideloadedTag) before updates can proceed" }
                     
                     if ($actionsRequired.Count -gt 0) {
-                        $summary += "`n`n## ⚠️ Actions Required`n"
+                        $summary += "`n`n## âš ï¸ Actions Required`n"
                         $summary += ($actionsRequired -join "`n")
                     }
                 }
@@ -552,11 +594,11 @@ stages:
                 "@
                 
                 if ($totalCount -eq 0) {
-                    $summary += "`n`n⚠️ No clusters found with UpdateRing tag value '$updateRing'"
+                    $summary += "`n`nâš ï¸ No clusters found with UpdateRing tag value '$updateRing'"
                 } else {
                     $summary += @"
                 
-                ⚠️ Found $totalCount cluster(s) with UpdateRing='$updateRing', but none are ready for updates.
+                âš ï¸ Found $totalCount cluster(s) with UpdateRing='$updateRing', but none are ready for updates.
                 
                 **Possible reasons:**
                 - Clusters may already be up to date

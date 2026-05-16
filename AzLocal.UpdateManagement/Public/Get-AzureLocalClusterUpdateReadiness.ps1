@@ -261,6 +261,7 @@ function Get-AzureLocalClusterUpdateReadiness {
                 if (-not $clusterInfo) {
                     [PSCustomObject]@{
                         ClusterName                  = $clusterName
+                        ClusterResourceId            = $cluster.ResourceId
                         ResourceGroup                = $cluster.ResourceGroup
                         SubscriptionId               = $cluster.SubscriptionId
                         ClusterState                 = 'Not Found'
@@ -419,6 +420,7 @@ function Get-AzureLocalClusterUpdateReadiness {
 
                 [PSCustomObject]@{
                     ClusterName                  = $clusterName
+                    ClusterResourceId            = $clusterInfo.id
                     ResourceGroup                = $rgName
                     SubscriptionId               = $subId
                     ClusterState                 = $clusterInfo.properties.status
@@ -443,6 +445,7 @@ function Get-AzureLocalClusterUpdateReadiness {
             catch {
                 [PSCustomObject]@{
                     ClusterName                  = $clusterName
+                    ClusterResourceId            = $cluster.ResourceId
                     ResourceGroup                = $cluster.ResourceGroup
                     SubscriptionId               = $cluster.SubscriptionId
                     ClusterState                 = 'Error'
@@ -493,6 +496,7 @@ function Get-AzureLocalClusterUpdateReadiness {
             foreach ($item in @($jr.Items)) {
                 $rowsByName[$item.Name] = [PSCustomObject]@{
                     ClusterName                  = $item.Name
+                    ClusterResourceId            = $item.ResourceId
                     ResourceGroup                = $item.ResourceGroup
                     SubscriptionId               = $item.SubscriptionId
                     ClusterState                 = 'Error'

@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.61'
+    ModuleVersion = '0.7.62'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -167,6 +167,68 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.62 - Apply-updates pipeline now consumes the readiness CSV; health gate, JUnit Status mapping, tag-write RBAC fixes
+
+### Fixed (critical)
+
+- Start-AzureLocalClusterUpdate Step 3b critical-health gate was being
+  silently bypassed. The caller invoked Test-AzureLocalClusterHealth
+  without -PassThru; the function logs to the host stream only and
+  returns $null without -PassThru, so the predicate
+  `$healthResults[0].CriticalCount -gt 0` always evaluated false even
+  when the function had just logged "BLOCKED (N critical)". Apply
+  would then write "No critical health issues found - cluster is
+  eligible for update" and proceed to PATCH the update despite
+  critical health failures. Two additional call sites in
+  Get-AzureLocalUpdateRuns had the same omission. All three now pass
+  -PassThru.
+- Set-AzLocalClusterTagsMerge (used by Start-AzureLocalClusterUpdate to
+  stamp UpdateVersionInProgress, by Reset-AzureLocalSideloadedTag, and
+  by the sideloaded auto-reset path) now writes tags via the ARM tags
+  subresource (PATCH .../providers/Microsoft.Resources/tags/default,
+  api-version=2021-04-01) instead of the full cluster resource. This
+  narrows the required RBAC from `microsoft.azurestackhci/clusters/write`
+  to `Microsoft.Resources/tags/write` (built-in Tag Contributor),
+  matching the documented behaviour. Two PATCHes are emitted when
+  needed: operation=Merge for keys being set, operation=Delete for
+  keys whose input value is $null. Idempotent: skips keys whose value
+  already matches and Delete keys that are not present.
+- Export-ResultsToJUnitXml previously rendered Status values NotReady,
+  NotConnected, NoUpdatesAvailable, NoReadyUpdates as <system-out>
+  (passed) instead of <skipped>, producing misleading "all green" CI
+  summaries when apply had actually skipped clusters. UpdateNotFound
+  now renders as <error type="UpdateNotFound"> instead of <system-out>.
+  The summary <testsuite tests/failures/errors/skipped/> counts and
+  the per-testcase element now agree with the apply-updates reality.
+
+### Changed
+
+- apply-updates pipeline samples (GitHub Actions + Azure DevOps) now
+  consume the readiness CSV from the check-readiness job instead of
+  re-discovering clusters by UpdateRing tag. The apply step downloads
+  the readiness-report artifact, filters rows where
+  ReadyForUpdate=True, and invokes Start-AzureLocalClusterUpdate
+  -ClusterResourceIds @(...) against that exact list. Apply still
+  re-validates each cluster (Step 1b connectivity, Step 3b health,
+  Step 3c schedule, Step 3b1 sideloaded) as defence in depth.
+  This guarantees the readiness gate's decision is ENFORCED rather
+  than advisory: a cluster flagged Blocked in readiness will not be
+  touched by apply even if its tag still matches the ring.
+- Get-AzureLocalClusterUpdateReadiness output (and the readiness CSV)
+  gains a ClusterResourceId column - the full ARM resource ID - so
+  the apply step can pass it straight to
+  Start-AzureLocalClusterUpdate -ClusterResourceIds without a second
+  Resource Graph query. Populated on every row, including NotFound/
+  Error rows (set from the input cluster's ResourceId where known).
+
+### Pipeline migration
+
+If you have copied apply-updates.yml into your repo, refresh it via:
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub -Update
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+The install step's drift detector will also emit a ::notice/warning
+log pointing at this once you bump REQUIRED_MODULE_VERSION to 0.7.62.
+
 ## Version 0.7.61 - Readiness gates: ClusterState + Critical health checks now block ReadyForUpdate
 
 ### Changed
@@ -265,60 +327,15 @@ Summary: new optional ITSM ticketing surface that lets apply-updates and
 fleet-update-status pipelines open ServiceNow incidents when a cluster
 needs operator action. Disabled by default; opt-in via pipeline input
 raise_itsm_ticket=true plus a ./.itsm/azurelocal-itsm.yml config file.
-New public functions: Get-AzureLocalItsmConfig,
-Test-AzureLocalItsmConnection, New-AzureLocalIncident. Secrets are
-referenced from Azure Key Vault (kv://...) or CI secrets (env://...) -
-never written to YAML or disk. New documentation: top-level ITSM/
-folder with setup walkthrough and config reference. Also new:
-Copy-AzureLocalPipelineExample (later reshaped in v0.7.50). Phase 2/3
-(lifecycle close-out, Teams/Slack mirrors) deferred. Full notes in
-CHANGELOG.md.
 
-## Version 0.7.3 - Module renamed to AzLocal.UpdateManagement + internal refactor
+## Versions 0.7.3 and earlier
 
-Summary: module renamed from `AzStackHci.ManageUpdates` to
-`AzLocal.UpdateManagement` to align with the Azure Local product name
-(the `Azure Stack HCI` brand was retired in late 2024). Module GUID is
-preserved across the rename. Migration:
-`Uninstall-Module AzStackHci.ManageUpdates -AllVersions; Install-Module AzLocal.UpdateManagement`.
-A transitional `AzStackHci.ManageUpdates` v0.7.3 stub is published once
-for users with automation that runs `Install-Module
-AzStackHci.ManageUpdates`; importing it emits a warning pointing at the
-new name. Default log folder moved to
-`C:\ProgramData\AzLocal.UpdateManagement\` (old folder not migrated;
-remove manually). Also refactored: monolithic 11,679-line `.psm1` split
-into Public/Private dot-sourced files (NestedModules), matching
-`AzLocal.DeploymentAutomation`. Full notes in CHANGELOG.md.
-
-## Version 0.7.2 - Fleet read paths fixed under -ThrottleLimit > 1
-
-Summary: fix for Get-AzureLocalUpdateRuns / Get-AzureLocalUpdateSummary /
-Get-AzureLocalClusterUpdateReadiness which previously failed under
--ThrottleLimit > 1 because child Start-Job runspaces could not see module-
-private helpers; per-cluster scriptblocks now resolve the loaded module
-(Import-Module -PassThru) and invoke helpers via `& $module { ... }`.
-Inline (-ThrottleLimit 1) execution was unaffected. Also suppresses cp1252
-encoding warnings from az rest / az graph query by passing
---only-show-errors at every call site (per azure-cli #14426). See also
-v0.7.41 for a related manifestation. Full notes in CHANGELOG.md.
-
-## Version 0.7.1 - EndTime column for update runs + Sideloaded payload workflow
-
-Summary: new optional `UpdateSideloaded` cluster tag and the auto-reset workflow
-(Reset-AzureLocalSideloadedTag), EndTime column on Get-AzureLocalUpdateRuns,
-CSV-injection sanitisation on intermediate logs, and a switch to
-`Generic.List[object]` accumulators for fleet read paths (O(n) instead of
-O(n^2)). Fully opt-in; clusters without the tag behave exactly as in v0.7.0.
-Full notes in CHANGELOG.md.
-
-## Version 0.7.0 - Fleet-scale correctness, parallelism, and hardening
-
-The jump from 0.6.5 to 0.7.0 reflects the scope of this release: correctness fixes for large
-fleets (1500+ clusters), a shift to true parallel execution across all per-cluster read/write
-paths, HTML report performance improvements, and a round of bug and security hardening. No
-breaking public-surface changes. Highlights: ARG pagination beyond 1000 results, true
-parallel fleet execution, ~60% faster HTML render at 1500 clusters, mid-run token refresh,
-CSV formula-injection escaping, UpdateWindow tag separator changed to '_'.
+Module renamed from AzStackHci.ManageUpdates to AzLocal.UpdateManagement
+in v0.7.3, monolithic .psm1 split into Public/Private NestedModules,
+parallel fleet read paths fixed for -ThrottleLimit > 1, EndTime column
+on Get-AzureLocalUpdateRuns, UpdateSideloaded auto-reset workflow, ARG
+pagination beyond 1000 results, mid-run token refresh, CSV-injection
+sanitisation. Full notes for every release in CHANGELOG.md.
 
 For full release notes on this and previous versions, see:
 https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
