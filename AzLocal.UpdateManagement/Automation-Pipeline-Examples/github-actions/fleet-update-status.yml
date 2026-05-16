@@ -64,7 +64,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.62'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.63'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -362,7 +362,7 @@ jobs:
         # Fail the workflow if there are health failures
         if ($failures -gt 0) {
             Write-Host ""
-            Write-Warning "⚠️ $failures cluster(s) have update failures or health issues!"
+            Write-Warning "âš ï¸ $failures cluster(s) have update failures or health issues!"
             Write-Host "Check the detailed reports for more information."
             # Note: We don't exit 1 here to allow reports to be uploaded
         }
@@ -396,16 +396,16 @@ jobs:
         $hasPrerequisite = "${{ steps.fleet-status.outputs.HAS_PREREQUISITE }}"
         
         $summary = @"
-        ## 📊 Fleet Update Status Summary
+        ## ðŸ“Š Fleet Update Status Summary
         
         | Metric | Count | Status |
         |--------|-------|--------|
-        | **Total Clusters** | $total | ℹ️ |
-        | **Up to Date** | $upToDate | ✅ |
-        | **Update In Progress** | $inProgress | 🔄 |
-        | **Ready for Update** | $ready | 📥 |
-        | **SBE Prerequisite Blocked** | $hasPrerequisite | $(if ([int]$hasPrerequisite -gt 0) { '⏳' } else { '✅' }) |
-        | **Health Failures** | $failures | $(if ([int]$failures -gt 0) { '❌' } else { '✅' }) |
+        | **Total Clusters** | $total | â„¹ï¸ |
+        | **Up to Date** | $upToDate | âœ… |
+        | **Update In Progress** | $inProgress | ðŸ”„ |
+        | **Ready for Update** | $ready | ðŸ“¥ |
+        | **SBE Prerequisite Blocked** | $hasPrerequisite | $(if ([int]$hasPrerequisite -gt 0) { 'â³' } else { 'âœ…' }) |
+        | **Health Failures** | $failures | $(if ([int]$failures -gt 0) { 'âŒ' } else { 'âœ…' }) |
         "@
         
         # Actions Required section
@@ -414,20 +414,20 @@ jobs:
         if ([int]$hasPrerequisite -gt 0) { $actions += "- **$hasPrerequisite cluster(s) blocked by SBE prerequisite** - Install the required Solution Builder Extension (SBE) update from the hardware vendor. See ``available-updates.csv`` for vendor details (Publisher, Family)" }
         
         if ($actions.Count -gt 0) {
-            $summary += "`n`n### ⚠️ Actions Required`n`n"
+            $summary += "`n`n### âš ï¸ Actions Required`n`n"
             $summary += ($actions -join "`n")
         }
         
         $summary += @"
         
         ### Reports Available
-        - 📄 ``readiness-status.csv`` - Detailed cluster status for spreadsheet analysis
-        - 📄 ``readiness-status.json`` - Machine-readable format for integrations
-        - 📄 ``readiness-status.xml`` - JUnit XML for CI/CD visualization
-        - 📄 ``cluster-inventory.csv`` - Full cluster inventory
-        - 📄 ``update-summaries.csv`` - Fleet-wide update state summaries
-        - 📄 ``available-updates.csv`` - All available updates across fleet
-        - 📄 ``update-runs.csv`` - Recent update run history (if enabled)
+        - ðŸ“„ ``readiness-status.csv`` - Detailed cluster status for spreadsheet analysis
+        - ðŸ“„ ``readiness-status.json`` - Machine-readable format for integrations
+        - ðŸ“„ ``readiness-status.xml`` - JUnit XML for CI/CD visualization
+        - ðŸ“„ ``cluster-inventory.csv`` - Full cluster inventory
+        - ðŸ“„ ``update-summaries.csv`` - Fleet-wide update state summaries
+        - ðŸ“„ ``available-updates.csv`` - All available updates across fleet
+        - ðŸ“„ ``update-runs.csv`` - Recent update run history (if enabled)
         
         *Generated at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")*
         "@

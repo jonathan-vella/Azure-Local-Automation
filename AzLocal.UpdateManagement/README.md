@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.62 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.62)
+**Latest Version:** v0.7.63 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.63)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.62](#whats-new-in-v0762)
+- [What's New in v0.7.63](#whats-new-in-v0763)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -143,23 +143,11 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.62
+## What's New in v0.7.63
 
-- **Fixed (critical) - `Start-AzureLocalClusterUpdate` Step 3b critical-health gate was being silently bypassed.** The caller invoked [`Test-AzureLocalClusterHealth`](Public/Test-AzureLocalClusterHealth.ps1) without `-PassThru`; the function logs to the host stream and returns `$null` without `-PassThru`, so the predicate `$healthResults[0].CriticalCount -gt 0` always evaluated false even when the function had just logged `BLOCKED (N critical)`. Apply would then write *"No critical health issues found - cluster is eligible for update"* and proceed to PATCH the update despite critical health failures. Two more call sites in [`Get-AzureLocalUpdateRuns`](Public/Get-AzureLocalUpdateRuns.ps1) had the same omission. All three fixed.
+- **Fixed (critical) - `fleet-update-status.yml` pipeline samples failed with `ParserError` under PowerShell 7.** Both [`Automation-Pipeline-Examples/github-actions/fleet-update-status.yml`](Automation-Pipeline-Examples/github-actions/fleet-update-status.yml) and [`Automation-Pipeline-Examples/azure-devops/fleet-update-status.yml`](Automation-Pipeline-Examples/azure-devops/fleet-update-status.yml) failed on the *Create Status Summary* step with `The Unicode escape sequence is not valid. A valid sequence is \`u{ followed by one to six hex digits and a closing '}'`. GitHub-hosted Windows runners default to `pwsh` 7 for `shell:` in `run:` steps, so the YAMLs render on PS 7 even though the module itself targets PS 5.1+. Inside the PS double-quoted here-string that builds the Markdown step summary, Markdown code-span backticks before file names like `` `update-summaries.csv` `` and `` `update-runs.csv` `` were interpreted by the PS 7 parser as the new `` `u{xxxx} `` Unicode escape (added in PS 6.2, which expects `{` immediately after `` `u ``). PS 5.1 had silently consumed the backtick; PS 7 hard-errors. Latent corruption also affected `` `readiness-status.csv` `` (`` `r `` -> CR), `` `available-updates.csv` `` (`` `a `` -> BEL `0x07`), and `` `cluster-inventory.csv` `` (`` `c `` -> backtick dropped) - producing rendered job summaries with stray control characters and missing code-span formatting even on PS 5.1. All Markdown code-span backticks in the affected here-strings have been doubled (`` `` `` ); under both PS 5.1 and PS 7 two consecutive backticks in a double-quoted string produce exactly one literal backtick, and Markdown renders single and doubled-backtick code spans identically. No module code paths are affected; only the pipeline-sample YAMLs.
 
-- **Fixed (critical) - Tag writes now use the ARM tags subresource (`Tag Contributor` RBAC, not `clusters/write`).** [`Set-AzLocalClusterTagsMerge`](Private/Set-AzLocalClusterTagsMerge.ps1) - used by `Start-AzureLocalClusterUpdate` to stamp `UpdateVersionInProgress`, by `Reset-AzureLocalSideloadedTag`, and by the sideloaded auto-reset path - now `PATCH`es `.../providers/Microsoft.Resources/tags/default?api-version=2021-04-01` instead of the full cluster resource. This narrows the required RBAC from `microsoft.azurestackhci/clusters/write` to `Microsoft.Resources/tags/write` (built-in **Tag Contributor**). Up to 2 PATCHes per call: one `operation=Merge` for keys being set, one `operation=Delete` for keys whose input value is `$null`. Idempotent: skips keys whose value already matches.
-
-- **Fixed (critical) - JUnit XML `Status` mapping no longer reports skipped clusters as passed.** `Export-ResultsToJUnitXml` previously rendered `NotReady`, `NotConnected`, `NoUpdatesAvailable`, and `NoReadyUpdates` as `<system-out>` (passed in `dorny/test-reporter`), producing misleading *all green* CI summaries when apply had actually skipped clusters. They now render as `<skipped>`. `UpdateNotFound` now renders as `<error type="UpdateNotFound">` instead of `<system-out>`.
-
-- **Changed - `apply-updates` pipeline samples now consume the readiness CSV.** Both [`Automation-Pipeline-Examples/github-actions/apply-updates.yml`](Automation-Pipeline-Examples/github-actions/apply-updates.yml) and [`Automation-Pipeline-Examples/azure-devops/apply-updates.yml`](Automation-Pipeline-Examples/azure-devops/apply-updates.yml) now download the `readiness-report` artifact from the `check-readiness` job, filter rows where `ReadyForUpdate=True`, and pass `-ClusterResourceIds @(...)` to `Start-AzureLocalClusterUpdate` instead of re-discovering clusters by `UpdateRing` tag. This guarantees the readiness gate's decision is **enforced** rather than advisory: a cluster flagged Blocked in readiness will not be touched by apply even if its tag still matches the ring. Apply still re-validates each cluster (Step 1b connectivity, Step 3b health, Step 3c schedule, Step 3b1 sideloaded) as defence in depth.
-
-- **Changed - Readiness output gains a `ClusterResourceId` column.** [`Get-AzureLocalClusterUpdateReadiness`](Public/Get-AzureLocalClusterUpdateReadiness.ps1) emits the full ARM resource ID on every row (including `NotFound`/`Error` rows) so the apply step can pass it straight to `Start-AzureLocalClusterUpdate -ClusterResourceIds` without a second Resource Graph query. **The CSV column is additive** - existing consumers that parse by header name keep working.
-
-- **Module version pin bumped to 0.7.62 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading.
-
-**What a successful `apply-updates.yml` run looks like** (dry-run against the Prod ring on a 9-cluster sandbox - 4 ready, 5 skipped, zero failures):
-
-![apply-updates.yml run Summary tab: target UpdateRing Prod, dry-run, Readiness section showing Total Clusters 9 / Ready for Update 4, Results section showing Updates Started 0 / Skipped 5 / Failed 0 / Health Blocked 0 / Schedule Blocked 0 / Sideloaded Blocked 0](docs/images/apply-updates-summary.png)
+- **Module version pin bumped to 0.7.63 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh both `fleet-update-status.yml` samples in your repo.
 
 > Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
@@ -2160,6 +2148,24 @@ This code is provided as-is for educational and reference purposes.
 ---
 
 ## Release History
+
+### What's New in v0.7.62
+
+- **Fixed (critical) - `Start-AzureLocalClusterUpdate` Step 3b critical-health gate was being silently bypassed.** The caller invoked [`Test-AzureLocalClusterHealth`](Public/Test-AzureLocalClusterHealth.ps1) without `-PassThru`; the function logs to the host stream and returns `$null` without `-PassThru`, so the predicate `$healthResults[0].CriticalCount -gt 0` always evaluated false even when the function had just logged `BLOCKED (N critical)`. Apply would then write *"No critical health issues found - cluster is eligible for update"* and proceed to PATCH the update despite critical health failures. Two more call sites in [`Get-AzureLocalUpdateRuns`](Public/Get-AzureLocalUpdateRuns.ps1) had the same omission. All three fixed.
+
+- **Fixed (critical) - Tag writes now use the ARM tags subresource (`Tag Contributor` RBAC, not `clusters/write`).** [`Set-AzLocalClusterTagsMerge`](Private/Set-AzLocalClusterTagsMerge.ps1) - used by `Start-AzureLocalClusterUpdate` to stamp `UpdateVersionInProgress`, by `Reset-AzureLocalSideloadedTag`, and by the sideloaded auto-reset path - now `PATCH`es `.../providers/Microsoft.Resources/tags/default?api-version=2021-04-01` instead of the full cluster resource. This narrows the required RBAC from `microsoft.azurestackhci/clusters/write` to `Microsoft.Resources/tags/write` (built-in **Tag Contributor**). Up to 2 PATCHes per call: one `operation=Merge` for keys being set, one `operation=Delete` for keys whose input value is `$null`. Idempotent: skips keys whose value already matches.
+
+- **Fixed (critical) - JUnit XML `Status` mapping no longer reports skipped clusters as passed.** `Export-ResultsToJUnitXml` previously rendered `NotReady`, `NotConnected`, `NoUpdatesAvailable`, and `NoReadyUpdates` as `<system-out>` (passed in `dorny/test-reporter`), producing misleading *all green* CI summaries when apply had actually skipped clusters. They now render as `<skipped>`. `UpdateNotFound` now renders as `<error type="UpdateNotFound">` instead of `<system-out>`.
+
+- **Changed - `apply-updates` pipeline samples now consume the readiness CSV.** Both [`Automation-Pipeline-Examples/github-actions/apply-updates.yml`](Automation-Pipeline-Examples/github-actions/apply-updates.yml) and [`Automation-Pipeline-Examples/azure-devops/apply-updates.yml`](Automation-Pipeline-Examples/azure-devops/apply-updates.yml) now download the `readiness-report` artifact from the `check-readiness` job, filter rows where `ReadyForUpdate=True`, and pass `-ClusterResourceIds @(...)` to `Start-AzureLocalClusterUpdate` instead of re-discovering clusters by `UpdateRing` tag. This guarantees the readiness gate's decision is **enforced** rather than advisory: a cluster flagged Blocked in readiness will not be touched by apply even if its tag still matches the ring. Apply still re-validates each cluster (Step 1b connectivity, Step 3b health, Step 3c schedule, Step 3b1 sideloaded) as defence in depth.
+
+- **Changed - Readiness output gains a `ClusterResourceId` column.** [`Get-AzureLocalClusterUpdateReadiness`](Public/Get-AzureLocalClusterUpdateReadiness.ps1) emits the full ARM resource ID on every row (including `NotFound`/`Error` rows) so the apply step can pass it straight to `Start-AzureLocalClusterUpdate -ClusterResourceIds` without a second Resource Graph query. **The CSV column is additive** - existing consumers that parse by header name keep working.
+
+- **Module version pin bumped to 0.7.62 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading.
+
+**What a successful `apply-updates.yml` run looks like** (dry-run against the Prod ring on a 9-cluster sandbox - 4 ready, 5 skipped, zero failures):
+
+![apply-updates.yml run Summary tab: target UpdateRing Prod, dry-run, Readiness section showing Total Clusters 9 / Ready for Update 4, Results section showing Updates Started 0 / Skipped 5 / Failed 0 / Health Blocked 0 / Schedule Blocked 0 / Sideloaded Blocked 0](docs/images/apply-updates-summary.png)
 
 ### What's New in v0.7.61
 

@@ -5,6 +5,21 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.63] - 2026-05-16
+
+### Fixed (critical)
+
+- **`fleet-update-status.yml` (both [GitHub Actions](Automation-Pipeline-Examples/github-actions/fleet-update-status.yml) and [Azure DevOps](Automation-Pipeline-Examples/azure-devops/fleet-update-status.yml) samples) failed on the *Create Status Summary* step under PowerShell 7** with `ParserError: The Unicode escape sequence is not valid. A valid sequence is \`u{ followed by one to six hex digits and a closing '}'`. GitHub-hosted Windows runners default to `pwsh` 7 for `shell:` in `run:` steps, so the YAMLs render on PS 7 even though the module itself targets PS 5.1+. Inside the PS double-quoted here-string that builds the Markdown step summary, Markdown code-span backticks before file names like `` `update-summaries.csv` `` and `` `update-runs.csv` `` were interpreted by the PS 7 parser as the new `` `u{xxxx} `` Unicode escape (added in PS 6.2, which expects `{` immediately after `` `u ``). PS 5.1 had silently consumed the backtick; PS 7 hard-errors. Latent corruption also affected `` `readiness-status.csv` `` (`` `r `` -> carriage return), `` `available-updates.csv` `` (`` `a `` -> BEL `0x07`), and `` `cluster-inventory.csv` `` (`` `c `` -> backtick dropped) - producing rendered job summaries with stray control characters and missing code-span formatting even on PS 5.1. All Markdown code-span backticks in the affected here-strings have been doubled (`` `` `` ); under both PS 5.1 and PS 7, two consecutive backticks in a double-quoted string is documented to produce exactly one literal backtick, and Markdown renders single and doubled-backtick code spans identically. The fix is portable across both shell versions and matches the pre-existing doubled-backtick pattern already in use on the same files (e.g. for `` `available-updates.csv` `` in the GH Actions readiness section). No module code paths are affected; only the pipeline-sample YAMLs.
+
+### Pipeline migration
+
+If you have copied `fleet-update-status.yml` into your repo, refresh both sample files via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+```
+
 ## [0.7.62] - 2026-05-15
 
 ### Fixed (critical)
