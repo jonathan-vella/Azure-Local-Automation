@@ -65,7 +65,7 @@ variables:
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.62'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.63'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -359,7 +359,7 @@ stages:
           Write-Host "##vso[task.setvariable variable=hasPrerequisite;isOutput=true]$hasPrerequisite"
           
           if ($failures -gt 0) {
-              Write-Warning "⚠️ $failures cluster(s) have update failures or health issues!"
+              Write-Warning "âš ï¸ $failures cluster(s) have update failures or health issues!"
           }
       name: collect
     
@@ -395,7 +395,7 @@ stages:
         Write-Host "##vso[task.uploadsummary]Fleet Status: $total clusters, $upToDate up-to-date, $inProgress in-progress, $ready ready, $failures failures, $hasPrerequisite SBE-blocked"
         
         $summary = @"
-        ## 📊 Fleet Update Status Summary
+        ## ðŸ“Š Fleet Update Status Summary
         
         | Metric | Count |
         |--------|-------|
@@ -420,13 +420,13 @@ stages:
         $summary += @"
         
         ### Reports Available in Artifacts
-        - `readiness-status.csv` - Detailed cluster status
-        - `readiness-status.json` - Machine-readable format
-        - `readiness-status.xml` - JUnit XML (see Tests tab)
-        - `cluster-inventory.csv` - Full cluster inventory
-        - `update-summaries.csv` - Fleet-wide update state summaries
-        - `available-updates.csv` - All available updates across fleet
-        - `update-runs.csv` - Recent update run history
+        - ``readiness-status.csv`` - Detailed cluster status
+        - ``readiness-status.json`` - Machine-readable format
+        - ``readiness-status.xml`` - JUnit XML (see Tests tab)
+        - ``cluster-inventory.csv`` - Full cluster inventory
+        - ``update-summaries.csv`` - Fleet-wide update state summaries
+        - ``available-updates.csv`` - All available updates across fleet
+        - ``update-runs.csv`` - Recent update run history
         "@
         
         Write-Host $summary

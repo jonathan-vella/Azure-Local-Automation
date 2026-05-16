@@ -65,7 +65,7 @@ variables:
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
-    value: '0.7.62'
+    value: '0.7.63'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -538,7 +538,7 @@ stages:
                 "@
                 
                 if ($dryRun) {
-                    $summary += "`n`n⚠️ **This was a dry run. No updates were applied.**"
+                    $summary += "`n`nâš ï¸ **This was a dry run. No updates were applied.**"
                     $summary += "`n`nRe-run the pipeline with 'Preview' set to false to apply updates."
                 }
                 else {
@@ -555,7 +555,7 @@ stages:
                     if ([int]$sideloadedBlocked -gt 0) { $actionsRequired += "- **$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False** - Operator must stage the sideloaded payload and flip the tag to True (or run Reset-AzureLocalSideloadedTag) before updates can proceed" }
                     
                     if ($actionsRequired.Count -gt 0) {
-                        $summary += "`n`n## ⚠️ Actions Required`n"
+                        $summary += "`n`n## âš ï¸ Actions Required`n"
                         $summary += ($actionsRequired -join "`n")
                     }
                 }
@@ -594,11 +594,11 @@ stages:
                 "@
                 
                 if ($totalCount -eq 0) {
-                    $summary += "`n`n⚠️ No clusters found with UpdateRing tag value '$updateRing'"
+                    $summary += "`n`nâš ï¸ No clusters found with UpdateRing tag value '$updateRing'"
                 } else {
                     $summary += @"
                 
-                ⚠️ Found $totalCount cluster(s) with UpdateRing='$updateRing', but none are ready for updates.
+                âš ï¸ Found $totalCount cluster(s) with UpdateRing='$updateRing', but none are ready for updates.
                 
                 **Possible reasons:**
                 - Clusters may already be up to date

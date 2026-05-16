@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.62'
+    ModuleVersion = '0.7.63'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -167,6 +167,32 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.63 - PowerShell 7 ParserError fix in fleet-update-status pipeline samples
+
+### Fixed (critical)
+
+- fleet-update-status.yml samples (GitHub Actions and Azure DevOps)
+  failed on the Create Status Summary step under pwsh 7 (default
+  shell on GH-hosted Windows runners) with
+  "ParserError: The Unicode escape sequence is not valid". Inside
+  the PS double-quoted here-string that builds the Markdown summary,
+  Markdown code-span backticks before file names like
+  update-summaries.csv and update-runs.csv were interpreted as the
+  PS 7 `u{xxxx} Unicode escape (which expects `{` next); PS 5.1 had
+  silently swallowed the backtick. Other file refs in the same block
+  had latent corruption under both shells (`r -> CR, `a -> BEL,
+  `c -> dropped backtick). All Markdown code-span backticks in the
+  affected blocks have been doubled, which renders as a literal
+  backtick in the output string under both PS 5.1 and PS 7. No
+  module code paths are affected; only the sample YAMLs.
+
+### Pipeline migration
+
+If you have copied fleet-update-status.yml into your repo, refresh
+the samples via:
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+
 ## Version 0.7.62 - Apply-updates pipeline now consumes the readiness CSV; health gate, JUnit Status mapping, tag-write RBAC fixes
 
 ### Fixed (critical)
@@ -267,36 +293,14 @@ log pointing at this once you bump REQUIRED_MODULE_VERSION to 0.7.62.
 
 ## Version 0.7.60 - GitHub Actions samples refreshed for Node 24 + checks:write fix on apply-updates
 
-### Changed
-
-- All five GitHub Actions sample workflows under
-  Automation-Pipeline-Examples/github-actions/ refreshed to use the
-  current Node 24-compatible major versions of the third-party actions
-  they pin. This removes the "Node.js 20 actions are deprecated" warning
-  banner that started appearing on workflow_dispatch runs after the GH
-  Actions runner began surfacing the upcoming Sept 2026 Node 20 hard-
-  removal. No input/output surface changes for any of the bumped
-  actions:
-  - actions/checkout         @v4 -> @v5  (Node 24 default since v5.0.0)
-  - actions/upload-artifact  @v4 -> @v6  (v6 = Node 24 default; v5 still defaulted to Node 20)
-  - azure/login              @v2 -> @v3  (v3.0.0 = Node 24)
-  - dorny/test-reporter      @v1 -> @v3  (v3 = Node 24)
-  Already-deployed pipelines will keep working on @v4/@v2/@v1 until the
-  Sept 16 2026 hard-removal date; running `Copy-AzureLocalPipelineExample
-  -Update` after upgrading to v0.7.60 pulls the refreshed YAMLs.
-
-### Fixed
-
-- apply-updates.yml (GitHub Actions sample): both jobs now grant
-  `checks: write` in their `permissions:` block. The `dorny/test-reporter`
-  step needs that permission to create the Check Run that publishes
-  JUnit results; without it the step failed with
-  `HttpError: Resource not accessible by integration` on every
-  workflow_dispatch run (workflow_dispatch contexts have no PR check
-  context to write back to by default). Sibling workflows
-  (assess-update-readiness.yml, fleet-update-status.yml) already had
-  the permission; only apply-updates.yml was missing it. The run itself
-  was unaffected - this only restored the Check Run summary surface.
+Summary: all five GitHub Actions sample workflows bumped to Node 24-
+compatible action majors (actions/checkout v5, actions/upload-artifact v6,
+azure/login v3, dorny/test-reporter v3) to clear the "Node.js 20 actions
+are deprecated" banner ahead of the Sept 2026 hard-removal. apply-updates
+GH Actions sample also gained `checks: write` in both jobs, fixing
+`HttpError: Resource not accessible by integration` from dorny/test-reporter
+on workflow_dispatch runs (sibling workflows already had it). Full notes
+in CHANGELOG.md.
 
 ## Version 0.7.50 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update + new Copy-AzureLocalItsmSample
 
@@ -326,21 +330,16 @@ Centralised resolution in a new private helper
 Get-AzLocalModuleRootManifestPath; added regression Pester tests for
 the parallel path. Full notes in CHANGELOG.md.
 
-## Version 0.7.4 - ITSM Connector Phase 1 (ServiceNow)
+## Versions 0.7.4 and earlier
 
-Summary: new optional ITSM ticketing surface that lets apply-updates and
-fleet-update-status pipelines open ServiceNow incidents when a cluster
-needs operator action. Disabled by default; opt-in via pipeline input
-raise_itsm_ticket=true plus a ./.itsm/azurelocal-itsm.yml config file.
-
-## Versions 0.7.3 and earlier
-
-Module renamed from AzStackHci.ManageUpdates to AzLocal.UpdateManagement
-in v0.7.3, monolithic .psm1 split into Public/Private NestedModules,
+Highlights: ITSM ticketing (ServiceNow) phase 1 in 0.7.4, opt-in via
+raise_itsm_ticket=true plus ./.itsm/azurelocal-itsm.yml. Module renamed
+from AzStackHci.ManageUpdates to AzLocal.UpdateManagement in v0.7.3,
+monolithic .psm1 split into Public/Private NestedModules. Earlier:
 parallel fleet read paths fixed for -ThrottleLimit > 1, EndTime column
 on Get-AzureLocalUpdateRuns, UpdateSideloaded auto-reset workflow, ARG
 pagination beyond 1000 results, mid-run token refresh, CSV-injection
-sanitisation. Full notes for every release in CHANGELOG.md.
+sanitisation. Full notes in CHANGELOG.md.
 
 For full release notes on this and previous versions, see:
 https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md

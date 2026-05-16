@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.62' {
-            $script:ModuleInfo.Version | Should -Be '0.7.62'
+        It 'Should have version 0.7.63' {
+            $script:ModuleInfo.Version | Should -Be '0.7.63'
         }
 
         It 'Should export exactly 25 functions' {
