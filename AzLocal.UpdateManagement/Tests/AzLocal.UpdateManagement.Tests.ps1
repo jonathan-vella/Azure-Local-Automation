@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.61' {
-            $script:ModuleInfo.Version | Should -Be '0.7.61'
+        It 'Should have version 0.7.62' {
+            $script:ModuleInfo.Version | Should -Be '0.7.62'
         }
 
         It 'Should export exactly 25 functions' {
@@ -917,6 +917,100 @@ Describe 'Helper Function: Export-ResultsToJUnitXml (Internal)' {
     }
 }
 
+Describe 'Helper Function: Get-HealthCheckFailureSummary (Internal)' {
+
+    Context 'Severity ordering and filtering' {
+        It 'Should return empty string when UpdateSummary is null' {
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                Get-HealthCheckFailureSummary -UpdateSummary $null
+            }
+            $result | Should -Be ''
+        }
+
+        It 'Should return empty string when healthCheckResult is missing' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{} }
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Be ''
+        }
+
+        It 'Should exclude Informational severity entries' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Informational'; displayName = 'I1' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Be ''
+        }
+
+        It 'Should exclude entries whose status is not Failed' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Succeeded'; severity = 'Critical'; displayName = 'C1' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Be ''
+        }
+
+        It 'Should emit Critical entries before Warning entries even when ARM returned Warnings first' {
+            # Regression: prior to this ordering fix, 5+ Warnings ahead of a
+            # Critical caused the Critical to be dropped during top-5 truncation,
+            # so the readiness gate ('-match "\[Critical\]"') silently failed.
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W1'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W2'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W3'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W4'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W5'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C1'; targetResourceName = 'nodeB' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Informational'; displayName = 'I1'; targetResourceName = 'nodeC' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            # Must start with [Critical] so the gate's -match succeeds
+            $result | Should -Match '^\[Critical\] C1'
+            # Informational is excluded entirely
+            $result | Should -Not -Match '\[Informational\]'
+            # All 5 Warnings + 1 Critical = 6 in-scope; top 5 displayed; "+1 more"
+            $result | Should -Match '\(\+1 more\)'
+        }
+
+        It 'Should preserve insertion order within each severity bucket' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W1' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C1' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W2' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C2' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            # Order should be: C1, C2 (Criticals in ARM order), then W1, W2 (Warnings in ARM order)
+            $result | Should -Be '[Critical] C1; [Critical] C2; [Warning] W1; [Warning] W2'
+        }
+
+        It 'Should include up to 5 entries and append "(+N more)" suffix when truncating' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C1' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C2' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C3' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C4' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C5' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C6' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C7' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Match '^\[Critical\] C1; \[Critical\] C2; \[Critical\] C3; \[Critical\] C4; \[Critical\] C5 \(\+2 more\)$'
+        }
+    }
+}
+
 Describe 'API Version Consistency' {
     
     Context 'Default API Version' {
@@ -1687,6 +1781,155 @@ Describe 'Integration: Start-AzureLocalClusterUpdate Schedule Status' {
             finally {
                 if (Test-Path $outputPath) { Remove-Item $outputPath -Force }
             }
+        }
+    }
+
+    Context 'JUnit XML export handles non-failure non-passing statuses (v0.7.62)' {
+        # v0.7.62 fix: Status values NotReady, NotConnected, NoUpdatesAvailable,
+        # NoReadyUpdates previously fell through to <system-out> (rendered as
+        # passed in dorny/test-reporter), producing misleading "all green" CI
+        # summaries when the apply step had actually skipped clusters. They
+        # must now render as <skipped>. UpdateNotFound must render as <error>.
+        BeforeAll {
+            $script:exportJUnit = {
+                param($results, $path)
+                Export-ResultsToJUnitXml -Results $results -OutputPath $path -TestSuiteName 'Test' -OperationType 'StartUpdate'
+            }
+        }
+
+        It 'Should render NotReady as <skipped>' {
+            $tr = [PSCustomObject]@{
+                ClusterName = 'c1'; Status = 'NotReady'
+                Message     = 'No ready updates available'
+                StartTime   = Get-Date; EndTime = Get-Date; Duration = '00:00:01'
+            }
+            $outputPath = Join-Path $env:TEMP "pester-junit-notready.xml"
+            try {
+                & (Get-Module 'AzLocal.UpdateManagement') $script:exportJUnit @($tr) $outputPath
+                $xml = [xml](Get-Content $outputPath -Raw)
+                $testCase = $xml.SelectSingleNode('//testcase')
+                $testCase.SelectSingleNode('skipped')   | Should -Not -BeNullOrEmpty
+                $testCase.SelectSingleNode('failure')   | Should -BeNullOrEmpty
+                $testCase.SelectSingleNode('error')     | Should -BeNullOrEmpty
+                $testCase.SelectSingleNode('system-out')| Should -BeNullOrEmpty
+            }
+            finally { if (Test-Path $outputPath) { Remove-Item $outputPath -Force } }
+        }
+
+        It 'Should render NotConnected as <skipped>' {
+            $tr = [PSCustomObject]@{
+                ClusterName = 'c1'; Status = 'NotConnected'
+                Message     = 'Cluster is NotConnectedRecently'
+                StartTime   = Get-Date; EndTime = Get-Date; Duration = '00:00:01'
+            }
+            $outputPath = Join-Path $env:TEMP "pester-junit-notconnected.xml"
+            try {
+                & (Get-Module 'AzLocal.UpdateManagement') $script:exportJUnit @($tr) $outputPath
+                $xml = [xml](Get-Content $outputPath -Raw)
+                $testCase = $xml.SelectSingleNode('//testcase')
+                $testCase.SelectSingleNode('skipped') | Should -Not -BeNullOrEmpty
+                $testCase.SelectSingleNode('failure') | Should -BeNullOrEmpty
+                $testCase.SelectSingleNode('error')   | Should -BeNullOrEmpty
+            }
+            finally { if (Test-Path $outputPath) { Remove-Item $outputPath -Force } }
+        }
+
+        It 'Should render NoUpdatesAvailable as <skipped>' {
+            $tr = [PSCustomObject]@{
+                ClusterName = 'c1'; Status = 'NoUpdatesAvailable'
+                Message     = 'No updates available'
+                StartTime   = Get-Date; EndTime = Get-Date; Duration = '00:00:01'
+            }
+            $outputPath = Join-Path $env:TEMP "pester-junit-noupdatesavail.xml"
+            try {
+                & (Get-Module 'AzLocal.UpdateManagement') $script:exportJUnit @($tr) $outputPath
+                $xml = [xml](Get-Content $outputPath -Raw)
+                $testCase = $xml.SelectSingleNode('//testcase')
+                $testCase.SelectSingleNode('skipped') | Should -Not -BeNullOrEmpty
+                $testCase.SelectSingleNode('failure') | Should -BeNullOrEmpty
+                $testCase.SelectSingleNode('error')   | Should -BeNullOrEmpty
+            }
+            finally { if (Test-Path $outputPath) { Remove-Item $outputPath -Force } }
+        }
+
+        It 'Should render NoReadyUpdates as <skipped>' {
+            $tr = [PSCustomObject]@{
+                ClusterName = 'c1'; Status = 'NoReadyUpdates'
+                Message     = 'No ready updates'
+                StartTime   = Get-Date; EndTime = Get-Date; Duration = '00:00:01'
+            }
+            $outputPath = Join-Path $env:TEMP "pester-junit-noreadyupdates.xml"
+            try {
+                & (Get-Module 'AzLocal.UpdateManagement') $script:exportJUnit @($tr) $outputPath
+                $xml = [xml](Get-Content $outputPath -Raw)
+                $testCase = $xml.SelectSingleNode('//testcase')
+                $testCase.SelectSingleNode('skipped') | Should -Not -BeNullOrEmpty
+                $testCase.SelectSingleNode('failure') | Should -BeNullOrEmpty
+                $testCase.SelectSingleNode('error')   | Should -BeNullOrEmpty
+            }
+            finally { if (Test-Path $outputPath) { Remove-Item $outputPath -Force } }
+        }
+
+        It 'Should render UpdateNotFound as <error type="UpdateNotFound">' {
+            $tr = [PSCustomObject]@{
+                ClusterName = 'c1'; Status = 'UpdateNotFound'
+                Message     = "Update '10.2511.0.99' not found"
+                UpdateName  = '10.2511.0.99'
+                StartTime   = Get-Date; EndTime = Get-Date; Duration = '00:00:01'
+            }
+            $outputPath = Join-Path $env:TEMP "pester-junit-updatenotfound.xml"
+            try {
+                & (Get-Module 'AzLocal.UpdateManagement') $script:exportJUnit @($tr) $outputPath
+                $xml = [xml](Get-Content $outputPath -Raw)
+                $testCase = $xml.SelectSingleNode('//testcase')
+                $errorNode = $testCase.SelectSingleNode('error')
+                $errorNode | Should -Not -BeNullOrEmpty
+                $errorNode.type | Should -Be 'UpdateNotFound'
+                $testCase.SelectSingleNode('skipped') | Should -BeNullOrEmpty
+                $testCase.SelectSingleNode('failure') | Should -BeNullOrEmpty
+            }
+            finally { if (Test-Path $outputPath) { Remove-Item $outputPath -Force } }
+        }
+
+        It 'UpdateStarted should still render as system-out (passed)' {
+            $tr = [PSCustomObject]@{
+                ClusterName = 'c1'; Status = 'UpdateStarted'
+                Message     = 'Update started successfully'
+                UpdateName  = '10.2511.0.10'
+                StartTime   = Get-Date; EndTime = Get-Date; Duration = '00:00:01'
+            }
+            $outputPath = Join-Path $env:TEMP "pester-junit-updatestarted.xml"
+            try {
+                & (Get-Module 'AzLocal.UpdateManagement') $script:exportJUnit @($tr) $outputPath
+                $xml = [xml](Get-Content $outputPath -Raw)
+                $testCase = $xml.SelectSingleNode('//testcase')
+                $testCase.SelectSingleNode('system-out') | Should -Not -BeNullOrEmpty
+                $testCase.SelectSingleNode('failure')    | Should -BeNullOrEmpty
+                $testCase.SelectSingleNode('error')      | Should -BeNullOrEmpty
+                $testCase.SelectSingleNode('skipped')    | Should -BeNullOrEmpty
+            }
+            finally { if (Test-Path $outputPath) { Remove-Item $outputPath -Force } }
+        }
+
+        It 'Mixed-result summary should produce correct testsuite counts' {
+            $results = @(
+                [PSCustomObject]@{ ClusterName = 'a'; Status = 'UpdateStarted';      Message = 'ok';   Duration = '00:00:01' }
+                [PSCustomObject]@{ ClusterName = 'b'; Status = 'NotReady';           Message = 'nope'; Duration = '00:00:01' }
+                [PSCustomObject]@{ ClusterName = 'c'; Status = 'HealthCheckBlocked'; Message = 'bad';  Duration = '00:00:01' }
+                [PSCustomObject]@{ ClusterName = 'd'; Status = 'UpdateNotFound';     Message = 'gone'; Duration = '00:00:01' }
+                [PSCustomObject]@{ ClusterName = 'e'; Status = 'NoUpdatesAvailable'; Message = 'none'; Duration = '00:00:01' }
+            )
+            $outputPath = Join-Path $env:TEMP "pester-junit-mixed.xml"
+            try {
+                & (Get-Module 'AzLocal.UpdateManagement') $script:exportJUnit $results $outputPath
+                $xml = [xml](Get-Content $outputPath -Raw)
+                $suite = $xml.SelectSingleNode('//testsuite')
+                [int]$suite.tests    | Should -Be 5
+                [int]$suite.failures | Should -Be 1     # HealthCheckBlocked
+                [int]$suite.errors   | Should -Be 1     # UpdateNotFound
+                [int]$suite.skipped  | Should -Be 2     # NotReady + NoUpdatesAvailable
+            }
+            finally { if (Test-Path $outputPath) { Remove-Item $outputPath -Force } }
         }
     }
 }
@@ -2580,6 +2823,14 @@ Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)
                 ($results | Where-Object ClusterName -eq 'cluster-a').RecommendedUpdate | Should -Be '10.2506.0.28'
                 ($results | Where-Object ClusterName -eq 'cluster-b').ReadyForUpdate | Should -BeFalse
                 ($results | Where-Object ClusterName -eq 'cluster-c').ReadyForUpdate | Should -BeFalse
+                # v0.7.62: every output row must carry ClusterResourceId so the
+                # apply-updates pipeline step can call
+                # Start-AzureLocalClusterUpdate -ClusterResourceIds directly
+                # from the readiness CSV.
+                foreach ($r in $results) {
+                    $r.PSObject.Properties.Name | Should -Contain 'ClusterResourceId'
+                    $r.ClusterResourceId | Should -Match '^/subscriptions/.+/clusters/[^/]+$'
+                }
                 # Internal tally fields must not leak to caller output
                 foreach ($r in $results) {
                     $r.PSObject.Properties.Name | Should -Not -Contain '__DisplayTag'
@@ -2961,13 +3212,15 @@ Describe 'Helper Function: Invoke-AzLocalSideloadedAutoResetForCluster (Internal
     }
 
     BeforeEach {
-        # Mock the cluster GET (and PATCH inside Set-AzLocalClusterTagsMerge) by stubbing az
-        # at module scope. We use $global: scoped variables so the mock (which runs inside
-        # the module's $script: scope when invoked via az rest) and the assertions (which
-        # run in the test's scope) share state.
-        $global:azGetTagsJson = $null
-        $global:azPatchCalled = $false
-        $global:azPatchBody   = $null
+        # v0.7.62: Set-AzLocalClusterTagsMerge now uses the ARM tags subresource
+        # (PATCH .../providers/Microsoft.Resources/tags/default). The GET shape is
+        # {"properties":{"tags":{...}}} and up to two PATCHes can fire per call
+        # (one for "operation":"Merge", one for "operation":"Delete") - so we
+        # capture all PATCH bodies into an array and reshape the GET stub
+        # response to the subresource envelope.
+        $global:azGetTagsJson  = $null
+        $global:azPatchCalled  = $false
+        $global:azPatchBodies  = @()
         InModuleScope AzLocal.UpdateManagement {
             function global:az {
                 $args2 = @($args)
@@ -2975,13 +3228,25 @@ Describe 'Helper Function: Invoke-AzLocalSideloadedAutoResetForCluster (Internal
                 if ($args2 -contains 'PATCH') {
                     $fIdx = [array]::IndexOf($args2, '--body')
                     if ($fIdx -ge 0 -and $args2[$fIdx + 1] -match '^@(.+)$') {
-                        $global:azPatchBody = Get-Content -Raw $matches[1]
+                        $global:azPatchBodies += ,(Get-Content -Raw $matches[1])
                     }
                     $global:azPatchCalled = $true
                     return ''
                 }
                 if ($args2 -contains 'GET') {
-                    return $global:azGetTagsJson
+                    $uIdx = [array]::IndexOf($args2, '--uri')
+                    $uri  = if ($uIdx -ge 0) { $args2[$uIdx + 1] } else { '' }
+                    $raw  = $global:azGetTagsJson
+                    # Tags subresource GET (Set-AzLocalClusterTagsMerge) expects
+                    # the {"properties":{"tags":{...}}} envelope. The cluster
+                    # resource GET (Invoke-AzLocalSideloadedAutoResetForCluster
+                    # reads $cluster.tags) wants the legacy {"tags":{...}} shape.
+                    if ($uri -match '/providers/Microsoft\.Resources/tags/default') {
+                        if ($raw -and $raw -notmatch '"properties"\s*:') {
+                            $raw = '{"properties":' + $raw + '}'
+                        }
+                    }
+                    return $raw
                 }
                 return ''
             }
@@ -2990,7 +3255,7 @@ Describe 'Helper Function: Invoke-AzLocalSideloadedAutoResetForCluster (Internal
 
     AfterEach {
         InModuleScope AzLocal.UpdateManagement { Remove-Item function:\global:az -ErrorAction SilentlyContinue }
-        Remove-Variable -Name azGetTagsJson, azPatchCalled, azPatchBody -Scope Global -ErrorAction SilentlyContinue
+        Remove-Variable -Name azGetTagsJson, azPatchCalled, azPatchBodies -Scope Global -ErrorAction SilentlyContinue
     }
 
     It 'Action=NoTag when UpdateSideloaded tag is absent' {
@@ -3010,12 +3275,16 @@ Describe 'Helper Function: Invoke-AzLocalSideloadedAutoResetForCluster (Internal
         $r.Action | Should -Be 'OrphanCleared'
         $r.Message | Should -BeLike '*orphan*'
         $global:azPatchCalled | Should -Be $true
-        # PATCH body must NOT contain UpdateSideloaded (we did not write it)
-        $global:azPatchBody | Should -Not -Match 'UpdateSideloaded'
-        # PATCH body must NOT contain UpdateVersionInProgress (we cleared it)
-        $global:azPatchBody | Should -Not -Match 'UpdateVersionInProgress'
-        # Existing tags preserved
-        $global:azPatchBody | Should -Match '"UpdateRing":\s*"Wave1"'
+        # v0.7.62: tags-subresource path emits a single PATCH (Delete operation)
+        # whose body contains only the keys being removed. No merge PATCH (we are
+        # not writing UpdateSideloaded). Preserved tags (UpdateRing) are NOT in
+        # the body - the subresource preserves them structurally.
+        $global:azPatchBodies.Count | Should -Be 1
+        $deleteBody = $global:azPatchBodies[0]
+        $deleteBody | Should -Match '"operation":\s*"Delete"'
+        $deleteBody | Should -Match 'UpdateVersionInProgress'
+        $deleteBody | Should -Not -Match 'UpdateSideloaded'
+        $deleteBody | Should -Not -Match 'UpdateRing'
     }
 
     It 'Action=NoTag when UpdateSideloaded absent and orphan UpdateVersionInProgress does NOT match latest run' {
@@ -3079,11 +3348,22 @@ Describe 'Helper Function: Invoke-AzLocalSideloadedAutoResetForCluster (Internal
         $r.Action | Should -Be 'Reset'
         $r.NewSideloaded | Should -Be 'False'
         $global:azPatchCalled | Should -Be $true
-        # Patch body should set UpdateSideloaded=False and remove UpdateVersionInProgress
-        $global:azPatchBody | Should -Match '"UpdateSideloaded":\s*"False"'
-        $global:azPatchBody | Should -Not -Match 'UpdateVersionInProgress'
-        # Existing UpdateRing must be preserved in the merge
-        $global:azPatchBody | Should -Match '"UpdateRing":\s*"Wave1"'
+        # v0.7.62: two PATCHes are emitted via the ARM tags subresource:
+        #   1. Merge body   -> sets UpdateSideloaded=False
+        #   2. Delete body  -> removes UpdateVersionInProgress
+        # Preserved tags (UpdateRing) appear in neither body (the subresource
+        # preserves them structurally, not via payload echo).
+        $global:azPatchBodies.Count | Should -Be 2
+        $mergeBody  = $global:azPatchBodies | Where-Object { $_ -match '"operation":\s*"Merge"' } | Select-Object -First 1
+        $deleteBody = $global:azPatchBodies | Where-Object { $_ -match '"operation":\s*"Delete"' } | Select-Object -First 1
+        $mergeBody  | Should -Not -BeNullOrEmpty
+        $deleteBody | Should -Not -BeNullOrEmpty
+        $mergeBody  | Should -Match '"UpdateSideloaded":\s*"False"'
+        $mergeBody  | Should -Not -Match 'UpdateVersionInProgress'
+        $deleteBody | Should -Match 'UpdateVersionInProgress'
+        $deleteBody | Should -Not -Match 'UpdateSideloaded'
+        # Existing UpdateRing is preserved structurally - never in any PATCH body.
+        ($global:azPatchBodies -join "`n") | Should -Not -Match 'UpdateRing'
     }
 
     It 'Action=Reset on -Force even with mismatch' {

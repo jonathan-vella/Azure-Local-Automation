@@ -552,9 +552,15 @@ function Start-AzureLocalClusterUpdate {
                     continue
                 }
 
-                # Step 3b: Pre-update health validation - check for Critical health failures
+                # Step 3b: Pre-update health validation - check for Critical health failures.
+                # CRITICAL: Test-AzureLocalClusterHealth only returns its [PSCustomObject]
+                # result rows when -PassThru is supplied; without it the function logs to
+                # the host stream only and returns $null. Omitting -PassThru here caused
+                # the gate to be silently bypassed in v0.7.61 and earlier - the "BLOCKED"
+                # log line would appear but the predicate below would short-circuit on
+                # $null, falling through to the apply path. Fixed in v0.7.62.
                 Write-Log -Message "Step 3b: Checking cluster health for update-blocking issues..." -Level Info
-                $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($clusterInfo.id) -BlockingOnly -UpdateSummary $updateSummary
+                $healthResults = Test-AzureLocalClusterHealth -ClusterResourceIds @($clusterInfo.id) -BlockingOnly -UpdateSummary $updateSummary -PassThru
                 if ($healthResults -and $healthResults.Count -gt 0 -and $healthResults[0].CriticalCount -gt 0) {
                     $critFailures = $healthResults[0].Failures | Where-Object { $_.Severity -eq "Critical" }
                     Write-Log -Message "Cluster '$clusterName' has $($healthResults[0].CriticalCount) critical health check failure(s) that will block the update:" -Level Error

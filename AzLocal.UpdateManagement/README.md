@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.61 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.61)
+**Latest Version:** v0.7.62 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.62)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,8 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.61](#whats-new-in-v0761)
-- [What's New in v0.7.60](#whats-new-in-v0760)
+- [What's New in v0.7.62](#whats-new-in-v0762)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -84,6 +83,10 @@ Azure Local REST API specification (includes update management endpoints): https
   - [Verbose Logging](#verbose-logging)
 - [License](#license)
 - [Release History](#release-history)
+  - [What's New in v0.7.61](#whats-new-in-v0761)
+  - [What's New in v0.7.60](#whats-new-in-v0760)
+  - [What's New in v0.7.50](#whats-new-in-v0750)
+  - [What's New in v0.7.41](#whats-new-in-v0741)
   - [What's New in v0.7.4](#whats-new-in-v074)
   - [What's New in v0.7.3](#whats-new-in-v073)
   - [What's New in v0.7.2](#whats-new-in-v072)
@@ -140,33 +143,19 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.61
+## What's New in v0.7.62
 
-- **Readiness now blocks `ReadyForUpdate` when the cluster is not reachable or has Critical-severity health checks.** Both [`Get-AzureLocalClusterUpdateReadiness`](Public/Get-AzureLocalClusterUpdateReadiness.ps1) and [`Get-AzureLocalFleetStatusData`](Public/Get-AzureLocalFleetStatusData.ps1) (driving the fleet HTML report) downgrade `ReadyForUpdate` to `False` and record the reason on a new **`BlockingReasons`** CSV column whenever either of these is true:
-  - **Connectivity gate** - `ClusterState` is not `'ConnectedRecently'` (e.g. `NotConnectedRecently`, `Disconnected`). ARM cannot reliably push an update to a cluster that has missed its heartbeat.
-  - **Critical health gate** - `HealthCheckFailures` contains at least one `[Critical]` severity entry. These must be cleared before any solution upgrade is started.
+- **Fixed (critical) - `Start-AzureLocalClusterUpdate` Step 3b critical-health gate was being silently bypassed.** The caller invoked [`Test-AzureLocalClusterHealth`](Public/Test-AzureLocalClusterHealth.ps1) without `-PassThru`; the function logs to the host stream and returns `$null` without `-PassThru`, so the predicate `$healthResults[0].CriticalCount -gt 0` always evaluated false even when the function had just logged `BLOCKED (N critical)`. Apply would then write *"No critical health issues found - cluster is eligible for update"* and proceed to PATCH the update despite critical health failures. Two more call sites in [`Get-AzureLocalUpdateRuns`](Public/Get-AzureLocalUpdateRuns.ps1) had the same omission. All three fixed.
 
-  Values on `BlockingReasons` are semicolon-joined (e.g. `CriticalHealthCheck`, `CriticalHealthCheck; NotConnectedRecently`). The per-cluster console output now shows `Blocked (<reasons>)` in red, and the summary footer reports `Blocked by Readiness Gate: N` alongside the existing `Blocked by SBE Prereq` count. **The CSV column is additive** - existing consumers that parse by header name keep working.
+- **Fixed (critical) - Tag writes now use the ARM tags subresource (`Tag Contributor` RBAC, not `clusters/write`).** [`Set-AzLocalClusterTagsMerge`](Private/Set-AzLocalClusterTagsMerge.ps1) - used by `Start-AzureLocalClusterUpdate` to stamp `UpdateVersionInProgress`, by `Reset-AzureLocalSideloadedTag`, and by the sideloaded auto-reset path - now `PATCH`es `.../providers/Microsoft.Resources/tags/default?api-version=2021-04-01` instead of the full cluster resource. This narrows the required RBAC from `microsoft.azurestackhci/clusters/write` to `Microsoft.Resources/tags/write` (built-in **Tag Contributor**). Up to 2 PATCHes per call: one `operation=Merge` for keys being set, one `operation=Delete` for keys whose input value is `$null`. Idempotent: skips keys whose value already matches.
 
-- **`Start-AzureLocalClusterUpdate` defence-in-depth: new `Step 1b` connectivity gate.** Immediately after cluster lookup, any cluster whose `properties.status` is not `'ConnectedRecently'` is skipped before any update is attempted. A row is recorded in `Update_Skipped.csv` with the message *"Update not started - cluster status is '<status>' (ARM cannot reach the cluster)"*, and the in-process `$results` list gets a `Status='NotConnected'` row. Complements the existing `Step 3b` critical-health gate. No new flags - the gate is always on.
+- **Fixed (critical) - JUnit XML `Status` mapping no longer reports skipped clusters as passed.** `Export-ResultsToJUnitXml` previously rendered `NotReady`, `NotConnected`, `NoUpdatesAvailable`, and `NoReadyUpdates` as `<system-out>` (passed in `dorny/test-reporter`), producing misleading *all green* CI summaries when apply had actually skipped clusters. They now render as `<skipped>`. `UpdateNotFound` now renders as `<error type="UpdateNotFound">` instead of `<system-out>`.
 
-- **Fixed - JUnit XML `Status` column from `Get-AzureLocalClusterUpdateReadiness` was always `Skipped`** for Ready clusters (long-standing bool/string comparison bug `$_.ReadyForUpdate -eq 'Yes'` against `[bool]$true`). JUnit `Status` now correctly emits `Ready`, `Blocked`, `Failed`, or `Skipped`. The CSV `ReadyForUpdate` column (a real `[bool]`) was unaffected; only JUnit XML readability in CI/CD test summaries was wrong.
+- **Changed - `apply-updates` pipeline samples now consume the readiness CSV.** Both [`Automation-Pipeline-Examples/github-actions/apply-updates.yml`](Automation-Pipeline-Examples/github-actions/apply-updates.yml) and [`Automation-Pipeline-Examples/azure-devops/apply-updates.yml`](Automation-Pipeline-Examples/azure-devops/apply-updates.yml) now download the `readiness-report` artifact from the `check-readiness` job, filter rows where `ReadyForUpdate=True`, and pass `-ClusterResourceIds @(...)` to `Start-AzureLocalClusterUpdate` instead of re-discovering clusters by `UpdateRing` tag. This guarantees the readiness gate's decision is **enforced** rather than advisory: a cluster flagged Blocked in readiness will not be touched by apply even if its tag still matches the ring. Apply still re-validates each cluster (Step 1b connectivity, Step 3b health, Step 3c schedule, Step 3b1 sideloaded) as defence in depth.
 
-- **Module version pin bumped to 0.7.61 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading.
+- **Changed - Readiness output gains a `ClusterResourceId` column.** [`Get-AzureLocalClusterUpdateReadiness`](Public/Get-AzureLocalClusterUpdateReadiness.ps1) emits the full ARM resource ID on every row (including `NotFound`/`Error` rows) so the apply step can pass it straight to `Start-AzureLocalClusterUpdate -ClusterResourceIds` without a second Resource Graph query. **The CSV column is additive** - existing consumers that parse by header name keep working.
 
-## What's New in v0.7.60
-
-- **GitHub Actions sample workflows refreshed for Node 24.** All five workflow YAMLs under [`Automation-Pipeline-Examples/github-actions/`](Automation-Pipeline-Examples/github-actions/) now pin Node 24-compatible major versions of the third-party actions they use. This removes the *"Node.js 20 actions are deprecated"* warning banner that GitHub Actions started surfacing ahead of the **Sept 16 2026 Node.js 20 hard-removal**. No input/output surface changes for any of the bumped actions - refreshed pipelines work without any other edits:
-  - `actions/checkout`        `@v4` -> `@v5`  (Node 24 default since v5.0.0)
-  - `actions/upload-artifact` `@v4` -> `@v6`  (v6 = Node 24 default; v5 still defaulted to Node 20)
-  - `azure/login`             `@v2` -> `@v3`  (v3.0.0 = Node 24)
-  - `dorny/test-reporter`     `@v1` -> `@v3`  (v3 = Node 24)
-
-  Already-deployed pipelines continue working on the older majors until Sept 16 2026. To pull the refreshed YAMLs into your existing `.github\workflows\` folder after upgrading the module, run `Copy-AzureLocalPipelineExample -Update -Platform GitHub -Destination .\.github\workflows`.
-
-- **Fixed - `dorny/test-reporter` 403 on `apply-updates.yml` (GitHub Actions sample).** Both jobs (`check-readiness` and `apply-updates`) only granted `id-token: write` + `contents: read` in their `permissions:` block, missing the `checks: write` permission that `dorny/test-reporter` needs to create the Check Run that publishes JUnit results. Symptom: the test-reporter step failed with `HttpError: Resource not accessible by integration` (HTTP 403) on every `workflow_dispatch` run, because `workflow_dispatch` contexts have no PR check-run context to write back to by default. The run itself was unaffected - readiness assessment and the subsequent apply still completed - this only restored the Check Run summary surface so the JUnit XML actually shows up in the GitHub UI. Sibling workflows (`assess-update-readiness.yml`, `fleet-update-status.yml`) already declared `checks: write` from v0.7.50; only `apply-updates.yml` was missing it.
-
-- **Module version pin bumped to 0.7.60 in all 10 sample workflow YAMLs.** `GENERATED_AGAINST_MODULE_VERSION` is the value the in-pipeline install step compares the actually-installed module version against, then warns if your local copy of the YAML is stale (see [Automation-Pipeline-Examples/README.md section 5.3](Automation-Pipeline-Examples/README.md#53-version-pinning--staleness-warnings)). All five GitHub Actions YAMLs and all five Azure DevOps YAMLs have been bumped in lock-step.
+- **Module version pin bumped to 0.7.62 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading.
 
 **What a successful `apply-updates.yml` run looks like** (dry-run against the Prod ring on a 9-cluster sandbox - 4 ready, 5 skipped, zero failures):
 
@@ -2172,10 +2161,33 @@ This code is provided as-is for educational and reference purposes.
 
 ## Release History
 
+### What's New in v0.7.61
+
+- **Readiness now blocks `ReadyForUpdate` when the cluster is not reachable or has Critical-severity health checks.** Both [`Get-AzureLocalClusterUpdateReadiness`](Public/Get-AzureLocalClusterUpdateReadiness.ps1) and [`Get-AzureLocalFleetStatusData`](Public/Get-AzureLocalFleetStatusData.ps1) (driving the fleet HTML report) downgrade `ReadyForUpdate` to `False` and record the reason on a new **`BlockingReasons`** CSV column whenever either of these is true:
+  - **Connectivity gate** - `ClusterState` is not `'ConnectedRecently'` (e.g. `NotConnectedRecently`, `Disconnected`). ARM cannot reliably push an update to a cluster that has missed its heartbeat.
+  - **Critical health gate** - `HealthCheckFailures` contains at least one `[Critical]` severity entry. These must be cleared before any solution upgrade is started.
+
+  Values on `BlockingReasons` are semicolon-joined (e.g. `CriticalHealthCheck`, `CriticalHealthCheck; NotConnectedRecently`). The per-cluster console output now shows `Blocked (<reasons>)` in red, and the summary footer reports `Blocked by Readiness Gate: N` alongside the existing `Blocked by SBE Prereq` count. **The CSV column is additive** - existing consumers that parse by header name keep working.
+
+- **`Start-AzureLocalClusterUpdate` defence-in-depth: new `Step 1b` connectivity gate.** Immediately after cluster lookup, any cluster whose `properties.status` is not `'ConnectedRecently'` is skipped before any update is attempted. A row is recorded in `Update_Skipped.csv` with the message *"Update not started - cluster status is '<status>' (ARM cannot reach the cluster)"*, and the in-process `$results` list gets a `Status='NotConnected'` row. Complements the existing `Step 3b` critical-health gate. No new flags - the gate is always on.
+
+- **Fixed - JUnit XML `Status` column from `Get-AzureLocalClusterUpdateReadiness` was always `Skipped`** for Ready clusters (long-standing bool/string comparison bug `$_.ReadyForUpdate -eq 'Yes'` against `[bool]$true`). JUnit `Status` now correctly emits `Ready`, `Blocked`, `Failed`, or `Skipped`. The CSV `ReadyForUpdate` column (a real `[bool]`) was unaffected; only JUnit XML readability in CI/CD test summaries was wrong.
+
+- **Module version pin bumped to 0.7.61 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading.
+
 ### What's New in v0.7.60
 
-- **GitHub Actions sample workflows refreshed for Node 24.** All five workflow YAMLs under [`Automation-Pipeline-Examples/github-actions/`](Automation-Pipeline-Examples/github-actions/) now pin Node 24-compatible major versions: `actions/checkout @v4 -> @v5`, `actions/upload-artifact @v4 -> @v6`, `azure/login @v2 -> @v3`, `dorny/test-reporter @v1 -> @v3`. Removes the "Node.js 20 actions are deprecated" warning banner ahead of the Sept 16 2026 Node.js 20 hard-removal. No input/output surface changes.
-- **Fixed - `dorny/test-reporter` 403 on `apply-updates.yml`.** Both jobs (`check-readiness` and `apply-updates`) now grant `checks: write` in their `permissions:` block so the Check Run that publishes JUnit results can be created on `workflow_dispatch` runs. Sibling workflows already declared this from v0.7.50.
+- **GitHub Actions sample workflows refreshed for Node 24.** All five workflow YAMLs under [`Automation-Pipeline-Examples/github-actions/`](Automation-Pipeline-Examples/github-actions/) now pin Node 24-compatible major versions of the third-party actions they use. This removes the *"Node.js 20 actions are deprecated"* warning banner that GitHub Actions started surfacing ahead of the **Sept 16 2026 Node.js 20 hard-removal**. No input/output surface changes for any of the bumped actions - refreshed pipelines work without any other edits:
+  - `actions/checkout`        `@v4` -> `@v5`  (Node 24 default since v5.0.0)
+  - `actions/upload-artifact` `@v4` -> `@v6`  (v6 = Node 24 default; v5 still defaulted to Node 20)
+  - `azure/login`             `@v2` -> `@v3`  (v3.0.0 = Node 24)
+  - `dorny/test-reporter`     `@v1` -> `@v3`  (v3 = Node 24)
+
+  Already-deployed pipelines continue working on the older majors until Sept 16 2026. To pull the refreshed YAMLs into your existing `.github\workflows\` folder after upgrading the module, run `Copy-AzureLocalPipelineExample -Update -Platform GitHub -Destination .\.github\workflows`.
+
+- **Fixed - `dorny/test-reporter` 403 on `apply-updates.yml` (GitHub Actions sample).** Both jobs (`check-readiness` and `apply-updates`) only granted `id-token: write` + `contents: read` in their `permissions:` block, missing the `checks: write` permission that `dorny/test-reporter` needs to create the Check Run that publishes JUnit results. Symptom: the test-reporter step failed with `HttpError: Resource not accessible by integration` (HTTP 403) on every `workflow_dispatch` run, because `workflow_dispatch` contexts have no PR check-run context to write back to by default. The run itself was unaffected - readiness assessment and the subsequent apply still completed - this only restored the Check Run summary surface so the JUnit XML actually shows up in the GitHub UI. Sibling workflows (`assess-update-readiness.yml`, `fleet-update-status.yml`) already declared `checks: write` from v0.7.50; only `apply-updates.yml` was missing it.
+
+- **Module version pin bumped to 0.7.60 in all 10 sample workflow YAMLs.** `GENERATED_AGAINST_MODULE_VERSION` is the value the in-pipeline install step compares the actually-installed module version against, then warns if your local copy of the YAML is stale (see [Automation-Pipeline-Examples/README.md section 5.3](Automation-Pipeline-Examples/README.md#53-version-pinning--staleness-warnings)). All five GitHub Actions YAMLs and all five Azure DevOps YAMLs have been bumped in lock-step.
 
 ### What's New in v0.7.50
 
