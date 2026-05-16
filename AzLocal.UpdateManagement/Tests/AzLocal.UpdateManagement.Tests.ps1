@@ -917,6 +917,100 @@ Describe 'Helper Function: Export-ResultsToJUnitXml (Internal)' {
     }
 }
 
+Describe 'Helper Function: Get-HealthCheckFailureSummary (Internal)' {
+
+    Context 'Severity ordering and filtering' {
+        It 'Should return empty string when UpdateSummary is null' {
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                Get-HealthCheckFailureSummary -UpdateSummary $null
+            }
+            $result | Should -Be ''
+        }
+
+        It 'Should return empty string when healthCheckResult is missing' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{} }
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Be ''
+        }
+
+        It 'Should exclude Informational severity entries' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Informational'; displayName = 'I1' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Be ''
+        }
+
+        It 'Should exclude entries whose status is not Failed' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Succeeded'; severity = 'Critical'; displayName = 'C1' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Be ''
+        }
+
+        It 'Should emit Critical entries before Warning entries even when ARM returned Warnings first' {
+            # Regression: prior to this ordering fix, 5+ Warnings ahead of a
+            # Critical caused the Critical to be dropped during top-5 truncation,
+            # so the readiness gate ('-match "\[Critical\]"') silently failed.
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W1'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W2'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W3'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W4'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W5'; targetResourceName = 'nodeA' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C1'; targetResourceName = 'nodeB' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Informational'; displayName = 'I1'; targetResourceName = 'nodeC' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            # Must start with [Critical] so the gate's -match succeeds
+            $result | Should -Match '^\[Critical\] C1'
+            # Informational is excluded entirely
+            $result | Should -Not -Match '\[Informational\]'
+            # All 5 Warnings + 1 Critical = 6 in-scope; top 5 displayed; "+1 more"
+            $result | Should -Match '\(\+1 more\)'
+        }
+
+        It 'Should preserve insertion order within each severity bucket' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W1' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C1' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Warning';  displayName = 'W2' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C2' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            # Order should be: C1, C2 (Criticals in ARM order), then W1, W2 (Warnings in ARM order)
+            $result | Should -Be '[Critical] C1; [Critical] C2; [Warning] W1; [Warning] W2'
+        }
+
+        It 'Should include up to 5 entries and append "(+N more)" suffix when truncating' {
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C1' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C2' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C3' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C4' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C5' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C6' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'C7' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Match '^\[Critical\] C1; \[Critical\] C2; \[Critical\] C3; \[Critical\] C4; \[Critical\] C5 \(\+2 more\)$'
+        }
+    }
+}
+
 Describe 'API Version Consistency' {
     
     Context 'Default API Version' {

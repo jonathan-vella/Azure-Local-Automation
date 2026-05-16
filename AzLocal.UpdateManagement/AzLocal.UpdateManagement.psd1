@@ -200,6 +200,11 @@
   now renders as <error type="UpdateNotFound"> instead of <system-out>.
   The summary <testsuite tests/failures/errors/skipped/> counts and
   the per-testcase element now agree with the apply-updates reality.
+- Get-HealthCheckFailureSummary now emits Critical-severity entries
+  before Warning before the top-5 truncation; previously a Critical
+  hidden behind 5+ Warnings was dropped, and the readiness gate
+  silently failed to downgrade ReadyForUpdate. Informational entries
+  remain excluded.
 
 ### Changed
 

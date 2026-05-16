@@ -17,7 +17,13 @@ function Get-HealthCheckFailureSummary {
         return ""
     }
 
-    $failures = @()
+    # Bucket failures by severity so Critical entries are always emitted first.
+    # The readiness gate in Get-AzureLocalClusterUpdateReadiness runs
+    # -match '\[Critical\]' on the truncated summary; without this ordering,
+    # a Critical failure could be hidden behind 5+ Warning failures returned
+    # earlier by ARM and the gate would silently miss it.
+    $criticals = @()
+    $warnings  = @()
     $healthChecks = $UpdateSummary.properties.healthCheckResult
 
     foreach ($check in $healthChecks) {
@@ -29,9 +35,18 @@ function Get-HealthCheckFailureSummary {
             }
             $displayName = if ($check.displayName) { $check.displayName } elseif ($check.name) { ($check.name -split '/')[0] } else { "Unknown Check" }
             $targetNode = if ($check.targetResourceName) { " ($($check.targetResourceName))" } else { "" }
-            $failures += "[$severity] $displayName$targetNode"
+            $entry = "[$severity] $displayName$targetNode"
+            if ($severity -eq "Critical") {
+                $criticals += $entry
+            }
+            else {
+                $warnings += $entry
+            }
         }
     }
+
+    # Critical-first, then Warning (insertion order preserved within each bucket).
+    $failures = @($criticals) + @($warnings)
 
     if ($failures.Count -gt 0) {
         # Limit to top 5 failures to keep CSV readable
