@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.63'
+    ModuleVersion = '0.7.64'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -167,6 +167,64 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.64 - Security hardening + pipeline-YAML UTF-8 mojibake repair
+
+### Fixed (critical)
+
+- Sample pipeline YAMLs (10 files across GitHub Actions and Azure
+  DevOps) had accumulated cp1252 mojibake from previous emoji-edit
+  round-trips. One of the multi-byte sequences contained a YAML 1.2
+  forbidden C1 control character (U+008F) which caused GitHub Actions
+  to reject manage-updatering-tags.yml at recent commits with
+  "Invalid workflow file" / YAML syntax error. All non-ASCII bytes
+  have been stripped from every sample workflow and the affected
+  Markdown step-summaries restored with plain-ASCII labels
+  ([info], [ok], [running], [ready], [blocked], [fail]). No module
+  code paths are affected; only the sample YAMLs.
+
+### Security hardening (medium)
+
+- Connect-AzureLocalServicePrincipal now scrubs `$loginResult` through
+  ConvertTo-ScrubbedCliOutput before writing the failure message to
+  Write-Error, so a stray refresh_token / access_token / cookie that
+  the az CLI might emit on a failed `az login --service-principal`
+  call can no longer reach the host logs verbatim.
+- Six additional direct callers of `az rest` / `az account set`
+  (Set-AzLocalClusterTagsMerge, Invoke-AzLocalSideloadedAutoResetForCluster,
+  Invoke-AzureLocalUpdateApply, Set-AzureLocalClusterUpdateRingTag,
+  Start-AzureLocalClusterUpdate x2) now route raw CLI output through
+  ConvertTo-ScrubbedCliOutput before logging/throwing. This closes the
+  same Bearer-token leak class that was previously handled inside
+  Invoke-AzRestJson but missed by the seven sites that call `az rest`
+  directly.
+- README and ITSM/README now carry explicit security notes about
+  (a) the `az login --service-principal --password` command-line
+  exposure on the SP+secret authentication path, and (b) the
+  unavoidable plaintext [string] residency of ITSM secrets in memory
+  during ServiceNow OAuth client_credentials grants.
+
+### Fixed (low)
+
+- Invoke-AzureLocalUpdateApply previously evaluated `$result -match
+  "202"` against the string ARRAY returned by `az rest`, which is
+  array-filter semantics, not regex-match semantics. The comparison
+  is now done against `($result | Out-String).Trim()` and the Write-
+  Verbose path is scrubbed.
+- Invoke-AzLocalItsmHttp throw on non-retryable HTTP failure now uses
+  $redactedUri instead of $Uri, matching the redaction already
+  applied to the Write-Verbose log line.
+- Two Pester tests that wrote to fixed temp filenames
+  (pester-junit-schedule-test.xml and pester-junit-sideloaded-test.xml)
+  now append a per-invocation GUID, removing the collision risk when
+  the test suite is run in parallel or back-to-back.
+
+### Pipeline migration
+
+If you have copied any of these sample workflows into your repo,
+refresh them via:
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+
 ## Version 0.7.63 - PowerShell 7 ParserError fix in fleet-update-status pipeline samples
 
 ### Fixed (critical)
@@ -260,84 +318,25 @@ If you have copied apply-updates.yml into your repo, refresh it via:
 The install step's drift detector will also emit a ::notice/warning
 log pointing at this once you bump REQUIRED_MODULE_VERSION to 0.7.62.
 
-## Version 0.7.61 - Readiness gates: ClusterState + Critical health checks now block ReadyForUpdate
+## Version 0.7.61 and earlier
 
-### Changed
-
-- Get-AzureLocalClusterUpdateReadiness and Get-AzureLocalFleetStatusData
-  now downgrade ReadyForUpdate to $false when either of these is true,
-  even if ARM otherwise reports a Ready update:
-  - ClusterState is not 'ConnectedRecently' (e.g. NotConnectedRecently,
-    Disconnected) - ARM cannot reliably push an update to a cluster it
-    has not heard from recently.
-  - HealthCheckFailures contains at least one [Critical] severity entry.
-  Both functions emit a new BlockingReasons CSV column listing the
-  reason(s) (e.g. "NotConnectedRecently", "CriticalHealthCheck",
-  "CriticalHealthCheck; NotConnectedRecently") so operators can see why
-  an otherwise-ready cluster was held back.
-- Start-AzureLocalClusterUpdate gains a connectivity gate (Step 1b)
-  immediately after cluster lookup: clusters whose properties.status is
-  not 'ConnectedRecently' are skipped with Status='NotConnected' and a
-  row written to Update_Skipped.csv before any update is attempted.
-  Complements the existing Step 3b critical-health gate.
-- Console summary on Get-AzureLocalClusterUpdateReadiness now reports
-  "Blocked by Readiness Gate: N" alongside SBE-prereq blocks. The
-  per-cluster console line shows "Blocked (<reason>)" in red.
-
-### Fixed
-
-- Get-AzureLocalClusterUpdateReadiness JUnit XML export was emitting
-  Status='Skipped' for every Ready cluster due to a boolean/string
-  comparison bug (`$_.ReadyForUpdate -eq 'Yes'` against a [bool]).
-  Status now correctly reports 'Ready' / 'Blocked' / 'Failed' / 'Skipped'.
-
-## Version 0.7.60 - GitHub Actions samples refreshed for Node 24 + checks:write fix on apply-updates
-
-Summary: all five GitHub Actions sample workflows bumped to Node 24-
-compatible action majors (actions/checkout v5, actions/upload-artifact v6,
-azure/login v3, dorny/test-reporter v3) to clear the "Node.js 20 actions
-are deprecated" banner ahead of the Sept 2026 hard-removal. apply-updates
-GH Actions sample also gained `checks: write` in both jobs, fixing
-`HttpError: Resource not accessible by integration` from dorny/test-reporter
-on workflow_dispatch runs (sibling workflows already had it). Full notes
-in CHANGELOG.md.
-
-## Version 0.7.50 - Pipelines install from PSGallery + Copy-AzureLocalPipelineExample gains -Update + new Copy-AzureLocalItsmSample
-
-Summary: pipeline examples (5 GitHub Actions + 5 Azure DevOps YAMLs)
-now install the module from PSGallery at runtime instead of importing
-a vendored copy (default latest, optional pin via REQUIRED_MODULE_VERSION).
-Copy-AzureLocalPipelineExample reshaped: -Flatten and -Force removed
-(neither survived first real-world use), replaced by -Update for
-controlled refresh with per-file ShouldContinue prompts and
--Confirm:$false bypass for unattended use. New public function
-Copy-AzureLocalItsmSample copies the bundled ITSM connector sample
-(azurelocal-itsm.yml + templates/incident-body.md) into a user-chosen
-destination (default .\.itsm, matching the workflow defaults). Not
-flagged as breaking: the v0.7.4 -Flatten/-Force surface had not been
-adopted at removal time. Full notes in CHANGELOG.md.
-
-## Version 0.7.41 - Hotfix: parallel fleet reads broken by v0.7.3 NestedModules refactor
-
-Summary: hotfix for every fleet read/write function that dispatched
-through Invoke-FleetJobsInParallel (and for
-New-AzureLocalFleetStatusHtmlReport / Get-AzureLocalFleetStatusData).
-Under -ThrottleLimit > 1 against PSGallery-installed v0.7.4, per-batch
-Start-Job scriptblocks could not see module-private helpers, returning
-State=Error: "Cannot use '&' to invoke in the context of module ...
-because it is not imported." Inline (-ThrottleLimit 1) was unaffected.
-Centralised resolution in a new private helper
-Get-AzLocalModuleRootManifestPath; added regression Pester tests for
-the parallel path. Full notes in CHANGELOG.md.
-
-## Versions 0.7.4 and earlier
-
-Highlights: ITSM ticketing (ServiceNow) phase 1 in 0.7.4, opt-in via
-raise_itsm_ticket=true plus ./.itsm/azurelocal-itsm.yml. Module renamed
-from AzStackHci.ManageUpdates to AzLocal.UpdateManagement in v0.7.3,
-monolithic .psm1 split into Public/Private NestedModules. Earlier:
-parallel fleet read paths fixed for -ThrottleLimit > 1, EndTime column
-on Get-AzureLocalUpdateRuns, UpdateSideloaded auto-reset workflow, ARG
+Highlights: 0.7.61 added two readiness gates - ClusterState !=
+'ConnectedRecently' and any [Critical] health-check entry now block
+ReadyForUpdate, with new BlockingReasons CSV column and a Step 1b
+connectivity gate in Start-AzureLocalClusterUpdate; JUnit Status
+emission for Ready clusters was fixed.
+0.7.60 refreshed all GitHub Actions samples to Node 24 action majors
+and granted `checks: write` to apply-updates GH job.
+0.7.50 reshaped Copy-AzureLocalPipelineExample (-Flatten/-Force
+removed, -Update added) and introduced Copy-AzureLocalItsmSample;
+pipelines now install the module from PSGallery at runtime instead
+of importing a vendored copy. 0.7.41 hotfix made parallel fleet
+reads work again under -ThrottleLimit > 1 against PSGallery-installed
+nested-module layout. 0.7.4 added ITSM ticketing (ServiceNow phase 1).
+0.7.3 renamed module from AzStackHci.ManageUpdates to
+AzLocal.UpdateManagement and split the monolithic .psm1 into
+Public/Private NestedModules. Earlier: EndTime column on
+Get-AzureLocalUpdateRuns, UpdateSideloaded auto-reset workflow, ARG
 pagination beyond 1000 results, mid-run token refresh, CSV-injection
 sanitisation. Full notes in CHANGELOG.md.
 

@@ -494,9 +494,10 @@ function Set-AzureLocalClusterUpdateRingTag {
                         $message = "UpdateRing tag $($action.ToLower()) successfully"
                     }
                     else {
-                        Write-Log -Message "Failed to apply tag: $result" -Level Error
+                        $scrubbed = ConvertTo-ScrubbedCliOutput -Text ($result | Out-String).Trim()
+                        Write-Log -Message "Failed to apply tag: $scrubbed" -Level Error
                         $status = "Failed"
-                        $message = "Failed to apply tag: $result"
+                        $message = "Failed to apply tag: $scrubbed"
                     }
                 }
                 finally {

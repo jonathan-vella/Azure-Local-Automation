@@ -240,9 +240,9 @@ function Start-AzureLocalClusterUpdate {
                 $subId = ($resourceId -split '/')[2]
                 $setSubResult = az account set --subscription $subId 2>&1
                 if ($LASTEXITCODE -ne 0) {
-                    $setSubError = $setSubResult | Out-String
+                    $setSubError = ConvertTo-ScrubbedCliOutput -Text (($setSubResult | Out-String).Trim())
                     Write-Log -Message "    Subscription '$subId' not found or not accessible in the current Azure CLI context. Ensure you are logged in to the correct Azure tenant (az login --tenant <tenantId>) and have access to this subscription." -Level Error
-                    throw "Subscription '$subId' not found or not accessible. Ensure you are logged in to the correct Azure tenant and have access to this subscription. Error: $($setSubError.Trim())"
+                    throw "Subscription '$subId' not found or not accessible. Ensure you are logged in to the correct Azure tenant and have access to this subscription. Error: $setSubError"
                 }
 
                 # Validate resource exists and user has access
@@ -253,7 +253,7 @@ function Start-AzureLocalClusterUpdate {
                     # python (-I isolated mode ignores PYTHONIOENCODING). See Invoke-AzRestJson.
                     $validateResult = az rest --method GET --uri $validateUri --only-show-errors 2>&1
                     if ($LASTEXITCODE -ne 0) {
-                        $errorMessage = $validateResult | Out-String
+                        $errorMessage = ConvertTo-ScrubbedCliOutput -Text (($validateResult | Out-String).Trim())
                         if ($errorMessage -match "ResourceGroupNotFound") {
                             $rgName = ($resourceId -split '/')[4]
                             Write-Log -Message "    Resource group '$rgName' not found in subscription '$subId'. Verify the resource group name and that the resource has not been deleted." -Level Error

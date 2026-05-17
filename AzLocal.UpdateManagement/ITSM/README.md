@@ -138,6 +138,8 @@ Then in your pipeline YAML, surface the GitHub / Azure DevOps secrets as environ
 
 > **Never put a raw secret in the config file.** The only literal-value form is `literal://<value>` and it is rejected unless the caller passes `-AllowLiteral` (used internally for `instanceUrl`, which is not a secret).
 
+> **Secret memory residency:** once `Resolve-AzLocalItsmSecret` reads a value out of Key Vault or an environment variable it materialises that value as a normal `[string]` inside the PowerShell session for the duration of the OAuth `client_credentials` token grant and the subsequent ServiceNow table calls. The connector does not load these values into `[SecureString]`, because the ServiceNow REST and OAuth surfaces require a plaintext POST body. This is comparable to the way most CI/CD secrets are handled at run time, but worth knowing: the secret will be reachable to anything that has process-memory access to the pipeline runner. Mitigations baked into the module are (1) the secret is never echoed - all log/error/throw paths route through `ConvertTo-ScrubbedCliOutput`; (2) URIs are redacted via the `(client_secret|access_token|password)=[^&]+ -> $1=***` rule before being logged; (3) the temp body files used by `az rest` PATCH callers are deleted in `finally` blocks. Keep your runner host trusted, rotate ServiceNow OAuth client secrets, and prefer Key Vault over env-vars wherever the runner supports it.
+
 ---
 
 ## 5. Author the trigger matrix

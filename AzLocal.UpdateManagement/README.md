@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.63 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.63)
+**Latest Version:** v0.7.64 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.64)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.63](#whats-new-in-v0763)
+- [What's New in v0.7.64](#whats-new-in-v0764)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -83,6 +83,7 @@ Azure Local REST API specification (includes update management endpoints): https
   - [Verbose Logging](#verbose-logging)
 - [License](#license)
 - [Release History](#release-history)
+  - [What's New in v0.7.63](#whats-new-in-v0763)
   - [What's New in v0.7.61](#whats-new-in-v0761)
   - [What's New in v0.7.60](#whats-new-in-v0760)
   - [What's New in v0.7.50](#whats-new-in-v0750)
@@ -143,11 +144,21 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.63
+## What's New in v0.7.64
 
-- **Fixed (critical) - `fleet-update-status.yml` pipeline samples failed with `ParserError` under PowerShell 7.** Both [`Automation-Pipeline-Examples/github-actions/fleet-update-status.yml`](Automation-Pipeline-Examples/github-actions/fleet-update-status.yml) and [`Automation-Pipeline-Examples/azure-devops/fleet-update-status.yml`](Automation-Pipeline-Examples/azure-devops/fleet-update-status.yml) failed on the *Create Status Summary* step with `The Unicode escape sequence is not valid. A valid sequence is \`u{ followed by one to six hex digits and a closing '}'`. GitHub-hosted Windows runners default to `pwsh` 7 for `shell:` in `run:` steps, so the YAMLs render on PS 7 even though the module itself targets PS 5.1+. Inside the PS double-quoted here-string that builds the Markdown step summary, Markdown code-span backticks before file names like `` `update-summaries.csv` `` and `` `update-runs.csv` `` were interpreted by the PS 7 parser as the new `` `u{xxxx} `` Unicode escape (added in PS 6.2, which expects `{` immediately after `` `u ``). PS 5.1 had silently consumed the backtick; PS 7 hard-errors. Latent corruption also affected `` `readiness-status.csv` `` (`` `r `` -> CR), `` `available-updates.csv` `` (`` `a `` -> BEL `0x07`), and `` `cluster-inventory.csv` `` (`` `c `` -> backtick dropped) - producing rendered job summaries with stray control characters and missing code-span formatting even on PS 5.1. All Markdown code-span backticks in the affected here-strings have been doubled (`` `` `` ); under both PS 5.1 and PS 7 two consecutive backticks in a double-quoted string produce exactly one literal backtick, and Markdown renders single and doubled-backtick code spans identically. No module code paths are affected; only the pipeline-sample YAMLs.
+- **Fixed (critical) - pipeline-sample YAMLs (10 files across GitHub Actions and Azure DevOps) had accumulated cp1252 mojibake from previous emoji-edit round-trips.** One of the multi-byte sequences in `manage-updatering-tags.yml` contained a YAML 1.2 forbidden C1 control character (U+008F), which caused GitHub Actions to reject the workflow at recent commits with `Invalid workflow file` / generic YAML syntax error and the affected step never ran. The root cause was UTF-8 emoji bytes (e.g. `F0 9F 93 84` = `[document]`) being misread as cp1252 by a previous editor session, then re-saved as UTF-8 - producing `C3 B0 C2 9F C2 93 C2 84`, which contains `C2 8F` -> U+008F. YAML 1.2 disallows raw C1 control characters U+0080-U+009F (except U+0085 NEL) in scalar content. **All non-ASCII bytes have been stripped from every sample workflow** (`[^\x09\x0A\x0D\x20-\x7E]`), the affected Markdown step-summary sections restored with plain-ASCII status labels (`[info]`, `[ok]`, `[running]`, `[ready]`, `[blocked]`, `[fail]`), and the YAMLs verified to round-trip cleanly through the GitHub Actions and Azure DevOps validators. No module code paths are affected; only the sample YAMLs.
 
-- **Module version pin bumped to 0.7.63 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh both `fleet-update-status.yml` samples in your repo.
+- **Security hardening (Medium) - `Connect-AzureLocalServicePrincipal` and six additional direct `az rest` callers now scrub raw CLI output through `ConvertTo-ScrubbedCliOutput` before logging or throwing.** A stray `refresh_token` / `access_token` / cookie that the `az` CLI might emit on a failure can no longer reach the host logs verbatim. Sites: `Set-AzLocalClusterTagsMerge` (3 throw paths), `Invoke-AzLocalSideloadedAutoResetForCluster`, `Invoke-AzureLocalUpdateApply` (verbose), `Set-AzureLocalClusterUpdateRingTag` (failure path), `Start-AzureLocalClusterUpdate` (subscription-set and validate paths), and `Connect-AzureLocalServicePrincipal`. This closes the same Bearer-token leak class that was already handled inside `Invoke-AzRestJson` / `Invoke-AzResourceGraphQuery` but missed by the seven sites that call `az rest` / `az account set` directly.
+
+- **Documentation: `README.md` and [`ITSM/README.md`](ITSM/README.md) now carry explicit security notes about** (a) the `az login --service-principal --password <secret>` command-line exposure on the SP+secret authentication path (visible to `Win32_Process.CommandLine` and EDR for the duration of the call - prefer OIDC or Managed Identity), and (b) the unavoidable plaintext `[string]` residency of ITSM secrets in memory during ServiceNow OAuth `client_credentials` grants (the ServiceNow REST surface requires plaintext POST bodies, so `[SecureString]` round-tripping is impossible at this layer; mitigations baked in: scrubbing, URI redaction, finally-block temp-file cleanup).
+
+- **Fixed (Low) - `Invoke-AzureLocalUpdateApply` `$result -match "202"` was running against the `string[]` returned by `az rest`** which is array-filter semantics, not regex-match. The comparison is now done against `($result | Out-String).Trim()` against the single regex `'202|Accepted'`; `Write-Verbose` path also scrubbed.
+
+- **Fixed (Low) - `Invoke-AzLocalItsmHttp` `throw` on non-retryable HTTP failure now uses `$redactedUri` instead of `$Uri`.** The redaction (`(client_secret|access_token|password)=[^&]+` -> `$1=***`) was already applied to the `Write-Verbose` log line; the `throw` message bypassed it.
+
+- **Fixed (Low) - two Pester tests (`ScheduleBlocked` and `SideloadedBlocked` JUnit XML coverage) wrote to fixed temp filenames** that would collide if the test suite is run in parallel or back-to-back. Filenames now append a per-invocation `[Guid]::NewGuid()`.
+
+- **Module version pin bumped to 0.7.64 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh the samples in your repo.
 
 > Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
@@ -771,6 +782,8 @@ Connect-AzureLocalServicePrincipal -ServicePrincipalId $appId -ServicePrincipalS
 # Plaintext [string] still works but logs a security warning - prefer SecureString or env var
 Connect-AzureLocalServicePrincipal -ServicePrincipalId $appId -ServicePrincipalSecret $secret -TenantId $tenant
 ```
+
+> **Security note (Service Principal + secret path):** internally `Connect-AzureLocalServicePrincipal` invokes `az login --service-principal --password <secret>`. The secret is materialised as a plaintext command-line argument for the duration of the `az login` call, which means on Windows it can be visible to other processes via the `Win32_Process.CommandLine` WMI surface (and likewise to EDR, audit, and process-creation logs). The module always tries the safer paths first (OIDC, Managed Identity, and only then SP) and clears the plaintext copy in a `finally` block, but you should still prefer **OIDC** or **Managed Identity** for any production runner. If you must use SP + secret, run on an isolated, EDR-aware host, keep secrets in `AZURE_CLIENT_SECRET` (env var) or a `[SecureString]` rather than a literal `[string]`, and rotate frequently.
 
 ---
 
@@ -2166,6 +2179,12 @@ This code is provided as-is for educational and reference purposes.
 **What a successful `apply-updates.yml` run looks like** (dry-run against the Prod ring on a 9-cluster sandbox - 4 ready, 5 skipped, zero failures):
 
 ![apply-updates.yml run Summary tab: target UpdateRing Prod, dry-run, Readiness section showing Total Clusters 9 / Ready for Update 4, Results section showing Updates Started 0 / Skipped 5 / Failed 0 / Health Blocked 0 / Schedule Blocked 0 / Sideloaded Blocked 0](docs/images/apply-updates-summary.png)
+
+### What's New in v0.7.63
+
+- **Fixed (critical) - `fleet-update-status.yml` pipeline samples failed with `ParserError` under PowerShell 7.** Inside the PS double-quoted here-string that builds the Markdown step summary, Markdown code-span backticks before file names like `` `update-summaries.csv` `` were interpreted by the PS 7 parser as the new `` `u{xxxx} `` Unicode escape (which expects `{` immediately after `` `u ``). PS 5.1 had silently consumed the backtick; PS 7 hard-errors. Latent corruption also affected `` `readiness-status.csv` `` (`` `r `` -> CR), `` `available-updates.csv` `` (`` `a `` -> BEL), and `` `cluster-inventory.csv` `` (`` `c `` -> backtick dropped) - producing rendered job summaries with stray control characters and missing code-span formatting even on PS 5.1. All Markdown code-span backticks in the affected here-strings have been doubled; under both PS 5.1 and PS 7 two consecutive backticks in a double-quoted string produce exactly one literal backtick. No module code paths affected; only the pipeline-sample YAMLs.
+
+- **Module version pin bumped to 0.7.63 in all 10 sample workflow YAMLs.**
 
 ### What's New in v0.7.61
 

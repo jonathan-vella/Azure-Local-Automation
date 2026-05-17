@@ -1,4 +1,4 @@
-﻿#Requires -Module Pester
+#Requires -Module Pester
 <#
 .SYNOPSIS
     Pester tests for the AzLocal.UpdateManagement module.
@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.63' {
-            $script:ModuleInfo.Version | Should -Be '0.7.63'
+        It 'Should have version 0.7.64' {
+            $script:ModuleInfo.Version | Should -Be '0.7.64'
         }
 
         It 'Should export exactly 25 functions' {
@@ -1731,7 +1731,7 @@ Describe 'Integration: Start-AzureLocalClusterUpdate Schedule Status' {
                 EndTime     = Get-Date
                 Duration    = '00:00:01'
             }
-            $outputPath = Join-Path $env:TEMP "pester-junit-schedule-test.xml"
+            $outputPath = Join-Path $env:TEMP "pester-junit-schedule-test-$([Guid]::NewGuid()).xml"
             try {
                 & (Get-Module 'AzLocal.UpdateManagement') {
                     param($results, $path)
@@ -1763,7 +1763,7 @@ Describe 'Integration: Start-AzureLocalClusterUpdate Schedule Status' {
                 EndTime     = Get-Date
                 Duration    = '00:00:01'
             }
-            $outputPath = Join-Path $env:TEMP "pester-junit-sideloaded-test.xml"
+            $outputPath = Join-Path $env:TEMP "pester-junit-sideloaded-test-$([Guid]::NewGuid()).xml"
             try {
                 & (Get-Module 'AzLocal.UpdateManagement') {
                     param($results, $path)

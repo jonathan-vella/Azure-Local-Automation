@@ -81,7 +81,8 @@ function Set-AzLocalClusterTagsMerge {
     # the cluster's current state.
     $existingTagsJson = az rest --method GET --uri $tagsUri --only-show-errors 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "Set-AzLocalClusterTagsMerge: failed to read tags subresource for '$ClusterResourceId': $existingTagsJson"
+        $scrubbed = ConvertTo-ScrubbedCliOutput -Text ($existingTagsJson | Out-String).Trim()
+        throw "Set-AzLocalClusterTagsMerge: failed to read tags subresource for '$ClusterResourceId': $scrubbed"
     }
     $existing = $existingTagsJson | ConvertFrom-Json
     $existingTags = @{}
@@ -136,7 +137,8 @@ function Set-AzLocalClusterTagsMerge {
             Write-Utf8NoBomFile -Path $tempFile -Content $mergeBody
             $patchResult = az rest --method PATCH --uri $tagsUri --body "@$tempFile" --headers "Content-Type=application/json" --only-show-errors 2>&1
             if ($LASTEXITCODE -ne 0) {
-                throw "Set-AzLocalClusterTagsMerge: PATCH (Merge) failed for '$ClusterResourceId': $patchResult"
+                $scrubbed = ConvertTo-ScrubbedCliOutput -Text ($patchResult | Out-String).Trim()
+                throw "Set-AzLocalClusterTagsMerge: PATCH (Merge) failed for '$ClusterResourceId': $scrubbed"
             }
         }
         finally {
@@ -155,7 +157,8 @@ function Set-AzLocalClusterTagsMerge {
             Write-Utf8NoBomFile -Path $tempFile -Content $deleteBody
             $patchResult = az rest --method PATCH --uri $tagsUri --body "@$tempFile" --headers "Content-Type=application/json" --only-show-errors 2>&1
             if ($LASTEXITCODE -ne 0) {
-                throw "Set-AzLocalClusterTagsMerge: PATCH (Delete) failed for '$ClusterResourceId': $patchResult"
+                $scrubbed = ConvertTo-ScrubbedCliOutput -Text ($patchResult | Out-String).Trim()
+                throw "Set-AzLocalClusterTagsMerge: PATCH (Delete) failed for '$ClusterResourceId': $scrubbed"
             }
         }
         finally {
