@@ -51,12 +51,14 @@ It is written in the same step-by-step style as [`ITSM/README.md`](../ITSM/READM
 By the end of this guide you will have:
 
 - A federated identity (no client secrets) wired into your CI/CD platform with the **minimum** Azure RBAC needed for cluster update management.
-- Five working pipelines committed to your repo and visible in the Actions / Pipelines UI:
-  - **Inventory** - enumerate every Azure Local cluster the identity can see and export a CSV.
-  - **Manage UpdateRing tags** - bulk-apply `UpdateRing`, `UpdateWindow`, `UpdateExclusions` tags from that CSV.
-  - **Assess Update Readiness** - pre-flight, report-only readiness + blocking-health snapshot, published as JUnit XML.
-  - **Apply Updates** - apply updates to a single `UpdateRing` wave at a time, with WhatIf / dry-run support.
-  - **Fleet Update Status** - scheduled daily snapshot of fleet update state, surfaced in the Tests tab.
+- Seven working pipelines committed to your repo and visible in the Actions / Pipelines UI:
+  - **Inventory** - enumerate every Azure Local cluster the identity can see and export a CSV. *Scheduled weekly + manual.*
+  - **Manage UpdateRing tags** - bulk-apply `UpdateRing`, `UpdateWindow`, `UpdateExclusions` tags from that CSV. *Manual only.*
+  - **Assess Update Readiness** - pre-flight, report-only readiness + blocking-health snapshot, published as JUnit XML. *Manual only.*
+  - **Apply Updates** - apply updates to a single `UpdateRing` wave at a time, with WhatIf / dry-run support. *Manual only by default - **you must add a schedule** that lines up with your cluster `UpdateWindow` tags, see [Appendix A.4](#a4-apply-updates) and [section 8](#8-scheduling-maintenance-windows-and-change-freeze-periods).*
+  - **Fleet Update Status** - scheduled daily snapshot of fleet update state, surfaced in the Tests tab. *Scheduled daily 06:00 UTC + manual.*
+  - **Fleet Health Status** (v0.7.65) - scheduled daily snapshot of 24-hour system health-check failures, surfaced in the Tests tab. *Scheduled daily 07:00 UTC + manual.*
+  - **Apply-Updates Schedule Coverage Audit** (v0.7.65) - read-only weekly audit that compares the cron(s) in your `apply-updates` pipeline to the `UpdateWindow` tags actually present on your clusters and flags any (UpdateRing, UpdateWindow) pair that no cron will reach. *Scheduled weekly Mon 05:00 UTC + manual.*
 - An end-to-end "ring-based" rollout pattern: Pilot -> Wave2 -> Production, with each ring gated on the previous wave's success.
 - **Optional**: a ServiceNow integration that opens deduped incidents for clusters whose run status indicates the module's own retries cannot recover (failures, blocking health checks, sideloaded payload missing) - see [section 7](#7-optional-open-itsm-tickets-for-clusters-needing-operator-action).
 
@@ -555,6 +557,8 @@ The identity created in section 3 needs the following permissions on every subsc
 
 If you opt in to the ITSM connector with Key Vault-sourced secrets, the identity additionally needs **Key Vault Secrets User** on the configured vault. No other new RBAC.
 
+> **Tag-management identity (Manage UpdateRing Tags pipeline)** can use the built-in **Tag Contributor** role on its own - it grants exactly `Microsoft.Resources/tags/*` and nothing else. Since v0.7.65, `Set-AzureLocalClusterUpdateRingTag` writes tags via the dedicated `Microsoft.Resources/tags/default` PATCH endpoint, so the broader `microsoft.azurestackhci/clusters/write` action (full cluster Contributor) is **not** required for tag changes. If you run the tag-management workflow under a separate identity from the update-apply identity (recommended in regulated estates), grant that identity Tag Contributor only.
+
 ### 4.1 Custom role: `Azure Stack HCI Update Operator` (recommended)
 
 This is the least-privilege role that supports every pipeline in this folder. The same definition is documented in the module-level [`AzLocal.UpdateManagement/README.md`](../README.md#permissions-required-for-update-operations) and is reproduced here so this folder is self-contained.
@@ -899,9 +903,11 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
         assess-update-readiness.yml
         apply-updates.yml
         fleet-update-status.yml
+        fleet-health-status.yml
+        apply-updates-schedule-audit.yml
     ```
 3. Commit and push. The workflows appear in the **Actions** tab.
-4. Each workflow exposes its inputs via the **Run workflow** button (workflow_dispatch). The scheduled triggers (e.g. fleet-update-status.yml runs daily at 06:00 UTC) activate automatically once the file is on the default branch.
+4. Each workflow exposes its inputs via the **Run workflow** button (workflow_dispatch). The scheduled triggers (e.g. `fleet-update-status.yml` runs daily at 06:00 UTC, `fleet-health-status.yml` runs daily at 07:00 UTC, `apply-updates-schedule-audit.yml` runs weekly on Mondays at 05:00 UTC) activate automatically once the file is on the default branch.
 
 ### 5.2 Azure DevOps
 
@@ -1032,6 +1038,14 @@ This is the canonical "nothing wired -> staged rollout working" sequence. Follow
 +-----------------------------------------------------------------------+
 |                          PHASE 4: STEADY STATE                         |
 |  6.6  fleet-update-status.yml  (scheduled, daily 06:00 UTC)            |
+|       - "Is each cluster up-to-date?"                                  |
+|  6.7  fleet-health-status.yml  (scheduled, daily 07:00 UTC) - v0.7.65  |
+|       - "Do clusters have actionable health issues even when           |
+|          up-to-date?" Surfaces 24-hour system health-check failures.   |
+|  6.8  apply-updates-schedule-audit.yml  (scheduled, weekly Mon 05:00   |
+|       UTC) - v0.7.65                                                   |
+|       - "Will any tagged UpdateWindow never be reached by the cron     |
+|          schedule in apply-updates.yml?" Read-only drift advisor.      |
 +-----------------------------------------------------------------------+
 ```
 
@@ -1074,6 +1088,8 @@ Section 8 documents the full schedule grammar (multi-window, overnight, wrap-aro
 ### 6.3 Apply tags
 
 Two equivalent ways to apply the edited CSV - pick whichever fits your workflow.
+
+> **RBAC**: The identity running the tag write needs `Microsoft.Resources/tags/write` on each cluster (or on a containing scope). The built-in **Tag Contributor** role is sufficient. See section 4 for the full minimum-role table.
 
 **Option A - via the pipeline (audit trail in CI/CD):**
 
@@ -1143,6 +1159,15 @@ For tighter control around production rollouts, add a manual approval gate betwe
 
 ### 6.6 Continuous fleet monitoring
 
+The "steady-state" phase ships **two complementary pipelines**, both read-only, both scheduled, designed to be run together as your daily fleet operations baseline:
+
+| Pipeline | Daily | Answers | Output |
+|----------|-------|---------|--------|
+| `fleet-update-status.yml` | 06:00 UTC | *"Is each cluster up-to-date? Which ones need an apply, which ones are SBE-blocked, which ones failed?"* | JUnit + CSV/JSON + Markdown summary; one test case per cluster |
+| `fleet-health-status.yml` *(v0.7.65)* | 07:00 UTC | *"Do clusters have actionable health issues even when up-to-date? What failure reasons hit the most clusters?"* | JUnit + CSV/JSON + Markdown summary; one test case per (cluster, failing 24-hour health check) grouped under Critical / Warning testsuites |
+
+The two run in distinct (offset) cron slots so they don't contend for the same agent.
+
 **Fleet Update Status** is scheduled to run daily at 06:00 UTC once you push the YAML. It does no writes - it builds a fleet-wide JUnit + CSV + JSON snapshot for dashboards and alerting.
 
 | Artefact | Description |
@@ -1154,7 +1179,39 @@ For tighter control around production rollouts, add a manual approval gate betwe
 | `available-updates.csv` | Every available update across the fleet with version + health state. |
 | `update-runs.csv` | Recent run history per cluster (durations, failure summaries) - this is what section 6.5's "size the next maintenance window" advice consumes. |
 
+**Fleet Health Status** *(new in v0.7.65)* runs daily at 07:00 UTC and surfaces the **24-hour system health-check failures** across every cluster the service connection can read - including clusters that are already "up to date". The 24-hour health checks continue to run on the cluster independently of update activity, so this pipeline is the dedicated place to triage fleet-wide health issues that exist OUTSIDE the update workflow.
+
+It calls the new [`Get-AzureLocalFleetHealthFailures`](../README.md#get-azurelocalfleethealthfailures) cmdlet under the covers.
+
+| Artefact | Description |
+|---|---|
+| `fleet-health-status.xml` | JUnit XML, one test case per (cluster, failing health check), grouped under `Critical Health Failures` / `Warning Health Failures` testsuites for two-level drill-down. `Failed/Critical` and `Failed/Warning` reflect the severity. |
+| `fleet-health-detail.csv` | Per-(cluster, failing check) export. Columns: `ClusterName`, `Severity`, `FailureReason`, `FailureName`, `Description`, `Remediation`, `LastOccurrence`, `ResourceGroup`, `SubscriptionId`, `ClusterResourceId`. |
+| `fleet-health-summary.csv` | Aggregated by `(FailureReason, Severity)`, ordered "most widespread first" (`ClusterCount desc`). Columns include `ClusterCount`, `FailureCount`, `AffectedClusters` (semicolon-separated), `LatestOccurrence`. This is the ready-made "what should we fix first?" prioritisation view. |
+| `fleet-health-detail.json` / `fleet-health-summary.json` | Machine-readable equivalents for downstream automation. |
+| Markdown step summary | Pipeline run summary leads with the pivot-by-failure-reason table, followed by a per-cluster "Detailed Results" table mirroring the standard "24-Hour System Health Checks - Detailed Results" view. |
+
+**RBAC for Fleet Health Status** (read-only): the service connection needs `Reader` on each cluster (or the parent RG / subscription) plus `Microsoft.ResourceGraph/resources/read`. No write actions are taken.
+
 Configure your CI/CD platform's alerting on the JUnit failures - GitHub Actions surfaces them in the run summary and Azure DevOps shows them in the Tests tab with trend analytics.
+
+### 6.7 Schedule coverage drift detection *(new in v0.7.65)*
+
+`apply-updates-schedule-audit.yml` runs the read-only [`Test-AzureLocalApplyUpdatesScheduleCoverage`](../README.md#test-azurelocalapplyupdatesschedulecoverage) cmdlet weekly on Mondays at 05:00 UTC and answers:
+
+> *"Is there any `(UpdateRing, UpdateWindow)` tag combination in my fleet that no cron in `apply-updates.yml` will ever reach?"*
+
+This is the safety net that catches drift between the cron schedule(s) you committed to `apply-updates.yml` and the `UpdateWindow` tags that operators tag onto new clusters. It is intentionally **read-only** - it never edits cluster tags and never modifies pipeline YAML.
+
+| Artefact | Description |
+|---|---|
+| `schedule-coverage-audit.xml` | JUnit XML, one `<testcase>` per `(UpdateRing, UpdateWindow)` pair. Uncovered / partially covered / malformed pairs become `<failure>`. Use the Tests tab to alert on regressions. |
+| `schedule-coverage-audit.csv` | Same data in spreadsheet form. Columns: `Status`, `UpdateRing`, `UpdateWindow`, `ClusterCount`, `RequiredCronUTC`, `Issue`, `Recommendation`, `MatchingCrons`. |
+| `schedule-coverage-matrix.csv` | Pure inventory view: every distinct `(UpdateRing, UpdateWindow)` pair with the cron expression the advisor would generate for it. |
+| `schedule-coverage-recommend.md` | Ready-to-paste GH Actions + Azure DevOps cron blocks that cover every distinct `UpdateWindow` tag value in the fleet. |
+| Markdown step / run summary | Tables for all of the above, headlined by `Covered` / `Uncovered` / `PartiallyCovered` / `MalformedTag` / `UnparseableCron` counts. |
+
+**See also**: the [end-to-end runbook in section 8.3](#83-end-to-end-runbook-apply-updates-schedule-coverage-audit) walks through the full loop (tag a cluster -> see drift -> paste recommended cron -> re-run audit and watch it turn green).
 
 ---
 
@@ -1203,6 +1260,20 @@ The `UpdateWindow` and `UpdateExclusions` tags on each cluster control when **Ap
 |---|---|---|---|
 | `UpdateWindow` | `<days>_<HH:MM>-<HH:MM>` (UTC) | `Sat-Sun_02:00-06:00` | Updates only start while current UTC time is inside the window. |
 | `UpdateExclusions` | `YYYY-MM-DD/YYYY-MM-DD`, comma-separated, supports `*` wildcards | `20**-12-20/20**-01-03,2027-06-01/2027-06-10` | No updates start during these dates. **Exclusions override windows.** |
+
+> **CRITICAL: the `UpdateWindow` tag is a *gate*, not a *trigger*.** The tag only controls **whether** the Apply Updates pipeline is allowed to start an update on a given cluster when the pipeline is already running. The tag does **not** schedule the pipeline itself. The shipped `apply-updates.yml` samples have **`workflow_dispatch` only** (GitHub Actions) / **`trigger: none`** (Azure DevOps) with no `schedule:` / `schedules:` block - which means **if you never trigger the pipeline manually during a window, no updates are ever applied automatically**, no matter what `UpdateWindow` you have tagged on your clusters.
+>
+> **You must add a `schedule:` (GH) / `schedules:` (ADO) block to `apply-updates.yml` that fires *inside* (or a few minutes *before*) every `UpdateWindow` you have tagged.** If your fleet uses several distinct `UpdateWindow` values across rings, add one cron entry per window. Examples (UTC):
+>
+> | Cluster `UpdateWindow` tag | GitHub Actions `cron` | Azure DevOps `cron` | Notes |
+> |---|---|---|---|
+> | `Sat-Sun_02:00-06:00` | `'55 1 * * 6,0'` | `'55 1 * * 6,0'` | Fires Sat + Sun at 01:55 UTC so cluster enumeration + auth completes before the 02:00 window opens. |
+> | `Mon-Fri_22:00-04:00` | `'55 21 * * 1-5'` | `'55 21 * * 1-5'` | Fires weeknights at 21:55 UTC. The overnight wrap is handled by `Test-AzureLocalUpdateScheduleAllowed`, you only need one cron per window opening. |
+> | `Sun_03:00-07:00` | `'55 2 * * 0'` | `'55 2 * * 0'` | Single weekly maintenance slot. |
+>
+> Inside the pipeline, `Test-AzureLocalUpdateScheduleAllowed` is the per-cluster gate - clusters whose `UpdateWindow` does not cover "now" (or whose `UpdateExclusions` does cover "now") are skipped with `Status = ScheduleBlocked`. Running the pipeline outside any window is therefore safe but wasted - **running it during a window is the only way an update ever starts.**
+>
+> **Tip - one pipeline per ring**: if `Pilot` / `Wave1` / `Production` have different windows, the cleanest pattern is to either (a) copy `apply-updates.yml` per ring with the ring's own schedule + `update_ring` hard-coded, or (b) keep one YAML but pass `update_ring` via a matrix indexed by cron entry. Sticking with the default "single manual workflow" is fine for ad-hoc / change-controlled estates - in that case the operator manually clicks **Run workflow** at the start of the maintenance window.
 
 Grammar details:
 
@@ -1266,6 +1337,99 @@ jobs:
     runs-on: windows-latest
     environment: production  # configure required reviewers in repo settings
     # ...
+```
+
+### 8.3 End-to-end runbook: Apply-Updates Schedule Coverage Audit
+
+*(New in v0.7.65. Pre-wired pipeline samples: [`github-actions/apply-updates-schedule-audit.yml`](./github-actions/apply-updates-schedule-audit.yml), [`azure-devops/apply-updates-schedule-audit.yml`](./azure-devops/apply-updates-schedule-audit.yml).)*
+
+This runbook walks through the full loop of **discover -> fix -> verify** for `UpdateWindow` / cron drift. Use it the first time you tag a new ring, and rely on the weekly scheduled audit to catch drift afterwards.
+
+#### Step 1 - One-time: deploy the audit pipeline
+
+```powershell
+# GitHub Actions
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+
+# Azure DevOps
+Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps
+```
+
+The audit YAML is one of the files copied. Commit and push. On GitHub it appears in the Actions tab; on Azure DevOps, import `apply-updates-schedule-audit.yml` as a new pipeline (same procedure as for the other YAMLs in section 5.2).
+
+#### Step 2 - Tag a new ring with an UpdateWindow
+
+```powershell
+Set-AzureLocalClusterUpdateRingTag `
+    -ClusterResourceId '/subscriptions/.../clusters/cl01' `
+    -UpdateRingValue   'Wave2' `
+    -UpdateWindowValue 'Mon-Fri_22:00-04:00'
+```
+
+Repeat for the rest of the ring.
+
+#### Step 3 - Trigger the audit (or wait for the Monday 05:00 UTC schedule)
+
+- **GitHub Actions**: *Actions -> Apply-Updates Schedule Coverage Audit -> Run workflow*.
+- **Azure DevOps**: *Pipelines -> Apply-Updates Schedule Coverage Audit -> Run pipeline*.
+
+Both default `pipelinePath` to `AzLocal.UpdateManagement/Automation-Pipeline-Examples` so the audit runs against the in-repo samples on the first try. Once you have an `apply-updates.yml` in your own pipelines folder, override `pipelinePath` to point at it (e.g. `.\.github\workflows` or `.\pipelines`).
+
+#### Step 4 - Read the run summary
+
+The markdown summary at the top of the run page leads with the counts:
+
+```
+| (Ring, Window) pairs audited | Covered | Uncovered | PartiallyCovered | MalformedTag | UnparseableCron |
+|---|---|---|---|---|---|
+| 4 | 1 | 2 | 0 | 0 | 0 |
+```
+
+Followed by the per-row detail (Uncovered first):
+
+```
+| Status    | UpdateRing  | UpdateWindow            | Clusters | Required Cron (UTC) | Recommendation               |
+| Uncovered | Wave2       | Mon-Fri_22:00-04:00     | 47       | 55 21 * * 1-5       | Add: 55 21 * * 1-5           |
+| Uncovered | Production  | Sun_03:00-07:00         | 312      | 55 2 * * 0          | Add: 55 2 * * 0              |
+| Covered   | Pilot       | Sat-Sun_02:00-06:00     | 3        | 55 1 * * 6,0        | OK - keep the current schedule. |
+```
+
+And finally the **ready-to-paste cron block** (Recommend view):
+
+````yaml
+# --- GitHub Actions: paste under apply-updates.yml `on:` ---
+# schedule:
+#   - cron: '55 1 * * 6,0'    # Sat-Sun_02:00-06:00 (rings: Pilot, 3 cluster(s))
+#   - cron: '55 2 * * 0'      # Sun_03:00-07:00     (rings: Production, 312 cluster(s))
+#   - cron: '55 21 * * 1-5'   # Mon-Fri_22:00-04:00 (rings: Wave2, 47 cluster(s))
+````
+
+#### Step 5 - Apply the recommendation
+
+Open `apply-updates.yml`, uncomment / paste the recommended `schedule:` (GH) or `schedules:` (ADO) block, and commit. The audit pipeline emits both blocks even when `-Platform Both` is the default - copy the section that matches your CI/CD platform.
+
+#### Step 6 - Re-run the audit to verify
+
+Trigger the audit pipeline again. The summary should now show **Uncovered = 0**, the Audit Detail table all `Covered`, and JUnit Test Results all green.
+
+#### Step 7 - Catch drift automatically
+
+Leave the weekly Monday 05:00 UTC schedule enabled. Any time someone tags a new cluster with a `UpdateWindow` value that the existing crons in `apply-updates.yml` do not cover, the next Monday's audit run flips to **Uncovered** for that pair and surfaces it on the Tests tab. Configure your CI/CD alerting (GitHub Actions: branch-protection required check; Azure DevOps: notification on Test results) so the team is notified.
+
+#### Ad-hoc / desktop equivalent (no pipeline)
+
+The same advisor is available interactively for one-off use:
+
+```powershell
+# Audit the in-repo samples
+Test-AzureLocalApplyUpdatesScheduleCoverage `
+    -PipelineYamlPath .\AzLocal.UpdateManagement\Automation-Pipeline-Examples
+
+# Just emit the recommended cron block, no audit
+Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -Platform GitHubActions
+
+# Inventory every (Ring, Window) pair with its required cron, export to CSV
+Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -ExportPath .\windows.csv
 ```
 
 ---
@@ -1382,13 +1546,17 @@ Automation-Pipeline-Examples/
     manage-updatering-tags.yml        # 2. Apply UpdateRing / UpdateWindow / UpdateExclusions tags.
     assess-update-readiness.yml       # 3. Pre-flight readiness report (v0.7.0).
     apply-updates.yml                 # 4. Apply updates to one UpdateRing (with optional ITSM step, v0.7.4).
-    fleet-update-status.yml           # 5. Scheduled fleet status snapshot.
+    fleet-update-status.yml           # 5. Scheduled fleet update-status snapshot (daily 06:00 UTC).
+    fleet-health-status.yml           # 6. Scheduled fleet 24-hour health-check failure report (daily 07:00 UTC, v0.7.65).
+    apply-updates-schedule-audit.yml  # 7. Weekly read-only audit: UpdateWindow tags vs apply-updates cron (Mon 05:00 UTC, v0.7.65).
   azure-devops/
     inventory-clusters.yml
     manage-updatering-tags.yml
     assess-update-readiness.yml
     apply-updates.yml
     fleet-update-status.yml
+    fleet-health-status.yml
+    apply-updates-schedule-audit.yml
 ```
 
 ---
@@ -1397,14 +1565,33 @@ Automation-Pipeline-Examples/
 
 This appendix summarises each pipeline's inputs and outputs without duplicating the YAML.
 
+### Default triggers and schedules (at a glance)
+
+The table below is the ground truth for what each shipped YAML does **out of the box**. Three of the seven pipelines (`fleet-update-status`, `fleet-health-status`, `apply-updates-schedule-audit`) and one optional (`inventory-clusters` weekly) are pre-wired with `schedule:` (GH) / `schedules:` (ADO) blocks. The remaining three (`manage-updatering-tags`, `assess-update-readiness`, `apply-updates`) are manual-only by design.
+
+| Pipeline | GitHub Actions trigger | Azure DevOps trigger | Notes |
+|---|---|---|---|
+| `inventory-clusters` | `workflow_dispatch` + `schedule: cron '0 6 * * 1'` (Mondays 06:00 UTC) | `trigger: none` + `schedules: cron '0 6 * * 1'` | Weekly drift detection. Edit the cron to change cadence. |
+| `manage-updatering-tags` | `workflow_dispatch` only | `trigger: none` (manual only) | Runs on-demand whenever you edit the CSV. |
+| `assess-update-readiness` | `workflow_dispatch` only | `trigger: none` (manual only) | Run on demand before each Apply Updates window, or wire your own schedule. |
+| `apply-updates` | `workflow_dispatch` only | `trigger: none` (manual only) | **No schedule shipped** - see the warning in A.4 below. The cluster `UpdateWindow` / `UpdateExclusions` tags only gate updates *while the pipeline is running*; they do **not** start the pipeline. |
+| `fleet-update-status` | `workflow_dispatch` + `schedule: cron '0 6 * * *'` (daily 06:00 UTC) | `trigger: none` + `schedules: cron '0 6 * * *'` | Daily fleet update snapshot. |
+| `fleet-health-status` (v0.7.65) | `workflow_dispatch` + `schedule: cron '0 7 * * *'` (daily 07:00 UTC) | `trigger: none` + `schedules: cron '0 7 * * *'` | Daily 24-hour health-check snapshot. Offset by one hour from `fleet-update-status` to avoid contention. |
+| `apply-updates-schedule-audit` (v0.7.65) | `workflow_dispatch` + `schedule: cron '0 5 * * 1'` (Mondays 05:00 UTC) | `trigger: none` + `schedules: cron '0 5 * * 1'` | Weekly read-only drift advisor: compares apply-updates cron(s) to `UpdateWindow` tags. Runs before the daily fleet pipelines so its annotations are first on Monday mornings. |
+
+> **All times are UTC.** GitHub Actions and Azure DevOps schedules both run on UTC; convert from your local timezone when picking cron values. Both platforms can delay scheduled runs by several minutes during high-load periods - do not rely on second-precision alignment.
+>
+> **GitHub Actions only**: scheduled workflows are **automatically disabled after 60 days of repository inactivity** (no commits, PRs, or issue activity). Re-enable them via the Actions UI or run any push. Azure DevOps schedules do not have this auto-disable behaviour.
+
 ### A.1 Inventory Clusters
 
 | Aspect | Value |
 |---|---|
 | **Purpose** | Enumerate every Azure Local cluster the identity can see and export to CSV. |
 | **Inputs** | None. |
+| **Trigger** | Manual (`workflow_dispatch` / **Run pipeline** button) **plus** weekly scheduled run on Mondays at 06:00 UTC (`cron '0 6 * * 1'`). Edit the cron in the YAML to change the day / time. |
 | **Artefacts** | `cluster-inventory.csv` (one row per cluster, includes current `UpdateRing` / `UpdateWindow` / `UpdateExclusions` and sideloaded-workflow tags). |
-| **When to run** | First run of a new estate; periodically to detect new clusters or tag drift. |
+| **When to run** | First run of a new estate; periodically (default weekly) to detect new clusters or tag drift. |
 
 ### A.2 Manage UpdateRing Tags
 
@@ -1412,6 +1599,7 @@ This appendix summarises each pipeline's inputs and outputs without duplicating 
 |---|---|
 | **Purpose** | Bulk-apply `UpdateRing`, `UpdateWindow`, `UpdateExclusions` tags from a CSV. |
 | **Inputs** | `csv_path` (required). |
+| **Trigger** | Manual only (`workflow_dispatch` / **Run pipeline** button). No schedule shipped - this is a deliberate change-controlled operation that should follow a CSV edit + review. Add a `schedule:` / `schedules:` block if your CSV is auto-generated and you want periodic re-application. |
 | **Artefacts** | Pipeline log with added / updated / unchanged counts per cluster. |
 | **When to run** | After editing the inventory CSV; whenever ring membership or maintenance windows change. |
 
@@ -1421,6 +1609,7 @@ This appendix summarises each pipeline's inputs and outputs without duplicating 
 |---|---|
 | **Purpose** | Pre-flight, report-only readiness + blocking-health snapshot for a single `UpdateRing`. **Always succeeds** - per-cluster failures show up as JUnit test failures. |
 | **Inputs** | `update_ring` (required), `throttle_limit` (optional). |
+| **Trigger** | Manual only (`workflow_dispatch` / **Run pipeline** button). No schedule shipped. To run automatically (e.g. 24-48 hours ahead of every Apply Updates window), add a `schedule:` / `schedules:` block to the YAML - for example `cron '0 6 * * 5'` to run every Friday at 06:00 UTC ahead of weekend maintenance windows. |
 | **Artefacts** | `readiness.xml`, `readiness.csv`, `health-blocking.xml`, `health-blocking.csv`. |
 | **When to run** | Before an Apply Updates run; or on a schedule a day or two ahead of the maintenance window. |
 
@@ -1430,8 +1619,13 @@ This appendix summarises each pipeline's inputs and outputs without duplicating 
 |---|---|
 | **Purpose** | Apply updates to clusters filtered by `UpdateRing` tag value. |
 | **Inputs** | `update_ring` (required), `update_name` (optional - leave blank for latest), `dry_run` (optional), `throttle_limit` (optional). **v0.7.4 adds** `raise_itsm_ticket`, `itsm_config_path`, `itsm_dry_run`, `itsm_force_create` (all optional, defaults preserve existing behaviour). |
+| **Trigger** | **Manual only by default** (`workflow_dispatch` / **Run pipeline** button). **No schedule is shipped** - you must add one. See the **mandatory customisation note below** and the schedule-alignment guidance in [section 8](#8-scheduling-maintenance-windows-and-change-freeze-periods). |
 | **Artefacts** | `update-results.xml` (JUnit, one cluster per test), `update-logs/*` (CSV + detail). When ITSM is enabled: `itsm-results.csv`, `itsm-results.xml`. |
 | **When to run** | During the maintenance window for each ring, after the readiness assessment is reviewed. |
+
+> **MANDATORY CUSTOMISATION: the Apply Updates pipeline does not ship with a schedule.** The cluster `UpdateWindow` / `UpdateExclusions` tags **only gate updates *while the pipeline is already running***; they do **not** start the pipeline. If you (a) use `UpdateWindow` tags to define when updates may be installed and (b) leave the shipped `apply-updates.yml` with `workflow_dispatch` only (GH) / `trigger: none` (ADO), **no updates will ever be applied automatically** - the pipeline will simply never start during the window.
+>
+> Add a `schedule:` (GitHub Actions) / `schedules:` (Azure DevOps) block to `apply-updates.yml` that fires at (or a few minutes before) the start of every `UpdateWindow` you have tagged. One cron entry per distinct window value. Worked examples and the per-cluster scheduling model are in [section 8](#8-scheduling-maintenance-windows-and-change-freeze-periods).
 
 ### A.5 Fleet Update Status
 
@@ -1439,9 +1633,30 @@ This appendix summarises each pipeline's inputs and outputs without duplicating 
 |---|---|
 | **Purpose** | Daily fleet-wide snapshot of cluster update state. Read-only. |
 | **Inputs** | Scope (`-AllClusters` or `-ScopeByUpdateRingTag`), `throttle_limit` (optional). |
-| **Schedule** | Daily at 06:00 UTC (configurable in the YAML). |
+| **Trigger** | Manual (`workflow_dispatch` / **Run pipeline** button) **plus** scheduled daily at 06:00 UTC (`cron '0 6 * * *'`). Edit the cron in the YAML to change cadence. |
 | **Artefacts** | `readiness-status.xml` / `.csv` / `.json`, `cluster-inventory.csv`, `update-summaries.csv`, `available-updates.csv`, `update-runs.csv`. |
 | **When to run** | Hands-off scheduled. Trigger manually for ad-hoc reporting. |
+
+### A.6 Fleet Health Status (v0.7.65)
+
+| Aspect | Value |
+|---|---|
+| **Purpose** | Daily fleet-wide snapshot of **24-hour system health-check failures** surfaced by every Azure Local cluster the identity can see. **Independent of update activity** - clusters that are "up to date" can still surface Critical / Warning issues that need operator triage. Read-only. |
+| **Inputs** | `severity` (optional - `Critical`, `Warning`, or `All`; default `All`), `update_ring_tag` (optional - narrow to one wave), `throttle_limit` (optional). |
+| **Trigger** | Manual (`workflow_dispatch` / **Run pipeline** button) **plus** scheduled daily at 07:00 UTC (`cron '0 7 * * *'`). Deliberately offset by one hour from `fleet-update-status` (06:00 UTC) to avoid agent and ARM contention. Edit the cron in the YAML to change cadence. |
+| **Artefacts** | `fleet-health-status.xml` (JUnit, one `<testcase>` per failing check, grouped under `Critical Health Failures` / `Warning Health Failures` testsuites), `fleet-health-detail.csv` (one row per failing check), `fleet-health-summary.csv` (aggregated by `FailureReason` + `Severity`), markdown job summary. |
+| **When to run** | Hands-off scheduled. Trigger manually for ad-hoc fleet-wide health triage outside the daily schedule, especially after operational events (capacity changes, network maintenance, certificate rotations) where health-check failures are expected to spike. |
+
+### A.7 Apply-Updates Schedule Coverage Audit (v0.7.65)
+
+| Aspect | Value |
+|---|---|
+| **Purpose** | Read-only advisor that compares the cron schedule(s) in your `apply-updates.yml` to the `UpdateWindow` tag values present on your clusters, and flags any `(UpdateRing, UpdateWindow)` pair that no cron in `apply-updates.yml` will ever reach. Never edits tags or YAML. Calls the [`Test-AzureLocalApplyUpdatesScheduleCoverage`](../README.md#test-azurelocalapplyupdatesschedulecoverage) cmdlet under the covers. |
+| **Inputs** | `pipeline_path` (file or folder; default `AzLocal.UpdateManagement/Automation-Pipeline-Examples`), `lead_time_minutes` (0-60, default 5), `include_untagged` (default false), `module_version` (optional). |
+| **Trigger** | Manual (`workflow_dispatch` / **Run pipeline** button) **plus** scheduled weekly on Mondays at 05:00 UTC (`cron '0 5 * * 1'`). Deliberately runs before the daily `fleet-update-status` (06:00 UTC) and `fleet-health-status` (07:00 UTC) pipelines so its drift annotations land at the top of the operator's Monday-morning inbox. Edit the cron in the YAML to change cadence. |
+| **Artefacts** | `schedule-coverage-audit.xml` (JUnit, one `<testcase>` per `(UpdateRing, UpdateWindow)` pair, uncovered = `<failure>`), `schedule-coverage-audit.csv` (full Audit view with `Status` / `Recommendation` columns), `schedule-coverage-matrix.csv` (every distinct `(Ring, Window)` pair with its required cron), `schedule-coverage-recommend.md` (ready-to-paste GH Actions + Azure DevOps cron blocks), markdown step summary. |
+| **When to run** | Hands-off scheduled. Trigger manually whenever you have just tagged a new ring or changed a maintenance window - see the [end-to-end runbook in section 8.3](#83-end-to-end-runbook-apply-updates-schedule-coverage-audit). |
+| **RBAC** | Read-only - same as A.1 (`Reader` on the cluster scope plus `Microsoft.ResourceGraph/resources/read`). No write actions are ever taken. |
 
 ---
 

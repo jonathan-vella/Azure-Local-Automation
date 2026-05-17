@@ -135,7 +135,7 @@
 Set-StrictMode -Version 1.0
 
 # Module constants
-$script:ModuleVersion = '0.7.64'
+$script:ModuleVersion = '0.7.65'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.UpdateManagement'
 
@@ -251,5 +251,9 @@ Export-ModuleMember -Function @(
     # Pipeline-Examples Convenience (v0.7.4)
     'Copy-AzureLocalPipelineExample',
     # ITSM Sample Convenience (v0.7.50)
-    'Copy-AzureLocalItsmSample'
+    'Copy-AzureLocalItsmSample',
+    # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
+    'Get-AzureLocalFleetHealthFailures',
+    # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
+    'Test-AzureLocalApplyUpdatesScheduleCoverage'
 )

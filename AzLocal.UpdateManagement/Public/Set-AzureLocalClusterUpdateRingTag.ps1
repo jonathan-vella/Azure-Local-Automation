@@ -83,7 +83,14 @@ function Set-AzureLocalClusterUpdateRingTag {
         Returns an array of PSCustomObjects with the results for each cluster.
     
     .NOTES
-        Requires: Azure CLI (az) installed and authenticated
+        Requires: Azure CLI (az) installed and authenticated.
+
+        Required RBAC: built-in 'Tag Contributor' role on each cluster (or on
+        the resource group / subscription scope that contains the clusters).
+        The function writes tags via the dedicated
+        Microsoft.Resources/tags/default PATCH endpoint, so only the
+        'Microsoft.Resources/tags/write' action is required - NOT the broader
+        'microsoft.azurestackhci/clusters/write' (full cluster Contributor).
     #>
     [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = 'ByResourceId')]
     [OutputType([PSCustomObject[]])]
@@ -446,37 +453,43 @@ function Set-AzureLocalClusterUpdateRingTag {
                 $action = "Created"
             }
 
-            # Build the new tags object (preserve existing tags and add/update UpdateRing)
-            # Use ordered hashtable and convert to PSCustomObject for clean JSON serialization
-            $newTags = [ordered]@{}
-            if ($currentTags -and $currentTags.PSObject.Properties.Name.Count -gt 0) {
-                # Copy existing tags (only actual tag properties, not PSObject internals)
-                foreach ($prop in $currentTags.PSObject.Properties) {
-                    # Skip PowerShell internal properties
-                    if ($prop.MemberType -eq 'NoteProperty') {
-                        $newTags[$prop.Name] = $prop.Value
-                    }
-                }
+            # Build the set of tags we want to write (Merge semantics: only send
+            # keys whose value should be set/updated). The dedicated
+            # Microsoft.Resources/tags/default endpoint preserves all other
+            # existing tags on the cluster without us having to re-send them,
+            # so we only include the keys this function manages.
+            $tagsToMerge = [ordered]@{
+                UpdateRing = $currentUpdateRingValue
             }
-            $newTags["UpdateRing"] = $currentUpdateRingValue
 
-            # Also set UpdateWindow and UpdateExclusions if provided (from CSV)
+            # Also set UpdateWindow and UpdateExclusions if provided (from CSV or parameters)
             if ($clusterEntry.UpdateWindowValue) {
-                $newTags[$script:UpdateWindowTagName] = $clusterEntry.UpdateWindowValue
+                $tagsToMerge[$script:UpdateWindowTagName] = $clusterEntry.UpdateWindowValue
                 Write-Log -Message "  Will also set $($script:UpdateWindowTagName) tag: $($clusterEntry.UpdateWindowValue)" -Level Info
             }
             if ($clusterEntry.UpdateExclusionsValue) {
-                $newTags[$script:UpdateExclusionsTagName] = $clusterEntry.UpdateExclusionsValue
+                $tagsToMerge[$script:UpdateExclusionsTagName] = $clusterEntry.UpdateExclusionsValue
                 Write-Log -Message "  Will also set $($script:UpdateExclusionsTagName) tag: $($clusterEntry.UpdateExclusionsValue)" -Level Info
             }
 
-            # Apply the tag using PATCH
+            # Apply the tag using PATCH against the dedicated tags subresource.
+            # Using /providers/Microsoft.Resources/tags/default (api-version 2021-04-01)
+            # narrows the required RBAC from `microsoft.azurestackhci/clusters/write`
+            # (full cluster Contributor) to `Microsoft.Resources/tags/write`
+            # (built-in Tag Contributor). The "Merge" operation preserves all
+            # other existing tags on the resource.
             if ($PSCmdlet.ShouldProcess($resourceId, "Set UpdateRing tag to '$currentUpdateRingValue'")) {
                 Write-Log -Message "Applying UpdateRing tag with value: '$currentUpdateRingValue'..." -Level Info
-                
-                # Create a clean PSCustomObject for JSON serialization
+
+                # Tags REST API: PATCH {scope}/providers/Microsoft.Resources/tags/default
+                # https://learn.microsoft.com/en-us/rest/api/resources/tags/update-at-scope
+                $tagsUri = "https://management.azure.com$resourceId/providers/Microsoft.Resources/tags/default?api-version=2021-04-01"
+
                 $patchBodyObj = [PSCustomObject]@{
-                    tags = [PSCustomObject]$newTags
+                    operation  = 'Merge'
+                    properties = [PSCustomObject]@{
+                        tags = [PSCustomObject]$tagsToMerge
+                    }
                 }
                 $patchBody = $patchBodyObj | ConvertTo-Json -Compress -Depth 10
 
@@ -484,10 +497,10 @@ function Set-AzureLocalClusterUpdateRingTag {
                 $tempFile = [System.IO.Path]::GetTempFileName()
                 try {
                     Write-Utf8NoBomFile -Path $tempFile -Content $patchBody
-                    
+
                     # Use az rest with @file syntax to avoid escaping issues
-                    $result = az rest --method PATCH --uri $uri --body "@$tempFile" --headers "Content-Type=application/json" --only-show-errors 2>&1
-                    
+                    $result = az rest --method PATCH --uri $tagsUri --body "@$tempFile" --headers "Content-Type=application/json" --only-show-errors 2>&1
+
                     if ($LASTEXITCODE -eq 0) {
                         Write-Log -Message "Successfully $($action.ToLower()) UpdateRing tag" -Level Success
                         $status = "Success"

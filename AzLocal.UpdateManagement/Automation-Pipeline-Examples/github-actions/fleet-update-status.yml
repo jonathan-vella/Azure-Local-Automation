@@ -64,7 +64,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.64'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.65'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -215,23 +215,57 @@ jobs:
         # Build JUnit XML manually for more control over test case details
         $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
         $totalTests = $readiness.Count
+
+        # Critical Health Status (this is what the JUnit XML pass/fail represents):
+        #   FAILED = HealthState=Failure OR UpdateState=Failed OR SBE prerequisite blocked
+        #   PASSED = everything else
         $failures = @($readiness | Where-Object { $_.HealthState -eq "Failure" -or $_.UpdateState -eq "Failed" -or $_.HasPrerequisiteUpdates -ne "" }).Count
-        $inProgress = @($readiness | Where-Object { $_.UpdateState -eq "UpdateInProgress" }).Count
-        $ready = @($readiness | Where-Object { $_.ReadyForUpdate -eq $true }).Count
-        $upToDate = @($readiness | Where-Object { $_.UpdateState -eq "UpToDate" }).Count
+        $criticalHealthPassed = $totalTests - $failures
+
+        # Mutually-exclusive primary status buckets so the summary table rows
+        # always sum to Total Clusters. Priority cascade (first match wins):
+        #   UpdateFailed > HealthFailure > SbeBlocked > InProgress > ReadyForUpdate > UpToDate > Other
+        $stUpdateFailed = 0
+        $stHealthFailure = 0
+        $stSbeBlocked = 0
+        $stInProgress = 0
+        $stReadyForUpdate = 0
+        $stUpToDate = 0
+        $stOther = 0
+        foreach ($c in $readiness) {
+            if ($c.UpdateState -eq 'Failed') { $stUpdateFailed++ }
+            elseif ($c.HealthState -eq 'Failure') { $stHealthFailure++ }
+            elseif ($c.HasPrerequisiteUpdates) { $stSbeBlocked++ }
+            elseif ($c.UpdateState -eq 'UpdateInProgress') { $stInProgress++ }
+            elseif ($c.ReadyForUpdate -eq $true) { $stReadyForUpdate++ }
+            elseif ($c.UpdateState -in @('UpToDate','AppliedSuccessfully')) { $stUpToDate++ }
+            else { $stOther++ }
+        }
+
+        # Legacy variable names (kept for backwards-compatible step outputs)
+        $inProgress = $stInProgress
+        $ready = $stReadyForUpdate
+        $upToDate = $stUpToDate
         
         # Build XML using string concatenation (avoids YAML parser issues with here-strings)
         $xmlContent = '<?xml version="1.0" encoding="UTF-8"?>' + "`n"
         $xmlContent += '<testsuites>' + "`n"
         $xmlContent += "  <testsuite name=`"AzureLocalFleetUpdateStatus`" tests=`"$totalTests`" failures=`"$failures`" errors=`"0`" skipped=`"0`" time=`"0`" timestamp=`"$timestamp`">" + "`n"
         $xmlContent += '    <properties>' + "`n"
+        $xmlContent += "      <property name=`"testCategory`" value=`"CriticalHealthStatus`"/>" + "`n"
+        $xmlContent += "      <property name=`"description`" value=`"Each testcase = one cluster's Critical Health Status. PASSED = healthy + no failures + not SBE-blocked. FAILED = HealthState=Failure OR UpdateState=Failed OR SBE prerequisite blocked.`"/>" + "`n"
         $xmlContent += "      <property name=`"scope`" value=`"$scope`"/>" + "`n"
         $xmlContent += "      <property name=`"updateRing`" value=`"$updateRing`"/>" + "`n"
         $xmlContent += "      <property name=`"totalClusters`" value=`"$totalTests`"/>" + "`n"
-        $xmlContent += "      <property name=`"readyForUpdate`" value=`"$ready`"/>" + "`n"
-        $xmlContent += "      <property name=`"updateInProgress`" value=`"$inProgress`"/>" + "`n"
-        $xmlContent += "      <property name=`"upToDate`" value=`"$upToDate`"/>" + "`n"
-        $xmlContent += "      <property name=`"healthFailures`" value=`"$failures`"/>" + "`n"
+        $xmlContent += "      <property name=`"criticalHealthPassed`" value=`"$criticalHealthPassed`"/>" + "`n"
+        $xmlContent += "      <property name=`"criticalHealthFailed`" value=`"$failures`"/>" + "`n"
+        $xmlContent += "      <property name=`"primaryUpdateFailed`" value=`"$stUpdateFailed`"/>" + "`n"
+        $xmlContent += "      <property name=`"primaryHealthFailure`" value=`"$stHealthFailure`"/>" + "`n"
+        $xmlContent += "      <property name=`"primarySbeBlocked`" value=`"$stSbeBlocked`"/>" + "`n"
+        $xmlContent += "      <property name=`"primaryInProgress`" value=`"$stInProgress`"/>" + "`n"
+        $xmlContent += "      <property name=`"primaryReadyForUpdate`" value=`"$stReadyForUpdate`"/>" + "`n"
+        $xmlContent += "      <property name=`"primaryUpToDate`" value=`"$stUpToDate`"/>" + "`n"
+        $xmlContent += "      <property name=`"primaryNeedsInvestigation`" value=`"$stOther`"/>" + "`n"
         $xmlContent += '    </properties>' + "`n"
         
         foreach ($cluster in $readiness) {
@@ -247,7 +281,7 @@ jobs:
             if ($cluster.HealthState -eq "Failure" -or $cluster.UpdateState -eq "Failed") {
                 $status = "failed"
                 $failureType = "UpdateFailure"
-                $failureMessage = "Health: $($cluster.HealthState), UpdateState: $($cluster.UpdateState)"
+                $failureMessage = "UpdateState: $($cluster.UpdateState), Health: $($cluster.HealthState)"
                 if ($cluster.HealthCheckFailures) {
                     $failureMessage += ", Issues: $($cluster.HealthCheckFailures -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;')"
                 }
@@ -279,7 +313,7 @@ jobs:
             $xmlContent += "      <system-out><![CDATA[$systemOut]]></system-out>`n"
             
             if ($status -eq "failed") {
-                $xmlContent += "      <failure message=`"Cluster has update issues`" type=`"$failureType`">$failureMessage</failure>`n"
+                $xmlContent += "      <failure message=`"Critical Health Status: Failed`" type=`"$failureType`">$failureMessage</failure>`n"
             }
             
             $xmlContent += "    </testcase>`n"
@@ -346,16 +380,31 @@ jobs:
         Write-Host "Fleet Status Summary" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Cyan
         Write-Host "Total Clusters: $totalTests"
-        Write-Host "Up to Date: $upToDate" -ForegroundColor Green
-        Write-Host "Update In Progress: $inProgress" -ForegroundColor Yellow
-        Write-Host "Ready for Update: $ready" -ForegroundColor Cyan
-        Write-Host "Health Failures: $failures" -ForegroundColor $(if ($failures -gt 0) { "Red" } else { "Green" })
-        
+        Write-Host ""
+        Write-Host "Critical Health Status (matches JUnit XML pass/fail):" -ForegroundColor White
+        Write-Host "  Passed: $criticalHealthPassed" -ForegroundColor Green
+        Write-Host "  Failed: $failures" -ForegroundColor $(if ($failures -gt 0) { 'Red' } else { 'Green' })
+        Write-Host ""
+        Write-Host "Primary Status (each cluster counted once; rows sum to Total):" -ForegroundColor White
+        Write-Host "  Up to Date: $stUpToDate" -ForegroundColor Green
+        Write-Host "  Ready for Update: $stReadyForUpdate" -ForegroundColor Cyan
+        Write-Host "  Update In Progress: $stInProgress" -ForegroundColor Yellow
+        Write-Host "  SBE Prerequisite Blocked: $stSbeBlocked" -ForegroundColor $(if ($stSbeBlocked -gt 0) { 'Yellow' } else { 'Green' })
+        Write-Host "  Health Failure: $stHealthFailure" -ForegroundColor $(if ($stHealthFailure -gt 0) { 'Red' } else { 'Green' })
+        Write-Host "  Update Failed: $stUpdateFailed" -ForegroundColor $(if ($stUpdateFailed -gt 0) { 'Red' } else { 'Green' })
+        Write-Host "  Needs Investigation: $stOther" -ForegroundColor $(if ($stOther -gt 0) { 'Yellow' } else { 'Green' })
+
         # Set output variables for downstream steps
         echo "TOTAL_CLUSTERS=$totalTests" >> $env:GITHUB_OUTPUT
-        echo "UP_TO_DATE=$upToDate" >> $env:GITHUB_OUTPUT
-        echo "IN_PROGRESS=$inProgress" >> $env:GITHUB_OUTPUT
-        echo "READY=$ready" >> $env:GITHUB_OUTPUT
+        echo "CRITICAL_HEALTH_PASSED=$criticalHealthPassed" >> $env:GITHUB_OUTPUT
+        echo "CRITICAL_HEALTH_FAILED=$failures" >> $env:GITHUB_OUTPUT
+        echo "UP_TO_DATE=$stUpToDate" >> $env:GITHUB_OUTPUT
+        echo "IN_PROGRESS=$stInProgress" >> $env:GITHUB_OUTPUT
+        echo "READY=$stReadyForUpdate" >> $env:GITHUB_OUTPUT
+        echo "SBE_BLOCKED=$stSbeBlocked" >> $env:GITHUB_OUTPUT
+        echo "HEALTH_FAILURE=$stHealthFailure" >> $env:GITHUB_OUTPUT
+        echo "UPDATE_FAILED=$stUpdateFailed" >> $env:GITHUB_OUTPUT
+        echo "NEEDS_INVESTIGATION=$stOther" >> $env:GITHUB_OUTPUT
         echo "FAILURES=$failures" >> $env:GITHUB_OUTPUT
         echo "HAS_PREREQUISITE=$hasPrerequisite" >> $env:GITHUB_OUTPUT
         
@@ -374,52 +423,67 @@ jobs:
         path: ./reports/
         retention-days: 90
     
-    # Publish JUnit test results for visualization in GitHub Actions
-    - name: Publish Test Results
-      uses: dorny/test-reporter@v3
-      if: always()
-      with:
-        name: Fleet Update Status Report
-        path: ./reports/readiness-status.xml
-        reporter: java-junit
-        fail-on-error: false  # Don't fail the action on test failures
-    
+    # Create the markdown summary FIRST so it appears at the top of the
+    # GitHub Actions run summary view. The Publish Test Results step (dorny)
+    # writes its testsuite expansion AFTER, and is configured below to only
+    # render failed suites/tests so large fleets (200+ clusters) do not
+    # produce a noisy expanded section.
     - name: Create Status Summary
       if: always()
       shell: pwsh
       run: |
         $total = "${{ steps.fleet-status.outputs.TOTAL_CLUSTERS }}"
+        $chPassed = "${{ steps.fleet-status.outputs.CRITICAL_HEALTH_PASSED }}"
+        $chFailed = "${{ steps.fleet-status.outputs.CRITICAL_HEALTH_FAILED }}"
         $upToDate = "${{ steps.fleet-status.outputs.UP_TO_DATE }}"
         $inProgress = "${{ steps.fleet-status.outputs.IN_PROGRESS }}"
         $ready = "${{ steps.fleet-status.outputs.READY }}"
-        $failures = "${{ steps.fleet-status.outputs.FAILURES }}"
+        $sbeBlocked = "${{ steps.fleet-status.outputs.SBE_BLOCKED }}"
+        $healthFailure = "${{ steps.fleet-status.outputs.HEALTH_FAILURE }}"
+        $updateFailed = "${{ steps.fleet-status.outputs.UPDATE_FAILED }}"
+        $needsInvestigation = "${{ steps.fleet-status.outputs.NEEDS_INVESTIGATION }}"
         $hasPrerequisite = "${{ steps.fleet-status.outputs.HAS_PREREQUISITE }}"
-        
+
         $summary = @"
         ## Fleet Update Status Summary
-        
+
+        ### Critical Health Status (matches JUnit XML pass/fail)
+
+        | Metric | Count | Status |
+        |--------|-------|--------|
+        | **Passed** (healthy, no failures, not SBE-blocked) | $chPassed | [ok] |
+        | **Failed** (HealthState=Failure OR UpdateState=Failed OR SBE prerequisite blocked) | $chFailed | $(if ([int]$chFailed -gt 0) { '[fail]' } else { '[ok]' }) |
+
+        ### Primary Status (each cluster counted once; rows sum to Total Clusters)
+
         | Metric | Count | Status |
         |--------|-------|--------|
         | **Total Clusters** | $total | [info] |
         | **Up to Date** | $upToDate | [ok] |
-        | **Update In Progress** | $inProgress | [running] |
         | **Ready for Update** | $ready | [ready] |
-        | **SBE Prerequisite Blocked** | $hasPrerequisite | $(if ([int]$hasPrerequisite -gt 0) { '[blocked]' } else { '[ok]' }) |
-        | **Health Failures** | $failures | $(if ([int]$failures -gt 0) { '[fail]' } else { '[ok]' }) |
+        | **Update In Progress** | $inProgress | [running] |
+        | **SBE Prerequisite Blocked** | $sbeBlocked | $(if ([int]$sbeBlocked -gt 0) { '[blocked]' } else { '[ok]' }) |
+        | **Health Failure** (HealthState=Failure) | $healthFailure | $(if ([int]$healthFailure -gt 0) { '[fail]' } else { '[ok]' }) |
+        | **Update Failed** (UpdateState=Failed) | $updateFailed | $(if ([int]$updateFailed -gt 0) { '[fail]' } else { '[ok]' }) |
+        | **Needs Investigation** | $needsInvestigation | $(if ([int]$needsInvestigation -gt 0) { '[info]' } else { '[ok]' }) |
+
+        Priority cascade used to bucket each cluster exactly once:
+        Update Failed > Health Failure > SBE Prerequisite Blocked > Update In Progress > Ready for Update > Up to Date > Needs Investigation.
         "@
-        
+
         # Actions Required section
         $actions = @()
-        if ([int]$failures -gt 0) { $actions += "- **$failures cluster(s) have health failures** - Resolve critical health check issues in Azure Portal" }
-        if ([int]$hasPrerequisite -gt 0) { $actions += "- **$hasPrerequisite cluster(s) blocked by SBE prerequisite** - Install the required Solution Builder Extension (SBE) update from the hardware vendor. See ``available-updates.csv`` for vendor details (Publisher, Family)" }
-        
+        if ([int]$updateFailed -gt 0) { $actions += "- **$updateFailed cluster(s) have UpdateState=Failed** - Review the most recent update run in Azure Portal and the ``update-runs.csv`` artifact for the failure detail." }
+        if ([int]$healthFailure -gt 0) { $actions += "- **$healthFailure cluster(s) have HealthState=Failure** - Resolve critical health check issues in Azure Portal before retrying any updates." }
+        if ([int]$hasPrerequisite -gt 0) { $actions += "- **$hasPrerequisite cluster(s) blocked by SBE prerequisite** - Install the required Solution Builder Extension (SBE) update from the hardware vendor. See ``available-updates.csv`` for vendor details (Publisher, Family)." }
+
         if ($actions.Count -gt 0) {
             $summary += "`n`n### Actions Required`n`n"
             $summary += ($actions -join "`n")
         }
-        
+
         $summary += @"
-        
+
         ### Reports Available
         - ``readiness-status.csv`` - Detailed cluster status for spreadsheet analysis
         - ``readiness-status.json`` - Machine-readable format for integrations
@@ -428,8 +492,24 @@ jobs:
         - ``update-summaries.csv`` - Fleet-wide update state summaries
         - ``available-updates.csv`` - All available updates across fleet
         - ``update-runs.csv`` - Recent update run history (if enabled)
-        
+
         *Generated at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")*
         "@
-        
+
         $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+    # Publish JUnit test results AFTER the markdown summary so the "Fleet
+    # Update Status Summary" tables are the first thing visible on the run
+    # page. dorny renders its testsuite expansion below; list-suites and
+    # list-tests are set to "failed" so the expansion stays compact even
+    # for fleets with 200+ clusters (only failing rows are shown).
+    - name: Publish Test Results
+      uses: dorny/test-reporter@v3
+      if: always()
+      with:
+        name: Fleet Update Status Report
+        path: ./reports/readiness-status.xml
+        reporter: java-junit
+        fail-on-error: false  # Don't fail the action on test failures
+        list-suites: failed    # collapse passing suites (compact view for large fleets)
+        list-tests: failed     # within failed suites, only render failed tests
