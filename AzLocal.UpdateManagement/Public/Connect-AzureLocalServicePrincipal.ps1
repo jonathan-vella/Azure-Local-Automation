@@ -216,7 +216,8 @@ function Connect-AzureLocalServicePrincipal {
                 --output none 2>&1
 
             if ($LASTEXITCODE -ne 0) {
-                Write-Error "Service Principal authentication failed: $loginResult"
+                $scrubbed = ConvertTo-ScrubbedCliOutput -Text (($loginResult | Out-String).Trim())
+                Write-Error "Service Principal authentication failed: $scrubbed"
                 return $false
             }
 

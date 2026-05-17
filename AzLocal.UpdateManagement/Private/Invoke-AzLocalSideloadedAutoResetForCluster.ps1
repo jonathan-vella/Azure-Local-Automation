@@ -83,7 +83,7 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
     $clusterJson = az rest --method GET --uri $getUri --only-show-errors 2>&1
     if ($LASTEXITCODE -ne 0) {
         $result.Action = 'Skipped'
-        $result.Message = "Failed to fetch cluster tags: $clusterJson"
+        $result.Message = "Failed to fetch cluster tags: $(ConvertTo-ScrubbedCliOutput -Text ($clusterJson | Out-String).Trim())"
         return [PSCustomObject]$result
     }
 

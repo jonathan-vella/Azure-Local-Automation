@@ -80,7 +80,7 @@ function Invoke-AzLocalItsmHttp {
 
             $retryable = $status -in 429,500,502,503,504
             if (-not $retryable -or $attempt -ge $MaxAttempts) {
-                throw [System.Exception]::new("ITSM HTTP $Method $Uri failed (status=$status, attempt=$attempt): $($ex.Message)", $ex)
+                throw [System.Exception]::new("ITSM HTTP $Method $redactedUri failed (status=$status, attempt=$attempt): $($ex.Message)", $ex)
             }
 
             if ($retryAfter -le 0) {

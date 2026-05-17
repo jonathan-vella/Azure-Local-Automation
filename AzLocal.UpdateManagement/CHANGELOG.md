@@ -5,6 +5,33 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.64] - 2026-05-17
+
+### Fixed (critical)
+
+- **Pipeline-sample YAMLs (10 files across GitHub Actions and Azure DevOps) had accumulated cp1252 mojibake from previous emoji-edit round-trips.** One of the multi-byte sequences in `manage-updatering-tags.yml` contained a YAML 1.2 forbidden C1 control character (U+008F), which caused GitHub Actions to reject the workflow at recent commits with **`Invalid workflow file`** / generic YAML syntax error and the affected step never ran. The root cause was UTF-8 emoji bytes (e.g. `F0 9F 93 84` = `[document]`) being misread as cp1252 by a previous editor session, then re-saved as UTF-8 - producing `C3 B0 C2 9F C2 93 C2 84`, which contains `C2 8F` -> U+008F. YAML 1.2 disallows raw C1 control characters U+0080-U+009F (except U+0085 NEL) in scalar content. **All non-ASCII bytes have been stripped from every sample workflow** (`[^\x09\x0A\x0D\x20-\x7E]`), the affected Markdown step-summary sections restored with plain-ASCII status labels (`[info]`, `[ok]`, `[running]`, `[ready]`, `[blocked]`, `[fail]`), and the YAMLs verified to round-trip cleanly through the GitHub Actions and Azure DevOps validators. No module code paths are affected; only the sample YAMLs.
+
+### Security hardening (Medium)
+
+- **`Connect-AzureLocalServicePrincipal` now scrubs `$loginResult` through `ConvertTo-ScrubbedCliOutput` before writing the failure message to `Write-Error`.** A stray `refresh_token` / `access_token` / cookie that the `az` CLI might emit on a failed `az login --service-principal` call can no longer reach the host logs verbatim.
+- **Six additional direct callers of `az rest` / `az account set` now route raw CLI output through `ConvertTo-ScrubbedCliOutput` before logging/throwing.** Sites: `Set-AzLocalClusterTagsMerge` (3), `Invoke-AzLocalSideloadedAutoResetForCluster`, `Invoke-AzureLocalUpdateApply`, `Set-AzureLocalClusterUpdateRingTag`, `Start-AzureLocalClusterUpdate` (subscription-set and validate). This closes the same Bearer-token leak class that was already handled inside `Invoke-AzRestJson` / `Invoke-AzResourceGraphQuery` but missed by the direct `az rest` call sites.
+- **Documentation: `README.md` and [`ITSM/README.md`](ITSM/README.md) now carry explicit security notes about** (a) the `az login --service-principal --password <secret>` command-line exposure on the SP+secret authentication path (visible to `Win32_Process.CommandLine` for the duration of the call), and (b) the unavoidable plaintext `[string]` residency of ITSM secrets in memory during ServiceNow OAuth `client_credentials` grants (the ServiceNow REST surface requires plaintext POST bodies, so `[SecureString]` round-tripping is impossible at this layer).
+
+### Fixed (Low)
+
+- **`Invoke-AzureLocalUpdateApply` previously evaluated `$result -match "202"` against the `string[]` returned by `az rest`**, which is array-filter semantics, not regex-match semantics: the test was returning the matching array elements (truthy) rather than the boolean intended. The comparison is now done against `($result | Out-String).Trim()` and combined into a single regex (`202|Accepted`); the `Write-Verbose` path is also scrubbed.
+- **`Invoke-AzLocalItsmHttp` `throw` on non-retryable HTTP failure now uses `$redactedUri` instead of `$Uri`.** The redaction (`(client_secret|access_token|password)=[^&]+` -> `$1=***`) was already applied to the `Write-Verbose` log line; the `throw` message bypassed it. With this fix, a non-retryable 4xx response from ServiceNow can no longer surface a secret-bearing query string into the exception chain.
+- **Two Pester tests (`ScheduleBlocked` and `SideloadedBlocked` JUnit XML coverage) wrote to fixed temp filenames** (`pester-junit-schedule-test.xml`, `pester-junit-sideloaded-test.xml`) that would collide if the test suite is run in parallel or back-to-back. Filenames now append a per-invocation `[Guid]::NewGuid()`.
+
+### Module-version pin bumped to 0.7.64 in all 10 sample workflow YAMLs
+
+Refresh your copy via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+```
+
 ## [0.7.63] - 2026-05-16
 
 ### Fixed (critical)

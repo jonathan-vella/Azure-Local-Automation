@@ -21,15 +21,16 @@ function Invoke-AzureLocalUpdateApply {
     
     # The apply endpoint is a POST with empty body
     $result = az rest --method POST --uri $uri --only-show-errors 2>&1
-    
+    $resultText = ($result | Out-String).Trim()
+
     if ($LASTEXITCODE -eq 0) {
         return $true
     }
-    elseif ($result -match "202" -or $result -match "Accepted") {
+    elseif ($resultText -match '202|Accepted') {
         # 202 Accepted is a valid response for long-running operations
         return $true
     }
-    
-    Write-Verbose "Apply result: $result"
+
+    Write-Verbose "Apply result: $(ConvertTo-ScrubbedCliOutput -Text $resultText)"
     return $false
 }
