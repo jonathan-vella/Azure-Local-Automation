@@ -71,14 +71,55 @@ stages:
                 if (-not (Test-Path $csvPath)) {
                     Write-Host "##vso[task.logissue type=error]CSV file not found: ${{ parameters.csvFilePath }}"
                     Write-Host ""
-                    Write-Host "To use this pipeline:" -ForegroundColor Yellow
-                    Write-Host "1. Run the 'Inventory Azure Local Clusters' pipeline first"
-                    Write-Host "2. Download the CSV artifact from that pipeline run"
-                    Write-Host "3. Edit the CSV in Excel - set UpdateRing values for each cluster"
-                    Write-Host "4. Commit the edited CSV to your repository"
-                    Write-Host "5. Run this pipeline with the path to your committed CSV file"
+                    Write-Host "===========================================================================" -ForegroundColor Yellow
+                    Write-Host " UpdateRing tagging is a TWO-STAGE pipeline. You must run the inventory" -ForegroundColor Yellow
+                    Write-Host " pipeline first, edit the CSV, commit it, then re-run THIS pipeline." -ForegroundColor Yellow
+                    Write-Host "===========================================================================" -ForegroundColor Yellow
                     Write-Host ""
-                    Write-Host "Example: If you committed the file to 'config/ClusterUpdateRings.csv', enter that path."
+                    Write-Host "STEP 1 - Generate the cluster inventory (one-off, then on demand)" -ForegroundColor Cyan
+                    Write-Host "  a. Open Azure DevOps Pipelines in this project."
+                    Write-Host "  b. Run the pipeline named 'Inventory Azure Local Clusters'"
+                    Write-Host "     (file: azure-pipelines/inventory-clusters.yml or similar)."
+                    Write-Host "  c. Wait for the run to finish successfully."
+                    Write-Host "  d. On the completed run summary, open the published artifact"
+                    Write-Host "     named 'cluster-inventory' and download it."
+                    Write-Host "  e. Extract it locally. You will get 'ClusterInventory_<timestamp>.csv'"
+                    Write-Host "     plus a matching .json file."
+                    Write-Host ""
+                    Write-Host "STEP 2 - Edit the CSV in Excel" -ForegroundColor Cyan
+                    Write-Host "  a. Open 'ClusterInventory_<timestamp>.csv' in Excel."
+                    Write-Host "  b. For each cluster row, fill in the 'UpdateRing' column with the wave"
+                    Write-Host "     name you want that cluster to belong to. Examples:"
+                    Write-Host "       Canary, Pilot, Production"
+                    Write-Host "       (or your own scheme, e.g. Wave1, Wave2, Wave3 / Dev, Test, Prod)."
+                    Write-Host "  c. Leave the 'UpdateRing' column EMPTY for any cluster you do not want"
+                    Write-Host "     this run to tag - those rows will be skipped."
+                    Write-Host "  d. Save as CSV (UTF-8). Do not change other columns or column order."
+                    Write-Host ""
+                    Write-Host "STEP 3 - Commit the edited CSV to this repository" -ForegroundColor Cyan
+                    Write-Host "  a. Copy the edited CSV into a stable location in this repo, for example:"
+                    Write-Host "       config/ClusterUpdateRings.csv"
+                    Write-Host "  b. Commit and push it (PR review optional but recommended)."
+                    Write-Host "  c. The path you commit it to is what you will pass as 'csvFilePath'"
+                    Write-Host "     on the next run of this pipeline."
+                    Write-Host ""
+                    Write-Host "STEP 4 - Re-run THIS pipeline ('Manage UpdateRing Tags')" -ForegroundColor Cyan
+                    Write-Host "  a. Click 'Run pipeline' on this pipeline."
+                    Write-Host "  b. Set 'csvFilePath' to the path you committed in step 3"
+                    Write-Host "     (default is 'config/ClusterUpdateRings.csv')."
+                    Write-Host "  c. RECOMMENDED FIRST RUN: leave 'dryRun' = true to preview which tags"
+                    Write-Host "     would be set/changed, without modifying any Azure resources."
+                    Write-Host "  d. Once the preview looks correct, re-run with 'dryRun' = false to"
+                    Write-Host "     apply the tags. Use 'force' = true only if you need to overwrite"
+                    Write-Host "     existing UpdateRing values already set on a cluster."
+                    Write-Host ""
+                    Write-Host "Documentation:" -ForegroundColor Yellow
+                    Write-Host "  AzLocal.UpdateManagement/README.md - 'Update Rings' section"
+                    Write-Host "  AzLocal.UpdateManagement/Automation-Pipeline-Examples/README.md"
+                    Write-Host ""
+                    Write-Host "The path you supplied ('${{ parameters.csvFilePath }}') does not exist" -ForegroundColor Red
+                    Write-Host "in the checked-out branch of this repository. Did you forget to commit" -ForegroundColor Red
+                    Write-Host "the CSV, point at the wrong branch on 'Run pipeline', or mistype it?" -ForegroundColor Red
                     exit 1
                 }
                 
