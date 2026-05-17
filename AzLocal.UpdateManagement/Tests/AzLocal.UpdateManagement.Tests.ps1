@@ -34,12 +34,12 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.64' {
-            $script:ModuleInfo.Version | Should -Be '0.7.64'
+        It 'Should have version 0.7.65' {
+            $script:ModuleInfo.Version | Should -Be '0.7.65'
         }
 
-        It 'Should export exactly 25 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 25
+        It 'Should export exactly 26 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 26
         }
 
         It 'Should export the expected functions' {
@@ -65,6 +65,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 # Fleet Status Data Collection & Reporting (v0.6.4)
                 'Get-AzureLocalFleetStatusData',
                 'New-AzureLocalFleetStatusHtmlReport',
+                # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
+                'Get-AzureLocalFleetHealthFailures',
                 # Update Schedule Tag Helpers (v0.6.4)
                 'Test-AzureLocalUpdateScheduleAllowed',
                 # Sideloaded Payload Workflow (v0.7.1)
@@ -93,6 +95,67 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $releaseNotes = $data.PrivateData.PSData.ReleaseNotes
             $releaseNotes | Should -Not -BeNullOrEmpty
             $releaseNotes.Length | Should -BeLessOrEqual 10000 -Because "PSGallery rejects ReleaseNotes longer than 10000 characters"
+        }
+    }
+
+    Context 'Pipeline YAML version pin (v0.7.65)' {
+        # Every sample pipeline that installs AzLocal.UpdateManagement at runtime
+        # also declares GENERATED_AGAINST_MODULE_VERSION so the install step can
+        # detect drift between the YAML's expected version and what is installed
+        # from PSGallery. The pin MUST match the current module manifest version,
+        # otherwise the runtime drift detector will emit a noisy warning on every
+        # pipeline run for end users. This test guards against forgetting to bump
+        # the pin in Automation-Pipeline-Examples/**/*.yml when releasing a new
+        # module version.
+        It 'Every pipeline YAML that installs the module pins GENERATED_AGAINST_MODULE_VERSION to the manifest version' {
+            $manifestVersion = $script:ModuleInfo.Version.ToString()
+            $examplesRoot    = Join-Path -Path $PSScriptRoot -ChildPath '..\Automation-Pipeline-Examples'
+            $examplesRoot    = (Resolve-Path -Path $examplesRoot).Path
+
+            $ymlFiles = Get-ChildItem -Path $examplesRoot -Recurse -Filter '*.yml' -File
+            $ymlFiles.Count | Should -BeGreaterThan 0 -Because 'sample pipeline YAMLs ship under Automation-Pipeline-Examples/{github-actions,azure-devops}/'
+
+            $issues = New-Object System.Collections.Generic.List[string]
+            foreach ($yml in $ymlFiles) {
+                $content = Get-Content -LiteralPath $yml.FullName -Raw
+
+                # The drift detector only runs in pipelines that install the
+                # module at runtime. Auth-smoke-test YAMLs and ITSM sample YAMLs
+                # do not install the module, so they are not expected to carry
+                # a pin. Use the presence of 'Install-Module AzLocal.UpdateManagement'
+                # as the discriminator.
+                $installsModule = $content -match 'Install-Module\s+AzLocal\.UpdateManagement'
+
+                # Two pin shapes are supported by the YAML examples:
+                # 1) Inline (GH Actions env, or ADO inline variable):
+                #      GENERATED_AGAINST_MODULE_VERSION: '0.7.65'
+                # 2) ADO variables block, name/value pair on two lines:
+                #      - name: GENERATED_AGAINST_MODULE_VERSION
+                #        value: '0.7.65'
+                $pin     = $null
+                $inline  = [regex]::Match($content, "GENERATED_AGAINST_MODULE_VERSION\s*:\s*'([^']+)'")
+                $twoLine = [regex]::Match($content, "(?ms)-\s*name\s*:\s*GENERATED_AGAINST_MODULE_VERSION\s*\r?\n\s*value\s*:\s*'([^']+)'")
+                if ($inline.Success)       { $pin = $inline.Groups[1].Value }
+                elseif ($twoLine.Success)  { $pin = $twoLine.Groups[1].Value }
+
+                $relPath = $yml.FullName.Substring($examplesRoot.Length).TrimStart('\','/')
+
+                if ($installsModule -and -not $pin) {
+                    $issues.Add("${relPath}: installs the module but is MISSING the GENERATED_AGAINST_MODULE_VERSION pin")
+                    continue
+                }
+
+                if ($pin -and $pin -ne $manifestVersion) {
+                    $issues.Add("${relPath}: pinned to '$pin' but manifest is '$manifestVersion'")
+                }
+            }
+
+            if ($issues.Count -gt 0) {
+                $detail = ($issues -join [Environment]::NewLine)
+            } else {
+                $detail = '(no mismatches)'
+            }
+            $issues.Count | Should -Be 0 -Because "every pipeline YAML under Automation-Pipeline-Examples/ that installs AzLocal.UpdateManagement must pin GENERATED_AGAINST_MODULE_VERSION to the current manifest version $manifestVersion. Bumping the manifest version requires the same bump in every sample YAML. Findings:$([Environment]::NewLine)$detail"
         }
     }
 }
@@ -2224,6 +2287,333 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
 }
 
 #endregion Internal Helper: Invoke-AzResourceGraphQuery
+
+#region Fleet Health Failures (v0.7.65)
+
+Describe 'Function: Get-AzureLocalFleetHealthFailures' {
+
+    Context 'Parameter Validation' {
+        BeforeAll {
+            $command = Get-Command Get-AzureLocalFleetHealthFailures
+        }
+
+        It 'Should have SubscriptionId parameter' {
+            $command.Parameters.Keys | Should -Contain 'SubscriptionId'
+        }
+
+        It 'Should have Severity parameter with ValidateSet (Critical, Warning, All)' {
+            $command.Parameters.Keys | Should -Contain 'Severity'
+            $validateSet = $command.Parameters['Severity'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+            $validateSet | Should -Not -BeNullOrEmpty
+            $validateSet.ValidValues | Should -Contain 'Critical'
+            $validateSet.ValidValues | Should -Contain 'Warning'
+            $validateSet.ValidValues | Should -Contain 'All'
+        }
+
+        It 'Should have View parameter with ValidateSet (Detail, Summary)' {
+            $command.Parameters.Keys | Should -Contain 'View'
+            $validateSet = $command.Parameters['View'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+            $validateSet | Should -Not -BeNullOrEmpty
+            $validateSet.ValidValues | Should -Contain 'Detail'
+            $validateSet.ValidValues | Should -Contain 'Summary'
+        }
+
+        It 'Should have UpdateRingTag parameter with ValidatePattern' {
+            $command.Parameters.Keys | Should -Contain 'UpdateRingTag'
+            $vp = $command.Parameters['UpdateRingTag'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ValidatePatternAttribute] }
+            $vp | Should -Not -BeNullOrEmpty
+        }
+
+        It 'Should have ExportPath and PassThru parameters' {
+            $command.Parameters.Keys | Should -Contain 'ExportPath'
+            $command.Parameters.Keys | Should -Contain 'PassThru'
+        }
+
+        It 'Should declare OutputType' {
+            $command.OutputType | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    Context 'Detail view' {
+
+        It 'Returns one row per (cluster, failing health-check) with the expected shape' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Two clusters, two failing checks each across Critical + Warning.
+                $payload = @{
+                    count = 4
+                    data  = @(
+                        @{
+                            ClusterName       = 'Cluster01'
+                            ResourceGroup     = 'RG1'
+                            SubscriptionId    = 'sub-1111'
+                            ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            Severity          = 'Critical'
+                            FailureName       = 'storage-pool-health'
+                            FailureReason     = 'Storage pool degraded'
+                            Description       = 'A storage pool drive is in degraded state.'
+                            Remediation       = 'Replace the failed drive.'
+                            LastOccurrence    = '2026-05-16T08:00:00Z'
+                        },
+                        @{
+                            ClusterName       = 'Cluster01'
+                            ResourceGroup     = 'RG1'
+                            SubscriptionId    = 'sub-1111'
+                            ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            Severity          = 'Warning'
+                            FailureName       = 'time-skew'
+                            FailureReason     = 'Time skew detected'
+                            Description       = 'Cluster nodes time skew > 1s.'
+                            Remediation       = 'Validate NTP configuration.'
+                            LastOccurrence    = '2026-05-16T07:30:00Z'
+                        },
+                        @{
+                            ClusterName       = 'Cluster02'
+                            ResourceGroup     = 'RG2'
+                            SubscriptionId    = 'sub-1111'
+                            ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG2/providers/Microsoft.AzureStackHCI/clusters/Cluster02'
+                            Severity          = 'Critical'
+                            FailureName       = 'storage-pool-health'
+                            FailureReason     = 'Storage pool degraded'
+                            Description       = 'A storage pool drive is in degraded state.'
+                            Remediation       = 'Replace the failed drive.'
+                            LastOccurrence    = '2026-05-16T08:15:00Z'
+                        },
+                        @{
+                            ClusterName       = 'Cluster02'
+                            ResourceGroup     = 'RG2'
+                            SubscriptionId    = 'sub-1111'
+                            ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG2/providers/Microsoft.AzureStackHCI/clusters/Cluster02'
+                            Severity          = 'Warning'
+                            FailureName       = 'network-mtu'
+                            FailureReason     = 'Network MTU misconfiguration'
+                            Description       = 'Cluster nodes have inconsistent MTU.'
+                            Remediation       = 'Align MTU across all NICs.'
+                            LastOccurrence    = '2026-05-16T07:00:00Z'
+                        }
+                    )
+                } | ConvertTo-Json -Depth 6
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $rows = Get-AzureLocalFleetHealthFailures -View Detail
+                $rows | Should -HaveCount 4
+                $rows[0].PSObject.Properties.Name | Should -Contain 'ClusterName'
+                $rows[0].PSObject.Properties.Name | Should -Contain 'FailureReason'
+                $rows[0].PSObject.Properties.Name | Should -Contain 'Severity'
+                $rows[0].PSObject.Properties.Name | Should -Contain 'LastOccurrence'
+                $rows[0].PSObject.Properties.Name | Should -Contain 'ClusterResourceId'
+                @($rows | Where-Object { $_.Severity -eq 'Critical' }).Count | Should -Be 2
+                @($rows | Where-Object { $_.Severity -eq 'Warning'  }).Count | Should -Be 2
+            }
+        }
+
+        It 'Returns an empty array when Resource Graph reports no failing checks' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return '{"count":0,"data":[]}' }
+                $global:LASTEXITCODE = 0
+                $rows = Get-AzureLocalFleetHealthFailures
+                ,$rows | Should -BeOfType ([object[]])
+                $rows.Count | Should -Be 0
+            }
+        }
+    }
+
+    Context 'Summary view' {
+
+        It 'Aggregates rows by FailureReason + Severity and orders by ClusterCount desc' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Storage pool degraded hits 2 clusters; Time skew hits 1; Network MTU hits 1.
+                # Expected ordering: Storage pool degraded (ClusterCount=2) first, then
+                # Critical-before-Warning at the tie-break, then FailureCount desc.
+                $payload = @{
+                    count = 5
+                    data  = @(
+                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
+                        @{ ClusterName='C2'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c2'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:30:00Z' },
+                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; Severity='Warning'; FailureName='ts'; FailureReason='Time skew detected'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' },
+                        @{ ClusterName='C3'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c3'; Severity='Warning'; FailureName='ts'; FailureReason='Time skew detected'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:30:00Z' },
+                        @{ ClusterName='C2'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c2'; Severity='Warning'; FailureName='mtu'; FailureReason='Network MTU misconfiguration'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T06:00:00Z' }
+                    )
+                } | ConvertTo-Json -Depth 6
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $summary = Get-AzureLocalFleetHealthFailures -View Summary
+                $summary | Should -Not -BeNullOrEmpty
+                $summary.Count | Should -BeGreaterOrEqual 3
+
+                # Most widespread (ClusterCount=2) must come first.
+                $summary[0].FailureReason | Should -Be 'Storage pool degraded'
+                $summary[0].Severity      | Should -Be 'Critical'
+                $summary[0].ClusterCount  | Should -Be 2
+                $summary[0].FailureCount  | Should -Be 2
+                $summary[0].AffectedClusters | Should -Match 'C1'
+                $summary[0].AffectedClusters | Should -Match 'C2'
+
+                # Among the two ClusterCount=2 entries (Time skew is also 2 clusters),
+                # Critical sorts before Warning - so Storage pool degraded is first;
+                # Time skew (Warning, 2 clusters) comes before Network MTU (Warning, 1 cluster).
+                $reasonsInOrder = $summary | Select-Object -ExpandProperty FailureReason
+                $reasonsInOrder[0] | Should -Be 'Storage pool degraded'
+                # Verify the lowest-impact failure is at the bottom
+                $summary[-1].FailureReason | Should -Be 'Network MTU misconfiguration'
+                $summary[-1].ClusterCount  | Should -Be 1
+            }
+        }
+    }
+
+    Context 'Severity filter' {
+
+        It 'Severity=Critical builds a KQL clause that filters to Critical' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:CapturedKql = $null
+                function az {
+                    # az graph query -q "<KQL>" --first 1000 --only-show-errors ...
+                    $argList = @($args)
+                    $qIdx = $argList.IndexOf('-q')
+                    if ($qIdx -ge 0 -and $qIdx + 1 -lt $argList.Count) {
+                        $script:CapturedKql = $argList[$qIdx + 1]
+                    }
+                    return '{"count":0,"data":[]}'
+                }
+                $global:LASTEXITCODE = 0
+
+                $null = Get-AzureLocalFleetHealthFailures -Severity Critical
+                $script:CapturedKql | Should -Not -BeNullOrEmpty
+                $script:CapturedKql | Should -Match "hc\.severity\)\s*=~\s*'Critical'"
+            }
+        }
+
+        It "Severity=All builds a KQL clause that filters in~ ('Critical','Warning')" {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:CapturedKql = $null
+                function az {
+                    $argList = @($args)
+                    $qIdx = $argList.IndexOf('-q')
+                    if ($qIdx -ge 0 -and $qIdx + 1 -lt $argList.Count) {
+                        $script:CapturedKql = $argList[$qIdx + 1]
+                    }
+                    return '{"count":0,"data":[]}'
+                }
+                $global:LASTEXITCODE = 0
+
+                $null = Get-AzureLocalFleetHealthFailures -Severity All
+                $script:CapturedKql | Should -Not -BeNullOrEmpty
+                $script:CapturedKql | Should -Match "in~\s*\('Critical','Warning'\)"
+            }
+        }
+    }
+
+    Context 'UpdateRingTag scoping' {
+
+        It 'Issues a second ARG query against the resources table to map UpdateRing -> ResourceIds and filters detail rows' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:Calls = 0
+                function az {
+                    $script:Calls++
+                    if ($script:Calls -eq 1) {
+                        # First call: health-check rows for two clusters
+                        return (@{
+                            count = 2
+                            data  = @(
+                                @{ ClusterName='Cluster01'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/subscriptions/s1/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
+                                @{ ClusterName='Cluster02'; ResourceGroup='RG2'; SubscriptionId='s1'; ClusterResourceId='/subscriptions/s1/resourceGroups/RG2/providers/Microsoft.AzureStackHCI/clusters/Cluster02'; Severity='Warning';  FailureName='ts';  FailureReason='Time skew detected';     Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' }
+                            )
+                        } | ConvertTo-Json -Depth 6)
+                    }
+                    elseif ($script:Calls -eq 2) {
+                        # Second call: UpdateRing tag mapping - only Cluster01 is in Wave1
+                        return (@{
+                            count = 1
+                            data  = @(
+                                @{ id = '/subscriptions/s1/resourcegroups/rg1/providers/microsoft.azurestackhci/clusters/cluster01' }
+                            )
+                        } | ConvertTo-Json -Depth 6)
+                    }
+                    else {
+                        throw "Unexpected az call $($script:Calls)"
+                    }
+                }
+                $global:LASTEXITCODE = 0
+
+                $rows = Get-AzureLocalFleetHealthFailures -UpdateRingTag 'Wave1'
+                $script:Calls | Should -Be 2
+                $rows | Should -HaveCount 1
+                $rows[0].ClusterName | Should -Be 'Cluster01'
+            }
+        }
+    }
+
+    Context 'Export' {
+
+        It 'Writes a CSV file when ExportPath ends in .csv and does not emit objects unless -PassThru' {
+            InModuleScope AzLocal.UpdateManagement {
+                $payload = @{
+                    count = 1
+                    data  = @(
+                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' }
+                    )
+                } | ConvertTo-Json -Depth 6
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $tempDir = Join-Path $env:TEMP "azlocal-fleethealth-test-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+                $csv = Join-Path $tempDir 'fleet-health-detail.csv'
+
+                try {
+                    $result = Get-AzureLocalFleetHealthFailures -ExportPath $csv
+                    $result | Should -BeNullOrEmpty
+                    Test-Path $csv | Should -BeTrue
+                    $loaded = Import-Csv $csv
+                    $loaded | Should -HaveCount 1
+                    $loaded[0].FailureReason | Should -Be 'Storage pool degraded'
+                }
+                finally {
+                    Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'Emits objects AND writes the file when -PassThru is set' {
+            InModuleScope AzLocal.UpdateManagement {
+                $payload = @{
+                    count = 1
+                    data  = @(
+                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' }
+                    )
+                } | ConvertTo-Json -Depth 6
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $tempDir = Join-Path $env:TEMP "azlocal-fleethealth-test-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+                $csv = Join-Path $tempDir 'fleet-health-detail.csv'
+
+                try {
+                    $rows = Get-AzureLocalFleetHealthFailures -ExportPath $csv -PassThru
+                    $rows | Should -HaveCount 1
+                    Test-Path $csv | Should -BeTrue
+                }
+                finally {
+                    Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+
+    Context 'Naming Convention' {
+        It 'Should use AzureLocal noun prefix' {
+            $noun = 'Get-AzureLocalFleetHealthFailures'.Split('-')[1]
+            $noun | Should -BeLike 'AzureLocal*'
+        }
+    }
+}
+
+#endregion Fleet Health Failures (v0.7.65)
 
 #region Internal Helper: Invoke-FleetJobsInParallel
 

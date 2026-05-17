@@ -5,6 +5,43 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.65] - 2026-05-17
+
+### Added
+
+- **New function `Get-AzureLocalFleetHealthFailures`** - queries Azure Resource Graph for every cluster the caller can read and surfaces the 24-hour system health-check entries with `status == 'Failed'`. Two views are supported: `-View Detail` returns one row per (cluster, failing check) and `-View Summary` aggregates by failure reason so administrators can see "what should I fix first?" at a fleet-wide level. `-Severity` filters at the ARG side to `Critical`, `Warning`, or `All` (Informational entries are always excluded). `-UpdateRingTag` narrows the report to a specific wave. The function reuses the module's existing `Invoke-AzResourceGraphQuery` helper for paginated CLI shell-out and inherits the same skip-token / error-scrubbing behaviour as every other fleet-wide query in the module. The 24-hour health checks run on Azure Local clusters independently of update activity, which means clusters that are already "up to date" can still surface Critical or Warning issues that need triage - this function is the dedicated entry point for that workflow.
+
+- **New "Fleet Health Status" pipeline samples** (`Automation-Pipeline-Examples/github-actions/fleet-health-status.yml` and `Automation-Pipeline-Examples/azure-devops/fleet-health-status.yml`). The GitHub Actions variant runs daily at 07:00 UTC (offset from `fleet-update-status` at 06:00) and the ADO variant uses the same schedule. Both pipelines call `Get-AzureLocalFleetHealthFailures -View Detail` once, aggregate the summary in-process, and emit:
+  - A markdown step summary (top failure reasons pivoted by cluster impact + a per-cluster "Detailed Results" table mirroring the data shown in the "24 Hour System Health Checks - Detailed Results" view).
+  - JUnit XML (`fleet-health-status.xml`) with one `<testcase>` per (cluster, failing check) grouped under `Critical Health Failures` / `Warning Health Failures` testsuites for two-level drill-down in dorny/test-reporter (GitHub) and PublishTestResults@2 (Azure DevOps).
+  - CSV exports (`fleet-health-detail.csv`, `fleet-health-summary.csv`) for spreadsheet workflows and ITSM hand-off.
+  Together with `fleet-update-status.yml`, administrators now have two dedicated pipelines: one for "is each cluster up-to-date" (Update Status) and one for "do clusters have actionable health issues even when up-to-date" (Health Status).
+
+- **New Pester guardrail: pipeline YAML version pin matches the module manifest.** A new `Context 'Pipeline YAML version pin (v0.7.65)'` test in `Tests/AzLocal.UpdateManagement.Tests.ps1` discovers every `*.yml` file under `Automation-Pipeline-Examples/` that installs `AzLocal.UpdateManagement` from PSGallery and asserts that the `GENERATED_AGAINST_MODULE_VERSION` constant in that YAML matches the manifest version. Supports both the inline GitHub Actions shape and the two-line Azure DevOps shape. This prevents the version-drift class of bug where the manifest is bumped but one or more sample YAMLs are forgotten.
+
+### Fixed
+
+- **`Set-AzureLocalClusterUpdateRingTag` now uses the dedicated `Microsoft.Resources/tags/default` PATCH endpoint instead of `PATCH`-ing the cluster resource.** The previous code issued `PATCH https://management.azure.com/<clusterId>?api-version=2025-10-01` with `{ "tags": {...} }`, which Azure RBAC routes through the `microsoft.azurestackhci/clusters/write` action - i.e. full cluster Contributor. CI/CD service principals scoped to **Tag Contributor** (only `Microsoft.Resources/tags/*` actions) therefore failed with `AuthorizationFailed: action 'microsoft.azurestackhci/clusters/write'` even though they should have been able to write tags. The function now `PATCH`es `https://management.azure.com/<clusterId>/providers/Microsoft.Resources/tags/default?api-version=2021-04-01` with `{ "operation": "Merge", "properties": { "tags": { "UpdateRing": "..." } } }`, which Azure routes through `Microsoft.Resources/tags/write` only. The `Merge` operation preserves all other existing tags on the cluster without us having to re-send them. Aligns with the v0.7.62 fix that already moved internal tag writes (`Set-AzLocalClusterTagsMerge`) to the same endpoint.
+
+- **"Fleet Update Status" pipeline summary now reconciles with the JUnit pass/fail counts.** Two related bugs in both `fleet-update-status.yml` samples (GitHub Actions and Azure DevOps) produced summary tables that did not add up to `Total Clusters`:
+  1. `Up to Date` only counted `UpdateState -eq "UpToDate"` and missed clusters reporting the (equally healthy) `AppliedSuccessfully` state. Both states now count as "Up to Date".
+  2. The bucket counters were not mutually exclusive and there was no catch-all, so a fleet of 12 healthy + 8 failed clusters could render as `Up to Date: 0`, `Health Failures: 8`, with the remaining 12 unaccounted for. Each cluster is now assigned to **exactly one** primary status using a priority cascade (`Update Failed` -> `Health Failure` -> `SBE Prerequisite Blocked` -> `Update In Progress` -> `Ready for Update` -> `Up to Date` -> `Needs Investigation`), so the rows always sum to `Total Clusters`.
+
+### Changed
+
+- **JUnit / step-summary ordering is now: Summary FIRST, Test Results SECOND.** Both `fleet-update-status.yml` and `fleet-health-status.yml` samples for GitHub Actions and Azure DevOps now create the markdown step summary before publishing the JUnit XML, so the run-extensions / job-summary view leads with the operator-facing numbers rather than the raw test list. The GitHub Actions dorny/test-reporter step now uses `list-suites: failed` + `list-tests: failed` so the published Test Reporter section is collapsed by default and only expands the failures.
+- **Fleet Update Status failure message now reads "UpdateState: ..., Health: ..." (was "Health: ..., UpdateState: ...").** The Update Status is the primary signal for that pipeline, so it now leads in both the JUnit `<failure>` message and the markdown summary.
+- **`Set-AzureLocalClusterUpdateRingTag` help and the Automation-Pipeline-Examples RBAC guidance now both recommend the built-in `Tag Contributor` role for tag-management automation.** If you scoped your tag-management SP to "Contributor" purely to work around the old write-the-whole-cluster behaviour, you can now safely scope it to **Tag Contributor** on the cluster (or the resource group).
+
+### Module-version pin bumped to 0.7.65 in all 10 sample workflow YAMLs
+
+Refresh your copy via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+```
+
 ## [0.7.64] - 2026-05-17
 
 ### Fixed (critical)

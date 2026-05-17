@@ -555,6 +555,8 @@ The identity created in section 3 needs the following permissions on every subsc
 
 If you opt in to the ITSM connector with Key Vault-sourced secrets, the identity additionally needs **Key Vault Secrets User** on the configured vault. No other new RBAC.
 
+> **Tag-management identity (Manage UpdateRing Tags pipeline)** can use the built-in **Tag Contributor** role on its own - it grants exactly `Microsoft.Resources/tags/*` and nothing else. Since v0.7.65, `Set-AzureLocalClusterUpdateRingTag` writes tags via the dedicated `Microsoft.Resources/tags/default` PATCH endpoint, so the broader `microsoft.azurestackhci/clusters/write` action (full cluster Contributor) is **not** required for tag changes. If you run the tag-management workflow under a separate identity from the update-apply identity (recommended in regulated estates), grant that identity Tag Contributor only.
+
 ### 4.1 Custom role: `Azure Stack HCI Update Operator` (recommended)
 
 This is the least-privilege role that supports every pipeline in this folder. The same definition is documented in the module-level [`AzLocal.UpdateManagement/README.md`](../README.md#permissions-required-for-update-operations) and is reproduced here so this folder is self-contained.
@@ -899,9 +901,10 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
         assess-update-readiness.yml
         apply-updates.yml
         fleet-update-status.yml
+        fleet-health-status.yml
     ```
 3. Commit and push. The workflows appear in the **Actions** tab.
-4. Each workflow exposes its inputs via the **Run workflow** button (workflow_dispatch). The scheduled triggers (e.g. fleet-update-status.yml runs daily at 06:00 UTC) activate automatically once the file is on the default branch.
+4. Each workflow exposes its inputs via the **Run workflow** button (workflow_dispatch). The scheduled triggers (e.g. `fleet-update-status.yml` runs daily at 06:00 UTC, `fleet-health-status.yml` runs daily at 07:00 UTC - offset to avoid contention) activate automatically once the file is on the default branch.
 
 ### 5.2 Azure DevOps
 
@@ -1032,6 +1035,10 @@ This is the canonical "nothing wired -> staged rollout working" sequence. Follow
 +-----------------------------------------------------------------------+
 |                          PHASE 4: STEADY STATE                         |
 |  6.6  fleet-update-status.yml  (scheduled, daily 06:00 UTC)            |
+|       - "Is each cluster up-to-date?"                                  |
+|  6.7  fleet-health-status.yml  (scheduled, daily 07:00 UTC) - v0.7.65  |
+|       - "Do clusters have actionable health issues even when           |
+|          up-to-date?" Surfaces 24-hour system health-check failures.   |
 +-----------------------------------------------------------------------+
 ```
 
@@ -1074,6 +1081,8 @@ Section 8 documents the full schedule grammar (multi-window, overnight, wrap-aro
 ### 6.3 Apply tags
 
 Two equivalent ways to apply the edited CSV - pick whichever fits your workflow.
+
+> **RBAC**: The identity running the tag write needs `Microsoft.Resources/tags/write` on each cluster (or on a containing scope). The built-in **Tag Contributor** role is sufficient. See section 4 for the full minimum-role table.
 
 **Option A - via the pipeline (audit trail in CI/CD):**
 
@@ -1143,6 +1152,15 @@ For tighter control around production rollouts, add a manual approval gate betwe
 
 ### 6.6 Continuous fleet monitoring
 
+The "steady-state" phase ships **two complementary pipelines**, both read-only, both scheduled, designed to be run together as your daily fleet operations baseline:
+
+| Pipeline | Daily | Answers | Output |
+|----------|-------|---------|--------|
+| `fleet-update-status.yml` | 06:00 UTC | *"Is each cluster up-to-date? Which ones need an apply, which ones are SBE-blocked, which ones failed?"* | JUnit + CSV/JSON + Markdown summary; one test case per cluster |
+| `fleet-health-status.yml` *(v0.7.65)* | 07:00 UTC | *"Do clusters have actionable health issues even when up-to-date? What failure reasons hit the most clusters?"* | JUnit + CSV/JSON + Markdown summary; one test case per (cluster, failing 24-hour health check) grouped under Critical / Warning testsuites |
+
+The two run in distinct (offset) cron slots so they don't contend for the same agent.
+
 **Fleet Update Status** is scheduled to run daily at 06:00 UTC once you push the YAML. It does no writes - it builds a fleet-wide JUnit + CSV + JSON snapshot for dashboards and alerting.
 
 | Artefact | Description |
@@ -1153,6 +1171,20 @@ For tighter control around production rollouts, add a manual approval gate betwe
 | `update-summaries.csv` | Update-summary state per cluster from Azure. |
 | `available-updates.csv` | Every available update across the fleet with version + health state. |
 | `update-runs.csv` | Recent run history per cluster (durations, failure summaries) - this is what section 6.5's "size the next maintenance window" advice consumes. |
+
+**Fleet Health Status** *(new in v0.7.65)* runs daily at 07:00 UTC and surfaces the **24-hour system health-check failures** across every cluster the service connection can read - including clusters that are already "up to date". The 24-hour health checks continue to run on the cluster independently of update activity, so this pipeline is the dedicated place to triage fleet-wide health issues that exist OUTSIDE the update workflow.
+
+It calls the new [`Get-AzureLocalFleetHealthFailures`](../README.md#get-azurelocalfleethealthfailures) cmdlet under the covers.
+
+| Artefact | Description |
+|---|---|
+| `fleet-health-status.xml` | JUnit XML, one test case per (cluster, failing health check), grouped under `Critical Health Failures` / `Warning Health Failures` testsuites for two-level drill-down. `Failed/Critical` and `Failed/Warning` reflect the severity. |
+| `fleet-health-detail.csv` | Per-(cluster, failing check) export. Columns: `ClusterName`, `Severity`, `FailureReason`, `FailureName`, `Description`, `Remediation`, `LastOccurrence`, `ResourceGroup`, `SubscriptionId`, `ClusterResourceId`. |
+| `fleet-health-summary.csv` | Aggregated by `(FailureReason, Severity)`, ordered "most widespread first" (`ClusterCount desc`). Columns include `ClusterCount`, `FailureCount`, `AffectedClusters` (semicolon-separated), `LatestOccurrence`. This is the ready-made "what should we fix first?" prioritisation view. |
+| `fleet-health-detail.json` / `fleet-health-summary.json` | Machine-readable equivalents for downstream automation. |
+| Markdown step summary | Pipeline run summary leads with the pivot-by-failure-reason table, followed by a per-cluster "Detailed Results" table mirroring the standard "24-Hour System Health Checks - Detailed Results" view. |
+
+**RBAC for Fleet Health Status** (read-only): the service connection needs `Reader` on each cluster (or the parent RG / subscription) plus `Microsoft.ResourceGraph/resources/read`. No write actions are taken.
 
 Configure your CI/CD platform's alerting on the JUnit failures - GitHub Actions surfaces them in the run summary and Azure DevOps shows them in the Tests tab with trend analytics.
 
@@ -1382,13 +1414,15 @@ Automation-Pipeline-Examples/
     manage-updatering-tags.yml        # 2. Apply UpdateRing / UpdateWindow / UpdateExclusions tags.
     assess-update-readiness.yml       # 3. Pre-flight readiness report (v0.7.0).
     apply-updates.yml                 # 4. Apply updates to one UpdateRing (with optional ITSM step, v0.7.4).
-    fleet-update-status.yml           # 5. Scheduled fleet status snapshot.
+    fleet-update-status.yml           # 5. Scheduled fleet update-status snapshot (daily 06:00 UTC).
+    fleet-health-status.yml           # 6. Scheduled fleet 24-hour health-check failure report (daily 07:00 UTC, v0.7.65).
   azure-devops/
     inventory-clusters.yml
     manage-updatering-tags.yml
     assess-update-readiness.yml
     apply-updates.yml
     fleet-update-status.yml
+    fleet-health-status.yml
 ```
 
 ---

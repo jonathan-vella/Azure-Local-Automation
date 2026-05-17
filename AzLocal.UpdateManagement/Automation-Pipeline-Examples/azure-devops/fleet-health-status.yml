@@ -1,0 +1,351 @@
+# Fleet Health Status Monitoring Pipeline
+# This pipeline surfaces 24-hour system health-check failures across every Azure Local
+# cluster the service connection can read - including clusters that are already
+# "up to date" with no available updates. The 24-hour health checks continue to run
+# on the cluster even when no update is in flight, so this pipeline is the dedicated
+# place to triage fleet-wide health issues that exist OUTSIDE the update workflow.
+#
+# USE CASES:
+# - Daily / weekly fleet-wide Critical & Warning health audit
+# - Executive dashboard: "which failure reason hits the most clusters?"
+# - Compliance tracking for cluster health, independent of update activity
+# - Triage hand-off into ITSM: the JUnit XML and CSV exports are ready-made
+#   incident payloads
+#
+# REPORTS GENERATED:
+# - Pipeline run summary (uploaded via ##vso[task.uploadsummary]): pivoted by
+#   FailureReason (top failures by cluster impact), with a per-cluster "Detailed
+#   Results" table further down.
+# - JUnit XML: published to the Test Results tab. One <testcase> per (cluster,
+#   failing health check), grouped under "Critical Health Failures" /
+#   "Warning Health Failures" testsuites for two-level drill-down.
+# - CSV (detail):  fleet-health-detail.csv  - one row per (cluster, failing check)
+# - CSV (summary): fleet-health-summary.csv - one row per (FailureReason, Severity)
+# - JSON: same shape, machine-readable for downstream automation
+#
+# AUTHENTICATION:
+# Uses Workload Identity Federation (OIDC) - recommended for secretless authentication.
+
+trigger: none  # Manual or scheduled only
+
+schedules:
+  # Run daily at 7 AM UTC (offset from fleet-update-status which runs at 06:00)
+  - cron: '0 7 * * *'
+    displayName: 'Daily Fleet Health Check'
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: scope
+    displayName: 'Scope of clusters to check'
+    type: string
+    default: 'all'
+    values:
+      - 'all'
+      - 'by-update-ring'
+
+  - name: updateRing
+    displayName: 'UpdateRing tag value (only used when scope=by-update-ring)'
+    type: string
+    default: ''
+
+  - name: severity
+    displayName: 'Severity filter at Resource Graph (default All = Critical + Warning; Informational always excluded)'
+    type: string
+    default: 'All'
+    values:
+      - 'All'
+      - 'Critical'
+      - 'Warning'
+
+  - name: moduleVersion
+    displayName: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
+    type: string
+    default: ''
+
+variables:
+  # Module version this YAML was generated against. The install step compares this to
+  # the version actually installed and to the latest on PSGallery, and emits a warning
+  # log if the YAML appears stale - prompting you to refresh via
+  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.65'
+  # Resolution order for the module version pin (leave all unset to install the latest,
+  # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
+  # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
+  REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
+  reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
+
+stages:
+- stage: FleetHealth
+  displayName: 'Collect Fleet Health Status'
+  jobs:
+  - job: CollectHealth
+    displayName: 'Collect and Report Fleet Health'
+    pool:
+      vmImage: 'windows-latest'
+
+    steps:
+    - checkout: self
+      displayName: 'Checkout repository'
+
+    - task: PowerShell@2
+      displayName: 'Install AzLocal.UpdateManagement from PSGallery'
+      env:
+        REQUIRED_MODULE_VERSION: $(REQUIRED_MODULE_VERSION)
+        GENERATED_AGAINST_MODULE_VERSION: $(GENERATED_AGAINST_MODULE_VERSION)
+      inputs:
+        targetType: 'inline'
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
+          if ($env:REQUIRED_MODULE_VERSION) {
+              $installArgs.RequiredVersion = $env:REQUIRED_MODULE_VERSION
+              Write-Host "REQUIRED_MODULE_VERSION is set - pinning install to v$($env:REQUIRED_MODULE_VERSION)."
+          } else {
+              Write-Host "REQUIRED_MODULE_VERSION is empty - installing the latest version from PSGallery (default fix-forward behaviour)."
+          }
+          Install-Module @installArgs
+          Import-Module AzLocal.UpdateManagement -Force
+          $installed = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+          $generated = [version]$env:GENERATED_AGAINST_MODULE_VERSION
+          $latest    = (Find-Module -Name AzLocal.UpdateManagement -Repository PSGallery -ErrorAction SilentlyContinue).Version
+          Write-Host ""
+          Write-Host "Module version summary"
+          Write-Host "  Installed on agent        : $installed"
+          Write-Host "  YAML generated against    : $generated"
+          Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
+          Write-Host ""
+          if ($installed -gt $generated) {
+              Write-Host "##vso[task.logissue type=warning]Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Refresh via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
+          }
+          if ($latest -and ($latest -gt $installed)) {
+              Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed."
+          }
+
+    - task: AzureCLI@2
+      displayName: 'Collect Fleet Health Failures'
+      inputs:
+        # Replace with your service connection name
+        azureSubscription: 'YOUR-SERVICE-CONNECTION-NAME'
+        scriptType: 'pscore'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $ErrorActionPreference = 'Stop'
+          az extension add --name resource-graph --yes
+          Import-Module AzLocal.UpdateManagement -Force
+
+          $outputDir = "$(reportsPath)"
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+          $scope    = "${{ parameters.scope }}"
+          $ring     = "${{ parameters.updateRing }}"
+          $severity = "${{ parameters.severity }}"
+
+          Write-Host "========================================"
+          Write-Host "Fleet Health Status Collection"
+          Write-Host "========================================"
+          Write-Host "Scope     : $scope"
+          Write-Host "Severity  : $severity"
+          if ($scope -eq 'by-update-ring' -and $ring) { Write-Host "UpdateRing: $ring" }
+          Write-Host ""
+
+          $argSplat = @{ Severity = $severity }
+          if ($scope -eq 'by-update-ring' -and $ring) { $argSplat.UpdateRingTag = $ring }
+
+          # Pull DETAIL view once. Both the JUnit emitter below and the markdown
+          # "Detailed Results" table consume this same in-memory collection.
+          $detailCsv  = Join-Path $outputDir 'fleet-health-detail.csv'
+          $detailJson = Join-Path $outputDir 'fleet-health-detail.json'
+          $detail     = Get-AzureLocalFleetHealthFailures -View Detail @argSplat -ExportPath $detailCsv -PassThru
+          if (-not $detail) { $detail = @() }
+          $detail | ConvertTo-Json -Depth 6 | Out-File -FilePath $detailJson -Encoding utf8
+
+          # SUMMARY view (grouped by FailureReason, Severity) - aggregated in-process.
+          $summary = @()
+          if ($detail.Count -gt 0) {
+              $summary = @(
+                  $detail | Group-Object -Property FailureReason, Severity | ForEach-Object {
+                      $first       = $_.Group | Select-Object -First 1
+                      $clusterList = @($_.Group | Select-Object -ExpandProperty ClusterName -Unique | Sort-Object)
+                      $latest      = ($_.Group | Measure-Object -Property LastOccurrence -Maximum).Maximum
+                      [PSCustomObject]@{
+                          FailureReason    = $first.FailureReason
+                          Severity         = $first.Severity
+                          ClusterCount     = $clusterList.Count
+                          FailureCount     = $_.Group.Count
+                          AffectedClusters = ($clusterList -join ';')
+                          LatestOccurrence = $latest
+                          Description      = $first.Description
+                          Remediation      = $first.Remediation
+                      }
+                  } | Sort-Object @{Expression={$_.ClusterCount};Descending=$true},
+                                  @{Expression={ if($_.Severity -eq 'Critical'){1}else{2} };Descending=$false},
+                                  @{Expression={$_.FailureCount};Descending=$true}
+              )
+          }
+          $summaryCsv  = Join-Path $outputDir 'fleet-health-summary.csv'
+          $summaryJson = Join-Path $outputDir 'fleet-health-summary.json'
+          $summary | Export-Csv -Path $summaryCsv -NoTypeInformation -Force
+          $summary | ConvertTo-Json -Depth 6 | Out-File -FilePath $summaryJson -Encoding utf8
+
+          # ------------------------------------------------------------------
+          # Emit JUnit XML pivoted by Severity -> FailureReason -> Cluster.
+          # ------------------------------------------------------------------
+          $xmlPath = Join-Path $outputDir 'fleet-health-status.xml'
+          $criticalDetail = @($detail | Where-Object { $_.Severity -eq 'Critical' })
+          $warningDetail  = @($detail | Where-Object { $_.Severity -eq 'Warning'  })
+          $totalClusters  = @($detail | Select-Object -ExpandProperty ClusterName -Unique).Count
+          $totalFailures  = $detail.Count
+          $criticalCount  = $criticalDetail.Count
+          $warningCount   = $warningDetail.Count
+
+          function Convert-XmlEscape([string]$s) {
+              if ($null -eq $s) { return '' }
+              ($s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;').Replace("'",'&apos;'))
+          }
+
+          $sb = New-Object System.Text.StringBuilder
+          [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
+          [void]$sb.AppendFormat('<testsuites name="AzureLocalFleetHealthStatus" tests="{0}" failures="{1}">' + "`n", $totalFailures, $totalFailures)
+          foreach ($severityLabel in @('Critical','Warning')) {
+              $rows = if ($severityLabel -eq 'Critical') { $criticalDetail } else { $warningDetail }
+              if (-not $rows -or $rows.Count -eq 0) { continue }
+              $suiteName = "$severityLabel Health Failures"
+              [void]$sb.AppendFormat('  <testsuite name="{0}" tests="{1}" failures="{1}">' + "`n", (Convert-XmlEscape $suiteName), $rows.Count)
+              foreach ($r in $rows) {
+                  $caseName = "{0} :: {1}" -f $r.ClusterName, $r.FailureReason
+                  [void]$sb.AppendFormat('    <testcase classname="{0}" name="{1}">' + "`n",
+                      (Convert-XmlEscape $r.ClusterName),
+                      (Convert-XmlEscape $caseName))
+                  $msg  = "{0}: {1} (last occurred {2:yyyy-MM-ddTHH:mm:ssZ})" -f $r.Severity, $r.FailureReason, $r.LastOccurrence
+                  $body = ($r.Description, $r.Remediation, "ResourceGroup: $($r.ResourceGroup)", "SubscriptionId: $($r.SubscriptionId)") -join "`n"
+                  [void]$sb.AppendFormat('      <failure type="{0}" message="{1}">{2}</failure>' + "`n",
+                      (Convert-XmlEscape $r.Severity),
+                      (Convert-XmlEscape $msg),
+                      (Convert-XmlEscape $body))
+                  [void]$sb.AppendLine('    </testcase>')
+              }
+              [void]$sb.AppendLine('  </testsuite>')
+          }
+          if ($totalFailures -eq 0) {
+              [void]$sb.AppendLine('  <testsuite name="Fleet Health" tests="1" failures="0">')
+              [void]$sb.AppendLine('    <testcase classname="Fleet Health" name="No Critical or Warning health-check failures across the fleet" />')
+              [void]$sb.AppendLine('  </testsuite>')
+          }
+          [void]$sb.AppendLine('</testsuites>')
+          $sb.ToString() | Out-File -FilePath $xmlPath -Encoding utf8
+
+          # Persist counts for the summary task below.
+          "##vso[task.setvariable variable=totalClusters;isOutput=true]$totalClusters"   | Write-Host
+          "##vso[task.setvariable variable=totalFailures;isOutput=true]$totalFailures"   | Write-Host
+          "##vso[task.setvariable variable=criticalCount;isOutput=true]$criticalCount"   | Write-Host
+          "##vso[task.setvariable variable=warningCount;isOutput=true]$warningCount"     | Write-Host
+          "##vso[task.setvariable variable=distinctReasons;isOutput=true]$($summary.Count)" | Write-Host
+
+          Write-Host ""
+          Write-Host "Fleet Health Collection complete:"
+          Write-Host "  Affected clusters       : $totalClusters"
+          Write-Host "  Total failing checks    : $totalFailures (Critical=$criticalCount, Warning=$warningCount)"
+          Write-Host "  Distinct failure reasons: $($summary.Count)"
+      name: collect
+
+    # Publish artifacts first (lightweight), then summary, then JUnit. Summary
+    # is uploaded via ##vso[task.uploadsummary] in the next step, which makes it
+    # the first thing visible on the run extensions tab.
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Fleet Health Reports'
+      condition: always()
+      inputs:
+        PathtoPublish: '$(reportsPath)'
+        ArtifactName: 'FleetHealthReports'
+        publishLocation: 'Container'
+
+    # Create the markdown summary FIRST (before PublishTestResults below) so the
+    # uploaded summary appears at the top of the pipeline run extensions view.
+    - pwsh: |
+        $total    = "$(collect.totalClusters)"
+        $failures = "$(collect.totalFailures)"
+        $crit     = "$(collect.criticalCount)"
+        $warn     = "$(collect.warningCount)"
+        $reasons  = "$(collect.distinctReasons)"
+
+        Write-Host "##vso[task.uploadsummary]Fleet Health: $total clusters affected, $failures failing check(s) ($crit Critical / $warn Warning) across $reasons reason(s)"
+
+        $summaryPath = Join-Path '$(reportsPath)' 'fleet-health-summary.csv'
+        $detailPath  = Join-Path '$(reportsPath)' 'fleet-health-detail.csv'
+        $summaryRows = if (Test-Path $summaryPath) { @(Import-Csv -Path $summaryPath) } else { @() }
+        $detailRows  = if (Test-Path $detailPath)  { @(Import-Csv -Path $detailPath)  } else { @() }
+
+        $md = @"
+        ## Fleet Health Status Summary
+
+        | Metric | Count |
+        |--------|-------|
+        | **Affected Clusters** | $total |
+        | **Total Failing Checks** | $failures |
+        | **Critical** | $crit |
+        | **Warning** | $warn |
+        | **Distinct Failure Reasons** | $reasons |
+
+        ### Health Check Failures By Reason (most widespread first)
+        "@
+
+        if ($summaryRows.Count -eq 0) {
+            $md += "`n`n*No Critical or Warning health-check failures across the fleet.*`n"
+        } else {
+            $md += "`n`n| Severity | Failure Reason | Cluster Count | Failure Count | Affected Clusters | Latest |`n"
+            $md += "|----------|----------------|---------------|---------------|--------------------|--------|`n"
+            foreach ($r in ($summaryRows | Select-Object -First 25)) {
+                $sevTag = if ($r.Severity -eq 'Critical') { '[Critical]' } else { '[Warning]' }
+                $clList = $r.AffectedClusters
+                if ($clList -and $clList.Length -gt 120) { $clList = $clList.Substring(0,117) + '...' }
+                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $sevTag, $r.FailureReason, $r.ClusterCount, $r.FailureCount, $clList, $r.LatestOccurrence) + "`n"
+            }
+            if ($summaryRows.Count -gt 25) {
+                $md += "`n*Showing top 25 failure reasons of $($summaryRows.Count); see ``fleet-health-summary.csv`` artifact for the full list.*`n"
+            }
+        }
+
+        $md += "`n### Detailed Results (per-cluster, per-failure)`n"
+
+        if ($detailRows.Count -eq 0) {
+            $md += "`n*No detail rows.*`n"
+        } else {
+            $md += "`n| Cluster | Severity | Failure Reason | Last Occurrence | Resource Group |`n"
+            $md += "|---------|----------|----------------|------------------|----------------|`n"
+            foreach ($r in ($detailRows | Select-Object -First 100)) {
+                $sevTag = if ($r.Severity -eq 'Critical') { '[Critical]' } else { '[Warning]' }
+                $md += ('| {0} | {1} | {2} | {3} | {4} |' -f $r.ClusterName, $sevTag, $r.FailureReason, $r.LastOccurrence, $r.ResourceGroup) + "`n"
+            }
+            if ($detailRows.Count -gt 100) {
+                $md += "`n*Showing first 100 rows of $($detailRows.Count); see ``fleet-health-detail.csv`` artifact for the full list.*`n"
+            }
+        }
+
+        $md += @"
+
+        ### Reports Available in Artifacts
+        - ``fleet-health-detail.csv`` - one row per (cluster, failing health check)
+        - ``fleet-health-summary.csv`` - one row per (FailureReason, Severity); ordered by ClusterCount desc
+        - ``fleet-health-detail.json`` / ``fleet-health-summary.json`` - machine-readable
+        - ``fleet-health-status.xml`` - JUnit XML (see Tests tab)
+        "@
+
+        Write-Host $md
+      displayName: 'Display Fleet Health Summary'
+      condition: always()
+
+    # Publish JUnit test results LAST so the Test Results tab is populated but the
+    # markdown summary above is the first thing visible on the run extensions view.
+    - task: PublishTestResults@2
+      displayName: 'Publish Fleet Health as Test Results'
+      condition: always()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '$(reportsPath)/fleet-health-status.xml'
+        testRunTitle: 'Fleet Health Status - $(Build.BuildNumber)'
+        mergeTestResults: false
+        failTaskOnFailedTests: false  # Don't fail pipeline on health failures

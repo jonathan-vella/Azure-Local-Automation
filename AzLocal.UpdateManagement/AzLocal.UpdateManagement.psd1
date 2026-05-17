@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.64'
+    ModuleVersion = '0.7.65'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -88,6 +88,7 @@
         'Public/Get-AzureLocalClusterUpdateReadiness.ps1',
         'Public/Get-AzureLocalFleetProgress.ps1',
         'Public/Get-AzureLocalFleetStatusData.ps1',
+        'Public/Get-AzureLocalFleetHealthFailures.ps1',
         'Public/Get-AzureLocalItsmConfig.ps1',
         'Public/Get-AzureLocalUpdateRuns.ps1',
         'Public/Get-AzureLocalUpdateSummary.ps1',
@@ -127,6 +128,8 @@
         # Fleet Status Data Collection & Reporting (v0.6.4)
         'Get-AzureLocalFleetStatusData',
         'New-AzureLocalFleetStatusHtmlReport',
+        # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
+        'Get-AzureLocalFleetHealthFailures',
         # Update Schedule Tag Helpers (v0.6.4)
         'Test-AzureLocalUpdateScheduleAllowed',
         # Sideloaded Payload Workflow (v0.7.1)
@@ -167,56 +170,113 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.65 - Tag-write RBAC narrowed to Tag Contributor; fleet status summary reconciliation; new Fleet Health Status pipeline
+
+### Added
+
+- Get-AzureLocalFleetHealthFailures: new cmdlet that surfaces 24h
+  health-check failures fleet-wide via Azure Resource Graph.
+  -View Detail|Summary, -Severity Critical|Warning|All,
+  -UpdateRingTag, -ExportPath. The 24h health checks run on
+  Azure Local clusters even when no update is in flight, so this
+  is the dedicated entry point for fleet-wide health triage that
+  exists outside the update workflow.
+- New Fleet Health Status pipeline samples (GitHub + Azure DevOps):
+  fleet-health-status.yml. Daily 07:00 UTC; emits JUnit XML +
+  CSV/JSON + markdown summary. Complements fleet-update-status.yml.
+- Pester guardrail: GENERATED_AGAINST_MODULE_VERSION in every
+  sample YAML that installs the module must match the manifest.
+
+### Fixed
+
+- Set-AzureLocalClusterUpdateRingTag now uses the dedicated
+  Microsoft.Resources/tags/default PATCH endpoint instead of PATCH-ing
+  the cluster resource. The previous code issued
+  PATCH https://management.azure.com/<clusterId>?api-version=2025-10-01
+  with { "tags": {...} }, which Azure RBAC routes through the
+  microsoft.azurestackhci/clusters/write action - i.e. full cluster
+  Contributor. CI/CD service principals scoped to Tag Contributor (only
+  Microsoft.Resources/tags/* actions) therefore failed with
+  "AuthorizationFailed: action 'microsoft.azurestackhci/clusters/write'"
+  even though they should have been able to write tags. The function
+  now PATCHes
+  https://management.azure.com/<clusterId>/providers/Microsoft.Resources/tags/default?api-version=2021-04-01
+  with { "operation": "Merge", "properties": { "tags": {...} } }, which
+  Azure routes through Microsoft.Resources/tags/write only. The Merge
+  operation preserves all other existing tags on the cluster without us
+  having to re-send them. Aligns with the v0.7.62 fix that already moved
+  internal tag writes (Set-AzLocalClusterTagsMerge) to the same
+  endpoint.
+- "Fleet Update Status" pipeline summary now reconciles with the JUnit
+  pass/fail counts. Two related bugs in both fleet-update-status.yml
+  samples (GitHub Actions and Azure DevOps) produced summary tables that
+  did not add up to Total Clusters:
+  1. "Up to Date" only counted UpdateState=UpToDate and missed clusters
+     reporting the (equally healthy) AppliedSuccessfully state. Both
+     states now count as "Up to Date".
+  2. The bucket counters were not mutually exclusive and there was no
+     catch-all, so a fleet of 12 healthy + 8 failed clusters could
+     render as "Up to Date: 0", "Health Failures: 8", with the
+     remaining 12 unaccounted for. Each cluster is now assigned to
+     exactly one primary status using a priority cascade (Update Failed,
+     Health Failure, SBE Prerequisite Blocked, Update In Progress,
+     Ready for Update, Up to Date, Needs Investigation), so the rows
+     always sum to Total Clusters.
+
+### Changed
+
+- JUnit pass/fail semantics are now explicit in the summary and in the
+  JUnit XML itself. A "Critical Health Status" line (PASSED = healthy +
+  no failures + not SBE-blocked; FAILED = HealthState=Failure OR
+  UpdateState=Failed OR SBE prerequisite blocked) sits at the top of
+  the fleet status summary, and the JUnit <testsuite> carries
+  <property name="testCategory" value="CriticalHealthStatus"/> plus a
+  description property that spells out what passed and failed mean.
+  The failure message attribute is now "Critical Health Status: Failed"
+  (was "Cluster has update issues").
+- Set-AzureLocalClusterUpdateRingTag help and the
+  Automation-Pipeline-Examples RBAC guidance now both recommend the
+  built-in Tag Contributor role for tag-management automation.
+
+### Pipeline migration
+
+If you have copied any of these sample workflows into your repo,
+refresh them via:
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+
 ## Version 0.7.64 - Security hardening + pipeline-YAML UTF-8 mojibake repair
 
 ### Fixed (critical)
 
 - Sample pipeline YAMLs (10 files across GitHub Actions and Azure
-  DevOps) had accumulated cp1252 mojibake from previous emoji-edit
-  round-trips. One of the multi-byte sequences contained a YAML 1.2
-  forbidden C1 control character (U+008F) which caused GitHub Actions
-  to reject manage-updatering-tags.yml at recent commits with
-  "Invalid workflow file" / YAML syntax error. All non-ASCII bytes
-  have been stripped from every sample workflow and the affected
-  Markdown step-summaries restored with plain-ASCII labels
-  ([info], [ok], [running], [ready], [blocked], [fail]). No module
-  code paths are affected; only the sample YAMLs.
+  DevOps) had accumulated cp1252 mojibake from earlier emoji-edit
+  round-trips, one of which contained YAML 1.2-forbidden C1 control
+  byte U+008F that caused GitHub Actions to reject
+  manage-updatering-tags.yml as "Invalid workflow file". All
+  non-ASCII bytes have been stripped from every sample workflow and
+  step-summaries restored with plain-ASCII labels.
 
 ### Security hardening (medium)
 
-- Connect-AzureLocalServicePrincipal now scrubs `$loginResult` through
-  ConvertTo-ScrubbedCliOutput before writing the failure message to
-  Write-Error, so a stray refresh_token / access_token / cookie that
-  the az CLI might emit on a failed `az login --service-principal`
-  call can no longer reach the host logs verbatim.
-- Six additional direct callers of `az rest` / `az account set`
-  (Set-AzLocalClusterTagsMerge, Invoke-AzLocalSideloadedAutoResetForCluster,
-  Invoke-AzureLocalUpdateApply, Set-AzureLocalClusterUpdateRingTag,
-  Start-AzureLocalClusterUpdate x2) now route raw CLI output through
-  ConvertTo-ScrubbedCliOutput before logging/throwing. This closes the
-  same Bearer-token leak class that was previously handled inside
-  Invoke-AzRestJson but missed by the seven sites that call `az rest`
-  directly.
-- README and ITSM/README now carry explicit security notes about
-  (a) the `az login --service-principal --password` command-line
-  exposure on the SP+secret authentication path, and (b) the
-  unavoidable plaintext [string] residency of ITSM secrets in memory
-  during ServiceNow OAuth client_credentials grants.
+- Seven direct callers of `az rest` / `az account set` /
+  `az login --service-principal` now route raw CLI output through
+  ConvertTo-ScrubbedCliOutput before logging/throwing, closing the
+  Bearer-token leak class that was previously handled inside
+  Invoke-AzRestJson but missed by the sites that called `az rest`
+  directly. README and ITSM/README also document residual exposures
+  (SP+secret command-line, in-memory plaintext during ServiceNow
+  OAuth client_credentials).
 
 ### Fixed (low)
 
-- Invoke-AzureLocalUpdateApply previously evaluated `$result -match
-  "202"` against the string ARRAY returned by `az rest`, which is
-  array-filter semantics, not regex-match semantics. The comparison
-  is now done against `($result | Out-String).Trim()` and the Write-
-  Verbose path is scrubbed.
-- Invoke-AzLocalItsmHttp throw on non-retryable HTTP failure now uses
-  $redactedUri instead of $Uri, matching the redaction already
-  applied to the Write-Verbose log line.
-- Two Pester tests that wrote to fixed temp filenames
-  (pester-junit-schedule-test.xml and pester-junit-sideloaded-test.xml)
-  now append a per-invocation GUID, removing the collision risk when
-  the test suite is run in parallel or back-to-back.
+- Invoke-AzureLocalUpdateApply HTTP 202 detection switched from
+  array-filter `-match` to single-string check on
+  ($result | Out-String).Trim() + scrubbed Write-Verbose path.
+- Invoke-AzLocalItsmHttp throw path now uses $redactedUri to match
+  the existing Write-Verbose redaction.
+- Two Pester tests that wrote to fixed temp filenames now append a
+  per-invocation GUID to remove parallel/back-to-back collision risk.
 
 ### Pipeline migration
 
@@ -251,76 +311,19 @@ the samples via:
   Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
   Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
 
-## Version 0.7.62 - Apply-updates pipeline now consumes the readiness CSV; health gate, JUnit Status mapping, tag-write RBAC fixes
+## Version 0.7.62 and earlier
 
-### Fixed (critical)
-
-- Start-AzureLocalClusterUpdate Step 3b critical-health gate was being
-  silently bypassed. The caller invoked Test-AzureLocalClusterHealth
-  without -PassThru; the function logs to the host stream only and
-  returns $null without -PassThru, so the predicate
-  `$healthResults[0].CriticalCount -gt 0` always evaluated false even
-  when the function had just logged "BLOCKED (N critical)". Apply
-  would then write "No critical health issues found - cluster is
-  eligible for update" and proceed to PATCH the update despite
-  critical health failures. Two additional call sites in
-  Get-AzureLocalUpdateRuns had the same omission. All three now pass
-  -PassThru.
-- Set-AzLocalClusterTagsMerge (used by Start-AzureLocalClusterUpdate to
-  stamp UpdateVersionInProgress, by Reset-AzureLocalSideloadedTag, and
-  by the sideloaded auto-reset path) now writes tags via the ARM tags
-  subresource (PATCH .../providers/Microsoft.Resources/tags/default,
-  api-version=2021-04-01) instead of the full cluster resource. This
-  narrows the required RBAC from `microsoft.azurestackhci/clusters/write`
-  to `Microsoft.Resources/tags/write` (built-in Tag Contributor),
-  matching the documented behaviour. Two PATCHes are emitted when
-  needed: operation=Merge for keys being set, operation=Delete for
-  keys whose input value is $null. Idempotent: skips keys whose value
-  already matches and Delete keys that are not present.
-- Export-ResultsToJUnitXml previously rendered Status values NotReady,
-  NotConnected, NoUpdatesAvailable, NoReadyUpdates as <system-out>
-  (passed) instead of <skipped>, producing misleading "all green" CI
-  summaries when apply had actually skipped clusters. UpdateNotFound
-  now renders as <error type="UpdateNotFound"> instead of <system-out>.
-  The summary <testsuite tests/failures/errors/skipped/> counts and
-  the per-testcase element now agree with the apply-updates reality.
-- Get-HealthCheckFailureSummary now emits Critical-severity entries
-  before Warning before the top-5 truncation; previously a Critical
-  hidden behind 5+ Warnings was dropped, and the readiness gate
-  silently failed to downgrade ReadyForUpdate. Informational entries
-  remain excluded.
-
-### Changed
-
-- apply-updates pipeline samples (GitHub Actions + Azure DevOps) now
-  consume the readiness CSV from the check-readiness job instead of
-  re-discovering clusters by UpdateRing tag. The apply step downloads
-  the readiness-report artifact, filters rows where
-  ReadyForUpdate=True, and invokes Start-AzureLocalClusterUpdate
-  -ClusterResourceIds @(...) against that exact list. Apply still
-  re-validates each cluster (Step 1b connectivity, Step 3b health,
-  Step 3c schedule, Step 3b1 sideloaded) as defence in depth.
-  This guarantees the readiness gate's decision is ENFORCED rather
-  than advisory: a cluster flagged Blocked in readiness will not be
-  touched by apply even if its tag still matches the ring.
-- Get-AzureLocalClusterUpdateReadiness output (and the readiness CSV)
-  gains a ClusterResourceId column - the full ARM resource ID - so
-  the apply step can pass it straight to
-  Start-AzureLocalClusterUpdate -ClusterResourceIds without a second
-  Resource Graph query. Populated on every row, including NotFound/
-  Error rows (set from the input cluster's ResourceId where known).
-
-### Pipeline migration
-
-If you have copied apply-updates.yml into your repo, refresh it via:
-  Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub -Update
-  Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
-The install step's drift detector will also emit a ::notice/warning
-log pointing at this once you bump REQUIRED_MODULE_VERSION to 0.7.62.
-
-## Version 0.7.61 and earlier
-
-Highlights: 0.7.61 added two readiness gates - ClusterState !=
+0.7.62 made apply-updates consume the readiness CSV (the readiness
+gate is now enforced, not advisory); fixed Start-AzureLocalCluster-
+Update's critical-health gate that was being silently bypassed
+because Test-AzureLocalClusterHealth was called without -PassThru;
+migrated Set-AzLocalClusterTagsMerge to the Microsoft.Resources/tags/
+default endpoint (Tag Contributor only); fixed Export-ResultsToJUnit-
+Xml so NotReady / NotConnected / NoUpdatesAvailable / NoReadyUpdates
+render as `<skipped>` and UpdateNotFound as `<error>`; and ensured
+Get-HealthCheckFailureSummary emits Critical-severity entries before
+Warning.
+0.7.61 added two readiness gates - ClusterState !=
 'ConnectedRecently' and any [Critical] health-check entry now block
 ReadyForUpdate, with new BlockingReasons CSV column and a Step 1b
 connectivity gate in Start-AzureLocalClusterUpdate; JUnit Status
