@@ -65,6 +65,7 @@ Azure Local REST API specification (includes update management endpoints): https
   - [`Get-AzureLocalFleetStatusData`](#get-azurelocalfleetstatusdata)
   - [`New-AzureLocalFleetStatusHtmlReport`](#new-azurelocalfleetstatushtmlreport)
   - [`Get-AzureLocalFleetHealthFailures`](#get-azurelocalfleethealthfailures)
+  - [`Test-AzureLocalApplyUpdatesScheduleCoverage`](#test-azurelocalapplyupdatesschedulecoverage)
 - [Logging and Output](#logging-and-output)
   - [Log Files](#log-files)
   - [Logging Examples](#logging-examples)
@@ -171,7 +172,9 @@ If you are new to this module, work through these in order from a regular PowerS
 
 - **Documentation - `Set-AzureLocalClusterUpdateRingTag` help and the Automation-Pipeline-Examples RBAC guidance now both recommend the built-in `Tag Contributor` role for tag-management automation.**
 
-- **Module version pin bumped to 0.7.65 in all 11 sample workflow YAMLs** (10 pre-existing + the new `fleet-health-status.yml`). Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh the samples in your repo.
+- **New - `Test-AzureLocalApplyUpdatesScheduleCoverage` cmdlet + matching CI/CD pipeline samples.** Read-only schedule-coverage advisor that compares the cron schedule(s) in your `apply-updates.yml` pipeline to the `UpdateWindow` tag values present on your clusters and flags any `(UpdateRing, UpdateWindow)` pair that no cron will ever reach. Three views: `-View Audit` (one row per `(Ring, Window)` pair with `Covered` / `Uncovered` / `PartiallyCovered` / `MalformedTag` / `UnparseableCron` plus a `Recommendation` column), `-View Matrix` (every distinct `(Ring, Window)` pair with the cron expression the advisor would generate for it), `-View Recommend` (ready-to-paste GH Actions and Azure DevOps cron blocks that cover every distinct `UpdateWindow` in the fleet). Per-segment cron generation handles multi-window tag values (`Sat-Sun_02:00-06:00;Mon-Fri_22:00-04:00`), day ranges (`Fri-Mon`), and configurable lead-time via `-LeadTimeMinutes` (default 5, 0-60). Pipeline samples ship at `Automation-Pipeline-Examples/github-actions/apply-updates-schedule-audit.yml` and `Automation-Pipeline-Examples/azure-devops/apply-updates-schedule-audit.yml`, scheduled weekly Mondays at 05:00 UTC (before the daily fleet pipelines) so drift annotations land at the top of the Monday-morning operator queue. Each run produces a JUnit XML (one `<testcase>` per `(Ring, Window)` pair), three CSV/MD exports (`schedule-coverage-audit.csv`, `schedule-coverage-matrix.csv`, `schedule-coverage-recommend.md`), and a markdown step summary. Full end-to-end runbook (tag a ring -> see drift -> copy recommended cron -> verify) in [`Automation-Pipeline-Examples/README.md` section 8.3](Automation-Pipeline-Examples/README.md#83-end-to-end-runbook-apply-updates-schedule-coverage-audit).
+
+- **Module version pin bumped to 0.7.65 in all 13 sample workflow YAMLs** (11 pre-existing + the two new `apply-updates-schedule-audit.yml` files). Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh the samples in your repo.
 
 > Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
@@ -1916,7 +1919,69 @@ $summary = Get-AzureLocalFleetHealthFailures -View Summary -ExportPath .\reports
 
 ---
 
-## Logging and Output
+### `Test-AzureLocalApplyUpdatesScheduleCoverage`
+
+*Added in v0.7.65.*
+
+Read-only **schedule-coverage advisor**. Compares the cron schedule(s) declared in your `apply-updates.yml` pipeline (GitHub Actions and/or Azure DevOps) to the `UpdateWindow` tag values actually present on your clusters, and flags every `(UpdateRing, UpdateWindow)` pair that no cron in the pipeline will ever reach. Never edits cluster tags. Never edits pipeline YAML. It is the safety net that closes the loop between section 8 of [`Automation-Pipeline-Examples/README.md`](./Automation-Pipeline-Examples/README.md) (the `UpdateWindow` tag is a *gate*, not a *trigger*) and `Test-AzureLocalUpdateScheduleAllowed` (the runtime per-cluster gate inside `Start-AzureLocalClusterUpdate`).
+
+Under the covers it pre-scans the pipeline YAML file(s) with a regex (no `powershell-yaml` dependency), runs a single Azure Resource Graph query against `resources` for clusters with `UpdateWindow` / `UpdateRing` tags, parses each tag value with the same `ConvertFrom-AzLocalUpdateWindow` helper used by the runtime gate, then enumerates every cron fire time over a reference week and compares it to each parsed window (with a configurable lead-time buffer).
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `-SubscriptionId` | String | No | All accessible | Optional. Limit the ARG query to a single subscription. |
+| `-View` | String | No | `Audit` | `Audit` (one row per `(Ring, Window)` pair with `Covered` / `Uncovered` / `PartiallyCovered` / `MalformedTag` / `NoWindowTag` / `UnparseableCron` status + remediation), `Matrix` (every distinct `(Ring, Window)` pair with the cron expression the advisor would generate for it), or `Recommend` (ready-to-paste GH Actions + Azure DevOps cron blocks). |
+| `-PipelineYamlPath` | String | Audit only | - | Path to `apply-updates.yml` file(s) or a folder containing them. Required when `-View Audit`. |
+| `-Platform` | String | No | `Both` | `GitHubActions`, `AzureDevOps`, or `Both`. Filters which YAML files are scanned and which cron blocks the Recommend view emits. |
+| `-LeadTimeMinutes` | Int | No | `5` | Range 0-60. How many minutes the cron should fire **before** the window opens (so cluster enumeration + auth completes before `Test-AzureLocalUpdateScheduleAllowed` evaluates). |
+| `-UpdateRingTag` | String[] | No | - | Optional. Narrow the audit to one or more `UpdateRing` tag values. |
+| `-IncludeUntagged` | Switch | No | - | Include clusters that have no `UpdateWindow` tag in the Audit view (`Status = NoWindowTag`). |
+| `-ExportPath` | String | No | - | Optional `.csv` / `.json` / `.md` path; format auto-detected from extension. `.md` emits the YAML snippet for Recommend, a markdown table for Audit/Matrix. |
+| `-PassThru` | Switch | No | - | Emit objects to the pipeline even when `-ExportPath` is used. |
+
+**Audit view columns:** `UpdateRing`, `UpdateWindow`, `ClusterCount`, `Status`, `Issue`, `Recommendation`, `MatchingCrons`, `RequiredCronUTC`. Rows are ordered by `Status` (Uncovered first), then `ClusterCount desc`.
+
+**Matrix view columns:** `UpdateRing`, `UpdateWindow`, `ClusterCount`, `RequiredCronUTC`, `Segment`, `Days`.
+
+**Recommend view columns:** `Platform`, `CronExpression`, `WindowsServed`, `ClustersServed`, `Comment`.
+
+**Examples:**
+
+```powershell
+# Audit the in-repo pipeline samples against the live fleet (default view)
+Test-AzureLocalApplyUpdatesScheduleCoverage `
+    -PipelineYamlPath .\AzLocal.UpdateManagement\Automation-Pipeline-Examples
+
+# Audit only the GitHub Actions sample, with a 10-minute lead time
+Test-AzureLocalApplyUpdatesScheduleCoverage `
+    -PipelineYamlPath .\.github\workflows\apply-updates.yml `
+    -Platform GitHubActions `
+    -LeadTimeMinutes 10
+
+# Just emit the recommended cron block(s), no comparison required
+Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -Platform GitHubActions
+
+# Inventory every (Ring, Window) pair with its required cron, export to CSV
+Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -ExportPath .\windows.csv
+
+# CI/CD pipeline: emit all three artefacts for the schedule audit pipeline
+$audit  = Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit  -PipelineYamlPath .\.github\workflows -ExportPath .\schedule-coverage-audit.csv     -PassThru
+$matrix = Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -ExportPath .\schedule-coverage-matrix.csv -PassThru
+$rec    = Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -ExportPath .\schedule-coverage-recommend.md -PassThru
+```
+
+> **CI/CD**: the bundled `apply-updates-schedule-audit.yml` pipeline samples (GitHub Actions and Azure DevOps) wire this cmdlet into a weekly-scheduled run (Mon 05:00 UTC) that emits JUnit XML, three CSV/MD exports, and a Markdown step summary. Full end-to-end runbook in [`Automation-Pipeline-Examples/README.md` section 8.3](./Automation-Pipeline-Examples/README.md#83-end-to-end-runbook-apply-updates-schedule-coverage-audit).
+
+**Required permissions** (read-only):
+- `Microsoft.Resources/subscriptions/resourceGroups/read`
+- `Microsoft.AzureStackHCI/clusters/read`
+- `Microsoft.ResourceGraph/resources/read`
+
+`Reader` on the cluster scope (or the containing resource group / subscription) is sufficient. No write actions are ever taken.
+
+---
 
 The module includes comprehensive logging capabilities for tracking update operations.
 

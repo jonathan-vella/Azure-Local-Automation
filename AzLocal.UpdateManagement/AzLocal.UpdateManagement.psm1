@@ -253,5 +253,7 @@ Export-ModuleMember -Function @(
     # ITSM Sample Convenience (v0.7.50)
     'Copy-AzureLocalItsmSample',
     # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
-    'Get-AzureLocalFleetHealthFailures'
+    'Get-AzureLocalFleetHealthFailures',
+    # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
+    'Test-AzureLocalApplyUpdatesScheduleCoverage'
 )

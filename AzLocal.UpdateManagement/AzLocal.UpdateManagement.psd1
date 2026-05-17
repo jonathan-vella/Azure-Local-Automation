@@ -29,6 +29,8 @@
     # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
     NestedModules = @(
         # Private helpers (loaded first)
+        'Private/Convert-AzLocalUpdateWindowToCron.ps1',
+        'Private/ConvertFrom-AzLocalCronExpression.ps1',
         'Private/ConvertFrom-AzLocalUpdateExclusion.ps1',
         'Private/ConvertFrom-AzLocalUpdateSideloaded.ps1',
         'Private/ConvertFrom-AzLocalUpdateWindow.ps1',
@@ -62,6 +64,7 @@
         'Private/Invoke-AzureLocalUpdateApply.ps1',
         'Private/Invoke-FleetJobsInParallel.ps1',
         'Private/Invoke-FleetOpClusterAction.ps1',
+        'Private/Read-AzLocalApplyUpdatesYamlCrons.ps1',
         'Private/Resolve-AzLocalItsmSecret.ps1',
         'Private/Resolve-SafeOutputPath.ps1',
         'Private/Resolve-WildcardDate.ps1',
@@ -100,6 +103,7 @@
         'Public/Set-AzureLocalClusterUpdateRingTag.ps1',
         'Public/Start-AzureLocalClusterUpdate.ps1',
         'Public/Stop-AzureLocalFleetUpdate.ps1',
+        'Public/Test-AzureLocalApplyUpdatesScheduleCoverage.ps1',
         'Public/Test-AzureLocalClusterHealth.ps1',
         'Public/Test-AzureLocalFleetHealthGate.ps1',
         'Public/Test-AzureLocalItsmConnection.ps1',
@@ -141,7 +145,9 @@
         # ITSM Sample Convenience (v0.7.50)
         'Copy-AzureLocalItsmSample',
         # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
-        'Get-AzureLocalFleetHealthFailures'
+        'Get-AzureLocalFleetHealthFailures',
+        # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
+        'Test-AzureLocalApplyUpdatesScheduleCoverage'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -170,7 +176,7 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.65 - Tag-write RBAC narrowed to Tag Contributor; fleet status summary reconciliation; new Fleet Health Status pipeline
+## Version 0.7.65 - Tag-write RBAC narrowed; fleet status summary fix; new Fleet Health Status + Apply-Updates Schedule Coverage Audit pipelines
 
 ### Added
 
@@ -181,21 +187,26 @@
   Azure Local clusters even when no update is in flight, so this
   is the dedicated entry point for fleet-wide health triage that
   exists outside the update workflow.
+- Test-AzureLocalApplyUpdatesScheduleCoverage: new read-only
+  cmdlet + apply-updates-schedule-audit.yml pipelines (GH + ADO,
+  weekly Mon 05:00 UTC). Flags (UpdateRing,UpdateWindow) tag
+  pairs no cron in apply-updates.yml will reach. Three views:
+  Audit, Matrix, Recommend. See README section 8.3 for the
+  end-to-end runbook.
 - New Fleet Health Status pipeline samples (GitHub + Azure DevOps):
   fleet-health-status.yml. Daily 07:00 UTC; emits JUnit XML +
   CSV/JSON + markdown summary. Complements fleet-update-status.yml.
 - Pester guardrail: GENERATED_AGAINST_MODULE_VERSION in every
   sample YAML that installs the module must match the manifest.
 - Automation-Pipeline-Examples README: new "Default triggers and
-  schedules" table in Appendix A covering all six pipelines (GH +
-  ADO); per-pipeline Trigger row added (A.1 - A.6, incl. new A.6
-  Fleet Health Status). Apply Updates (A.4) + Section 8 now carry
-  a mandatory-customisation callout: UpdateWindow / UpdateExclusions
-  tags only GATE updates while the pipeline runs - they do NOT
-  start it. If apply-updates.yml is left at its shipped default
-  (workflow_dispatch only / trigger: none) and you rely on
-  UpdateWindow tags, no updates will ever apply automatically.
-  Section 8 includes worked GH / ADO cron examples.
+  schedules" table in Appendix A covering all 7 pipelines (incl.
+  new A.6 Fleet Health Status + A.7 Schedule Coverage Audit).
+  Apply Updates (A.4) + Section 8 carry a mandatory-customisation
+  callout: UpdateWindow / UpdateExclusions tags only GATE updates
+  while the pipeline runs - they do NOT start it. If apply-updates.yml
+  is left at its shipped default and you rely on UpdateWindow tags,
+  no updates will ever apply automatically. Section 8 has worked GH
+  / ADO cron examples; section 8.3 is the end-to-end runbook.
 
 ### Fixed
 
@@ -235,14 +246,10 @@
 
 ### Changed
 
-- JUnit pass/fail semantics are now explicit in the summary and in the
-  JUnit XML itself. A "Critical Health Status" line (PASSED = healthy +
-  no failures + not SBE-blocked; FAILED = HealthState=Failure OR
-  UpdateState=Failed OR SBE prerequisite blocked) sits at the top of
-  the fleet status summary, and the JUnit <testsuite> carries
-  <property name="testCategory" value="CriticalHealthStatus"/> plus a
-  description property that spells out what passed and failed mean.
-  The failure message attribute is now "Critical Health Status: Failed"
+- JUnit pass/fail semantics in fleet-update-status are now explicit:
+  a "Critical Health Status" line sits at the top of the summary, and
+  the <testsuite> carries a CriticalHealthStatus testCategory property.
+  Failure message is now "Critical Health Status: Failed"
   (was "Cluster has update issues").
 - Set-AzureLocalClusterUpdateRingTag help and the
   Automation-Pipeline-Examples RBAC guidance now both recommend the

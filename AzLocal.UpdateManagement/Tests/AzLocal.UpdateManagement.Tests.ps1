@@ -38,8 +38,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo.Version | Should -Be '0.7.65'
         }
 
-        It 'Should export exactly 26 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 26
+        It 'Should export exactly 27 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 27
         }
 
         It 'Should export the expected functions' {
@@ -67,6 +67,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 'New-AzureLocalFleetStatusHtmlReport',
                 # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
                 'Get-AzureLocalFleetHealthFailures',
+                # Apply-Updates Schedule Coverage Advisor (v0.7.65)
+                'Test-AzureLocalApplyUpdatesScheduleCoverage',
                 # Update Schedule Tag Helpers (v0.6.4)
                 'Test-AzureLocalUpdateScheduleAllowed',
                 # Sideloaded Payload Workflow (v0.7.1)
@@ -4855,5 +4857,307 @@ Describe 'Function: Copy-AzureLocalItsmSample' {
 }
 
 #endregion Copy-AzureLocalItsmSample (v0.7.50)
+
+#region Apply-Updates Schedule Coverage Advisor (v0.7.65)
+
+Describe 'Function: Test-AzureLocalApplyUpdatesScheduleCoverage' {
+
+    Context 'Parameter Validation' {
+        BeforeAll {
+            $command = Get-Command Test-AzureLocalApplyUpdatesScheduleCoverage
+        }
+
+        It 'Is CmdletBinding' {
+            $command.CmdletBinding | Should -BeTrue
+        }
+
+        It 'Should have View parameter with ValidateSet (Audit, Matrix, Recommend)' {
+            $command.Parameters.Keys | Should -Contain 'View'
+            $vs = $command.Parameters['View'].Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+            $vs | Should -Not -BeNullOrEmpty
+            ($vs.ValidValues | Sort-Object) | Should -Be (@('Audit','Matrix','Recommend') | Sort-Object)
+        }
+
+        It 'Should have Platform parameter with ValidateSet (GitHubActions, AzureDevOps, Both)' {
+            $command.Parameters.Keys | Should -Contain 'Platform'
+            $vs = $command.Parameters['Platform'].Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+            $vs | Should -Not -BeNullOrEmpty
+            ($vs.ValidValues | Sort-Object) | Should -Be (@('AzureDevOps','Both','GitHubActions') | Sort-Object)
+        }
+
+        It 'Should have LeadTimeMinutes parameter with ValidateRange 0..60' {
+            $command.Parameters.Keys | Should -Contain 'LeadTimeMinutes'
+            $vr = $command.Parameters['LeadTimeMinutes'].Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateRangeAttribute] }
+            $vr | Should -Not -BeNullOrEmpty
+            $vr.MinRange | Should -Be 0
+            $vr.MaxRange | Should -Be 60
+        }
+
+        It 'Should have SubscriptionId, PipelineYamlPath, UpdateRingTag, IncludeUntagged, ExportPath, PassThru parameters' {
+            foreach ($p in @('SubscriptionId','PipelineYamlPath','UpdateRingTag','IncludeUntagged','ExportPath','PassThru')) {
+                $command.Parameters.Keys | Should -Contain $p
+            }
+        }
+
+        It 'Declares [OutputType([PSCustomObject[]])]' {
+            # PSCustomObject is a PowerShell accelerator for PSObject, so the
+            # resolved type name on the OutputTypeAttribute is 'PSObject[]'.
+            $command.OutputType.Type.Name | Should -Contain 'PSObject[]'
+        }
+
+        It 'Throws when -View Audit is used without -PipelineYamlPath' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery { @() }
+                { Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit } |
+                    Should -Throw -ExpectedMessage '*PipelineYamlPath is required*'
+            }
+        }
+
+        It 'Throws when PipelineYamlPath does not exist' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery { @() }
+                { Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath 'X:\does\not\exist.yml' } |
+                    Should -Throw -ExpectedMessage '*PipelineYamlPath not found*'
+            }
+        }
+    }
+
+    Context 'Private helper: Convert-AzLocalUpdateWindowToCron' {
+        It 'Sat-Sun_02:00-06:00 with lead 5 -> 55 1 * * 6,0' {
+            InModuleScope AzLocal.UpdateManagement {
+                $r = Convert-AzLocalUpdateWindowToCron -UpdateWindow 'Sat-Sun_02:00-06:00' -LeadTimeMinutes 5
+                $r | Should -HaveCount 1
+                $r[0].CronExpression | Should -Be '55 1 * * 6,0'
+                $r[0].FireHour | Should -Be 1
+                $r[0].FireMinute | Should -Be 55
+                $r[0].DayShift | Should -BeFalse
+            }
+        }
+
+        It 'Mon-Fri_22:00-04:00 with lead 5 -> 55 21 * * 1-5 (range)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $r = Convert-AzLocalUpdateWindowToCron -UpdateWindow 'Mon-Fri_22:00-04:00' -LeadTimeMinutes 5
+                $r | Should -HaveCount 1
+                $r[0].CronExpression | Should -Be '55 21 * * 1-5'
+            }
+        }
+
+        It 'Sun_03:00-07:00 with lead 5 -> 55 2 * * 0' {
+            InModuleScope AzLocal.UpdateManagement {
+                $r = Convert-AzLocalUpdateWindowToCron -UpdateWindow 'Sun_03:00-07:00' -LeadTimeMinutes 5
+                $r[0].CronExpression | Should -Be '55 2 * * 0'
+            }
+        }
+
+        It 'Lead-time wrap: Mon_00:05-04:00 with lead 10 -> 55 23 * * 0 (Sun) with DayShift=$true' {
+            InModuleScope AzLocal.UpdateManagement {
+                $r = Convert-AzLocalUpdateWindowToCron -UpdateWindow 'Mon_00:05-04:00' -LeadTimeMinutes 10
+                $r[0].CronExpression | Should -Be '55 23 * * 0'
+                $r[0].DayShift | Should -BeTrue
+            }
+        }
+
+        It 'Multi-segment window emits one cron per segment' {
+            InModuleScope AzLocal.UpdateManagement {
+                $r = Convert-AzLocalUpdateWindowToCron -UpdateWindow 'Mon-Fri_22:00-04:00;Sat-Sun_02:00-10:00' -LeadTimeMinutes 5
+                $r | Should -HaveCount 2
+                ($r | ForEach-Object CronExpression) -join '|' | Should -Be '55 21 * * 1-5|55 1 * * 6,0'
+            }
+        }
+    }
+
+    Context 'Private helper: ConvertFrom-AzLocalCronExpression' {
+        It 'Parses 55 1 * * 6,0 and enumerates 2 fire times in the reference week' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression '55 1 * * 6,0'
+                $p.IsValid | Should -BeTrue
+                $p.IsComplex | Should -BeFalse
+                @($p.FireTimes).Count | Should -Be 2
+            }
+        }
+
+        It 'Parses comma-separated minutes (0,15,30,45) into 4 entries per hour' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression '0,15,30,45 2 * * 1'
+                $p.IsValid | Should -BeTrue
+                @($p.FireTimes).Count | Should -Be 4
+            }
+        }
+
+        It 'Flags non-* DayOfMonth as IsComplex (advisor cannot evaluate)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression '0 2 15 * *'
+                $p.IsValid | Should -BeTrue
+                $p.IsComplex | Should -BeTrue
+                @($p.FireTimes).Count | Should -Be 0
+            }
+        }
+
+        It 'Rejects step expressions (/N)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression '*/15 * * * *'
+                $p.IsValid | Should -BeFalse
+                $p.ErrorMessage | Should -Match 'not supported'
+            }
+        }
+
+        It 'Rejects wrong field count' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression '0 2 * *'
+                $p.IsValid | Should -BeFalse
+                $p.ErrorMessage | Should -Match '5 cron fields'
+            }
+        }
+
+        It 'Treats DOW=7 as Sunday (== 0)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p7 = ConvertFrom-AzLocalCronExpression -Expression '0 2 * * 7'
+                $p0 = ConvertFrom-AzLocalCronExpression -Expression '0 2 * * 0'
+                @($p7.FireTimes).Count | Should -Be 1
+                $p7.FireTimes[0] | Should -Be $p0.FireTimes[0]
+            }
+        }
+    }
+
+    Context 'Private helper: Read-AzLocalApplyUpdatesYamlCrons' {
+        BeforeAll {
+            $script:tmpYamlDir = Join-Path $env:TEMP "schedule-cov-tests-$(Get-Random)"
+            New-Item -ItemType Directory -Path (Join-Path $script:tmpYamlDir 'github-actions') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $script:tmpYamlDir 'azure-devops')   -Force | Out-Null
+            @"
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '55 1 * * 6,0'
+    - cron: "0 22 * * 5"
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'github-actions\apply-updates.yml') -Encoding ASCII
+            @"
+trigger: none
+schedules:
+  - cron: '30 2 * * 1-5'
+    displayName: Weekday early-morning
+    branches:
+      include: [ main ]
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'azure-devops\apply-updates.yml') -Encoding ASCII
+        }
+        AfterAll {
+            Remove-Item -Path $script:tmpYamlDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        It 'Discovers 2 GH cron lines + 1 ADO cron line with platform inferred from folder name' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ tmpYamlDir = $script:tmpYamlDir } {
+                param($tmpYamlDir)
+                $r = Read-AzLocalApplyUpdatesYamlCrons -Path $tmpYamlDir
+                @($r).Count | Should -Be 3
+                @($r | Where-Object Platform -eq 'GitHubActions').Count | Should -Be 2
+                @($r | Where-Object Platform -eq 'AzureDevOps').Count   | Should -Be 1
+            }
+        }
+
+        It 'Strips surrounding quotes from cron expressions' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ tmpYamlDir = $script:tmpYamlDir } {
+                param($tmpYamlDir)
+                $r = Read-AzLocalApplyUpdatesYamlCrons -Path $tmpYamlDir
+                ($r | ForEach-Object CronExpression) | Should -Contain '55 1 * * 6,0'
+                ($r | ForEach-Object CronExpression) | Should -Contain '0 22 * * 5'
+                ($r | ForEach-Object CronExpression) | Should -Contain '30 2 * * 1-5'
+            }
+        }
+    }
+
+    Context 'Behavior: Audit / Matrix / Recommend' {
+        BeforeAll {
+            $script:tmpYamlDir2 = Join-Path $env:TEMP "schedule-cov-behaviour-$(Get-Random)"
+            New-Item -ItemType Directory -Path (Join-Path $script:tmpYamlDir2 'github-actions') -Force | Out-Null
+            # YAML covers Sat/Sun windows (fires Sat 01:50, Sun 01:50) but does NOT cover Mon-Fri windows.
+            @"
+on:
+  schedule:
+    - cron: '50 1 * * 6,0'
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir2 'github-actions\apply-updates.yml') -Encoding ASCII
+        }
+        AfterAll {
+            Remove-Item -Path $script:tmpYamlDir2 -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        It 'Audit: reports Covered for Sat-Sun window and Uncovered for Mon-Fri window' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ tmpYamlDir2 = $script:tmpYamlDir2 } {
+                param($tmpYamlDir2)
+                Mock Invoke-AzResourceGraphQuery {
+                    @(
+                        [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='Wave1';      UpdateWindow='Sat-Sun_02:00-06:00' },
+                        [PSCustomObject]@{ ClusterName='c2'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c2'; UpdateRing='Wave1';      UpdateWindow='Sat-Sun_02:00-06:00' },
+                        [PSCustomObject]@{ ClusterName='c3'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c3'; UpdateRing='Production'; UpdateWindow='Mon-Fri_22:00-04:00' }
+                    )
+                }
+                $result = Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath $tmpYamlDir2 -PassThru 6>$null
+                $rWave  = $result | Where-Object UpdateRing -eq 'Wave1'
+                $rProd  = $result | Where-Object UpdateRing -eq 'Production'
+                $rWave.Status | Should -Be 'Covered'
+                $rWave.ClusterCount | Should -Be 2
+                $rProd.Status | Should -Be 'Uncovered'
+                $rProd.RequiredCronUTC | Should -Be '55 21 * * 1-5'
+            }
+        }
+
+        It 'Matrix: emits one row per distinct (Ring, Window) with RequiredCronUTC populated' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    @(
+                        [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='Wave1'; UpdateWindow='Sat-Sun_02:00-06:00' }
+                    )
+                }
+                $result = Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -PassThru 6>$null
+                $result | Should -HaveCount 1
+                $result[0].RequiredCronUTC | Should -Be '55 1 * * 6,0'
+                $result[0].ClusterCount | Should -Be 1
+            }
+        }
+
+        It 'Recommend: dedupes crons across rings and emits one row per cron' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    @(
+                        [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='Pilot'; UpdateWindow='Sat-Sun_02:00-06:00' },
+                        [PSCustomObject]@{ ClusterName='c2'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c2'; UpdateRing='Wave1'; UpdateWindow='Sat-Sun_02:00-06:00' }
+                    )
+                }
+                $result = Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -PassThru 6>$null
+                $result | Should -HaveCount 1
+                $result[0].CronExpression | Should -Be '55 1 * * 6,0'
+                $result[0].ClusterCount   | Should -Be 2
+                ($result[0].Rings | Sort-Object) | Should -Be @('Pilot','Wave1')
+                $result[0].Snippet | Should -Match "schedule:"
+            }
+        }
+
+        It 'Audit: MalformedTag emitted when UpdateWindow tag fails to parse' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ tmpYamlDir2 = $script:tmpYamlDir2 } {
+                param($tmpYamlDir2)
+                Mock Invoke-AzResourceGraphQuery {
+                    @([PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='X'; UpdateWindow='NotAWindow' })
+                }
+                $result = Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath $tmpYamlDir2 -PassThru 6>$null
+                ($result | Where-Object UpdateRing -eq 'X').Status | Should -Be 'MalformedTag'
+            }
+        }
+
+        It '-IncludeUntagged surfaces clusters with no UpdateWindow tag' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ tmpYamlDir2 = $script:tmpYamlDir2 } {
+                param($tmpYamlDir2)
+                Mock Invoke-AzResourceGraphQuery {
+                    @(
+                        [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='Wave1'; UpdateWindow='Sat-Sun_02:00-06:00' },
+                        [PSCustomObject]@{ ClusterName='c2'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c2'; UpdateRing='';      UpdateWindow='' }
+                    )
+                }
+                $result = Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath $tmpYamlDir2 -IncludeUntagged -PassThru 6>$null
+                ($result | Where-Object Status -eq 'NoWindowTag').ClusterCount | Should -Be 1
+            }
+        }
+    }
+}
+
+#endregion Apply-Updates Schedule Coverage Advisor (v0.7.65)
 
 

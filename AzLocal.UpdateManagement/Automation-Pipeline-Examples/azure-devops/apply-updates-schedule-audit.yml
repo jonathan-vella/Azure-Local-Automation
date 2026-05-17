@@ -1,0 +1,285 @@
+# Apply-Updates Schedule Coverage Audit Pipeline
+# This pipeline runs the read-only Test-AzureLocalApplyUpdatesScheduleCoverage advisor
+# weekly to detect drift between the cron schedule(s) in your apply-updates pipeline
+# YAML and the UpdateWindow tags that operators have placed on Azure Local clusters.
+#
+# WHY THIS PIPELINE EXISTS
+# ------------------------
+# apply-updates.yml ships with NO default schedule (trigger:none) on purpose, so
+# customers must consciously choose when updates fire. After you have configured
+# UpdateWindow tags on your clusters and added cron entries to apply-updates.yml, this
+# pipeline is the safety net that catches:
+#   - a new ring tagged with UpdateWindow that no cron in apply-updates.yml will reach
+#   - an UpdateWindow tag value that fails to parse (typo / wrong syntax)
+#   - apply-updates.yml cron entries that the advisor cannot reason about
+#     (DayOfMonth restrictions, step values) so you can audit them manually
+#
+# REPORTS GENERATED:
+# - Pipeline run summary (uploaded via ##vso[task.uploadsummary]): Audit + Recommend views
+# - JUnit XML: published to the Test Results tab. One <testcase> per (UpdateRing,
+#   UpdateWindow) pair; uncovered pairs become <failure>.
+# - CSV: schedule-coverage-audit.csv + schedule-coverage-matrix.csv
+# - Markdown: schedule-coverage-recommend.md with the ready-to-paste cron block
+#
+# AUTHENTICATION:
+# Uses Workload Identity Federation (OIDC) - recommended for secretless authentication.
+
+trigger: none  # Manual or scheduled only
+
+schedules:
+  # Weekly on Monday at 05:00 UTC - well before any common Saturday/Sunday or weekday
+  # evening update window so a coverage drift report lands in the inbox before the
+  # next scheduled apply-updates run.
+  - cron: '0 5 * * 1'
+    displayName: 'Weekly Apply-Updates Schedule Coverage Audit'
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: pipelinePath
+    displayName: 'Path (file or folder) to apply-updates.yml to audit (relative to repo root)'
+    type: string
+    default: 'AzLocal.UpdateManagement/Automation-Pipeline-Examples'
+
+  - name: leadTimeMinutes
+    displayName: 'Minutes before UpdateWindow opens that the pipeline should fire (0-60)'
+    type: number
+    default: 5
+
+  - name: includeUntagged
+    displayName: 'Surface clusters with no UpdateWindow tag as their own row'
+    type: boolean
+    default: false
+
+  - name: moduleVersion
+    displayName: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
+    type: string
+    default: ''
+
+variables:
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.65'
+  REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
+  reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
+
+stages:
+- stage: ScheduleCoverage
+  displayName: 'Audit Apply-Updates Schedule Coverage'
+  jobs:
+  - job: Audit
+    displayName: 'Run Schedule Coverage Advisor'
+    pool:
+      vmImage: 'windows-latest'
+
+    steps:
+    - checkout: self
+      displayName: 'Checkout repository'
+
+    - task: PowerShell@2
+      displayName: 'Install AzLocal.UpdateManagement from PSGallery'
+      env:
+        REQUIRED_MODULE_VERSION: $(REQUIRED_MODULE_VERSION)
+        GENERATED_AGAINST_MODULE_VERSION: $(GENERATED_AGAINST_MODULE_VERSION)
+      inputs:
+        targetType: 'inline'
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
+          if ($env:REQUIRED_MODULE_VERSION) {
+              $installArgs.RequiredVersion = $env:REQUIRED_MODULE_VERSION
+              Write-Host "REQUIRED_MODULE_VERSION is set - pinning install to v$($env:REQUIRED_MODULE_VERSION)."
+          } else {
+              Write-Host "REQUIRED_MODULE_VERSION is empty - installing the latest version from PSGallery (default fix-forward behaviour)."
+          }
+          Install-Module @installArgs
+          Import-Module AzLocal.UpdateManagement -Force
+          $installed = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+          $generated = [version]$env:GENERATED_AGAINST_MODULE_VERSION
+          $latest    = (Find-Module -Name AzLocal.UpdateManagement -Repository PSGallery -ErrorAction SilentlyContinue).Version
+          Write-Host ""
+          Write-Host "Module version summary"
+          Write-Host "  Installed on agent        : $installed"
+          Write-Host "  YAML generated against    : $generated"
+          Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
+          if ($installed -gt $generated) {
+              Write-Host "##vso[task.logissue type=warning]Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Refresh via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
+          }
+          if ($latest -and ($latest -gt $installed)) {
+              Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed."
+          }
+
+    - task: AzureCLI@2
+      displayName: 'Run Schedule Coverage Audit'
+      name: audit
+      inputs:
+        # Replace with your service connection name
+        azureSubscription: 'YOUR-SERVICE-CONNECTION-NAME'
+        scriptType: 'pscore'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $ErrorActionPreference = 'Stop'
+          az extension add --name resource-graph --yes
+          Import-Module AzLocal.UpdateManagement -Force
+
+          $outputDir = "$(reportsPath)"
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+          $pipelinePath = "${{ parameters.pipelinePath }}"
+          $leadTime     = [int]"${{ parameters.leadTimeMinutes }}"
+          $includeUnt   = ${{ lower(parameters.includeUntagged) }}
+
+          if (-not (Test-Path -LiteralPath $pipelinePath)) {
+              throw "PipelineYamlPath '$pipelinePath' does not exist on the agent. Either commit the folder to the repo or pass a different -pipelinePath at queue time."
+          }
+
+          Write-Host "========================================"
+          Write-Host "Apply-Updates Schedule Coverage Audit"
+          Write-Host "========================================"
+          Write-Host "PipelineYamlPath : $pipelinePath"
+          Write-Host "LeadTimeMinutes  : $leadTime"
+          Write-Host "IncludeUntagged  : $includeUnt"
+          Write-Host ""
+
+          $auditCsv  = Join-Path $outputDir 'schedule-coverage-audit.csv'
+          $recoMd    = Join-Path $outputDir 'schedule-coverage-recommend.md'
+          $matrixCsv = Join-Path $outputDir 'schedule-coverage-matrix.csv'
+
+          $auditArgs = @{
+              View             = 'Audit'
+              PipelineYamlPath = $pipelinePath
+              LeadTimeMinutes  = $leadTime
+              ExportPath       = $auditCsv
+              PassThru         = $true
+          }
+          if ($includeUnt) { $auditArgs.IncludeUntagged = $true }
+          $auditResult = Test-AzureLocalApplyUpdatesScheduleCoverage @auditArgs
+          if (-not $auditResult) { $auditResult = @() }
+
+          Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
+          Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -ExportPath $recoMd | Out-Null
+
+          $covered     = @($auditResult | Where-Object Status -eq 'Covered')
+          $uncovered   = @($auditResult | Where-Object Status -eq 'Uncovered')
+          $partial     = @($auditResult | Where-Object Status -eq 'PartiallyCovered')
+          $malformed   = @($auditResult | Where-Object Status -eq 'MalformedTag')
+          $unparseable = @($auditResult | Where-Object Status -eq 'UnparseableCron')
+
+          function Convert-XmlEscape([string]$s) {
+              if ($null -eq $s) { return '' }
+              ($s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;').Replace("'",'&apos;'))
+          }
+
+          $failureCount = $uncovered.Count + $partial.Count + $malformed.Count + $unparseable.Count
+          $xmlPath = Join-Path $outputDir 'schedule-coverage-audit.xml'
+          $sb = New-Object System.Text.StringBuilder
+          [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
+          [void]$sb.AppendLine('<testsuites>')
+          [void]$sb.AppendLine(("  <testsuite name=`"Apply-Updates Schedule Coverage`" tests=`"{0}`" failures=`"{1}`">" -f $auditResult.Count, $failureCount))
+          foreach ($row in $auditResult) {
+              $tcName = ("{0} / {1}" -f $row.UpdateRing, ($(if ($row.UpdateWindow) { $row.UpdateWindow } else { '(no window)' })))
+              [void]$sb.AppendLine(("    <testcase classname=`"ScheduleCoverage`" name=`"{0}`">" -f (Convert-XmlEscape $tcName)))
+              if ($row.Status -ne 'Covered') {
+                  $issue = Convert-XmlEscape $row.Issue
+                  $reco  = Convert-XmlEscape $row.Recommendation
+                  [void]$sb.AppendLine(("      <failure type=`"{0}`" message=`"{1}`">Recommendation: {2}{3}Cluster count: {4}</failure>" -f $row.Status, $issue, $reco, [Environment]::NewLine, $row.ClusterCount))
+              }
+              [void]$sb.AppendLine('    </testcase>')
+          }
+          if ($auditResult.Count -eq 0) {
+              [void]$sb.AppendLine('    <testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />')
+          }
+          [void]$sb.AppendLine('  </testsuite>')
+          [void]$sb.AppendLine('</testsuites>')
+          [System.IO.File]::WriteAllText($xmlPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
+
+          "##vso[task.setvariable variable=totalRows;isOutput=true]$($auditResult.Count)"      | Write-Host
+          "##vso[task.setvariable variable=covered;isOutput=true]$($covered.Count)"             | Write-Host
+          "##vso[task.setvariable variable=uncovered;isOutput=true]$($uncovered.Count)"         | Write-Host
+          "##vso[task.setvariable variable=partial;isOutput=true]$($partial.Count)"             | Write-Host
+          "##vso[task.setvariable variable=malformed;isOutput=true]$($malformed.Count)"         | Write-Host
+          "##vso[task.setvariable variable=unparseable;isOutput=true]$($unparseable.Count)"     | Write-Host
+
+          Write-Host ""
+          Write-Host "Audit complete:"
+          Write-Host "  Covered           : $($covered.Count)"
+          Write-Host "  Uncovered         : $($uncovered.Count)"
+          Write-Host "  PartiallyCovered  : $($partial.Count)"
+          Write-Host "  MalformedTag      : $($malformed.Count)"
+          Write-Host "  UnparseableCron   : $($unparseable.Count)"
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Schedule Coverage Reports'
+      condition: always()
+      inputs:
+        PathtoPublish: '$(reportsPath)'
+        ArtifactName: 'ScheduleCoverageReports'
+        publishLocation: 'Container'
+
+    - pwsh: |
+        $total       = "$(audit.totalRows)"
+        $covered     = "$(audit.covered)"
+        $uncovered   = "$(audit.uncovered)"
+        $partial     = "$(audit.partial)"
+        $malformed   = "$(audit.malformed)"
+        $unparseable = "$(audit.unparseable)"
+
+        Write-Host "##vso[task.uploadsummary]Schedule Coverage: $covered covered, $uncovered uncovered, $partial partial, $malformed malformed, $unparseable unparseable"
+
+        $rowsPath = Join-Path '$(reportsPath)' 'schedule-coverage-audit.csv'
+        $recoPath = Join-Path '$(reportsPath)' 'schedule-coverage-recommend.md'
+        $rows = if (Test-Path $rowsPath) { @(Import-Csv -Path $rowsPath) } else { @() }
+        $reco = if (Test-Path $recoPath) { Get-Content -Path $recoPath -Raw } else { '' }
+
+        $md = @"
+        ## Apply-Updates Schedule Coverage Audit
+
+        | Metric | Count |
+        |--------|-------|
+        | **(Ring, Window) pairs audited** | $total |
+        | **Covered** | $covered |
+        | **Uncovered** | $uncovered |
+        | **PartiallyCovered** | $partial |
+        | **MalformedTag** | $malformed |
+        | **UnparseableCron** | $unparseable |
+
+        ### Audit Detail
+        "@
+
+        if ($rows.Count -eq 0) {
+            $md += "`n`n*No tagged clusters found - nothing to audit.*`n"
+        } else {
+            $md += "`n`n| Status | UpdateRing | UpdateWindow | Clusters | Required Cron (UTC) | Recommendation |`n"
+            $md += "|--------|------------|--------------|---------:|----------------------|----------------|`n"
+            foreach ($r in ($rows | Select-Object -First 100)) {
+                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $r.Status, $r.UpdateRing, $r.UpdateWindow, $r.ClusterCount, $r.RequiredCronUTC, $r.Recommendation) + "`n"
+            }
+            if ($rows.Count -gt 100) {
+                $md += "`n*Showing first 100 of $($rows.Count); see ``schedule-coverage-audit.csv`` artifact for the full list.*`n"
+            }
+        }
+
+        $md += "`n### Recommended Schedule (copy into apply-updates.yml)`n"
+        if ($reco) {
+            $md += "`n``````yaml`n" + $reco + "`n```````n"
+        } else {
+            $md += "`n*Recommendation output unavailable.*`n"
+        }
+
+        $summaryFile = Join-Path '$(reportsPath)' 'schedule-coverage-summary.md'
+        $md | Out-File -FilePath $summaryFile -Encoding utf8
+        Write-Host "##vso[task.uploadsummary]$summaryFile"
+        Write-Host $md
+      displayName: 'Display Schedule Coverage Summary'
+      condition: always()
+
+    - task: PublishTestResults@2
+      displayName: 'Publish Schedule Coverage as Test Results'
+      condition: always()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '$(reportsPath)/schedule-coverage-audit.xml'
+        testRunTitle: 'Apply-Updates Schedule Coverage - $(Build.BuildNumber)'
+        mergeTestResults: false
+        failTaskOnFailedTests: false

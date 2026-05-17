@@ -1,0 +1,312 @@
+# Apply-Updates Schedule Coverage Audit
+# This workflow runs the read-only Test-AzureLocalApplyUpdatesScheduleCoverage advisor
+# weekly to detect drift between the cron schedule(s) in your apply-updates pipeline
+# YAML and the UpdateWindow tags that operators have placed on Azure Local clusters.
+#
+# WHY THIS PIPELINE EXISTS
+# ------------------------
+# apply-updates.yml ships with NO default schedule (workflow_dispatch only) on purpose,
+# so customers must consciously choose when updates fire. After you have configured
+# UpdateWindow tags on your clusters and added cron entries to apply-updates.yml, this
+# pipeline is the safety net that catches:
+#   - a new ring tagged with UpdateWindow that no cron in apply-updates.yml will reach
+#   - an UpdateWindow tag value that fails to parse (typo / wrong syntax)
+#   - apply-updates.yml cron entries that the advisor cannot reason about
+#     (DayOfMonth restrictions, step values) so you can audit them manually
+#
+# REPORTS GENERATED
+# -----------------
+# - Markdown step summary: human-readable Audit + Matrix views at the top of the run
+# - JUnit XML: one <testcase> per (UpdateRing, UpdateWindow) pair - uncovered pairs
+#   become <failure>. dorny/test-reporter renders the tree in the run page.
+# - CSV: schedule-coverage-audit.csv with the full Audit view
+# - Markdown: schedule-coverage-recommend.md with the ready-to-paste cron block
+#
+# AUTHENTICATION
+# --------------
+# Uses OpenID Connect (OIDC) - recommended for secretless authentication
+# See: https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect
+
+name: Apply-Updates Schedule Coverage Audit
+
+on:
+  # Weekly on Monday at 05:00 UTC - well before any common Saturday/Sunday or weekday
+  # evening update window so a coverage drift report lands in the inbox before the
+  # next scheduled apply-updates run.
+  schedule:
+    - cron: '0 5 * * 1'   # Mondays at 05:00 UTC
+
+  workflow_dispatch:
+    inputs:
+      pipeline_path:
+        description: 'Path (file or folder) to apply-updates.yml to audit. Defaults to the in-repo Automation-Pipeline-Examples folder.'
+        required: false
+        default: 'AzLocal.UpdateManagement/Automation-Pipeline-Examples'
+      lead_time_minutes:
+        description: 'Minutes before UpdateWindow opens that the pipeline should fire (0-60). Default 5.'
+        required: false
+        default: '5'
+      include_untagged:
+        description: 'Surface clusters with no UpdateWindow tag as their own row.'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      module_version:
+        description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
+        required: false
+        default: ''
+
+env:
+  # Module version this workflow YAML was generated against. The install step compares
+  # this to the version actually installed and to the latest on PSGallery, and emits a
+  # ::notice annotation if the YAML appears stale - prompting you to refresh via
+  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.65'
+  REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
+
+jobs:
+  audit:
+    name: Audit Apply-Updates Schedule Coverage
+    runs-on: windows-latest
+    permissions:
+      id-token: write
+      contents: read
+      checks: write   # Required for test reporter
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v5
+
+    - name: Azure CLI Login (OIDC)
+      uses: azure/login@v3
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Install Azure CLI Resource Graph Extension
+      shell: pwsh
+      run: |
+        az extension add --name resource-graph --yes
+
+    - name: Install AzLocal.UpdateManagement from PSGallery
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
+        if ($env:REQUIRED_MODULE_VERSION) {
+            $installArgs.RequiredVersion = $env:REQUIRED_MODULE_VERSION
+            Write-Host "REQUIRED_MODULE_VERSION is set - pinning install to v$($env:REQUIRED_MODULE_VERSION)."
+        } else {
+            Write-Host "REQUIRED_MODULE_VERSION is empty - installing the latest version from PSGallery (default fix-forward behaviour)."
+        }
+        Install-Module @installArgs
+        Import-Module AzLocal.UpdateManagement -Force
+        $installed = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+        $generated = [version]$env:GENERATED_AGAINST_MODULE_VERSION
+        $latest    = (Find-Module -Name AzLocal.UpdateManagement -Repository PSGallery -ErrorAction SilentlyContinue).Version
+        Write-Host ""
+        Write-Host "Module version summary"
+        Write-Host "  Installed on runner       : $installed"
+        Write-Host "  YAML generated against    : $generated"
+        Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
+        if ($installed -gt $generated) {
+            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Refresh via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            Write-Host "::notice title=Workflow YAML may be stale::$msg"
+        }
+        if ($latest -and ($latest -gt $installed)) {
+            $msg = "AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed."
+            Write-Host "::notice title=Newer AzLocal.UpdateManagement version available on PSGallery::$msg"
+        }
+
+    - name: Run Schedule Coverage Audit
+      shell: pwsh
+      id: audit
+      env:
+        INPUT_PIPELINE_PATH:     ${{ github.event.inputs.pipeline_path || 'AzLocal.UpdateManagement/Automation-Pipeline-Examples' }}
+        INPUT_LEAD_TIME_MINUTES: ${{ github.event.inputs.lead_time_minutes || '5' }}
+        INPUT_INCLUDE_UNTAGGED:  ${{ github.event.inputs.include_untagged || 'false' }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Import-Module AzLocal.UpdateManagement -Force
+
+        $outputDir = "./reports"
+        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+        $pipelinePath = $env:INPUT_PIPELINE_PATH
+        $leadTime     = [int]$env:INPUT_LEAD_TIME_MINUTES
+        $includeUnt   = ($env:INPUT_INCLUDE_UNTAGGED -eq 'true')
+
+        if (-not (Test-Path -LiteralPath $pipelinePath)) {
+            throw "PipelineYamlPath '$pipelinePath' does not exist on the runner. Either commit the folder to the repo or pass a different -pipeline_path via workflow_dispatch."
+        }
+
+        Write-Host "========================================"
+        Write-Host "Apply-Updates Schedule Coverage Audit"
+        Write-Host "========================================"
+        Write-Host "PipelineYamlPath : $pipelinePath"
+        Write-Host "LeadTimeMinutes  : $leadTime"
+        Write-Host "IncludeUntagged  : $includeUnt"
+        Write-Host ""
+
+        $auditCsv  = Join-Path $outputDir 'schedule-coverage-audit.csv'
+        $recoMd    = Join-Path $outputDir 'schedule-coverage-recommend.md'
+        $matrixCsv = Join-Path $outputDir 'schedule-coverage-matrix.csv'
+
+        $auditArgs = @{
+            View             = 'Audit'
+            PipelineYamlPath = $pipelinePath
+            LeadTimeMinutes  = $leadTime
+            ExportPath       = $auditCsv
+            PassThru         = $true
+        }
+        if ($includeUnt) { $auditArgs.IncludeUntagged = $true }
+        $audit = Test-AzureLocalApplyUpdatesScheduleCoverage @auditArgs
+        if (-not $audit) { $audit = @() }
+
+        # Matrix view (CSV only).
+        Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
+
+        # Recommend view (markdown snippet).
+        Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -ExportPath $recoMd | Out-Null
+
+        $covered     = @($audit | Where-Object Status -eq 'Covered')
+        $uncovered   = @($audit | Where-Object Status -eq 'Uncovered')
+        $partial     = @($audit | Where-Object Status -eq 'PartiallyCovered')
+        $malformed   = @($audit | Where-Object Status -eq 'MalformedTag')
+        $unparseable = @($audit | Where-Object Status -eq 'UnparseableCron')
+
+        # ------------------------------------------------------------------
+        # JUnit XML: one testcase per (UpdateRing, UpdateWindow) row.
+        # Uncovered, PartiallyCovered, MalformedTag, UnparseableCron => failure.
+        # Covered => pass.
+        # ------------------------------------------------------------------
+        function Convert-XmlEscape([string]$s) {
+            if ($null -eq $s) { return '' }
+            ($s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;').Replace("'",'&apos;'))
+        }
+        $failureCount = $uncovered.Count + $partial.Count + $malformed.Count + $unparseable.Count
+        $xmlPath = Join-Path $outputDir 'schedule-coverage-audit.xml'
+        $sb = New-Object System.Text.StringBuilder
+        [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
+        [void]$sb.AppendLine('<testsuites>')
+        [void]$sb.AppendLine(("  <testsuite name=`"Apply-Updates Schedule Coverage`" tests=`"{0}`" failures=`"{1}`">" -f $audit.Count, $failureCount))
+        foreach ($row in $audit) {
+            $tcName = ("{0} / {1}" -f $row.UpdateRing, ($(if ($row.UpdateWindow) { $row.UpdateWindow } else { '(no window)' })))
+            [void]$sb.AppendLine(("    <testcase classname=`"ScheduleCoverage`" name=`"{0}`">" -f (Convert-XmlEscape $tcName)))
+            if ($row.Status -ne 'Covered') {
+                $issue = Convert-XmlEscape $row.Issue
+                $reco  = Convert-XmlEscape $row.Recommendation
+                [void]$sb.AppendLine(("      <failure type=`"{0}`" message=`"{1}`">Recommendation: {2}{3}Cluster count: {4}</failure>" -f $row.Status, $issue, $reco, [Environment]::NewLine, $row.ClusterCount))
+            }
+            [void]$sb.AppendLine('    </testcase>')
+        }
+        [void]$sb.AppendLine('  </testsuite>')
+        [void]$sb.AppendLine('</testsuites>')
+        [System.IO.File]::WriteAllText($xmlPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
+
+        # Step outputs for the summary step.
+        "TOTAL_ROWS=$($audit.Count)"          | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "COVERED=$($covered.Count)"           | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "UNCOVERED=$($uncovered.Count)"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "PARTIAL=$($partial.Count)"           | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "MALFORMED=$($malformed.Count)"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "UNPARSEABLE=$($unparseable.Count)"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+        Write-Host ""
+        Write-Host "Audit complete:"
+        Write-Host "  Covered           : $($covered.Count)"
+        Write-Host "  Uncovered         : $($uncovered.Count)"
+        Write-Host "  PartiallyCovered  : $($partial.Count)"
+        Write-Host "  MalformedTag      : $($malformed.Count)"
+        Write-Host "  UnparseableCron   : $($unparseable.Count)"
+
+    - name: Upload Schedule Coverage Reports
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: schedule-coverage-reports
+        path: ./reports/
+        retention-days: 90
+
+    - name: Create Schedule Coverage Summary
+      if: always()
+      shell: pwsh
+      run: |
+        $total       = "${{ steps.audit.outputs.TOTAL_ROWS }}"
+        $covered     = "${{ steps.audit.outputs.COVERED }}"
+        $uncovered   = "${{ steps.audit.outputs.UNCOVERED }}"
+        $partial     = "${{ steps.audit.outputs.PARTIAL }}"
+        $malformed   = "${{ steps.audit.outputs.MALFORMED }}"
+        $unparseable = "${{ steps.audit.outputs.UNPARSEABLE }}"
+
+        $rows = @()
+        if (Test-Path './reports/schedule-coverage-audit.csv') {
+            $rows = @(Import-Csv -Path './reports/schedule-coverage-audit.csv')
+        }
+        $reco = ''
+        if (Test-Path './reports/schedule-coverage-recommend.md') {
+            $reco = Get-Content -Path './reports/schedule-coverage-recommend.md' -Raw
+        }
+
+        $md = @"
+        ## Apply-Updates Schedule Coverage Audit
+
+        | Metric | Count |
+        |--------|-------|
+        | **(Ring, Window) pairs audited** | $total |
+        | **Covered** | $covered |
+        | **Uncovered** | $uncovered |
+        | **PartiallyCovered** | $partial |
+        | **MalformedTag** | $malformed |
+        | **UnparseableCron** | $unparseable |
+
+        ### Audit Detail (Uncovered / Partial / Malformed first)
+        "@
+
+        if ($rows.Count -eq 0) {
+            $md += "`n`n*No tagged clusters found - nothing to audit.*`n"
+        } else {
+            $md += "`n`n| Status | UpdateRing | UpdateWindow | Clusters | Required Cron (UTC) | Recommendation |`n"
+            $md += "|--------|------------|--------------|---------:|----------------------|----------------|`n"
+            foreach ($r in ($rows | Select-Object -First 100)) {
+                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $r.Status, $r.UpdateRing, $r.UpdateWindow, $r.ClusterCount, $r.RequiredCronUTC, $r.Recommendation) + "`n"
+            }
+            if ($rows.Count -gt 100) {
+                $md += "`n*Showing first 100 of $($rows.Count); see ``schedule-coverage-audit.csv`` artifact for the full list.*`n"
+            }
+        }
+
+        $md += "`n### Recommended Schedule (copy into apply-updates.yml)`n"
+        if ($reco) {
+            $md += "`n``````yaml`n" + $reco + "`n```````n"
+        } else {
+            $md += "`n*Recommendation output unavailable.*`n"
+        }
+
+        $md += @"
+
+        ### Reports Available
+        - ``schedule-coverage-audit.csv`` - one row per (UpdateRing, UpdateWindow) pair
+        - ``schedule-coverage-matrix.csv`` - full inventory + required cron per row
+        - ``schedule-coverage-recommend.md`` - ready-to-paste cron block (GH + ADO)
+        - ``schedule-coverage-audit.xml`` - JUnit XML for CI/CD visualisation
+
+        *Generated at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")*
+        "@
+
+        $md | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+    - name: Publish Test Results
+      uses: dorny/test-reporter@v3
+      if: always()
+      with:
+        name: Apply-Updates Schedule Coverage
+        path: ./reports/schedule-coverage-audit.xml
+        reporter: java-junit
+        fail-on-error: false
+        list-suites: failed
+        list-tests: failed
