@@ -186,6 +186,16 @@
   CSV/JSON + markdown summary. Complements fleet-update-status.yml.
 - Pester guardrail: GENERATED_AGAINST_MODULE_VERSION in every
   sample YAML that installs the module must match the manifest.
+- Automation-Pipeline-Examples README: new "Default triggers and
+  schedules" table in Appendix A covering all six pipelines (GH +
+  ADO); per-pipeline Trigger row added (A.1 - A.6, incl. new A.6
+  Fleet Health Status). Apply Updates (A.4) + Section 8 now carry
+  a mandatory-customisation callout: UpdateWindow / UpdateExclusions
+  tags only GATE updates while the pipeline runs - they do NOT
+  start it. If apply-updates.yml is left at its shipped default
+  (workflow_dispatch only / trigger: none) and you rely on
+  UpdateWindow tags, no updates will ever apply automatically.
+  Section 8 includes worked GH / ADO cron examples.
 
 ### Fixed
 
