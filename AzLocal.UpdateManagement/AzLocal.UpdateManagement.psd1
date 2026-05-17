@@ -128,8 +128,6 @@
         # Fleet Status Data Collection & Reporting (v0.6.4)
         'Get-AzureLocalFleetStatusData',
         'New-AzureLocalFleetStatusHtmlReport',
-        # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
-        'Get-AzureLocalFleetHealthFailures',
         # Update Schedule Tag Helpers (v0.6.4)
         'Test-AzureLocalUpdateScheduleAllowed',
         # Sideloaded Payload Workflow (v0.7.1)
@@ -141,7 +139,9 @@
         # Pipeline-Examples Convenience (v0.7.4)
         'Copy-AzureLocalPipelineExample',
         # ITSM Sample Convenience (v0.7.50)
-        'Copy-AzureLocalItsmSample'
+        'Copy-AzureLocalItsmSample',
+        # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
+        'Get-AzureLocalFleetHealthFailures'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
