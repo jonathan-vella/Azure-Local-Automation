@@ -251,5 +251,7 @@ Export-ModuleMember -Function @(
     # Pipeline-Examples Convenience (v0.7.4)
     'Copy-AzureLocalPipelineExample',
     # ITSM Sample Convenience (v0.7.50)
-    'Copy-AzureLocalItsmSample'
+    'Copy-AzureLocalItsmSample',
+    # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
+    'Get-AzureLocalFleetHealthFailures'
 )
