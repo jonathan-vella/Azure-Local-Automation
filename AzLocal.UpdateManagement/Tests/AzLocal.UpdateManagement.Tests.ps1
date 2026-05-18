@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.65' {
-            $script:ModuleInfo.Version | Should -Be '0.7.65'
+        It 'Should have version 0.7.66' {
+            $script:ModuleInfo.Version | Should -Be '0.7.66'
         }
 
         It 'Should export exactly 27 functions' {
@@ -100,7 +100,7 @@ Describe 'Module: AzLocal.UpdateManagement' {
         }
     }
 
-    Context 'Pipeline YAML version pin (v0.7.65)' {
+    Context 'Pipeline YAML version pin (v0.7.66)' {
         # Every sample pipeline that installs AzLocal.UpdateManagement at runtime
         # also declares GENERATED_AGAINST_MODULE_VERSION so the install step can
         # detect drift between the YAML's expected version and what is installed
@@ -158,6 +158,43 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 $detail = '(no mismatches)'
             }
             $issues.Count | Should -Be 0 -Because "every pipeline YAML under Automation-Pipeline-Examples/ that installs AzLocal.UpdateManagement must pin GENERATED_AGAINST_MODULE_VERSION to the current manifest version $manifestVersion. Bumping the manifest version requires the same bump in every sample YAML. Findings:$([Environment]::NewLine)$detail"
+        }
+    }
+
+    Context 'Schedule-audit pipeline_path default is consumer-friendly (v0.7.66 regression)' {
+        # v0.7.66 regression guard: apply-updates-schedule-audit.yml (GH + ADO)
+        # shipped with a default pipeline_path of
+        # 'AzLocal.UpdateManagement/Automation-Pipeline-Examples' - a path that
+        # only exists in this module's source repo. In a consumer repo (where
+        # apply-updates.yml lives under .github/workflows or .azure-pipelines),
+        # the default-trigger run failed with
+        #   PipelineYamlPath '...' does not exist on the runner
+        # before the schedule advisor could emit JUnit XML. The defaults are
+        # now '.github/workflows' on GH and '.azure-pipelines' on ADO.
+        # This test guards both files from ever regressing to the in-source path.
+        It 'Neither apply-updates-schedule-audit.yml defaults to the in-source examples folder' {
+            $examplesRoot = Join-Path -Path $PSScriptRoot -ChildPath '..\Automation-Pipeline-Examples'
+            $examplesRoot = (Resolve-Path -Path $examplesRoot).Path
+
+            $auditYamls = @(
+                Join-Path $examplesRoot 'github-actions\apply-updates-schedule-audit.yml'
+                Join-Path $examplesRoot 'azure-devops\apply-updates-schedule-audit.yml'
+            )
+
+            $offenders = New-Object System.Collections.Generic.List[string]
+            foreach ($yml in $auditYamls) {
+                if (-not (Test-Path -LiteralPath $yml)) {
+                    $offenders.Add("${yml}: file is missing (expected for the schedule-audit pair)")
+                    continue
+                }
+                $content = Get-Content -LiteralPath $yml -Raw
+                if ($content -match "AzLocal\.UpdateManagement/Automation-Pipeline-Examples") {
+                    $offenders.Add("${yml}: still references the in-source path 'AzLocal.UpdateManagement/Automation-Pipeline-Examples'")
+                }
+            }
+
+            $detail = if ($offenders.Count -gt 0) { $offenders -join [Environment]::NewLine } else { '(no offenders)' }
+            $offenders.Count | Should -Be 0 -Because "the schedule-audit pipelines must default pipeline_path/pipelinePath to a consumer-realistic path (.github/workflows or .azure-pipelines), not to the in-source examples folder. Findings:$([Environment]::NewLine)$detail"
         }
     }
 }
@@ -2283,6 +2320,71 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
                 $rows = Invoke-AzResourceGraphQuery -Query 'resources' -MaxPages 3 -WarningVariable warnings -WarningAction SilentlyContinue
                 $rows | Should -HaveCount 3
                 ($warnings -join ' ') | Should -Match 'safety cap'
+            }
+        }
+    }
+
+    Context 'cp1252 stderr WARNING does not corrupt JSON parse (v0.7.66 regression)' {
+        # v0.7.66 regression guard: on hosted Windows runners (windows-latest,
+        # windows-2022) the Azure CLI's Python layer can emit
+        # 'WARNING: Unable to encode the output with cp1252 encoding...' to
+        # stderr before emitting the JSON body to stdout. The helper captures
+        # the merged stream via 2>&1, so without explicit stream-type filtering
+        # the WARNING line gets prepended to the JSON body and ConvertFrom-Json
+        # throws 'Unexpected character encountered while parsing value: W.'
+        # The fix: split the captured stream by element type (stderr lines
+        # surface as ErrorRecord, stdout lines as String) and feed only the
+        # string stream to ConvertFrom-Json. See matching hardening in
+        # Invoke-AzRestJson (v0.7.2).
+        It 'Should ignore stderr ErrorRecord lines when parsing the JSON body' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Simulate the Azure CLI emitting both a stderr WARNING and a
+                # valid JSON body on stdout. Write-Error makes the line surface
+                # as an ErrorRecord under 2>&1; the trailing 'return' emits
+                # the JSON to the output (stdout) stream. Pre-v0.7.66 the
+                # helper would call ConvertFrom-Json on 'WARNING: ...\n{...}'
+                # and throw.
+                function az {
+                    Write-Error 'WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.'
+                    return '{"count":1,"data":[{"id":"row-after-warning"}],"total_records":1}'
+                }
+                $global:LASTEXITCODE = 0
+
+                $rows = Invoke-AzResourceGraphQuery -Query 'resources | project id' -ErrorAction SilentlyContinue
+                $rows | Should -HaveCount 1
+                $rows[0].id | Should -Be 'row-after-warning'
+            }
+        }
+
+        It 'Should restore PYTHONIOENCODING after a successful call' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return '{"count":0,"data":[],"total_records":0}' }
+                $global:LASTEXITCODE = 0
+                $before = $env:PYTHONIOENCODING
+                try {
+                    $env:PYTHONIOENCODING = 'sentinel-before'
+                    [void](Invoke-AzResourceGraphQuery -Query 'resources | where 1==0')
+                    $env:PYTHONIOENCODING | Should -Be 'sentinel-before'
+                }
+                finally {
+                    $env:PYTHONIOENCODING = $before
+                }
+            }
+        }
+
+        It 'Should restore PYTHONIOENCODING after a throwing call' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return 'FATAL: oops' }
+                $global:LASTEXITCODE = 1
+                $before = $env:PYTHONIOENCODING
+                try {
+                    $env:PYTHONIOENCODING = 'sentinel-throw'
+                    { Invoke-AzResourceGraphQuery -Query 'bad' } | Should -Throw
+                    $env:PYTHONIOENCODING | Should -Be 'sentinel-throw'
+                }
+                finally {
+                    $env:PYTHONIOENCODING = $before
+                }
             }
         }
     }

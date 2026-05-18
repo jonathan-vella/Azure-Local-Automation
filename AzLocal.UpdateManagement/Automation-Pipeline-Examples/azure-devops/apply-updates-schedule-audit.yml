@@ -39,9 +39,9 @@ schedules:
 
 parameters:
   - name: pipelinePath
-    displayName: 'Path (file or folder) to apply-updates.yml to audit (relative to repo root)'
+    displayName: 'Path (file or folder) to apply-updates.yml to audit, repo-relative. Default `.azure-pipelines` matches the standard Azure DevOps consumer layout; for repos that keep apply-updates.yml at the repo root pass `.`'
     type: string
-    default: 'AzLocal.UpdateManagement/Automation-Pipeline-Examples'
+    default: '.azure-pipelines'
 
   - name: leadTimeMinutes
     displayName: 'Minutes before UpdateWindow opens that the pipeline should fire (0-60)'
@@ -59,7 +59,7 @@ parameters:
     default: ''
 
 variables:
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.65'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.66'
   REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
   reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
 
@@ -131,7 +131,9 @@ stages:
           $includeUnt   = ${{ lower(parameters.includeUntagged) }}
 
           if (-not (Test-Path -LiteralPath $pipelinePath)) {
-              throw "PipelineYamlPath '$pipelinePath' does not exist on the agent. Either commit the folder to the repo or pass a different -pipelinePath at queue time."
+              $candidates = @('.azure-pipelines', 'pipelines', '.github/workflows', '.') | Where-Object { Test-Path -LiteralPath $_ }
+              $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-queue the pipeline and override the 'pipelinePath' parameter." } else { "No common pipeline folders (.azure-pipelines, pipelines, .github/workflows, repo root) were found - commit your apply-updates.yml first, or set 'pipelinePath' to wherever you keep it." }
+              throw "PipelineYamlPath '$pipelinePath' does not exist on the agent. $hint"
           }
 
           Write-Host "========================================"

@@ -5,6 +5,50 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.66] - 2026-05-18
+
+### Fixed (critical)
+
+- **`Get-AzureLocalFleetHealthFailures` failed JSON parsing on hosted Windows runners when the Azure CLI emitted a cp1252 encoding warning.** Any call into `Invoke-AzResourceGraphQuery` (currently used by `Get-AzureLocalFleetHealthFailures` and indirectly by every consumer of the `fleet-health-status.yml` pipeline) on a `windows-latest` GitHub Actions runner (or any ADO Windows agent whose console code page is `cp1252`) could surface the following stderr line from the Azure CLI's underlying Python layer:
+
+  ```
+  WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.
+  ```
+
+  The helper captured `& az graph query ... 2>&1` as a single merged stream and passed the entire thing to `ConvertFrom-Json`, so the WARNING line got prepended to the JSON body and the cmdlet threw:
+
+  ```
+  Conversion from JSON failed with error: Unexpected character encountered while parsing value: W. Path '', line 0, position 0.; raw: WARNING: Unable to encode the output with cp1252 encoding. ...
+  ```
+
+  This was the same class of bug that the v0.7.2 hardening of `Invoke-AzRestJson` already handled - the fix never made it into `Invoke-AzResourceGraphQuery` when that helper was split out. The helper has now been updated to:
+  1. Set `$env:PYTHONIOENCODING = 'utf-8'` for the duration of the call (best-effort; `az.cmd` launches python with `-I` which causes python to ignore the env var, but we still set it as defence-in-depth). The previous value is restored in a `finally` block.
+  2. Split the merged `2>&1` stream by element type after capture: stderr lines surface as `[System.Management.Automation.ErrorRecord]` objects when captured via `2>&1`; stdout lines surface as strings. Only the string stream is fed to `ConvertFrom-Json`. The error-throwing path likewise renders the stderr stream separately so token-scrubbing still applies.
+
+  No public surface change. Every fleet-health-status pipeline run on a Windows runner is now resilient to this stderr warning regardless of the runner's console code page.
+
+- **`apply-updates-schedule-audit.yml` (both GitHub Actions and Azure DevOps) shipped with a default `pipeline_path` of `AzLocal.UpdateManagement/Automation-Pipeline-Examples` - a path that only exists in *this* module's source repo, never in a consumer repo.** Every default-trigger run of the schedule audit therefore failed with:
+
+  ```
+  PipelineYamlPath 'AzLocal.UpdateManagement/Automation-Pipeline-Examples' does not exist on the runner.
+  Either commit the folder to the repo or pass a different -pipeline_path via workflow_dispatch.
+  ```
+
+  before the schedule advisor could write its JUnit XML. The next step (`dorny/test-reporter` on GH, `PublishTestResults@2` on ADO) then failed with `Error: No test report files were found matching the pattern 'reports/schedule-coverage-audit.xml'`, making the entire job red. Both YAMLs now default to the standard consumer layout:
+  - GitHub Actions: `.github/workflows` (the folder where consumers paste the bundled `apply-updates.yml` sample).
+  - Azure DevOps: `.azure-pipelines` (the convention recommended by the ADO docs; consumers who keep apply-updates.yml elsewhere can still override via the `pipelinePath` parameter at queue time).
+
+  When the resolved path still does not exist on the runner (operator override pointed at a missing folder, etc.) the audit step now lists which common pipeline folders **do** exist in the checked-out repo (`.github/workflows`, `.azure-pipelines`, `pipelines`, repo root) so the operator immediately knows what value to pass.
+
+### Pipeline migration
+
+If you have copied any of the bundled workflows into your repo, refresh them via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+```
+
 ## [0.7.65] - 2026-05-17
 
 ### Added

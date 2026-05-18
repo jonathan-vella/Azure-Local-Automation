@@ -51,58 +51,88 @@ function Invoke-AzResourceGraphQuery {
     $skipToken = $null
     $pages = 0
 
-    while ($true) {
-        $pages++
-        if ($pages -gt $MaxPages) {
-            Write-Warning "Invoke-AzResourceGraphQuery: reached MaxPages=$MaxPages safety cap; returning partial result ($($allRows.Count) rows). Check the query for unbounded output or raise -MaxPages."
-            break
-        }
+    # Force Azure CLI (Python) to write UTF-8 to stdout/stderr regardless of the
+    # host console code page. Without this, any non-cp1252 character in an ARG
+    # response (resource IDs from non-en-US tenants, localised update names,
+    # cluster property strings, etc.) causes the CLI to emit a stderr warning
+    # like "WARNING: Unable to encode the output with cp1252 encoding..." which,
+    # when captured via 2>&1, gets prepended to the JSON and breaks
+    # ConvertFrom-Json. See the matching hardening in Invoke-AzRestJson.ps1
+    # (the v0.7.2 cp1252 fix). NOTE: az.cmd launches python with -I (isolated),
+    # which causes python to ignore PYTHONIOENCODING / PYTHONUTF8; the env-var
+    # assignment is therefore best-effort. The hard fix is the stderr/stdout
+    # split below: stderr lines surface as ErrorRecord objects under 2>&1 and
+    # we only feed the stdout strings to ConvertFrom-Json.
+    $prevPyEncoding = $env:PYTHONIOENCODING
+    try {
+        $env:PYTHONIOENCODING = 'utf-8'
 
-        $azArgs = @('graph', 'query', '-q', $Query, '--first', $First, '--only-show-errors')
-        if ($SubscriptionId) { $azArgs += @('--subscriptions', $SubscriptionId) }
-        if ($skipToken) { $azArgs += @('--skip-token', $skipToken) }
+        while ($true) {
+            $pages++
+            if ($pages -gt $MaxPages) {
+                Write-Warning "Invoke-AzResourceGraphQuery: reached MaxPages=$MaxPages safety cap; returning partial result ($($allRows.Count) rows). Check the query for unbounded output or raise -MaxPages."
+                break
+            }
 
-        $raw = & az @azArgs 2>&1
-        $exit = $LASTEXITCODE
-        if ($exit -ne 0) {
-            throw "Azure Resource Graph query failed (exit $exit): $(ConvertTo-ScrubbedCliOutput -Text (($raw | Out-String).Trim()))"
-        }
+            $azArgs = @('graph', 'query', '-q', $Query, '--first', $First, '--only-show-errors')
+            if ($SubscriptionId) { $azArgs += @('--subscriptions', $SubscriptionId) }
+            if ($skipToken) { $azArgs += @('--skip-token', $skipToken) }
 
-        $rawText = ($raw | Out-String).Trim()
-        if ([string]::IsNullOrWhiteSpace($rawText)) {
-            break
-        }
-        try {
-            $parsed = $rawText | ConvertFrom-Json -ErrorAction Stop
-        }
-        catch {
-            throw "Azure Resource Graph query failed to parse JSON: $($_.Exception.Message); raw: $(ConvertTo-ScrubbedCliOutput -Text $rawText.Substring(0, [Math]::Min(500, $rawText.Length)))"
-        }
+            $raw = & az @azArgs 2>&1
+            $exit = $LASTEXITCODE
 
-        # 'az graph query' returns either a top-level array (older CLI) or an
-        # object with .data / .skip_token (newer CLI). Normalise.
-        $rows = $null
-        $nextToken = $null
-        if ($parsed -is [System.Array]) {
-            $rows = $parsed
-        }
-        elseif ($parsed.PSObject.Properties.Name -contains 'data') {
-            $rows = $parsed.data
-            if ($parsed.PSObject.Properties.Name -contains 'skip_token') { $nextToken = $parsed.skip_token }
-            elseif ($parsed.PSObject.Properties.Name -contains 'skipToken') { $nextToken = $parsed.skipToken }
-        }
-        else {
-            # Unknown shape - treat as single-row result
-            $rows = @($parsed)
-        }
+            # Split merged stdout+stderr by stream type. Stderr lines (Python
+            # warnings, deprecation notices) surface as ErrorRecord objects
+            # when using 2>&1; stdout lines surface as strings. We only pass
+            # the string stream to ConvertFrom-Json so a stray stderr warning
+            # can never corrupt JSON.
+            $stderrLines = @($raw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+            $stdoutLines = @($raw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
 
-        if ($rows) {
-            foreach ($row in $rows) { [void]$allRows.Add($row) }
-        }
+            if ($exit -ne 0) {
+                $errText = ((($stderrLines + $stdoutLines) | Out-String).Trim())
+                throw "Azure Resource Graph query failed (exit $exit): $(ConvertTo-ScrubbedCliOutput -Text $errText)"
+            }
 
-        if (-not $nextToken) { break }
-        $skipToken = $nextToken
-        Write-Verbose "Invoke-AzResourceGraphQuery: fetched page $pages ($($allRows.Count) rows so far); following skip_token for next page."
+            $rawText = ($stdoutLines | Out-String).Trim()
+            if ([string]::IsNullOrWhiteSpace($rawText)) {
+                break
+            }
+            try {
+                $parsed = $rawText | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                throw "Azure Resource Graph query failed to parse JSON: $($_.Exception.Message); raw: $(ConvertTo-ScrubbedCliOutput -Text $rawText.Substring(0, [Math]::Min(500, $rawText.Length)))"
+            }
+
+            # 'az graph query' returns either a top-level array (older CLI) or an
+            # object with .data / .skip_token (newer CLI). Normalise.
+            $rows = $null
+            $nextToken = $null
+            if ($parsed -is [System.Array]) {
+                $rows = $parsed
+            }
+            elseif ($parsed.PSObject.Properties.Name -contains 'data') {
+                $rows = $parsed.data
+                if ($parsed.PSObject.Properties.Name -contains 'skip_token') { $nextToken = $parsed.skip_token }
+                elseif ($parsed.PSObject.Properties.Name -contains 'skipToken') { $nextToken = $parsed.skipToken }
+            }
+            else {
+                # Unknown shape - treat as single-row result
+                $rows = @($parsed)
+            }
+
+            if ($rows) {
+                foreach ($row in $rows) { [void]$allRows.Add($row) }
+            }
+
+            if (-not $nextToken) { break }
+            $skipToken = $nextToken
+            Write-Verbose "Invoke-AzResourceGraphQuery: fetched page $pages ($($allRows.Count) rows so far); following skip_token for next page."
+        }
+    }
+    finally {
+        $env:PYTHONIOENCODING = $prevPyEncoding
     }
 
     return , $allRows.ToArray()

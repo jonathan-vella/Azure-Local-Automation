@@ -135,7 +135,7 @@
 Set-StrictMode -Version 1.0
 
 # Module constants
-$script:ModuleVersion = '0.7.65'
+$script:ModuleVersion = '0.7.66'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.UpdateManagement'
 

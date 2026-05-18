@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.65 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.65)
+**Latest Version:** v0.7.66 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.66)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.65](#whats-new-in-v0765)
+- [What's New in v0.7.66](#whats-new-in-v0766)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -85,6 +85,7 @@ Azure Local REST API specification (includes update management endpoints): https
   - [Verbose Logging](#verbose-logging)
 - [License](#license)
 - [Release History](#release-history)
+  - [What's New in v0.7.65](#whats-new-in-v0765)
   - [What's New in v0.7.64](#whats-new-in-v0764)
   - [What's New in v0.7.63](#whats-new-in-v0763)
   - [What's New in v0.7.61](#whats-new-in-v0761)
@@ -148,6 +149,29 @@ If you are new to this module, work through these in order from a regular PowerS
 | **Recover from emergency** | `Stop-AzureLocalFleetUpdate` -> `Test-AzureLocalClusterHealth` (assess) -> `Resume-AzureLocalFleetUpdate -RetryFailed` |
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
+
+## What's New in v0.7.66
+
+v0.7.66 is a CI/CD hotfix release. Two errors were observed on production runs of the `fleet-health-status` and `apply-updates-schedule-audit` pipelines on `windows-latest` GitHub Actions runners; both have a clean root cause and a minimal patch. No public surface change.
+
+- **Fixed (critical) - `Get-AzureLocalFleetHealthFailures` failed JSON parsing when the Azure CLI emitted a cp1252 encoding warning to stderr.** On `windows-latest` runners (or any ADO Windows agent whose console code page is `cp1252`), the Azure CLI's underlying Python layer can surface this stderr line:
+
+  ```
+  WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.
+  ```
+
+  The shared `Invoke-AzResourceGraphQuery` helper was capturing `& az graph query ... 2>&1` as a single merged stream and feeding the entire thing to `ConvertFrom-Json`. The WARNING line therefore got prepended to the JSON body and the cmdlet threw `Conversion from JSON failed with error: Unexpected character encountered while parsing value: W. Path '', line 0, position 0.` This is the same class of bug that the v0.7.2 hardening of `Invoke-AzRestJson` already handled - the fix never made it into `Invoke-AzResourceGraphQuery` when that helper was split out. The helper now (a) sets `$env:PYTHONIOENCODING = 'utf-8'` for the duration of the call (best-effort; restored in a `finally` block) and (b) splits the merged `2>&1` stream by element type after capture - stderr lines surface as `[System.Management.Automation.ErrorRecord]` objects when captured via `2>&1`; stdout lines surface as strings; only the string stream is fed to `ConvertFrom-Json`. Every fleet-health-status pipeline run on a Windows runner is now resilient to this stderr warning.
+
+- **Fixed (critical) - `apply-updates-schedule-audit.yml` (both GitHub Actions and Azure DevOps) shipped with a default `pipeline_path` that only exists in *this* module's source repo.** The shipped default was `AzLocal.UpdateManagement/Automation-Pipeline-Examples`. In a consumer repo - where `apply-updates.yml` lives under `.github/workflows/` (GH) or `.azure-pipelines/` (ADO) - that path does not exist and every default-trigger run failed with `PipelineYamlPath '...' does not exist on the runner` before the schedule advisor could write its JUnit XML, which then crashed `dorny/test-reporter` with `No test report files were found`. The defaults now match the standard consumer layout: `.github/workflows` on GitHub Actions, `.azure-pipelines` on Azure DevOps. When the resolved path is still missing on the runner, the audit step now lists which common pipeline folders **do** exist in the checked-out repo (`.github/workflows`, `.azure-pipelines`, `pipelines`, repo root) so the operator immediately knows what value to pass via `workflow_dispatch` / queue-time override.
+
+### Pipeline migration
+
+If you have copied any of the bundled workflows into your repo, refresh them via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+```
 
 ## What's New in v0.7.65
 
