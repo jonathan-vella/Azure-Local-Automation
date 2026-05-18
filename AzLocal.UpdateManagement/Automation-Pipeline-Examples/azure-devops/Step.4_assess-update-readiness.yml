@@ -24,7 +24,12 @@
 # Remediation of Critical health failures is out of scope for this module - see the module
 # README "Assess Readiness and Health BEFORE Applying Updates" section for pointers.
 
+# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+# Add or modify `schedules:` blocks here to enable automated readiness checks.
+# Content between BEGIN/END markers is preserved by Update-AzureLocalPipelineExample
+# across module upgrades.
 trigger: none
+# END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
 parameters:
   - name: scope

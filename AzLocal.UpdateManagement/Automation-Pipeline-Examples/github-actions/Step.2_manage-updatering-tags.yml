@@ -21,6 +21,14 @@
 name: Manage UpdateRing Tags
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Add `schedule:` cron blocks here to enable automated runs, e.g.:
+  #   schedule:
+  #     - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
+  # Content between BEGIN/END markers is preserved by
+  # Update-AzureLocalPipelineExample across module upgrades.
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+
   workflow_dispatch:
     inputs:
       csv_file_path:

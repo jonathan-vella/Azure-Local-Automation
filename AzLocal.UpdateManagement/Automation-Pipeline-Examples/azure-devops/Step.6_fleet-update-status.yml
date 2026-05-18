@@ -20,6 +20,9 @@
 # Uses Workload Identity Federation (OIDC) - recommended for secretless authentication
 # See: https://learn.microsoft.com/en-us/azure/devops/pipelines/library/connect-to-azure?view=azure-devops#create-an-azure-resource-manager-service-connection-using-workload-identity-federation
 
+# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+# Edits inside this block are preserved across Update-AzureLocalPipelineExample
+# module upgrades. Add or modify `schedules:` blocks below.
 trigger: none  # Manual or scheduled only
 
 schedules:
@@ -30,6 +33,7 @@ schedules:
       include:
         - main
     always: true  # Run even if no code changes
+# END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
 parameters:
   - name: scope

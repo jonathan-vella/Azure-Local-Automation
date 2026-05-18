@@ -29,6 +29,14 @@
 name: Assess Update Readiness
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Add `schedule:` cron blocks here to enable automated readiness checks, e.g.:
+  #   schedule:
+  #     - cron: '0 4 * * *'  # Daily at 04:00 UTC, before apply-updates windows
+  # Content between BEGIN/END markers is preserved by
+  # Update-AzureLocalPipelineExample across module upgrades.
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+
   workflow_dispatch:
     inputs:
       scope:

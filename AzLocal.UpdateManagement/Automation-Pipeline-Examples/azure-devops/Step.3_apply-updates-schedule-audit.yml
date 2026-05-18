@@ -24,6 +24,9 @@
 # AUTHENTICATION:
 # Uses Workload Identity Federation (OIDC) - recommended for secretless authentication.
 
+# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+# Edits inside this block are preserved across Update-AzureLocalPipelineExample
+# module upgrades. Add or modify `schedules:` blocks below.
 trigger: none  # Manual or scheduled only
 
 schedules:
@@ -36,6 +39,7 @@ schedules:
       include:
         - main
     always: true
+# END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
 parameters:
   - name: pipelinePath

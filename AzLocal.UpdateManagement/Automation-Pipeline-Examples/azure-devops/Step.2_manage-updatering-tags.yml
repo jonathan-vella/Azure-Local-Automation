@@ -11,7 +11,12 @@
 # NOTE: Azure DevOps does not support file uploads as pipeline parameters.
 #       The edited CSV must be committed to the repository first.
 
+# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+# Add or modify `schedules:` blocks here to enable cron-driven runs. Content
+# between BEGIN/END markers is preserved by Update-AzureLocalPipelineExample
+# across module upgrades.
 trigger: none
+# END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
 parameters:
   - name: csvFilePath

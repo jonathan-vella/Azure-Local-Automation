@@ -23,10 +23,14 @@
 name: Fleet Update Status
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Edits inside this block are preserved across Update-AzureLocalPipelineExample
+  # module upgrades. Add or modify `schedule:` cron blocks below.
   # Run on schedule (e.g., daily at 6 AM UTC)
   schedule:
     - cron: '0 6 * * *'  # Daily at 6:00 AM UTC
-  
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+
   # Manual trigger with options
   workflow_dispatch:
     inputs:

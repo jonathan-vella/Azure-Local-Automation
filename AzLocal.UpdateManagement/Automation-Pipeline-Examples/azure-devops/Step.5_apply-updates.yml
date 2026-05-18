@@ -1,7 +1,15 @@
 # Apply Updates to Azure Local Clusters
 # This pipeline applies updates to clusters filtered by UpdateRing tag value
 
+# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+# Add or modify `schedules:` cron blocks here to drive automated update runs.
+# The cron entries must align with your UpdateWindow tag values - use
+# `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` (or the Step.3
+# schedule-audit pipeline) to generate ready-to-paste cron lines. Content
+# between BEGIN/END markers is preserved by Update-AzureLocalPipelineExample
+# across module upgrades.
 trigger: none
+# END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
 parameters:
   - name: updateRing
@@ -469,13 +477,16 @@ stages:
             name: itsm
             condition: and(succeeded(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
             env:
-              # Secrets sourced from the variable group above. Mapping them
-              # here keeps them off the PowerShell command line (no process-
-              # listing or log leakage) and lets the module pick them up via
-              # env:// references in azurelocal-itsm.yml.
+              # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+              # Bind your ITSM connector secrets from the variable group above.
+              # Defaults assume the ServiceNow OAuth client_credentials naming
+              # used by azurelocal-itsm.yml (env://ITSM_SN_*). If your secret
+              # names differ, update them here - this block is preserved by
+              # Update-AzureLocalPipelineExample across module upgrades.
               ITSM_SN_INSTANCE_URL: $(ITSM_SN_INSTANCE_URL)
               ITSM_SN_CLIENT_ID: $(ITSM_SN_CLIENT_ID)
               ITSM_SN_CLIENT_SECRET: $(ITSM_SN_CLIENT_SECRET)
+              # END-AZLOCAL-CUSTOMIZE:itsm-secrets
             inputs:
               azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
               scriptType: 'pscore'

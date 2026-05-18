@@ -11,6 +11,18 @@
 name: Apply Updates
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Add `schedule:` cron blocks here to drive automated update runs. The cron
+  # entries must align with your UpdateWindow tag values - use
+  # `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` (or the
+  # Step.3 schedule-audit pipeline) to generate ready-to-paste cron lines.
+  # Example:
+  #   schedule:
+  #     - cron: '0 22 * * 6'  # Saturday-night UpdateWindow=SatNight22UTC
+  # Content between BEGIN/END markers is preserved by
+  # Update-AzureLocalPipelineExample across module upgrades.
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+
   workflow_dispatch:
     inputs:
       update_ring:
@@ -438,12 +450,16 @@ jobs:
       shell: pwsh
       id: itsm
       env:
-        # ServiceNow OAuth client_credentials grant. Reference these via
-        # env://ITSM_SN_* in azurelocal-itsm.yml. Keep these secret names
-        # stable so users only have to wire them once.
+        # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+        # Bind your ITSM connector secrets here. Defaults below assume the
+        # ServiceNow OAuth client_credentials grant naming used by
+        # azurelocal-itsm.yml (env://ITSM_SN_*). If your secret names differ,
+        # update them here - this block is preserved by
+        # Update-AzureLocalPipelineExample across module upgrades.
         ITSM_SN_INSTANCE_URL: ${{ secrets.ITSM_SN_INSTANCE_URL }}
         ITSM_SN_CLIENT_ID:    ${{ secrets.ITSM_SN_CLIENT_ID }}
         ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
+        # END-AZLOCAL-CUSTOMIZE:itsm-secrets
         INPUT_ITSM_CONFIG_PATH: ${{ github.event.inputs.itsm_config_path }}
         INPUT_ITSM_DRY_RUN:     ${{ github.event.inputs.itsm_dry_run }}
         INPUT_ITSM_FORCE_CREATE: ${{ github.event.inputs.itsm_force_create }}

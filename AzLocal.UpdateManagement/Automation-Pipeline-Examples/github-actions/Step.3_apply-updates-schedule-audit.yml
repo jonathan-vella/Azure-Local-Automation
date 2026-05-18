@@ -30,11 +30,15 @@
 name: Apply-Updates Schedule Coverage Audit
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Edits inside this block are preserved across Update-AzureLocalPipelineExample
+  # module upgrades. Add or modify `schedule:` cron blocks below.
   # Weekly on Monday at 05:00 UTC - well before any common Saturday/Sunday or weekday
   # evening update window so a coverage drift report lands in the inbox before the
   # next scheduled apply-updates run.
   schedule:
     - cron: '0 5 * * 1'   # Mondays at 05:00 UTC
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
   workflow_dispatch:
     inputs:
