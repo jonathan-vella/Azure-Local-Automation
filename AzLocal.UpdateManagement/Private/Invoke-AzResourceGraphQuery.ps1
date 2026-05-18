@@ -166,5 +166,13 @@ function Invoke-AzResourceGraphQuery {
         $env:PYTHONIOENCODING = $prevPyEncoding
     }
 
+    # IMPORTANT: the leading comma is required to preserve array shape so that
+    # callers using `$x = Invoke-AzResourceGraphQuery ...` receive an [object[]]
+    # for 0, 1, or N rows (not $null, scalar, or unwrapped enumerable).
+    # WARNING: callers MUST NOT wrap this call with @( ... ). The `,`-return
+    # plus `@()` combination produces a double-wrapped Object[1] containing the
+    # inner array, which silently collapses N rows to 1 row of property-arrays.
+    # Use `$x = Invoke-AzResourceGraphQuery ...` directly; the result is always
+    # an array.
     return , $allRows.ToArray()
 }
