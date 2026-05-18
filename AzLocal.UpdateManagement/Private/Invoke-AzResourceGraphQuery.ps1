@@ -42,6 +42,27 @@ function Invoke-AzResourceGraphQuery {
         Safety cap. Defaults to 100 (= 100,000 rows). Bumped from 50 in
         v0.7.68 so that fleets up to ~100K clusters paginate without operator
         intervention.
+    .PARAMETER MaxRetries
+        v0.7.68: per-page retry budget for transient ARG throttling (HTTP 429
+        / RateLimitingException). Each page can be retried up to this many
+        times with exponential backoff + jitter before the call gives up and
+        throws. Defaults to 5 (initial attempt + 5 retries = 6 total tries
+        per page).
+    .PARAMETER RetryBaseSeconds
+        v0.7.68: base delay for the exponential backoff on throttle retries.
+        Defaults to 1 second; attempt N sleeps `RetryBaseSeconds * 2^(N-1)`
+        seconds (1, 2, 4, 8, 16, ...) with +/-20% random jitter. The minimum
+        effective sleep is 0.5s.
+    .NOTES
+        v0.7.68 throttle handling exposes two module-scope diagnostic flags
+        reset at the start of every call and readable by callers/tests:
+          $script:LastResourceGraphThrottled  - $true if any retry happened
+          $script:LastResourceGraphRetryCount - total retries across all pages
+        Recognised throttle markers in the CLI error text (case-insensitive):
+          'rate limit', 'ratelimit', 'throttl', '429', 'too many requests'.
+        Once a throttle event is observed during a call, an inter-page pause
+        of 1 second is inserted between subsequent pages to avoid immediately
+        re-triggering the limiter.
     .OUTPUTS
         [object[]] of rows merged across all pages. Empty array if no rows.
         Throws if the CLI returns a non-zero exit code or the response cannot
@@ -63,7 +84,15 @@ function Invoke-AzResourceGraphQuery {
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(1, 500)]
-        [int]$MaxPages = 100
+        [int]$MaxPages = 100,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(0, 20)]
+        [int]$MaxRetries = 5,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateRange(0.1, 60)]
+        [double]$RetryBaseSeconds = 1
     )
 
     # v0.7.68: collapse CR/LF and runs of whitespace into single spaces so the
@@ -76,6 +105,16 @@ function Invoke-AzResourceGraphQuery {
     # Reset the truncation flag at the start of every call so a caller checking
     # $script:LastResourceGraphQueryTruncated sees only THIS call's outcome.
     $script:LastResourceGraphQueryTruncated = $false
+
+    # v0.7.68: throttle diagnostics, reset per call. Tests and pipeline
+    # callers can read these flags to detect/report transient ARG throttling.
+    $script:LastResourceGraphThrottled = $false
+    $script:LastResourceGraphRetryCount = 0
+
+    # Inter-page pause (milliseconds). Starts at 0; ratchets to 1000ms after
+    # the first throttle event in this call so subsequent pages don't
+    # immediately re-trigger the limiter.
+    $interPagePauseMs = 0
 
     $allRows = [System.Collections.Generic.List[object]]::new()
     $skipToken = $null
@@ -109,19 +148,52 @@ function Invoke-AzResourceGraphQuery {
             if ($SubscriptionId) { $azArgs += @('--subscriptions', $SubscriptionId) }
             if ($skipToken) { $azArgs += @('--skip-token', $skipToken) }
 
-            $raw = & az @azArgs 2>&1
-            $exit = $LASTEXITCODE
+            # v0.7.68: per-page retry loop for transient ARG throttling. ARG
+            # returns HTTP 429 / RateLimitingException when the caller exceeds
+            # the per-subscription quota; the CLI surfaces those in the error
+            # stream. Non-throttle failures (auth, bad KQL, permissions) fall
+            # straight through to the throw path - we do NOT retry those.
+            $retryAttempt = 0
+            $raw = $null
+            $exit = $null
+            $stderrLines = @()
+            $stdoutLines = @()
+            while ($true) {
+                $raw = & az @azArgs 2>&1
+                $exit = $LASTEXITCODE
 
-            # Split merged stdout+stderr by stream type. Stderr lines (Python
-            # warnings, deprecation notices) surface as ErrorRecord objects
-            # when using 2>&1; stdout lines surface as strings. We only pass
-            # the string stream to ConvertFrom-Json so a stray stderr warning
-            # can never corrupt JSON.
-            $stderrLines = @($raw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
-            $stdoutLines = @($raw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+                # Split merged stdout+stderr by stream type. Stderr lines
+                # (Python warnings, deprecation notices, throttle errors)
+                # surface as ErrorRecord objects when using 2>&1; stdout
+                # lines surface as strings. We only pass the string stream to
+                # ConvertFrom-Json so a stray stderr warning can never corrupt
+                # JSON.
+                $stderrLines = @($raw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+                $stdoutLines = @($raw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
 
-            if ($exit -ne 0) {
+                if ($exit -eq 0) {
+                    break
+                }
+
                 $errText = ((($stderrLines + $stdoutLines) | Out-String).Trim())
+                $isThrottle = $errText -match '(?i)(rate.?limit|throttl|\b429\b|too many requests)'
+
+                if ($isThrottle -and $retryAttempt -lt $MaxRetries) {
+                    $retryAttempt++
+                    $script:LastResourceGraphThrottled = $true
+                    $script:LastResourceGraphRetryCount++
+                    $baseDelay = $RetryBaseSeconds * [Math]::Pow(2, $retryAttempt - 1)
+                    # +/-20% jitter, floor 0.5s
+                    $jitterFactor = 1 + (Get-Random -Minimum -0.2 -Maximum 0.2)
+                    $delay = [Math]::Max(0.5, $baseDelay * $jitterFactor)
+                    Write-Warning ("Invoke-AzResourceGraphQuery: ARG throttled on page {0} (attempt {1}/{2}); sleeping {3:N2}s before retry." -f $pages, $retryAttempt, $MaxRetries, $delay)
+                    Start-Sleep -Seconds $delay
+                    # Ratchet the inter-page pause so the NEXT page also waits
+                    if ($interPagePauseMs -lt 1000) { $interPagePauseMs = 1000 }
+                    continue
+                }
+
+                # Either not a throttle, or out of retries: fail hard.
                 throw "Azure Resource Graph query failed (exit $exit): $(ConvertTo-ScrubbedCliOutput -Text $errText)"
             }
 
@@ -160,6 +232,13 @@ function Invoke-AzResourceGraphQuery {
             if (-not $nextToken) { break }
             $skipToken = $nextToken
             Write-Verbose "Invoke-AzResourceGraphQuery: fetched page $pages ($($allRows.Count) rows so far); following skip_token for next page."
+
+            # v0.7.68: pause between pages if we have observed throttling in
+            # this call, to avoid immediately re-triggering the limiter on
+            # the next page request.
+            if ($interPagePauseMs -gt 0) {
+                Start-Sleep -Milliseconds $interPagePauseMs
+            }
         }
     }
     finally {
