@@ -38,6 +38,19 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo.Version | Should -Be '0.7.67'
         }
 
+        It 'Module version constants are in sync between .psm1 and .psd1' {
+            # v0.7.67: regression guard for the drift bug where
+            # $script:ModuleVersion in AzLocal.UpdateManagement.psm1 was '0.7.66'
+            # while the manifest had been bumped to '0.7.67'. The script-scope
+            # constant is the value emitted in run-log headers and stamped into
+            # exported fleet-state JSON, so drift silently misreports the
+            # generator version to consumers. Both must match.
+            $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.UpdateManagement.psd1'
+            $manifestVersion = (Import-PowerShellDataFile -Path $manifestPath).ModuleVersion
+            $scriptVersion = InModuleScope AzLocal.UpdateManagement { $script:ModuleVersion }
+            $scriptVersion | Should -Be $manifestVersion -Because '$script:ModuleVersion in the .psm1 must match ModuleVersion in the .psd1'
+        }
+
         It 'Should export exactly 27 functions' {
             $script:ModuleInfo.ExportedFunctions.Count | Should -Be 27
         }
@@ -2445,6 +2458,106 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
 }
 
 #endregion Internal Helper: Invoke-AzResourceGraphQuery
+
+Describe 'Internal Helper: Invoke-AzCliJson (v0.7.67)' {
+    # New in v0.7.67. Generic wrapper around 'az <subcommand>' that applies the
+    # same stderr/stdout stream-split + JSON parse pattern as Invoke-AzRestJson
+    # and Invoke-AzResourceGraphQuery, so callers outside the 'az rest' path
+    # (notably 'az account show' in Get-AzureLocalClusterInventory) no longer
+    # have to inline the unsafe `az ... 2>&1 | ConvertFrom-Json` boilerplate.
+
+    Context 'Stream-split JSON parsing' {
+        It 'Returns Ok=$true and parsed Data on a clean JSON response' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return '{"id":"00000000-0000-0000-0000-000000000000","name":"sub-name"}' }
+                $global:LASTEXITCODE = 0
+                $res = Invoke-AzCliJson -Arguments @('account','show','--subscription','x')
+                $res.Ok | Should -BeTrue
+                $res.Data.name | Should -Be 'sub-name'
+                $res.Error | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'Ignores stderr WARNING lines when parsing the JSON body (cp1252 regression guard)' {
+            # Mirrors the Invoke-AzResourceGraphQuery cp1252 guard. Write-Error
+            # makes the line surface as an ErrorRecord under 2>&1; without the
+            # stream-type filter the WARNING would be prepended to the JSON and
+            # ConvertFrom-Json would throw.
+            InModuleScope AzLocal.UpdateManagement {
+                function az {
+                    Write-Error 'WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.'
+                    return '{"name":"sub-after-warning"}'
+                }
+                $global:LASTEXITCODE = 0
+                $res = Invoke-AzCliJson -Arguments @('account','show') -ErrorAction SilentlyContinue
+                $res.Ok | Should -BeTrue
+                $res.Data.name | Should -Be 'sub-after-warning'
+            }
+        }
+
+        It 'Returns Ok=$false with scrubbed Error when CLI exits non-zero' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return 'ERROR: not authenticated' }
+                $global:LASTEXITCODE = 1
+                $res = Invoke-AzCliJson -Arguments @('account','show')
+                $res.Ok | Should -BeFalse
+                $res.Data | Should -BeNullOrEmpty
+                $res.Error | Should -Match 'not authenticated'
+            }
+        }
+
+        It 'Returns Ok=$true with Data=$null when stdout is empty' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return '' }
+                $global:LASTEXITCODE = 0
+                $res = Invoke-AzCliJson -Arguments @('logout')
+                $res.Ok | Should -BeTrue
+                $res.Data | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'Returns Ok=$false with parse-failure Error when stdout is not JSON' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return 'this is not json' }
+                $global:LASTEXITCODE = 0
+                $res = Invoke-AzCliJson -Arguments @('account','show')
+                $res.Ok | Should -BeFalse
+                $res.Error | Should -Match 'JSON parse failure'
+            }
+        }
+
+        It 'Appends --only-show-errors to the invocation' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:capturedArgs = $null
+                function az {
+                    $script:capturedArgs = @($args)
+                    return '{}'
+                }
+                $global:LASTEXITCODE = 0
+                [void](Invoke-AzCliJson -Arguments @('account','show'))
+                $script:capturedArgs | Should -Contain '--only-show-errors'
+            }
+        }
+
+        It 'Restores PYTHONIOENCODING after a successful call' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return '{}' }
+                $global:LASTEXITCODE = 0
+                $before = $env:PYTHONIOENCODING
+                try {
+                    $env:PYTHONIOENCODING = 'sentinel-clean'
+                    [void](Invoke-AzCliJson -Arguments @('account','show'))
+                    $env:PYTHONIOENCODING | Should -Be 'sentinel-clean'
+                }
+                finally {
+                    $env:PYTHONIOENCODING = $before
+                }
+            }
+        }
+    }
+}
+
+#endregion Internal Helper: Invoke-AzCliJson
 
 #region Fleet Health Failures (v0.7.65)
 
@@ -5149,11 +5262,47 @@ Describe 'Function: Test-AzureLocalApplyUpdatesScheduleCoverage' {
             }
         }
 
-        It 'Rejects step expressions (/N)' {
+        It 'Parses */15 step syntax (v0.7.67) and enumerates 4 fires per hour' {
+            # v0.7.67: cron step syntax is now supported. Pre-v0.7.67 this
+            # asserted IsValid=$false and ErrorMessage matched "not supported";
+            # the advisor would falsely flag every-15-minute crons as
+            # UnparseableCron even though GitHub Actions and Azure DevOps
+            # both honour the syntax.
             InModuleScope AzLocal.UpdateManagement {
                 $p = ConvertFrom-AzLocalCronExpression -Expression '*/15 * * * *'
+                $p.IsValid | Should -BeTrue
+                $p.IsComplex | Should -BeFalse
+                # 60 / 15 = 4 minutes per hour * 24 hours * 7 days = 672 fires.
+                @($p.FireTimes).Count | Should -Be 672
+            }
+        }
+
+        It 'Parses bounded step range 9-17/2 in the hour field (v0.7.67)' {
+            InModuleScope AzLocal.UpdateManagement {
+                # 0 9-17/2 * * 1-5 -> hours 9,11,13,15,17 on weekdays = 5 fires/day * 5 days = 25.
+                $p = ConvertFrom-AzLocalCronExpression -Expression '0 9-17/2 * * 1-5'
+                $p.IsValid | Should -BeTrue
+                $p.IsComplex | Should -BeFalse
+                @($p.FireTimes).Count | Should -Be 25
+            }
+        }
+
+        It 'Parses start-anchored step 5/15 in the minute field (v0.7.67)' {
+            InModuleScope AzLocal.UpdateManagement {
+                # 5/15 in minute (0-59) -> 5,20,35,50 = 4 fires per hour.
+                $p = ConvertFrom-AzLocalCronExpression -Expression '5/15 * * * 1'
+                $p.IsValid | Should -BeTrue
+                @($p.FireTimes).Count | Should -Be (4 * 24)
+                # First fire should be at minute 5, not 0.
+                $p.FireTimes[0].Minute | Should -Be 5
+            }
+        }
+
+        It 'Rejects step expressions with non-positive N (v0.7.67)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression '*/0 * * * *'
                 $p.IsValid | Should -BeFalse
-                $p.ErrorMessage | Should -Match 'not supported'
+                $p.ErrorMessage | Should -Match 'positive integer'
             }
         }
 
@@ -5727,6 +5876,81 @@ Describe 'v0.7.67 schedule-audit summary - cron fixes first when issues exist' {
         $idxActionRequired | Should -BeGreaterThan -1
         $idxAuditDetail    | Should -BeGreaterThan -1
         $idxActionRequired | Should -BeLessThan $idxAuditDetail -Because 'When issues exist, recommendation block must precede the detail table in the summary script.'
+    }
+}
+
+Describe 'v0.7.67 Reset-AzureLocalSideloadedTag warns on malformed Resource IDs' {
+    # v0.7.67 review finding: the ByResourceId resolver silently dropped Resource
+    # IDs that did not end in '/clusters/<name>'. Operators with typo'd inputs
+    # (trailing slash, wrong provider, truncated string) would never see the
+    # entry was excluded from the reset. This test ensures the resolver emits a
+    # Write-Log Warning for any input it cannot match.
+    BeforeAll {
+        $moduleName = 'AzLocal.UpdateManagement'
+    }
+
+    It 'Writes a Warning for a malformed Resource ID and does not include it in targets' {
+        InModuleScope AzLocal.UpdateManagement {
+            $warnings = @()
+            Mock Write-Log -ParameterFilter { $Level -eq 'Warning' } -MockWith {
+                $script:warnings += ,$Message
+            }
+            Mock Write-Log {}
+            Mock Test-AzCliAvailable { return $true }
+            # Force the function to short-circuit before any 'az' / network call:
+            # by passing only a malformed RID, $targets will end up empty, and
+            # the function returns @() with a "no matching clusters" warning.
+            $script:warnings = @()
+            $script:result = $null
+            { $script:result = Reset-AzureLocalSideloadedTag `
+                -ClusterResourceIds @('/this/is/not/a/cluster/resource/id') `
+                -Confirm:$false } | Should -Not -Throw
+            ($script:warnings -join "`n") | Should -Match "does not match an Azure Local cluster Resource ID"
+        }
+    }
+}
+
+Describe 'v0.7.67 Import-AzureLocalFleetState size guard' {
+    # v0.7.67 review finding: the helper called `Get-Content -Raw |
+    # ConvertFrom-Json` on the input file without any size check. A user
+    # pointed at a multi-GB file (typo, mis-glob, malicious symlink) would
+    # OOM the runner. We now reject anything > 50 MB.
+    It 'Throws when the input file exceeds the 50 MB safety cap' {
+        InModuleScope AzLocal.UpdateManagement {
+            $tempFile = Join-Path $env:TEMP "fleet-state-oversize-$([guid]::NewGuid()).json"
+            '{"RunId":"x","TotalClusters":0,"CompletedCount":0,"FailedCount":0,"PendingCount":0}' |
+                Out-File -FilePath $tempFile -Encoding ASCII
+            try {
+                Mock Get-Item {
+                    [PSCustomObject]@{ Length = 60MB; FullName = $tempFile }
+                } -ParameterFilter { $LiteralPath -eq $tempFile }
+                # Capture Write-Error rather than letting it surface (the
+                # helper catches the throw and re-emits via Write-Error,
+                # returning $null).
+                $result = Import-AzureLocalFleetState -Path $tempFile -ErrorAction SilentlyContinue -ErrorVariable err
+                $result | Should -BeNullOrEmpty
+                ($err | Out-String) | Should -Match '50 MB safety cap'
+            }
+            finally {
+                Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    It 'Loads a normal-sized fleet state without invoking the cap' {
+        InModuleScope AzLocal.UpdateManagement {
+            $tempFile = Join-Path $env:TEMP "fleet-state-normal-$([guid]::NewGuid()).json"
+            '{"RunId":"abc","StartTime":"2025-01-01T00:00:00Z","TotalClusters":1,"CompletedCount":0,"FailedCount":0,"PendingCount":1}' |
+                Out-File -FilePath $tempFile -Encoding ASCII
+            try {
+                $result = Import-AzureLocalFleetState -Path $tempFile
+                $result | Should -Not -BeNullOrEmpty
+                $result.RunId | Should -Be 'abc'
+            }
+            finally {
+                Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 }
 

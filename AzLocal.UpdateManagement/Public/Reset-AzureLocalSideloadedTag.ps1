@@ -101,6 +101,15 @@ function Reset-AzureLocalSideloadedTag {
                 if ($rid -match '/clusters/([^/]+)$') {
                     $targets += [PSCustomObject]@{ Name = $matches[1]; ResourceId = $rid }
                 }
+                else {
+                    # v0.7.67: surface malformed inputs explicitly. The other
+                    # resolvers below ('ByName', 'ByTag') warn on lookup
+                    # failure - the ByResourceId path previously dropped
+                    # malformed entries (typos, trailing slash, wrong provider)
+                    # without any operator-visible signal, so the operator
+                    # never noticed the entry was excluded from the reset.
+                    Write-Log -Message "Reset-AzureLocalSideloadedTag: skipping '$rid' - does not match an Azure Local cluster Resource ID (must end in '/clusters/<name>')." -Level Warning
+                }
             }
         }
         'ByName' {

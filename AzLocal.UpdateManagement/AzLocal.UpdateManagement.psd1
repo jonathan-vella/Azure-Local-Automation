@@ -56,6 +56,7 @@
         'Private/Get-TagValue.ps1',
         'Private/Import-AzureLocalFleetState.ps1',
         'Private/Install-AzGraphExtension.ps1',
+        'Private/Invoke-AzCliJson.ps1',
         'Private/Invoke-AzLocalSideloadedAutoReset.ps1',
         'Private/Invoke-AzLocalSideloadedAutoResetForCluster.ps1',
         'Private/Invoke-AzLocalItsmHttp.ps1',
