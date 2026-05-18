@@ -23,11 +23,6 @@ parameters:
     type: boolean
     default: true
 
-  - name: throttleLimit
-    displayName: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
-    type: number
-    default: 4
-
   # --- ITSM Connector (v0.7.4 Phase 1: ServiceNow) ---
   # Opt-in ticket creation. Defaults preserve the previous pipeline behaviour
   # (no ITSM calls). Secrets are wired via the variable group referenced below
@@ -153,9 +148,8 @@ stages:
                 Import-Module AzLocal.UpdateManagement -Force
                 
                 $updateRing = "${{ parameters.updateRing }}"
-                $throttle = [int]"${{ parameters.throttleLimit }}"; if ($throttle -lt 1) { $throttle = 4 }
                 
-                Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing' (ThrottleLimit=$throttle)"
+                Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing'"
                 
                 # Create output directory
                 $outputDir = "$(Build.ArtifactStagingDirectory)"
@@ -165,7 +159,6 @@ stages:
                 $results = Get-AzureLocalClusterUpdateReadiness `
                     -ScopeByUpdateRingTag `
                     -UpdateRingValue $updateRing `
-                    -ThrottleLimit $throttle `
                     -ExportPath $csvPath `
                     -PassThru
                 

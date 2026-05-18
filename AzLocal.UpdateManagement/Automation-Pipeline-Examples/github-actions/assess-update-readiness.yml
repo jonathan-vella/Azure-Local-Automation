@@ -45,10 +45,6 @@ on:
         description: "UpdateRing tag value (only used when scope=by-update-ring). Single ring, 'Prod;Ring2', or '***'."
         required: false
         default: 'Wave1'
-      throttle_limit:
-        description: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
-        required: false
-        default: '4'
       module_version:
         description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
         required: false
@@ -135,13 +131,11 @@ jobs:
         env:
           INPUT_SCOPE: ${{ github.event.inputs.scope }}
           INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
-          INPUT_THROTTLE_LIMIT: ${{ github.event.inputs.throttle_limit }}
         run: |
           Import-Module AzLocal.UpdateManagement -Force
 
           $scope = $env:INPUT_SCOPE
           $updateRing = $env:INPUT_UPDATE_RING
-          $throttle = [int]($env:INPUT_THROTTLE_LIMIT); if ($throttle -lt 1) { $throttle = 4 }
 
           $outputDir = './artifacts'
           New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
@@ -175,13 +169,11 @@ jobs:
 
           # CSV for humans
           $readiness = Get-AzureLocalClusterUpdateReadiness @scopeParams `
-              -ThrottleLimit $throttle `
               -ExportPath $readinessCsv `
               -PassThru
 
           # JUnit XML for the test reporter (ExportPath .xml auto-detects JUnitXml)
           $null = Get-AzureLocalClusterUpdateReadiness @scopeParams `
-              -ThrottleLimit $throttle `
               -ExportPath $readinessXml
 
           $notReady = @($readiness | Where-Object { $_.ReadyForUpdate -ne $true }).Count
@@ -233,7 +225,6 @@ jobs:
           $scopeLabel = $scope
           if ($updateRing) { $scopeLabel = "$scope (UpdateRing = $updateRing)" }
           $lines.Add("**Scope**: $scopeLabel")
-          $lines.Add("**ThrottleLimit**: $throttle")
           $lines.Add('')
           if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
               $lines.Add("> **Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Review the JUnit results in the Checks tab and the CSV artifacts; remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. **The healthy clusters are safe to proceed** - apply-updates.yml is per-cluster scoped.")

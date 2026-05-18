@@ -52,10 +52,6 @@ on:
         options:
           - 'true'
           - 'false'
-      throttle_limit:
-        description: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16. Raise for large fleets.'
-        required: false
-        default: '4'
       module_version:
         description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
         required: false
@@ -142,7 +138,6 @@ jobs:
         INPUT_SCOPE: ${{ github.event.inputs.scope || 'all' }}
         INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
         INPUT_INCLUDE_UPDATE_RUNS: ${{ github.event.inputs.include_update_runs || 'true' }}
-        INPUT_THROTTLE_LIMIT: ${{ github.event.inputs.throttle_limit || '4' }}
       run: |
         Import-Module AzLocal.UpdateManagement -Force
         
@@ -153,7 +148,6 @@ jobs:
         $scope = $env:INPUT_SCOPE
         $updateRing = $env:INPUT_UPDATE_RING
         $includeRuns = $env:INPUT_INCLUDE_UPDATE_RUNS -eq 'true'
-        $throttle = [int]($env:INPUT_THROTTLE_LIMIT); if ($throttle -lt 1) { $throttle = 4 }
         
         Write-Host "========================================" -ForegroundColor Cyan
         Write-Host "Fleet Update Status Collection" -ForegroundColor Cyan
@@ -197,7 +191,7 @@ jobs:
         $readinessJson = Join-Path $outputDir "readiness-status.json"
         $readinessXml = Join-Path $outputDir "readiness-status.xml"
         
-        $readiness = Get-AzureLocalClusterUpdateReadiness @readinessParams -ThrottleLimit $throttle -ExportPath $readinessCsv -PassThru
+        $readiness = Get-AzureLocalClusterUpdateReadiness @readinessParams -ExportPath $readinessCsv -PassThru
         
         # Also export to JSON
         $hasPrerequisite = @($readiness | Where-Object { $_.HasPrerequisiteUpdates -ne "" }).Count
@@ -368,7 +362,7 @@ jobs:
         Write-Host "Step 4a: Collecting fleet update summaries..." -ForegroundColor Yellow
         
         $summaryCsv = Join-Path $outputDir "update-summaries.csv"
-        $summaries = Get-AzureLocalUpdateSummary -ClusterResourceIds $fleetResourceIds -ThrottleLimit $throttle -ExportPath $summaryCsv -PassThru
+        $summaries = Get-AzureLocalUpdateSummary -ClusterResourceIds $fleetResourceIds -ExportPath $summaryCsv -PassThru
         Write-Host "Update summaries collected for $($summaries.Count) cluster(s)" -ForegroundColor Green
         
         # Step 4b: Get available updates across fleet
@@ -385,7 +379,7 @@ jobs:
             Write-Host "Step 4c: Collecting recent update run history..." -ForegroundColor Yellow
             
             $runsCsv = Join-Path $outputDir "update-runs.csv"
-            $allRuns = Get-AzureLocalUpdateRuns -ClusterResourceIds $fleetResourceIds -Latest -ThrottleLimit $throttle -ExportPath $runsCsv -PassThru
+            $allRuns = Get-AzureLocalUpdateRuns -ClusterResourceIds $fleetResourceIds -Latest -ExportPath $runsCsv -PassThru
             Write-Host "Update runs collected for $($allRuns.Count) cluster(s)" -ForegroundColor Green
             
             # Display summary

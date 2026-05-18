@@ -41,11 +41,6 @@ parameters:
     type: string
     default: 'Wave1'
 
-  - name: throttleLimit
-    displayName: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
-    type: number
-    default: 4
-
   - name: moduleVersion
     displayName: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
     type: string
@@ -132,7 +127,6 @@ stages:
 
                 $scope = "${{ parameters.scope }}"
                 $updateRing = "${{ parameters.updateRing }}"
-                $throttle = [int]"${{ parameters.throttleLimit }}"; if ($throttle -lt 1) { $throttle = 4 }
 
                 $outputDir = "$(artifactsPath)"
                 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
@@ -165,12 +159,10 @@ stages:
                 Write-Host '========================================' -ForegroundColor Cyan
 
                 $readiness = Get-AzureLocalClusterUpdateReadiness @scopeParams `
-                    -ThrottleLimit $throttle `
                     -ExportPath $readinessCsv `
                     -PassThru
 
                 $null = Get-AzureLocalClusterUpdateReadiness @scopeParams `
-                    -ThrottleLimit $throttle `
                     -ExportPath $readinessXml
 
                 $notReady = @($readiness | Where-Object { $_.ReadyForUpdate -ne $true }).Count
@@ -220,7 +212,6 @@ stages:
                 $scopeLabel = $scope
                 if ($updateRing) { $scopeLabel = "$scope (UpdateRing = $updateRing)" }
                 $summaryLines.Add("**Scope**: $scopeLabel")
-                $summaryLines.Add("**ThrottleLimit**: $throttle")
                 $summaryLines.Add('')
                 if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
                     $summaryLines.Add("**Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. The healthy clusters are safe to proceed - apply-updates.yml is per-cluster scoped.")
