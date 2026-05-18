@@ -78,16 +78,21 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
         Message              = ''
     }
 
-    # GET cluster to read current tags
+    # GET cluster to read current tags.
+    # v0.7.67: route through Invoke-AzRestJson so the stderr/stdout stream-split
+    # + JSON parse error handling is centralised. The previous inline pattern
+    # (`$json = az rest ... 2>&1; $cluster = $json | ConvertFrom-Json`) silently
+    # corrupted parsing whenever the CLI emitted a stderr warning (e.g. the
+    # cp1252 encode warning on non-UTF-8 Windows runners), which would abort
+    # the auto-reset for that cluster.
     $getUri = "https://management.azure.com$ClusterResourceId`?api-version=$ApiVersion"
-    $clusterJson = az rest --method GET --uri $getUri --only-show-errors 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $resp = Invoke-AzRestJson -Uri $getUri -Method GET
+    if (-not $resp.Ok) {
         $result.Action = 'Skipped'
-        $result.Message = "Failed to fetch cluster tags: $(ConvertTo-ScrubbedCliOutput -Text ($clusterJson | Out-String).Trim())"
+        $result.Message = "Failed to fetch cluster tags: $($resp.Error)"
         return [PSCustomObject]$result
     }
-
-    $cluster = $clusterJson | ConvertFrom-Json
+    $cluster = $resp.Data
     $tagSideloaded = Get-TagValue -Tags $cluster.tags -Name $script:UpdateSideloadedTagName
     $tagVersion = Get-TagValue -Tags $cluster.tags -Name $script:UpdateVersionInProgressTagName
     $result.PreviousSideloaded = $tagSideloaded

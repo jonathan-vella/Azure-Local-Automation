@@ -79,12 +79,18 @@ function Set-AzLocalClusterTagsMerge {
     # Read current tags via the tags subresource (requires Microsoft.Resources/tags/read).
     # This is what enables idempotency: skip PATCHes that would be a no-op against
     # the cluster's current state.
-    $existingTagsJson = az rest --method GET --uri $tagsUri --only-show-errors 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $scrubbed = ConvertTo-ScrubbedCliOutput -Text ($existingTagsJson | Out-String).Trim()
-        throw "Set-AzLocalClusterTagsMerge: failed to read tags subresource for '$ClusterResourceId': $scrubbed"
+    # v0.7.67: route through Invoke-AzRestJson so the stderr/stdout stream-split
+    # + JSON parse error handling is centralised. The previous inline pattern
+    # (`$json = az rest ... 2>&1; $existing = $json | ConvertFrom-Json`) silently
+    # corrupted parsing whenever the CLI emitted a stderr warning (e.g. the
+    # cp1252 encode warning on non-UTF-8 Windows runners) - and since this is
+    # the WRITE path for every tag operation, a stray warning would throw and
+    # abort tag writes across the fleet.
+    $tagsResp = Invoke-AzRestJson -Uri $tagsUri -Method GET
+    if (-not $tagsResp.Ok) {
+        throw "Set-AzLocalClusterTagsMerge: failed to read tags subresource for '$ClusterResourceId': $($tagsResp.Error)"
     }
-    $existing = $existingTagsJson | ConvertFrom-Json
+    $existing = $tagsResp.Data
     $existingTags = @{}
     if ($existing -and $existing.properties -and $existing.properties.tags) {
         foreach ($prop in $existing.properties.tags.PSObject.Properties) {

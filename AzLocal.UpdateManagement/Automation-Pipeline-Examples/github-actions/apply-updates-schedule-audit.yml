@@ -64,7 +64,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.66'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.67'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
@@ -211,6 +211,12 @@ jobs:
             }
             [void]$sb.AppendLine('    </testcase>')
         }
+        # v0.7.67: emit a single passing testcase when the fleet has no tagged
+        # clusters so the GitHub Actions test reporter shows the audit as
+        # "passed (1/1)" instead of "no tests found". Matches the ADO behaviour.
+        if ($audit.Count -eq 0) {
+            [void]$sb.AppendLine('    <testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />')
+        }
         [void]$sb.AppendLine('  </testsuite>')
         [void]$sb.AppendLine('</testsuites>')
         [System.IO.File]::WriteAllText($xmlPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
@@ -270,6 +276,12 @@ jobs:
             $reco = Get-Content -Path './reports/schedule-coverage-recommend.md' -Raw
         }
 
+        # v0.7.67: when there is at least one Uncovered / PartiallyCovered / MalformedTag /
+        # UnparseableCron row, surface the ready-to-paste cron block at the TOP of the summary
+        # so operators can act without scrolling past the detail table first. Counts table
+        # remains the very first thing so the run status is still readable at a glance.
+        $hasIssues = (([int]$uncovered) + ([int]$partial) + ([int]$malformed) + ([int]$unparseable)) -gt 0
+
         $md = @"
         ## Apply-Updates Schedule Coverage Audit
 
@@ -282,13 +294,19 @@ jobs:
         | **MalformedTag** | $malformed |
         | **UnparseableCron** | $unparseable |
 
-        ### Audit Detail (Uncovered / Partial / Malformed first)
         "@
 
+        if ($hasIssues -and $reco) {
+            $md += "`n### Action required - paste these cron entries into apply-updates.yml`n"
+            $md += "`n``````yaml`n" + $reco + "`n```````n"
+        }
+
+        $md += "`n### Audit Detail (Uncovered / Partial / Malformed first)`n"
+
         if ($rows.Count -eq 0) {
-            $md += "`n`n*No tagged clusters found - nothing to audit.*`n"
+            $md += "`n*No tagged clusters found - nothing to audit.*`n"
         } else {
-            $md += "`n`n| Status | UpdateRing | UpdateWindow | Clusters | Required Cron (UTC) | Recommendation |`n"
+            $md += "`n| Status | UpdateRing | UpdateWindow | Clusters | Required Cron (UTC) | Recommendation |`n"
             $md += "|--------|------------|--------------|---------:|----------------------|----------------|`n"
             foreach ($r in ($rows | Select-Object -First 100)) {
                 $md += ('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $r.Status, $r.UpdateRing, $r.UpdateWindow, $r.ClusterCount, $r.RequiredCronUTC, $r.Recommendation) + "`n"
@@ -298,11 +316,16 @@ jobs:
             }
         }
 
-        $md += "`n### Recommended Schedule (copy into apply-updates.yml)`n"
-        if ($reco) {
-            $md += "`n``````yaml`n" + $reco + "`n```````n"
-        } else {
-            $md += "`n*Recommendation output unavailable.*`n"
+        # When there are no issues, still print the recommendation block at the bottom for
+        # operators who want the canonical cron list as a reference. When there are issues
+        # we already printed it at the top so skip the duplicate.
+        if (-not $hasIssues) {
+            $md += "`n### Recommended Schedule (copy into apply-updates.yml)`n"
+            if ($reco) {
+                $md += "`n``````yaml`n" + $reco + "`n```````n"
+            } else {
+                $md += "`n*Recommendation output unavailable.*`n"
+            }
         }
 
         $md += @"

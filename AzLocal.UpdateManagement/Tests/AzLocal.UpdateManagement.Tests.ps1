@@ -34,8 +34,21 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.66' {
-            $script:ModuleInfo.Version | Should -Be '0.7.66'
+        It 'Should have version 0.7.67' {
+            $script:ModuleInfo.Version | Should -Be '0.7.67'
+        }
+
+        It 'Module version constants are in sync between .psm1 and .psd1' {
+            # v0.7.67: regression guard for the drift bug where
+            # $script:ModuleVersion in AzLocal.UpdateManagement.psm1 was '0.7.66'
+            # while the manifest had been bumped to '0.7.67'. The script-scope
+            # constant is the value emitted in run-log headers and stamped into
+            # exported fleet-state JSON, so drift silently misreports the
+            # generator version to consumers. Both must match.
+            $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.UpdateManagement.psd1'
+            $manifestVersion = (Import-PowerShellDataFile -Path $manifestPath).ModuleVersion
+            $scriptVersion = InModuleScope AzLocal.UpdateManagement { $script:ModuleVersion }
+            $scriptVersion | Should -Be $manifestVersion -Because '$script:ModuleVersion in the .psm1 must match ModuleVersion in the .psd1'
         }
 
         It 'Should export exactly 27 functions' {
@@ -2445,6 +2458,106 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
 }
 
 #endregion Internal Helper: Invoke-AzResourceGraphQuery
+
+Describe 'Internal Helper: Invoke-AzCliJson (v0.7.67)' {
+    # New in v0.7.67. Generic wrapper around 'az <subcommand>' that applies the
+    # same stderr/stdout stream-split + JSON parse pattern as Invoke-AzRestJson
+    # and Invoke-AzResourceGraphQuery, so callers outside the 'az rest' path
+    # (notably 'az account show' in Get-AzureLocalClusterInventory) no longer
+    # have to inline the unsafe `az ... 2>&1 | ConvertFrom-Json` boilerplate.
+
+    Context 'Stream-split JSON parsing' {
+        It 'Returns Ok=$true and parsed Data on a clean JSON response' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return '{"id":"00000000-0000-0000-0000-000000000000","name":"sub-name"}' }
+                $global:LASTEXITCODE = 0
+                $res = Invoke-AzCliJson -Arguments @('account','show','--subscription','x')
+                $res.Ok | Should -BeTrue
+                $res.Data.name | Should -Be 'sub-name'
+                $res.Error | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'Ignores stderr WARNING lines when parsing the JSON body (cp1252 regression guard)' {
+            # Mirrors the Invoke-AzResourceGraphQuery cp1252 guard. Write-Error
+            # makes the line surface as an ErrorRecord under 2>&1; without the
+            # stream-type filter the WARNING would be prepended to the JSON and
+            # ConvertFrom-Json would throw.
+            InModuleScope AzLocal.UpdateManagement {
+                function az {
+                    Write-Error 'WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.'
+                    return '{"name":"sub-after-warning"}'
+                }
+                $global:LASTEXITCODE = 0
+                $res = Invoke-AzCliJson -Arguments @('account','show') -ErrorAction SilentlyContinue
+                $res.Ok | Should -BeTrue
+                $res.Data.name | Should -Be 'sub-after-warning'
+            }
+        }
+
+        It 'Returns Ok=$false with scrubbed Error when CLI exits non-zero' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return 'ERROR: not authenticated' }
+                $global:LASTEXITCODE = 1
+                $res = Invoke-AzCliJson -Arguments @('account','show')
+                $res.Ok | Should -BeFalse
+                $res.Data | Should -BeNullOrEmpty
+                $res.Error | Should -Match 'not authenticated'
+            }
+        }
+
+        It 'Returns Ok=$true with Data=$null when stdout is empty' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return '' }
+                $global:LASTEXITCODE = 0
+                $res = Invoke-AzCliJson -Arguments @('logout')
+                $res.Ok | Should -BeTrue
+                $res.Data | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'Returns Ok=$false with parse-failure Error when stdout is not JSON' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return 'this is not json' }
+                $global:LASTEXITCODE = 0
+                $res = Invoke-AzCliJson -Arguments @('account','show')
+                $res.Ok | Should -BeFalse
+                $res.Error | Should -Match 'JSON parse failure'
+            }
+        }
+
+        It 'Appends --only-show-errors to the invocation' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:capturedArgs = $null
+                function az {
+                    $script:capturedArgs = @($args)
+                    return '{}'
+                }
+                $global:LASTEXITCODE = 0
+                [void](Invoke-AzCliJson -Arguments @('account','show'))
+                $script:capturedArgs | Should -Contain '--only-show-errors'
+            }
+        }
+
+        It 'Restores PYTHONIOENCODING after a successful call' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return '{}' }
+                $global:LASTEXITCODE = 0
+                $before = $env:PYTHONIOENCODING
+                try {
+                    $env:PYTHONIOENCODING = 'sentinel-clean'
+                    [void](Invoke-AzCliJson -Arguments @('account','show'))
+                    $env:PYTHONIOENCODING | Should -Be 'sentinel-clean'
+                }
+                finally {
+                    $env:PYTHONIOENCODING = $before
+                }
+            }
+        }
+    }
+}
+
+#endregion Internal Helper: Invoke-AzCliJson
 
 #region Fleet Health Failures (v0.7.65)
 
@@ -5149,11 +5262,47 @@ Describe 'Function: Test-AzureLocalApplyUpdatesScheduleCoverage' {
             }
         }
 
-        It 'Rejects step expressions (/N)' {
+        It 'Parses */15 step syntax (v0.7.67) and enumerates 4 fires per hour' {
+            # v0.7.67: cron step syntax is now supported. Pre-v0.7.67 this
+            # asserted IsValid=$false and ErrorMessage matched "not supported";
+            # the advisor would falsely flag every-15-minute crons as
+            # UnparseableCron even though GitHub Actions and Azure DevOps
+            # both honour the syntax.
             InModuleScope AzLocal.UpdateManagement {
                 $p = ConvertFrom-AzLocalCronExpression -Expression '*/15 * * * *'
+                $p.IsValid | Should -BeTrue
+                $p.IsComplex | Should -BeFalse
+                # 60 / 15 = 4 minutes per hour * 24 hours * 7 days = 672 fires.
+                @($p.FireTimes).Count | Should -Be 672
+            }
+        }
+
+        It 'Parses bounded step range 9-17/2 in the hour field (v0.7.67)' {
+            InModuleScope AzLocal.UpdateManagement {
+                # 0 9-17/2 * * 1-5 -> hours 9,11,13,15,17 on weekdays = 5 fires/day * 5 days = 25.
+                $p = ConvertFrom-AzLocalCronExpression -Expression '0 9-17/2 * * 1-5'
+                $p.IsValid | Should -BeTrue
+                $p.IsComplex | Should -BeFalse
+                @($p.FireTimes).Count | Should -Be 25
+            }
+        }
+
+        It 'Parses start-anchored step 5/15 in the minute field (v0.7.67)' {
+            InModuleScope AzLocal.UpdateManagement {
+                # 5/15 in minute (0-59) -> 5,20,35,50 = 4 fires per hour.
+                $p = ConvertFrom-AzLocalCronExpression -Expression '5/15 * * * 1'
+                $p.IsValid | Should -BeTrue
+                @($p.FireTimes).Count | Should -Be (4 * 24)
+                # First fire should be at minute 5, not 0.
+                $p.FireTimes[0].Minute | Should -Be 5
+            }
+        }
+
+        It 'Rejects step expressions with non-positive N (v0.7.67)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression '*/0 * * * *'
                 $p.IsValid | Should -BeFalse
-                $p.ErrorMessage | Should -Match 'not supported'
+                $p.ErrorMessage | Should -Match 'positive integer'
             }
         }
 
@@ -5637,4 +5786,173 @@ Describe 'v0.7.66 Pipeline update_ring inputs document multi-value and wildcard 
 
 #endregion v0.7.66 UX + Multi-Value UpdateRing regression suite
 
+
+#region v0.7.67 CI/CD parity + doc-drift regression suite
+
+Describe 'v0.7.67 schedule-audit zero-row JUnit parity' {
+    # v0.7.67 regression guard: apply-updates-schedule-audit.yml previously
+    # behaved differently across CI platforms when the fleet had no tagged
+    # clusters. Azure DevOps emitted a passing testcase ("No tagged clusters
+    # found - nothing to audit") so the run rendered as passed (1/1) in the
+    # Tests tab. GitHub Actions wrote an EMPTY <testsuite>, which
+    # dorny/test-reporter surfaced as "no tests found" - indistinguishable
+    # from a broken reporter step. v0.7.67 brings the GH workflow into parity
+    # by writing the same passing testcase for the zero-row case. This test
+    # guards both files so neither side regresses.
+    BeforeAll {
+        $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
+    }
+
+    It 'GitHub Actions schedule-audit YAML emits the zero-row testcase' {
+        $yml = Join-Path $script:examplesRoot 'github-actions\apply-updates-schedule-audit.yml'
+        Test-Path -LiteralPath $yml | Should -BeTrue -Because "the GH schedule-audit YAML should exist at $yml"
+        $content = Get-Content -LiteralPath $yml -Raw
+        $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'v0.7.67 added the zero-row JUnit testcase to the GH schedule-audit YAML to match ADO parity'
+    }
+
+    It 'Azure DevOps schedule-audit YAML still emits the zero-row testcase' {
+        $yml = Join-Path $script:examplesRoot 'azure-devops\apply-updates-schedule-audit.yml'
+        Test-Path -LiteralPath $yml | Should -BeTrue -Because "the ADO schedule-audit YAML should exist at $yml"
+        $content = Get-Content -LiteralPath $yml -Raw
+        $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'the ADO schedule-audit YAML has emitted the zero-row JUnit testcase since v0.7.0; the v0.7.67 parity work must not regress it'
+    }
+}
+
+Describe 'v0.7.67 doc drift - old UpdateRing regex' {
+    # v0.7.67 doc-drift guard: v0.7.66 widened the UpdateRing ValidatePattern
+    # from the strict single-token form '^[A-Za-z0-9_-]{1,64}$' to the
+    # semicolon-list + wildcard form
+    # '^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$'. The strict
+    # regex must NOT appear in any consumer-facing README. The CHANGELOG.md
+    # historical entry for the regex change is the only legitimate place
+    # where the old regex may still appear (as a historical reference).
+    # This test scans non-CHANGELOG markdown for the literal old regex.
+    It 'No consumer-facing README documents the v0.7.65 strict-single-token UpdateRing regex' {
+        $oldRegexLiteral = '^[A-Za-z0-9_-]{1,64}$'
+        $moduleRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..')).Path
+        # CHANGELOG.md is the historical record - it MAY contain the old
+        # regex when documenting the change. Everywhere else, it is drift.
+        $targets = @(
+            Join-Path $moduleRoot 'README.md'
+            Join-Path $moduleRoot 'Automation-Pipeline-Examples\README.md'
+        )
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($md in $targets) {
+            if (-not (Test-Path -LiteralPath $md)) { continue }
+            $content = Get-Content -LiteralPath $md -Raw
+            if ($content -and $content.Contains($oldRegexLiteral)) {
+                $offenders.Add($md.Substring($moduleRoot.Length).TrimStart('\','/'))
+            }
+        }
+        $detail = if ($offenders.Count -gt 0) { $offenders -join [Environment]::NewLine } else { '(no offenders)' }
+        $offenders.Count | Should -Be 0 -Because "v0.7.66 widened the UpdateRing regex to accept semicolon-separated lists and the '***' wildcard. Any non-CHANGELOG README that still documents the strict single-token regex '$oldRegexLiteral' will mislead consumers. Findings:$([Environment]::NewLine)$detail"
+    }
+}
+
+Describe 'v0.7.67 schedule-audit summary - cron fixes first when issues exist' {
+    # Phase 4.3: when Uncovered / PartiallyCovered / MalformedTag / UnparseableCron > 0,
+    # the schedule-audit pipelines must surface the recommended cron block ABOVE the
+    # detail table so operators can act without scrolling. Guardrail asserts that both
+    # YAMLs carry the conditional structure (hasIssues + 'Action required' header).
+    $moduleRoot = Split-Path $PSScriptRoot -Parent
+    $yamlCases = @(
+        @{
+            Platform = 'github-actions'
+            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\github-actions\apply-updates-schedule-audit.yml')
+        }
+        @{
+            Platform = 'azure-devops'
+            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\azure-devops\apply-updates-schedule-audit.yml')
+        }
+    )
+
+    It '[<Platform>] schedule-audit YAML emits recommendation before audit detail when issues exist' -ForEach $yamlCases {
+        Test-Path $YamlPath | Should -BeTrue -Because "expected schedule-audit YAML at $YamlPath"
+        $content = Get-Content -Path $YamlPath -Raw
+        $content | Should -Match '\$hasIssues\s*=\s*\(\(\[int\]\$uncovered\)' -Because 'Phase 4.3 conditional must compute $hasIssues from the four issue counts.'
+        $content | Should -Match 'Action required - paste these cron entries into apply-updates\.yml' -Because 'Phase 4.3 must surface a top-of-summary "Action required" header when issues exist.'
+        $idxActionRequired = $content.IndexOf('Action required - paste these cron entries')
+        $idxAuditDetail    = $content.IndexOf('### Audit Detail')
+        $idxActionRequired | Should -BeGreaterThan -1
+        $idxAuditDetail    | Should -BeGreaterThan -1
+        $idxActionRequired | Should -BeLessThan $idxAuditDetail -Because 'When issues exist, recommendation block must precede the detail table in the summary script.'
+    }
+}
+
+Describe 'v0.7.67 Reset-AzureLocalSideloadedTag warns on malformed Resource IDs' {
+    # v0.7.67 review finding: the ByResourceId resolver silently dropped Resource
+    # IDs that did not end in '/clusters/<name>'. Operators with typo'd inputs
+    # (trailing slash, wrong provider, truncated string) would never see the
+    # entry was excluded from the reset. This test ensures the resolver emits a
+    # Write-Log Warning for any input it cannot match.
+    BeforeAll {
+        $moduleName = 'AzLocal.UpdateManagement'
+    }
+
+    It 'Writes a Warning for a malformed Resource ID and does not include it in targets' {
+        InModuleScope AzLocal.UpdateManagement {
+            $warnings = @()
+            Mock Write-Log -ParameterFilter { $Level -eq 'Warning' } -MockWith {
+                $script:warnings += ,$Message
+            }
+            Mock Write-Log {}
+            Mock Test-AzCliAvailable { return $true }
+            # Force the function to short-circuit before any 'az' / network call:
+            # by passing only a malformed RID, $targets will end up empty, and
+            # the function returns @() with a "no matching clusters" warning.
+            $script:warnings = @()
+            $script:result = $null
+            { $script:result = Reset-AzureLocalSideloadedTag `
+                -ClusterResourceIds @('/this/is/not/a/cluster/resource/id') `
+                -Confirm:$false } | Should -Not -Throw
+            ($script:warnings -join "`n") | Should -Match "does not match an Azure Local cluster Resource ID"
+        }
+    }
+}
+
+Describe 'v0.7.67 Import-AzureLocalFleetState size guard' {
+    # v0.7.67 review finding: the helper called `Get-Content -Raw |
+    # ConvertFrom-Json` on the input file without any size check. A user
+    # pointed at a multi-GB file (typo, mis-glob, malicious symlink) would
+    # OOM the runner. We now reject anything > 50 MB.
+    It 'Throws when the input file exceeds the 50 MB safety cap' {
+        InModuleScope AzLocal.UpdateManagement {
+            $tempFile = Join-Path $env:TEMP "fleet-state-oversize-$([guid]::NewGuid()).json"
+            '{"RunId":"x","TotalClusters":0,"CompletedCount":0,"FailedCount":0,"PendingCount":0}' |
+                Out-File -FilePath $tempFile -Encoding ASCII
+            try {
+                Mock Get-Item {
+                    [PSCustomObject]@{ Length = 60MB; FullName = $tempFile }
+                } -ParameterFilter { $LiteralPath -eq $tempFile }
+                # Capture Write-Error rather than letting it surface (the
+                # helper catches the throw and re-emits via Write-Error,
+                # returning $null).
+                $result = Import-AzureLocalFleetState -Path $tempFile -ErrorAction SilentlyContinue -ErrorVariable err
+                $result | Should -BeNullOrEmpty
+                ($err | Out-String) | Should -Match '50 MB safety cap'
+            }
+            finally {
+                Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    It 'Loads a normal-sized fleet state without invoking the cap' {
+        InModuleScope AzLocal.UpdateManagement {
+            $tempFile = Join-Path $env:TEMP "fleet-state-normal-$([guid]::NewGuid()).json"
+            '{"RunId":"abc","StartTime":"2025-01-01T00:00:00Z","TotalClusters":1,"CompletedCount":0,"FailedCount":0,"PendingCount":1}' |
+                Out-File -FilePath $tempFile -Encoding ASCII
+            try {
+                $result = Import-AzureLocalFleetState -Path $tempFile
+                $result | Should -Not -BeNullOrEmpty
+                $result.RunId | Should -Be 'abc'
+            }
+            finally {
+                Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+#endregion v0.7.67 CI/CD parity + doc-drift regression suite
 

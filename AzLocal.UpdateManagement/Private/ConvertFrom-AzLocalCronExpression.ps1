@@ -17,6 +17,9 @@ function ConvertFrom-AzLocalCronExpression {
             <n>,<n>,<n>...            (e.g. 6,0)
             <a>-<b>                   (e.g. 1-5)
             comma-separated mix       (e.g. 0,15,30,45 or 1-3,5)
+            */N                       (v0.7.67: every N from Min to Max, e.g. */15 in minute field -> 0,15,30,45)
+            <a>-<b>/N                 (v0.7.67: every N within [a,b], e.g. 9-17/2 in hour field -> 9,11,13,15,17)
+            <a>/N                     (v0.7.67: every N from a to Max, e.g. 5/15 in minute field -> 5,20,35,50)
 
         DayOfMonth and Month MUST be * - any other value returns IsComplex=$true
         and FireTimes=@(), so the caller can surface "this cron is too complex
@@ -95,7 +98,32 @@ function ConvertFrom-AzLocalCronExpression {
         $values = @()
         foreach ($part in $Field -split ',') {
             $part = $part.Trim()
-            if ($part -match '^(\d+)-(\d+)$') {
+            # Step syntax (v0.7.67): '*/N' fires every N starting at $Min;
+            # '<a>-<b>/N' fires every N within the explicit range [a,b];
+            # '<a>/N' fires every N from a to $Max (cron treats a single
+            # value with a step as 'from a to max in steps of N').
+            # N must be a positive integer; N==1 is allowed but degenerate.
+            if ($part -match '^(\*|\d+|\d+-\d+)/(\d+)$') {
+                $base = $matches[1]
+                $step = [int]$matches[2]
+                if ($step -le 0) { throw "Invalid step '$part' (step value must be a positive integer)." }
+                $rangeStart = $Min
+                $rangeEnd = $Max
+                if ($base -eq '*') {
+                    # full range
+                }
+                elseif ($base -match '^(\d+)-(\d+)$') {
+                    $rangeStart = [int]$matches[1]; $rangeEnd = [int]$matches[2]
+                    if ($rangeStart -gt $rangeEnd) { throw "Invalid range '$part' (start > end). Wrap-around ranges are not supported - use comma syntax." }
+                }
+                elseif ($base -match '^\d+$') {
+                    $rangeStart = [int]$base
+                    # rangeEnd stays at $Max so '5/15' under [0,59] means 5,20,35,50.
+                }
+                if ($rangeStart -lt $Min -or $rangeEnd -gt $Max) { throw "Step base '$base' out of bounds [$Min-$Max]." }
+                for ($i = $rangeStart; $i -le $rangeEnd; $i += $step) { $values += $i }
+            }
+            elseif ($part -match '^(\d+)-(\d+)$') {
                 $a = [int]$matches[1]; $b = [int]$matches[2]
                 if ($a -gt $b) { throw "Invalid range '$part' (start > end). Wrap-around ranges are not supported - use comma syntax." }
                 if ($a -lt $Min -or $b -gt $Max) { throw "Range '$part' out of bounds [$Min-$Max]." }
@@ -107,7 +135,7 @@ function ConvertFrom-AzLocalCronExpression {
                 $values += $n
             }
             else {
-                throw "Unsupported cron token '$part' (step/'/N' values, names, and other shorthand are not supported by the advisor)."
+                throw "Unsupported cron token '$part' (named months/days and other shorthand are not supported by the advisor)."
             }
         }
         return @($values | Sort-Object -Unique)

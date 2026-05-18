@@ -272,16 +272,17 @@ function Get-AzureLocalClusterInventory {
         $uniqueSubIds = $clusterData | Select-Object -ExpandProperty subscriptionId -Unique
         
         foreach ($subId in $uniqueSubIds) {
-            try {
-                $subInfo = az account show --subscription $subId 2>&1 | ConvertFrom-Json
-                if ($LASTEXITCODE -eq 0 -and $subInfo.name) {
-                    $subscriptionMap[$subId] = $subInfo.name
-                }
-                else {
-                    $subscriptionMap[$subId] = "(Unable to retrieve name)"
-                }
+            # v0.7.67: use the stream-split Invoke-AzCliJson helper instead of
+            # piping `az account show ... 2>&1` directly to ConvertFrom-Json.
+            # The merged-stream pipe would silently corrupt JSON whenever the
+            # CLI emitted a stderr warning (e.g. the cp1252 encode warning on
+            # non-UTF-8 Windows runners), losing the subscription name even
+            # when the lookup itself succeeded.
+            $sub = Invoke-AzCliJson -Arguments @('account', 'show', '--subscription', $subId)
+            if ($sub.Ok -and $sub.Data -and $sub.Data.name) {
+                $subscriptionMap[$subId] = $sub.Data.name
             }
-            catch {
+            else {
                 $subscriptionMap[$subId] = "(Unable to retrieve name)"
             }
         }

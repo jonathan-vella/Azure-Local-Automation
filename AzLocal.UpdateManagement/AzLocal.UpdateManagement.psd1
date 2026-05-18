@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.66'
+    ModuleVersion = '0.7.67'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -56,6 +56,7 @@
         'Private/Get-TagValue.ps1',
         'Private/Import-AzureLocalFleetState.ps1',
         'Private/Install-AzGraphExtension.ps1',
+        'Private/Invoke-AzCliJson.ps1',
         'Private/Invoke-AzLocalSideloadedAutoReset.ps1',
         'Private/Invoke-AzLocalSideloadedAutoResetForCluster.ps1',
         'Private/Invoke-AzLocalItsmHttp.ps1',

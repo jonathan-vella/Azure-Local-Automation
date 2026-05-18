@@ -486,7 +486,12 @@ foreach ($group in $testsByDescribe) {
 "@)
 }
 
-$moduleVersion = (Get-Module AzLocal.UpdateManagement -ErrorAction SilentlyContinue).Version
+# v0.7.67: when nested modules are loaded, Get-Module -Name returns an array
+# of all loaded versions. Without Sort-Object / Select -First 1 the .Version
+# property would be Object[] and the HTML footer would print "System.Object[]".
+$moduleVersion = (Get-Module AzLocal.UpdateManagement -ErrorAction SilentlyContinue |
+    Sort-Object Version -Descending |
+    Select-Object -First 1).Version
 [void]$htmlBuilder.Append(@"
             </div>
         </div>
