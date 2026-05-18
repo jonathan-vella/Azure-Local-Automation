@@ -67,32 +67,6 @@ function Copy-AzureLocalPipelineExample {
         Return the [System.IO.DirectoryInfo] of the destination folder. By
         default the function writes only informational messages.
 
-    .PARAMETER SchedulePath
-        Where to drop the ring-aware apply-updates schedule file
-        (apply-updates-schedule.yml). Applies to `-Platform GitHub` and
-        `-Platform AzureDevOps` only; ignored for `-Platform All` (the
-        example file is included as part of the full mirror in that
-        case and operators can move/rename it manually).
-
-        Default: `<PWD>\apply-updates-schedule.yml` - i.e. the current
-        working directory. The intended workflow is to `cd` to your
-        fleet repo root first, so the schedule file lands at the repo
-        root alongside `.github\workflows\`, `pipelines\`, etc.
-
-        The source file is named `apply-updates-schedule.example.yml`
-        inside the module; this function strips the `.example` suffix
-        on copy so the file lands as `apply-updates-schedule.yml` at
-        `-SchedulePath` (the operator's working copy).
-
-        To upgrade an existing schedule file in place across module
-        versions, use `Update-AzLocalApplyUpdatesScheduleConfig` (or
-        `Update-AzureLocalPipelineExample`, which calls it for you).
-
-    .PARAMETER SkipScheduleFile
-        Opt out of dropping the schedule file. Useful if you maintain
-        the schedule file elsewhere or do not (yet) use the
-        ring-aware Step.5 trigger.
-
     .PARAMETER Update
         Allow overwriting destination files that already exist. Without this
         switch the function aborts with a list of conflicting files. With
@@ -172,18 +146,6 @@ function Copy-AzureLocalPipelineExample {
         [ValidateSet('All', 'GitHub', 'AzureDevOps')]
         [string]$Platform = 'All',
 
-        # Where to drop the ring-aware apply-updates schedule file.
-        # GitHub/AzureDevOps platforms only; default is
-        # <PWD>\apply-updates-schedule.yml so the file lands at the
-        # operator's working-directory root (typically the repo root).
-        [Parameter()]
-        [ValidateNotNullOrEmpty()]
-        [string]$SchedulePath,
-
-        # Skip dropping the schedule file (operator manages it
-        # elsewhere or is not using the ring-aware Step.5 trigger).
-        [switch]$SkipScheduleFile,
-
         # Allow overwriting destination files that already exist. Without
         # -Update, conflicts cause the function to abort. With -Update,
         # ShouldContinue prompts per file (bypassable via -Confirm:$false).
@@ -239,10 +201,6 @@ function Copy-AzureLocalPipelineExample {
     # ------------------------------------------------------------------
     $copyPairs = New-Object System.Collections.Generic.List[pscustomobject]
     $targetRoot = $null
-    # Schedule-file destination is determined in step 3b (GitHub/ADO only).
-    # Pre-declare so the next-steps summary in step 6 can reference it
-    # safely under any Set-StrictMode level.
-    $resolvedSchedule = $null
     switch ($Platform) {
         'GitHub' {
             # Platform-specific: copy ONLY *.yml from github-actions/ into
@@ -284,52 +242,6 @@ function Copy-AzureLocalPipelineExample {
                     Destination = Join-Path -Path $targetRoot -ChildPath $relative
                 })
             }
-        }
-    }
-
-    # ------------------------------------------------------------------
-    # 3b. Special-case the ring-aware schedule file for GitHub/ADO.
-    #     The .example.yml file lives at the source root (NOT under
-    #     github-actions/ or azure-devops/) because it is platform-
-    #     agnostic. Step.5_apply-updates.yml in each platform folder
-    #     references it via a relative path from the repo root, so the
-    #     working copy must NOT be placed under .github/workflows/ - it
-    #     belongs at the repo root next to the workflows folder.
-    #
-    #     The .example suffix is stripped on copy so the working file
-    #     is named 'apply-updates-schedule.yml'. Operators with an
-    #     existing schedule should use Update-AzLocalApplyUpdatesScheduleConfig
-    #     (or Update-AzureLocalPipelineExample) instead of re-copying.
-    # ------------------------------------------------------------------
-    if (-not $SkipScheduleFile -and $Platform -in @('GitHub', 'AzureDevOps')) {
-        $scheduleSrc = Join-Path -Path $sourceRoot -ChildPath 'apply-updates-schedule.example.yml'
-        if (-not (Test-Path -LiteralPath $scheduleSrc -PathType Leaf)) {
-            Write-Verbose "Copy-AzureLocalPipelineExample: schedule example file not found at '$scheduleSrc' - skipping schedule drop."
-        }
-        else {
-            if ([string]::IsNullOrWhiteSpace($SchedulePath)) {
-                # Default: <PWD>\apply-updates-schedule.yml
-                # PWD is typically the operator's repo root.
-                $resolvedSchedule = Join-Path -Path $PWD.Path -ChildPath 'apply-updates-schedule.yml'
-            }
-            else {
-                # Honour the operator's explicit -SchedulePath. Resolve
-                # relative paths against $PWD just like the rest of
-                # PowerShell does.
-                $resolvedSchedule = if ([System.IO.Path]::IsPathRooted($SchedulePath)) {
-                    $SchedulePath
-                }
-                else {
-                    Join-Path -Path $PWD.Path -ChildPath $SchedulePath
-                }
-                # Normalise to a full path (handles ..\ and trailing slashes)
-                $resolvedSchedule = [System.IO.Path]::GetFullPath($resolvedSchedule)
-            }
-            [void]$copyPairs.Add([pscustomobject]@{
-                Source      = $scheduleSrc
-                Destination = $resolvedSchedule
-            })
-            Write-Verbose "Copy-AzureLocalPipelineExample: queued schedule file -> '$resolvedSchedule'"
         }
     }
 
@@ -460,26 +372,16 @@ function Copy-AzureLocalPipelineExample {
             else {
                 Write-Host ("  1. Move the YAML files from '{0}' into '.github\workflows\' in your repo, then commit and push." -f $targetRoot)
             }
-            if (-not $SkipScheduleFile -and $resolvedSchedule) {
-                Write-Host ("  2. Ring-aware schedule file dropped at: {0}" -f $resolvedSchedule) -ForegroundColor Cyan
-                Write-Host "       Review/edit the cycle anchor and schedule rows. Preview the rotation with:"
-                Write-Host ("         Get-AzLocalApplyUpdatesScheduleNextFirings -Schedule (Get-AzLocalApplyUpdatesScheduleConfig -Path '{0}')" -f $resolvedSchedule)
-            }
-            Write-Host "  3. RECOMMENDED: run 'Step.0_authentication-test.yml' FIRST (one-shot) to validate OIDC / RBAC before wiring the other workflows. See section 5.1 of the Automation-Pipeline-Examples README."
-            Write-Host "  4. Wire up authentication (OIDC / Workload Identity / Managed Identity / SP) - see section 3 of the README."
-            Write-Host "  5. Optional: enable the ITSM connector by setting 'raise_itsm_ticket=true' (setup in ITSM/README.md)."
+            Write-Host "  2. RECOMMENDED: run 'Step.0_authentication-test.yml' FIRST (one-shot) to validate OIDC / RBAC before wiring the other workflows. See section 5.1 of the Automation-Pipeline-Examples README."
+            Write-Host "  3. Wire up authentication (OIDC / Workload Identity / Managed Identity / SP) - see section 3 of the README."
+            Write-Host "  4. Optional: enable the ITSM connector by setting 'raise_itsm_ticket=true' (setup in ITSM/README.md)."
         }
         'AzureDevOps' {
             Write-Host ("  1. Commit the YAML files from '{0}' to your Azure Repo." -f $targetRoot)
-            if (-not $SkipScheduleFile -and $resolvedSchedule) {
-                Write-Host ("  2. Ring-aware schedule file dropped at: {0}" -f $resolvedSchedule) -ForegroundColor Cyan
-                Write-Host "       Review/edit the cycle anchor and schedule rows. Preview the rotation with:"
-                Write-Host ("         Get-AzLocalApplyUpdatesScheduleNextFirings -Schedule (Get-AzLocalApplyUpdatesScheduleConfig -Path '{0}')" -f $resolvedSchedule)
-            }
-            Write-Host "  3. RECOMMENDED: import 'Step.0_authentication-test.yml' FIRST (one-shot) to validate the service connection / RBAC before wiring the other pipelines. See section 5.2 of the Automation-Pipeline-Examples README."
-            Write-Host "  4. For each remaining YAML: Pipelines -> New pipeline -> Existing Azure Pipelines YAML file -> point at the file -> Save."
-            Write-Host "  5. Each pipeline references service connection 'AzureLocal-ServiceConnection' - either name yours to match or edit 'azureSubscription:' in each YAML."
-            Write-Host "  6. Optional: enable the ITSM connector by setting 'raise_itsm_ticket=true' (setup in ITSM/README.md)."
+            Write-Host "  2. RECOMMENDED: import 'Step.0_authentication-test.yml' FIRST (one-shot) to validate the service connection / RBAC before wiring the other pipelines. See section 5.2 of the Automation-Pipeline-Examples README."
+            Write-Host "  3. For each remaining YAML: Pipelines -> New pipeline -> Existing Azure Pipelines YAML file -> point at the file -> Save."
+            Write-Host "  4. Each pipeline references service connection 'AzureLocal-ServiceConnection' - either name yours to match or edit 'azureSubscription:' in each YAML."
+            Write-Host "  5. Optional: enable the ITSM connector by setting 'raise_itsm_ticket=true' (setup in ITSM/README.md)."
         }
         default {
             $readmePath = Join-Path -Path $targetRoot -ChildPath 'README.md'
