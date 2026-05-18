@@ -51,6 +51,65 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $scriptVersion | Should -Be $manifestVersion -Because '$script:ModuleVersion in the .psm1 must match ModuleVersion in the .psd1'
         }
 
+        It 'README.md Latest Version banner matches manifest ModuleVersion' {
+            # v0.7.67 polish: regression guard for the drift bug where
+            # README.md still advertised "Latest Version: v0.7.66" after the
+            # manifest had been bumped to 0.7.67 and v0.7.67 was published to
+            # the PowerShell Gallery. The README banner and the gallery link
+            # on the same line are the first thing a consumer reads, so
+            # silent drift is a credibility bug. Both must match the manifest.
+            $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.UpdateManagement.psd1'
+            $readmePath   = Join-Path -Path $PSScriptRoot -ChildPath '..\README.md'
+            $manifestVersion = (Import-PowerShellDataFile -Path $manifestPath).ModuleVersion
+            $readmeContent = Get-Content -Path $readmePath -Raw
+            $pattern = '\*\*Latest Version:\*\*\s+v(?<displayed>\d+\.\d+\.\d+)\s+-\s+\[Published in PowerShell Gallery\]\(https://www\.powershellgallery\.com/packages/AzLocal\.UpdateManagement/(?<urlversion>\d+\.\d+\.\d+)\)'
+            $match = [regex]::Match($readmeContent, $pattern)
+            $match.Success | Should -BeTrue -Because "README.md must contain a parseable '**Latest Version:** vX.Y.Z - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/X.Y.Z)' line"
+            $match.Groups['displayed'].Value | Should -Be $manifestVersion -Because 'the displayed version in the README banner must match the manifest ModuleVersion'
+            $match.Groups['urlversion'].Value | Should -Be $manifestVersion -Because 'the PowerShell Gallery URL in the README banner must point at the manifest ModuleVersion'
+        }
+
+        It 'README.md TOC "What''s New in vX.Y.Z" entry matches manifest ModuleVersion' {
+            # v0.7.67 polish: companion to the Latest Version banner guard.
+            # The TOC's main-body "What's New in vX.Y.Z" link must always
+            # point at the current manifest version - prior versions live
+            # under the Release History sub-list.
+            $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.UpdateManagement.psd1'
+            $readmePath   = Join-Path -Path $PSScriptRoot -ChildPath '..\README.md'
+            $manifestVersion = (Import-PowerShellDataFile -Path $manifestPath).ModuleVersion
+            $manifestVersionAnchor = $manifestVersion -replace '\.',''
+            $readmeContent = Get-Content -Path $readmePath -Raw
+            # Match the top-level TOC link: "- [What's New in vX.Y.Z](#whats-new-in-vXYZ)"
+            # (this is the main-body link, NOT the indented Release History sub-entry).
+            # Note: do NOT anchor with trailing $ - .NET (?m)$ matches before \n but not
+            # before \r, so on CRLF files \)$ never matches; use a CRLF-tolerant lookahead.
+            $pattern = "(?m)^- \[What's New in v(?<displayed>\d+\.\d+\.\d+)\]\(#whats-new-in-v(?<anchor>\d+)\)(?=\r?\n|\z)"
+            $match = [regex]::Match($readmeContent, $pattern)
+            $match.Success | Should -BeTrue -Because "README.md TOC must contain a main-body '- [What's New in vX.Y.Z](#whats-new-in-vXYZ)' entry"
+            $match.Groups['displayed'].Value | Should -Be $manifestVersion -Because 'the TOC main-body What''s New entry must point at the current manifest ModuleVersion'
+            $match.Groups['anchor'].Value | Should -Be $manifestVersionAnchor -Because "the TOC anchor must collapse to the manifest ModuleVersion (#whats-new-in-v$manifestVersionAnchor)"
+        }
+
+        It 'README.md main body has exactly one "## What''s New" section, pointing at manifest ModuleVersion' {
+            # v0.7.67 polish: regression guard for the drift bug where prior
+            # release "What's New" sections were left at `##` level in the
+            # main body (v0.7.66 release missed moving v0.7.65 to Release
+            # History; v0.7.67 publish missed moving v0.7.66). The current-
+            # release section is the only one that should be `##` in the main
+            # body; every prior section MUST live under `## Release History`
+            # as `### What's New in vX.Y.Z`.
+            $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.UpdateManagement.psd1'
+            $readmePath   = Join-Path -Path $PSScriptRoot -ChildPath '..\README.md'
+            $manifestVersion = (Import-PowerShellDataFile -Path $manifestPath).ModuleVersion
+            # Force array context with @(...) - Select-String returning a single match
+            # otherwise collapses to a scalar string and $h2Matches[0] returns the first
+            # CHARACTER of that string ('#') rather than the line text.
+            $h2Matches = @(Select-String -Path $readmePath -Pattern "^## What's New in v\d+\.\d+\.\d+" -CaseSensitive |
+                           ForEach-Object { $_.Line })
+            $h2Matches.Count | Should -Be 1 -Because "exactly one '## What's New' section must exist in the README main body (found: $($h2Matches -join '; '))"
+            $h2Matches[0] | Should -Be "## What's New in v$manifestVersion" -Because 'the sole main-body What''s New section must match the current manifest ModuleVersion'
+        }
+
         It 'Should export exactly 27 functions' {
             $script:ModuleInfo.ExportedFunctions.Count | Should -Be 27
         }
