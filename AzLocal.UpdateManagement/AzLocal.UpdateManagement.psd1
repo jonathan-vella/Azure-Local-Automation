@@ -118,6 +118,7 @@
         'Public/Test-AzureLocalFleetHealthGate.ps1',
         'Public/Test-AzureLocalItsmConnection.ps1',
         'Public/Test-AzureLocalUpdateScheduleAllowed.ps1',
+        'Public/Update-AzLocalApplyUpdatesScheduleConfig.ps1',
         'Public/Update-AzureLocalPipelineExample.ps1'
     )
 
@@ -166,7 +167,8 @@
         'Get-AzLocalApplyUpdatesScheduleConfig',
         'Resolve-AzLocalCurrentUpdateRing',
         'Get-AzLocalApplyUpdatesScheduleNextFirings',
-        'New-AzLocalApplyUpdatesScheduleConfig'
+        'New-AzLocalApplyUpdatesScheduleConfig',
+        'Update-AzLocalApplyUpdatesScheduleConfig'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.

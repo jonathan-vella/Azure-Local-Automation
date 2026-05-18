@@ -281,5 +281,6 @@ Export-ModuleMember -Function @(
     'Get-AzLocalApplyUpdatesScheduleConfig',
     'Resolve-AzLocalCurrentUpdateRing',
     'Get-AzLocalApplyUpdatesScheduleNextFirings',
-    'New-AzLocalApplyUpdatesScheduleConfig'
+    'New-AzLocalApplyUpdatesScheduleConfig',
+    'Update-AzLocalApplyUpdatesScheduleConfig'
 )
