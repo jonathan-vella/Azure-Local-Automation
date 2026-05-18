@@ -257,8 +257,9 @@ Export-ModuleMember -Function @(
     'Get-AzureLocalItsmConfig',
     'Test-AzureLocalItsmConnection',
     'New-AzureLocalIncident',
-    # Pipeline-Examples Convenience (v0.7.4)
+    # Pipeline-Examples Convenience (v0.7.4 / Update added v0.7.68)
     'Copy-AzureLocalPipelineExample',
+    'Update-AzureLocalPipelineExample',
     # ITSM Sample Convenience (v0.7.50)
     'Copy-AzureLocalItsmSample',
     # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet

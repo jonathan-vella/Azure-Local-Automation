@@ -110,8 +110,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $h2Matches[0] | Should -Be "## What's New in v$manifestVersion" -Because 'the sole main-body What''s New section must match the current manifest ModuleVersion'
         }
 
-        It 'Should export exactly 28 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 28
+        It 'Should export exactly 29 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 29
         }
 
         It 'Should export the expected functions' {
@@ -149,8 +149,9 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 'Get-AzureLocalItsmConfig',
                 'Test-AzureLocalItsmConnection',
                 'New-AzureLocalIncident',
-                # Pipeline-Examples Convenience (v0.7.4)
+                # Pipeline-Examples Convenience (v0.7.4 / Update added v0.7.68)
                 'Copy-AzureLocalPipelineExample',
+                'Update-AzureLocalPipelineExample',
                 # ITSM Sample Convenience (v0.7.50)
                 'Copy-AzureLocalItsmSample',
                 # Update Run Failures Deep-Error Extraction (v0.7.68)
@@ -6035,3 +6036,233 @@ Describe 'v0.7.67 Import-AzureLocalFleetState size guard' {
 
 #endregion v0.7.67 CI/CD parity + doc-drift regression suite
 
+
+
+#region v0.7.68 Update-AzureLocalPipelineExample + marker parser
+
+Describe 'Helper Function: Get-AzLocalPipelineCustomiseMarkers (Internal)' {
+
+    It 'Returns an empty hashtable on empty input' {
+        InModuleScope AzLocal.UpdateManagement {
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text ''
+            $r | Should -BeOfType [hashtable]
+            $r.Count | Should -Be 0
+        }
+    }
+
+    It 'Returns an empty hashtable when no markers are present' {
+        InModuleScope AzLocal.UpdateManagement {
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text @"
+name: My Workflow
+on:
+  push:
+    branches: [main]
+"@
+            $r.Count | Should -Be 0
+        }
+    }
+
+    It 'Parses a single marker block with multi-line body' {
+        InModuleScope AzLocal.UpdateManagement {
+            $text = @"
+on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  schedule:
+    - cron: '0 22 * * 6'
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+  workflow_dispatch:
+"@
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text $text
+            $r.Count | Should -Be 1
+            $r.ContainsKey('schedule-triggers') | Should -BeTrue
+            $r['schedule-triggers'].BeginLine | Should -Match 'BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers'
+            $r['schedule-triggers'].EndLine   | Should -Match 'END-AZLOCAL-CUSTOMIZE:schedule-triggers'
+            $r['schedule-triggers'].Body      | Should -Match "cron: '0 22 \* \* 6'"
+        }
+    }
+
+    It 'Parses multiple distinct markers in the same file' {
+        InModuleScope AzLocal.UpdateManagement {
+            $text = @"
+on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  schedule: []
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+env:
+  # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+  TOKEN: `${{ secrets.MY_TOKEN }}
+  # END-AZLOCAL-CUSTOMIZE:itsm-secrets
+"@
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text $text
+            $r.Count | Should -Be 2
+            $r.ContainsKey('schedule-triggers') | Should -BeTrue
+            $r.ContainsKey('itsm-secrets')      | Should -BeTrue
+        }
+    }
+
+    It 'Reconstructing BeginLine + Body + EndLine reproduces the original span exactly' {
+        InModuleScope AzLocal.UpdateManagement {
+            $text = "preamble`n  # BEGIN-AZLOCAL-CUSTOMIZE:demo`nline1`nline2`n  # END-AZLOCAL-CUSTOMIZE:demo`ntail"
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text $text
+            $r.Count | Should -Be 1
+            $b = $r['demo']
+            $reassembled = $b.BeginLine + $b.Body + $b.EndLine
+            $text.Substring($b.Index, $b.Length) | Should -BeExactly $reassembled
+        }
+    }
+
+    It 'Skips duplicate marker names and keeps the first occurrence' {
+        InModuleScope AzLocal.UpdateManagement {
+            $text = @"
+# BEGIN-AZLOCAL-CUSTOMIZE:dup
+first
+# END-AZLOCAL-CUSTOMIZE:dup
+# BEGIN-AZLOCAL-CUSTOMIZE:dup
+second
+# END-AZLOCAL-CUSTOMIZE:dup
+"@
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text $text 3>$null
+            $r.Count | Should -Be 1
+            $r['dup'].Body | Should -Match 'first'
+        }
+    }
+}
+
+Describe 'Function: Update-AzureLocalPipelineExample' {
+
+    BeforeAll {
+        # The cmdlet resolves -Platform 'GitHub' to <ModuleBase>/Automation-Pipeline-Examples/github-actions
+        # so all tests below operate against the development checkout's bundled samples.
+        $script:UpePlatformSrcGh  = Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples\github-actions'
+        $script:UpePlatformSrcAdo = Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples\azure-devops'
+    }
+
+    Context 'Parameter surface' {
+        It 'Has Destination, Platform, Force, PassThru parameters' {
+            $cmd = Get-Command Update-AzureLocalPipelineExample
+            $cmd.Parameters.Keys | Should -Contain 'Destination'
+            $cmd.Parameters.Keys | Should -Contain 'Platform'
+            $cmd.Parameters.Keys | Should -Contain 'Force'
+            $cmd.Parameters.Keys | Should -Contain 'PassThru'
+        }
+        It 'Supports ShouldProcess (WhatIf / Confirm)' {
+            $cmd = Get-Command Update-AzureLocalPipelineExample
+            $cmd.Parameters.Keys | Should -Contain 'WhatIf'
+            $cmd.Parameters.Keys | Should -Contain 'Confirm'
+        }
+        It 'Platform is ValidateSet GitHub|AzureDevOps' {
+            $cmd = Get-Command Update-AzureLocalPipelineExample
+            $attr = $cmd.Parameters['Platform'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+            $attr | Should -Not -BeNullOrEmpty
+            ($attr.ValidValues | Sort-Object) -join ',' | Should -Be 'AzureDevOps,GitHub'
+        }
+        It 'Throws when -Destination does not exist' {
+            { Update-AzureLocalPipelineExample -Destination "$env:TEMP\does-not-exist-$([guid]::NewGuid())" -Platform GitHub -PassThru } |
+                Should -Throw -ExpectedMessage '*Destination*does not exist*'
+        }
+    }
+
+    Context 'Net-new files are Created on the first run into an empty folder' {
+        It 'Copies every bundled GitHub Actions YAML into an empty destination' {
+            $temp = Join-Path $env:TEMP "upe-create-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                $r = Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Confirm:$false
+                $r | Should -Not -BeNullOrEmpty
+                ($r | Where-Object Action -eq 'Created').Count | Should -BeGreaterThan 0
+                ($r | Where-Object Action -eq 'Updated').Count | Should -Be 0
+                # Every bundled GitHub Actions sample should now exist in the destination.
+                $expected = Get-ChildItem -Path $script:UpePlatformSrcGh -Filter '*.yml' -File | Select-Object -ExpandProperty Name
+                foreach ($name in $expected) {
+                    Test-Path -LiteralPath (Join-Path $temp $name) | Should -BeTrue
+                }
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'Marker-aware merge preserves destination customisations' {
+        It 'Replaces the schedule-triggers body with the destination body in Step.5_apply-updates.yml' {
+            $temp = Join-Path $env:TEMP "upe-merge-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                # 1. Copy the bundled Step.5_apply-updates.yml to the destination.
+                $src = Join-Path $script:UpePlatformSrcGh 'Step.5_apply-updates.yml'
+                Copy-Item -Path $src -Destination $temp
+                $destFile = Join-Path $temp 'Step.5_apply-updates.yml'
+
+                # 2. Inject a customer cron INSIDE the schedule-triggers marker block.
+                $customerBody = "`r`n  schedule:`r`n    - cron: '0 22 * * 6'  # Wave1 SatNight22UTC`r`n  "
+                $destTextOriginal = [System.IO.File]::ReadAllText($destFile, [System.Text.UTF8Encoding]::new($false))
+                $pattern = '(?ms)(BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers[^\r\n]*)(.*?)(  # END-AZLOCAL-CUSTOMIZE:schedule-triggers)'
+                $destTextCustom = [regex]::Replace($destTextOriginal, $pattern, ('${1}' + [System.Text.RegularExpressions.Regex]::Escape($customerBody).Replace('\\','\').Replace('$','$$') + '${3}'), 1)
+                # Simpler: do the substitution by string slice, not regex - the regex with .Escape is brittle.
+                $marker = '# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers'
+                $endMark = '# END-AZLOCAL-CUSTOMIZE:schedule-triggers'
+                $iStart = $destTextOriginal.IndexOf($marker) + $marker.Length
+                $iEnd   = $destTextOriginal.IndexOf($endMark)
+                $destTextCustom = $destTextOriginal.Substring(0,$iStart) + $customerBody + '  ' + $destTextOriginal.Substring($iEnd)
+                [System.IO.File]::WriteAllText($destFile, $destTextCustom, [System.Text.UTF8Encoding]::new($false))
+
+                # 3. Run the cmdlet. Source body should be REPLACED with customer body.
+                $r = Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Confirm:$false
+                $row = $r | Where-Object { $_.File -like '*Step.5_apply-updates.yml' }
+                $row.Action            | Should -Match 'Updated|Unchanged'
+                # Customer cron MUST survive
+                $newText = [System.IO.File]::ReadAllText($destFile, [System.Text.UTF8Encoding]::new($false))
+                $newText | Should -Match "cron: '0 22 \* \* 6'"
+                $row.PreservedMarkers | Should -Contain 'schedule-triggers'
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'WhatIf does not write to disk' {
+        It 'Reports Created for net-new files without creating them' {
+            $temp = Join-Path $env:TEMP "upe-whatif-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -WhatIf 6>$null 4>$null
+                (Get-ChildItem -Path $temp -File -ErrorAction SilentlyContinue).Count | Should -Be 0
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'First-migration (destination has no markers) requires -Force' {
+        It 'Refuses to write without -Force and emits Skipped-NeedsForce' {
+            $temp = Join-Path $env:TEMP "upe-firstmig-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                # Place a stripped-down YAML at dest with NO markers, same filename as a bundled file.
+                $destFile = Join-Path $temp 'Step.5_apply-updates.yml'
+                'name: legacy file with no markers' | Set-Content -LiteralPath $destFile -Encoding utf8
+
+                $r = Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Confirm:$false 3>$null
+                $row = $r | Where-Object { $_.File -like '*Step.5_apply-updates.yml' }
+                $row.Action | Should -Be 'Skipped-NeedsForce'
+                # Dest file unchanged
+                (Get-Content -Raw -LiteralPath $destFile) | Should -Match 'legacy file with no markers'
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        It 'Overwrites and records the new marker names when -Force is supplied' {
+            $temp = Join-Path $env:TEMP "upe-firstmig-force-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                $destFile = Join-Path $temp 'Step.5_apply-updates.yml'
+                'name: legacy file with no markers' | Set-Content -LiteralPath $destFile -Encoding utf8
+
+                $r = Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Force -Confirm:$false 3>$null
+                $row = $r | Where-Object { $_.File -like '*Step.5_apply-updates.yml' }
+                $row.Action | Should -Be 'Overwritten'
+                $row.NewMarkers | Should -Contain 'schedule-triggers'
+                (Get-Content -Raw -LiteralPath $destFile) | Should -Match 'BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers'
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+#endregion v0.7.68 Update-AzureLocalPipelineExample + marker parser

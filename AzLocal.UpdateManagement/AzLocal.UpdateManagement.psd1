@@ -47,6 +47,7 @@
         'Private/Get-AzLocalItsmDedupeKey.ps1',
         'Private/Get-AzLocalItsmTriggerDecision.ps1',
         'Private/Get-AzLocalModuleRootManifestPath.ps1',
+        'Private/Get-AzLocalPipelineCustomiseMarkers.ps1',
         'Private/Get-AzLocalRunEndTime.ps1',
         'Private/Get-CurrentStepPath.ps1',
         'Private/Get-ExportFormat.ps1',
@@ -110,7 +111,8 @@
         'Public/Test-AzureLocalClusterHealth.ps1',
         'Public/Test-AzureLocalFleetHealthGate.ps1',
         'Public/Test-AzureLocalItsmConnection.ps1',
-        'Public/Test-AzureLocalUpdateScheduleAllowed.ps1'
+        'Public/Test-AzureLocalUpdateScheduleAllowed.ps1',
+        'Public/Update-AzureLocalPipelineExample.ps1'
     )
 
     FunctionsToExport = @(
@@ -143,8 +145,9 @@
         'Get-AzureLocalItsmConfig',
         'Test-AzureLocalItsmConnection',
         'New-AzureLocalIncident',
-        # Pipeline-Examples Convenience (v0.7.4)
+        # Pipeline-Examples Convenience (v0.7.4 / Update added v0.7.68)
         'Copy-AzureLocalPipelineExample',
+        'Update-AzureLocalPipelineExample',
         # ITSM Sample Convenience (v0.7.50)
         'Copy-AzureLocalItsmSample',
         # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
@@ -188,13 +191,19 @@
 - New cmdlet `Get-AzureLocalUpdateRunFailures`: ARG-only deep-error
   extraction (9 levels deep) for fleet-scale verbose error information
   from cluster update runs. No per-cluster shell-outs.
+- New cmdlet `Update-AzureLocalPipelineExample`: marker-aware merge
+  for the bundled pipeline YAMLs. Refreshes the shipped sample set in
+  a customer repo while preserving any content inside
+  `BEGIN-AZLOCAL-CUSTOMIZE:<section>` / `END-AZLOCAL-CUSTOMIZE:<section>`
+  marker pairs (schedule-triggers, itsm-secrets). Companion to
+  `Copy-AzureLocalPipelineExample` (clean overwrite).
 - Throttle/retry handling in `Invoke-AzResourceGraphQuery`: detects
   HTTP 429 responses, parses `Retry-After`, and applies bounded
   exponential backoff so large fleet sweeps no longer fail at the
-  ARG throttling boundary.
-- Cmdlet inventory and design table in
-  `docs/Cmdlet-Inventory-And-Design.md`: documents which cmdlets read
-  vs write and which back-end they use (ARG vs Az SDK vs az CLI).
+  ARG throttling boundary. Two new module-scope diagnostic flags
+  reset per call (`$script:LastResourceGraphThrottled`,
+  `$script:LastResourceGraphRetryCount`) make the retry behaviour
+  inspectable from callers and tests.
 
 ### Changed (ARG-first refactor)
 
@@ -225,9 +234,9 @@
 - New AZLOCAL-CUSTOMIZE marker pairs (`schedule-triggers` on the 6 main
   pipelines, `itsm-secrets` on Step.5) mark the YAML regions intended
   for operator customisation. Markers are pure YAML comments and have
-  no runtime effect; they are scaffolding for a forthcoming
-  `Update-AzureLocalPipelineExample` cmdlet that will preserve operator
-  edits inside these regions across module upgrades.
+  no runtime effect. The new `Update-AzureLocalPipelineExample` cmdlet
+  consumes them to preserve operator edits inside these regions across
+  module upgrades.
 - `Read-AzLocalApplyUpdatesYamlCrons` glob expanded to match both
   `Step.5_apply-updates*.yml` and the legacy `apply-updates*.yml` so a
   customer's existing schedule-audit pipeline keeps working until they
@@ -235,15 +244,18 @@
 
 ### Migration
 
-If you have copied any of the bundled workflows into your repo, refresh
-them via:
+If you have copied any of the bundled workflows into your repo, the
+recommended refresh path is now the marker-aware merge:
 
 ```powershell
-Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
-Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
 ```
 
-The full v0.7.67 release notes are in CHANGELOG.md.
+For a first-time migration from a pre-v0.7.68 copy (no markers in the
+destination yet) add `-Force`, then re-apply any operator customisations
+once. The clean-overwrite tool (`Copy-AzureLocalPipelineExample -Update`)
+remains available for forced refreshes.
 
 For full release notes on this and previous versions, see:
 https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
