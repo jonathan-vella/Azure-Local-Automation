@@ -189,7 +189,10 @@ $severityClause
     # the cluster's tags - tags live on the cluster resource itself. A
     # separate ARG hop is required to map ResourceId -> UpdateRing.
     if ($UpdateRingTag) {
-        # v0.7.66: support semicolon-delimited rings and '*' (match all).
+        # v0.7.66: support semicolon-delimited rings and the literal '***'
+        # wildcard (three stars). Single '*', double '**', and quadruple '****'
+        # are deliberately rejected by [ValidatePattern] so a one-character
+        # typo cannot accidentally widen the scope.
         $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingTag -TagAccessor "tostring(tags['UpdateRing'])"
         $tagKql = @"
 resources

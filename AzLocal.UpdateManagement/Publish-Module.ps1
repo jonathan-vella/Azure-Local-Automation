@@ -56,6 +56,23 @@ foreach ($relativePath in $RemovePaths) {
     }
 }
 
+# Remove root-level *.md files EXCEPT README.md. Markdown files at the module
+# root (CHANGELOG.md, in-progress review notes, internal design docs, etc.)
+# are repository-only artefacts - consumers see them on GitHub and do not
+# need them inside the installed module footprint. README.md is preserved
+# because PowerShell Gallery surfaces it on the module page and it is the
+# documented entry point. Subfolder *.md files (e.g. ITSM/*.md,
+# Automation-Pipeline-Examples/README.md, docs/*.md) are RETAINED because
+# they carry user-facing setup / reference content that is linked from the
+# module help and the README.
+Write-Host "[$ModuleName] Removing root-level .md files (except README.md)..." -ForegroundColor Cyan
+Get-ChildItem -Path $StagingDir -Filter '*.md' -File |
+    Where-Object { $_.Name -ne 'README.md' } |
+    ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force
+        Write-Host "  Removed root markdown: $($_.Name)" -ForegroundColor DarkGray
+    }
+
 # --- 4. Show what will be published ------------------------------------------
 Write-Host ""
 Write-Host "[$ModuleName] Files to be published:" -ForegroundColor Yellow
