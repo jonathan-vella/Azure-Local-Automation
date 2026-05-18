@@ -43,9 +43,14 @@ schedules:
 
 parameters:
   - name: pipelinePath
-    displayName: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Default `.azure-pipelines` matches the standard Azure DevOps consumer layout; for repos that keep Step.5_apply-updates.yml at the repo root pass `.`'
+    displayName: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Leave empty to audit ONLY the schedulePath (v0.7.69 schedule file). Default `.azure-pipelines` matches the standard Azure DevOps consumer layout; for repos that keep Step.5_apply-updates.yml at the repo root pass `.`'
     type: string
     default: '.azure-pipelines'
+
+  - name: schedulePath
+    displayName: 'v0.7.69: Path to apply-updates-schedule.yml. When set, the audit also reports RingMissingFromSchedule (fleet ring with no schedule row) and RingOrphanedInSchedule (schedule ring no cluster carries). Leave empty to skip the schedule-file two-way diff.'
+    type: string
+    default: './apply-updates-schedule.yml'
 
   - name: leadTimeMinutes
     displayName: 'Minutes before UpdateWindow opens that the pipeline should fire (0-60)'
@@ -62,8 +67,13 @@ parameters:
     type: string
     default: ''
 
+  - name: debug
+    displayName: 'Enable verbose/debug PowerShell streams for self-service triage. Surfaces $VerbosePreference=Continue, $DebugPreference=Continue, plus a one-shot environment snapshot before the audit runs.'
+    type: boolean
+    default: false
+
 variables:
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.68'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.69'
   REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
   reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
 
@@ -135,10 +145,42 @@ stages:
           New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
           $pipelinePath = "${{ parameters.pipelinePath }}"
+          $schedulePath = "${{ parameters.schedulePath }}"
           $leadTime     = [int]"${{ parameters.leadTimeMinutes }}"
           $includeUnt   = ${{ lower(parameters.includeUntagged) }}
+          $debug        = ('${{ parameters.debug }}' -ieq 'true')
 
-          if (-not (Test-Path -LiteralPath $pipelinePath)) {
+          # Debug toggle (v0.7.69+): flips Verbose/Debug preferences and emits a
+          # one-shot environment snapshot so operators can self-triage without
+          # needing a code change. Default OFF to keep normal runs concise. Note:
+          # Azure DevOps also honours queue-time variable system.debug=true as a
+          # built-in mechanism; either flips on detailed agent logging.
+          if ($debug) {
+              $VerbosePreference = 'Continue'
+              $DebugPreference   = 'Continue'
+              Write-Host "##[group]Debug environment"
+              Write-Host "PSVersion                : $($PSVersionTable.PSVersion)"
+              Write-Host "PSEdition                : $($PSVersionTable.PSEdition)"
+              Write-Host "OS                       : $($PSVersionTable.OS)"
+              $mod = Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1
+              Write-Host "AzLocal.UpdateManagement : v$($mod.Version) (path: $($mod.Path))"
+              Write-Host "VerbosePreference        : $VerbosePreference"
+              Write-Host "DebugPreference          : $DebugPreference"
+              Write-Host "##[endgroup]"
+          }
+
+          # v0.7.69: pipelinePath is OPTIONAL when schedulePath is set. The audit
+          # cmdlet requires at least one of -PipelineYamlPath / -SchedulePath; if
+          # both are blank, fall through to the original pipeline-yaml-only check
+          # to keep the original error message.
+          $havePipeline = -not [string]::IsNullOrWhiteSpace($pipelinePath)
+          $haveSchedule = -not [string]::IsNullOrWhiteSpace($schedulePath) -and (Test-Path -LiteralPath $schedulePath)
+          if ($haveSchedule -and -not $havePipeline) {
+              Write-Host "PipelineYamlPath is empty - auditing schedule file only ('$schedulePath')"
+              $pipelinePath = $null
+              $havePipeline = $false
+          }
+          elseif ($havePipeline -and -not (Test-Path -LiteralPath $pipelinePath)) {
               $candidates = @('.azure-pipelines', 'pipelines', '.github/workflows', '.') | Where-Object { Test-Path -LiteralPath $_ }
               $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-queue the pipeline and override the 'pipelinePath' parameter." } else { "No common pipeline folders (.azure-pipelines, pipelines, .github/workflows, repo root) were found - commit your Step.5_apply-updates.yml first, or set 'pipelinePath' to wherever you keep it." }
               throw "PipelineYamlPath '$pipelinePath' does not exist on the agent. $hint"
@@ -147,7 +189,8 @@ stages:
           Write-Host "========================================"
           Write-Host "Apply-Updates Schedule Coverage Audit"
           Write-Host "========================================"
-          Write-Host "PipelineYamlPath : $pipelinePath"
+          Write-Host "PipelineYamlPath : $(if ($pipelinePath) { $pipelinePath } else { '(skipped - pipelinePath empty)' })"
+          Write-Host "SchedulePath     : $(if ($haveSchedule) { $schedulePath } else { '(skipped - schedulePath empty or file missing)' })"
           Write-Host "LeadTimeMinutes  : $leadTime"
           Write-Host "IncludeUntagged  : $includeUnt"
           Write-Host ""
@@ -158,12 +201,13 @@ stages:
 
           $auditArgs = @{
               View             = 'Audit'
-              PipelineYamlPath = $pipelinePath
               LeadTimeMinutes  = $leadTime
               ExportPath       = $auditCsv
               PassThru         = $true
           }
-          if ($includeUnt) { $auditArgs.IncludeUntagged = $true }
+          if ($havePipeline) { $auditArgs.PipelineYamlPath = $pipelinePath }
+          if ($haveSchedule) { $auditArgs.SchedulePath     = $schedulePath }
+          if ($includeUnt)   { $auditArgs.IncludeUntagged  = $true }
           $auditResult = Test-AzureLocalApplyUpdatesScheduleCoverage @auditArgs
           if (-not $auditResult) { $auditResult = @() }
 
@@ -175,13 +219,16 @@ stages:
           $partial     = @($auditResult | Where-Object Status -eq 'PartiallyCovered')
           $malformed   = @($auditResult | Where-Object Status -eq 'MalformedTag')
           $unparseable = @($auditResult | Where-Object Status -eq 'UnparseableCron')
+          # v0.7.69: schedule-file two-way diff buckets.
+          $ringMissing = @($auditResult | Where-Object Status -eq 'RingMissingFromSchedule')
+          $ringOrphan  = @($auditResult | Where-Object Status -eq 'RingOrphanedInSchedule')
 
           function Convert-XmlEscape([string]$s) {
               if ($null -eq $s) { return '' }
               ($s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;').Replace("'",'&apos;'))
           }
 
-          $failureCount = $uncovered.Count + $partial.Count + $malformed.Count + $unparseable.Count
+          $failureCount = $uncovered.Count + $partial.Count + $malformed.Count + $unparseable.Count + $ringMissing.Count + $ringOrphan.Count
           $xmlPath = Join-Path $outputDir 'schedule-coverage-audit.xml'
           $sb = New-Object System.Text.StringBuilder
           [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
@@ -210,14 +257,18 @@ stages:
           "##vso[task.setvariable variable=partial;isOutput=true]$($partial.Count)"             | Write-Host
           "##vso[task.setvariable variable=malformed;isOutput=true]$($malformed.Count)"         | Write-Host
           "##vso[task.setvariable variable=unparseable;isOutput=true]$($unparseable.Count)"     | Write-Host
+          "##vso[task.setvariable variable=ringMissing;isOutput=true]$($ringMissing.Count)"     | Write-Host
+          "##vso[task.setvariable variable=ringOrphan;isOutput=true]$($ringOrphan.Count)"       | Write-Host
 
           Write-Host ""
           Write-Host "Audit complete:"
-          Write-Host "  Covered           : $($covered.Count)"
-          Write-Host "  Uncovered         : $($uncovered.Count)"
-          Write-Host "  PartiallyCovered  : $($partial.Count)"
-          Write-Host "  MalformedTag      : $($malformed.Count)"
-          Write-Host "  UnparseableCron   : $($unparseable.Count)"
+          Write-Host "  Covered                  : $($covered.Count)"
+          Write-Host "  Uncovered                : $($uncovered.Count)"
+          Write-Host "  PartiallyCovered         : $($partial.Count)"
+          Write-Host "  MalformedTag             : $($malformed.Count)"
+          Write-Host "  UnparseableCron          : $($unparseable.Count)"
+          Write-Host "  RingMissingFromSchedule  : $($ringMissing.Count)"
+          Write-Host "  RingOrphanedInSchedule   : $($ringOrphan.Count)"
 
     # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
     - pwsh: |
@@ -243,19 +294,21 @@ stages:
         $partial     = "$(audit.partial)"
         $malformed   = "$(audit.malformed)"
         $unparseable = "$(audit.unparseable)"
+        $ringMissing = "$(audit.ringMissing)"
+        $ringOrphan  = "$(audit.ringOrphan)"
 
-        Write-Host "##vso[task.uploadsummary]Schedule Coverage: $covered covered, $uncovered uncovered, $partial partial, $malformed malformed, $unparseable unparseable"
+        Write-Host "##vso[task.uploadsummary]Schedule Coverage: $covered covered, $uncovered uncovered, $partial partial, $malformed malformed, $unparseable unparseable, $ringMissing missing-from-schedule, $ringOrphan orphan-in-schedule"
 
         $rowsPath = Join-Path '$(reportsPath)' 'schedule-coverage-audit.csv'
         $recoPath = Join-Path '$(reportsPath)' 'schedule-coverage-recommend.md'
         $rows = if (Test-Path $rowsPath) { @(Import-Csv -Path $rowsPath) } else { @() }
         $reco = if (Test-Path $recoPath) { Get-Content -Path $recoPath -Raw } else { '' }
 
-        # v0.7.67: when there is at least one Uncovered / PartiallyCovered / MalformedTag /
-        # UnparseableCron row, surface the ready-to-paste cron block at the TOP of the summary
-        # so operators can act without scrolling past the detail table first. Counts table
-        # remains the very first thing so the run status is still readable at a glance.
-        $hasIssues = (([int]$uncovered) + ([int]$partial) + ([int]$malformed) + ([int]$unparseable)) -gt 0
+        # v0.7.67/v0.7.69: when there is at least one issue row, surface the ready-to-paste
+        # cron block at the TOP of the summary so operators can act without scrolling past
+        # the detail table first. Counts table remains the very first thing so the run
+        # status is still readable at a glance.
+        $hasIssues = (([int]$uncovered) + ([int]$partial) + ([int]$malformed) + ([int]$unparseable) + ([int]$ringMissing) + ([int]$ringOrphan)) -gt 0
 
         $md = @"
         ## Apply-Updates Schedule Coverage Audit
@@ -268,6 +321,8 @@ stages:
         | **PartiallyCovered** | $partial |
         | **MalformedTag** | $malformed |
         | **UnparseableCron** | $unparseable |
+        | **RingMissingFromSchedule (v0.7.69)** | $ringMissing |
+        | **RingOrphanedInSchedule (v0.7.69)** | $ringOrphan |
 
         "@
 
