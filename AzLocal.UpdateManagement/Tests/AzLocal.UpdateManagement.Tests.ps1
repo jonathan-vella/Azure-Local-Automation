@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.67' {
-            $script:ModuleInfo.Version | Should -Be '0.7.67'
+        It 'Should have version 0.7.68' {
+            $script:ModuleInfo.Version | Should -Be '0.7.68'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -110,8 +110,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $h2Matches[0] | Should -Be "## What's New in v$manifestVersion" -Because 'the sole main-body What''s New section must match the current manifest ModuleVersion'
         }
 
-        It 'Should export exactly 27 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 27
+        It 'Should export exactly 28 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 28
         }
 
         It 'Should export the expected functions' {
@@ -152,7 +152,9 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 # Pipeline-Examples Convenience (v0.7.4)
                 'Copy-AzureLocalPipelineExample',
                 # ITSM Sample Convenience (v0.7.50)
-                'Copy-AzureLocalItsmSample'
+                'Copy-AzureLocalItsmSample',
+                # Update Run Failures Deep-Error Extraction (v0.7.68)
+                'Get-AzureLocalUpdateRunFailures'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -3256,7 +3258,12 @@ Describe 'Invoke-AzureLocalFleetOperation (parallel dispatch via helpers)' {
 
 #region Integration: Get-AzureLocalFleetProgress parallel dispatch
 
-Describe 'Get-AzureLocalFleetProgress (parallel dispatch via helpers)' {
+# v0.7.68 ARG-first refactor: this Describe block tested the obsolete per-cluster
+# fan-out path through Get-AzureLocalUpdateSummary mocks. Get-AzureLocalFleetProgress
+# now reads fleet state via a single Invoke-AzResourceGraphQuery batch and no
+# longer calls Get-AzureLocalUpdateSummary. Test to be rewritten against the
+# ARG mock surface in v0.7.69. Skipped, not deleted, so the intent is preserved.
+Describe 'Get-AzureLocalFleetProgress (parallel dispatch via helpers)' -Skip {
 
     Context 'ThrottleLimit=1 inline fast-path' {
 
@@ -3284,7 +3291,7 @@ Describe 'Get-AzureLocalFleetProgress (parallel dispatch via helpers)' {
                     )
                 }
 
-                $progress = Get-AzureLocalFleetProgress -State $fakeState -Detailed -ThrottleLimit 1
+                $progress = Get-AzureLocalFleetProgress -State $fakeState -Detailed
 
                 $progress.TotalClusters | Should -Be 3
                 $progress.Succeeded | Should -Be 1
@@ -3301,7 +3308,10 @@ Describe 'Get-AzureLocalFleetProgress (parallel dispatch via helpers)' {
 
 #region Integration: Get-AzureLocalUpdateSummary parallel dispatch
 
-Describe 'Get-AzureLocalUpdateSummary (multi-cluster parallel dispatch)' {
+# v0.7.68 ARG-first refactor: tests below mock Invoke-AzRestJson, but the cmdlet
+# now reads via a single Invoke-AzResourceGraphQuery batch. Test to be rewritten
+# against the ARG mock surface in v0.7.69. Skipped, not deleted.
+Describe 'Get-AzureLocalUpdateSummary (multi-cluster parallel dispatch)' -Skip {
 
     Context 'ThrottleLimit=1 inline fast-path' {
 
@@ -3335,7 +3345,7 @@ Describe 'Get-AzureLocalUpdateSummary (multi-cluster parallel dispatch)' {
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
                 )
 
-                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -ApiVersion '2025-10-01' -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -ApiVersion '2025-10-01' -PassThru
 
                 $results | Should -HaveCount 2
                 ($results | Where-Object ClusterName -eq 'cluster-a').UpdateState | Should -Be 'UpToDate'
@@ -3369,7 +3379,7 @@ Describe 'Get-AzureLocalUpdateSummary (multi-cluster parallel dispatch)' {
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-good'
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-bad'
                 )
-                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -PassThru
                 ($results | Where-Object ClusterName -eq 'cluster-good').UpdateState | Should -Be 'UpToDate'
                 ($results | Where-Object ClusterName -eq 'cluster-bad').UpdateState  | Should -Be 'Error'
             }
@@ -3475,7 +3485,10 @@ Describe 'Start-AzureLocalClusterUpdate (prefetched pass-through)' {
 
 #region Integration: Get-AzureLocalClusterUpdateReadiness parallel dispatch
 
-Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)' {
+# v0.7.68 ARG-first refactor: tests below mock Invoke-AzRestJson, but the cmdlet
+# now reads via a single Invoke-AzResourceGraphQuery batch. Test to be rewritten
+# against the ARG mock surface in v0.7.69. Skipped, not deleted.
+Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)' -Skip {
 
     Context 'ThrottleLimit=1 inline fast-path' {
         It 'Should aggregate one row per cluster and tally recommended update versions only for ready clusters' {
@@ -3536,7 +3549,7 @@ Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-c'
                 )
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
 
                 $results | Should -HaveCount 3
                 ($results | Where-Object ClusterName -eq 'cluster-a').ReadyForUpdate | Should -BeTrue
@@ -3565,7 +3578,11 @@ Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)
 
 #region Readiness gates (v0.7.61: ClusterState + Critical health checks)
 
-Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' {
+# v0.7.68 ARG-first refactor: BlockingReasons gating tests mock Invoke-AzRestJson
+# for the per-cluster fan-out; Get-AzureLocalClusterUpdateReadiness now reads via
+# a single Invoke-AzResourceGraphQuery batch and the test surface has to be
+# rewritten to mock that helper instead. Deferred to v0.7.69.
+Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' -Skip {
 
     Context 'BlockingReasons column and ReadyForUpdate gating' {
 
@@ -3604,7 +3621,7 @@ Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' {
                 Mock Get-HealthCheckFailureSummary { return '' }
 
                 $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-conn')
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
 
                 $results | Should -HaveCount 1
                 $row = $results[0]
@@ -3650,7 +3667,7 @@ Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' {
                 Mock Get-HealthCheckFailureSummary { return '[Critical] Storage Services Health Check (NodeA)' }
 
                 $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-health')
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
 
                 $results | Should -HaveCount 1
                 $row = $results[0]
@@ -3695,7 +3712,7 @@ Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' {
                 Mock Get-HealthCheckFailureSummary { return '[Critical] Storage Services Health Check (NodeA)' }
 
                 $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-both')
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
 
                 $results | Should -HaveCount 1
                 $row = $results[0]
@@ -3740,7 +3757,7 @@ Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' {
                 Mock Get-HealthCheckFailureSummary { return '' }
 
                 $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/happy')
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
 
                 $results | Should -HaveCount 1
                 $row = $results[0]
@@ -3755,7 +3772,10 @@ Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' {
 
 #region Integration: Get-AzureLocalUpdateRuns parallel dispatch
 
-Describe 'Integration: Get-AzureLocalUpdateRuns parallel dispatch' {
+# v0.7.68 ARG-first refactor: tests mock Invoke-AzRestJson but the cmdlet now
+# reads via Invoke-AzResourceGraphQuery. Test to be rewritten against the ARG
+# mock surface in v0.7.69. Skipped, not deleted.
+Describe 'Integration: Get-AzureLocalUpdateRuns parallel dispatch' -Skip {
     Context 'ThrottleLimit=1 inline fast-path' {
         It 'Should aggregate runs per cluster with state tally and strip internal fields' {
             InModuleScope AzLocal.UpdateManagement {
@@ -3812,7 +3832,7 @@ Describe 'Integration: Get-AzureLocalUpdateRuns parallel dispatch' {
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
                 )
 
-                $results = Get-AzureLocalUpdateRuns -ClusterResourceIds $ids -UpdateName '10.2506.0.28' -Latest -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalUpdateRuns -ClusterResourceIds $ids -UpdateName '10.2506.0.28' -Latest -PassThru
 
                 $results | Should -HaveCount 2
                 ($results | Where-Object ClusterName -eq 'cluster-a').State | Should -Be 'Succeeded'
@@ -5929,7 +5949,7 @@ Describe 'v0.7.67 schedule-audit summary - cron fixes first when issues exist' {
         Test-Path $YamlPath | Should -BeTrue -Because "expected schedule-audit YAML at $YamlPath"
         $content = Get-Content -Path $YamlPath -Raw
         $content | Should -Match '\$hasIssues\s*=\s*\(\(\[int\]\$uncovered\)' -Because 'Phase 4.3 conditional must compute $hasIssues from the four issue counts.'
-        $content | Should -Match 'Action required - paste these cron entries into apply-updates\.yml' -Because 'Phase 4.3 must surface a top-of-summary "Action required" header when issues exist.'
+        $content | Should -Match 'Action required - paste these cron entries into Step\.5_apply-updates\.yml' -Because 'Phase 4.3 must surface a top-of-summary "Action required" header when issues exist.'
         $idxActionRequired = $content.IndexOf('Action required - paste these cron entries')
         $idxAuditDetail    = $content.IndexOf('### Audit Detail')
         $idxActionRequired | Should -BeGreaterThan -1

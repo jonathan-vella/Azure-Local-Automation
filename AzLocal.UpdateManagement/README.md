@@ -196,11 +196,11 @@ This brings in the new file names *and* the Layer 1 marker scaffolding. Operator
 
 - **New `docs/Cmdlet-Inventory-And-Design.md`** documents which cmdlets read vs write, which back-end they use (ARG vs Az SDK vs az CLI), and the design rules that keep read paths ARG-first (no `-ThrottleLimit`, no per-cluster Get-AzResource fan-out). Removes ambiguity about which back-end a new cmdlet should take.
 
-## What's New in v0.7.67
+### What's New in v0.7.67
 
 v0.7.67 lands a Phase 3/4 CI/CD-parity refresh, a new maintainer-facing release-process document, and a six-item batch of in-depth-review fixes. **No public surface change** - every pre-existing pipeline and cmdlet keeps the same contract.
 
-### CI/CD parity + UX
+#### CI/CD parity + UX
 
 - **GitHub Actions schedule-audit pipeline now emits a passing testcase when the fleet has no tagged clusters.** Previously the GH variant of `Step.3_apply-updates-schedule-audit.yml` wrote an empty `<testsuite>` whenever there were no `(UpdateRing, UpdateWindow)` rows to evaluate; `dorny/test-reporter` then reported "no tests found", indistinguishable from a misconfigured reporter step. The pipeline now writes `<testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />` for the zero-row case, matching the long-standing Azure DevOps behaviour. The Tests tab reads cleanly as "passed (1/1)" regardless of whether the fleet has any tagged clusters yet, removing the daily false-alarm during onboarding and after fleet-wide tag clean-ups.
 
@@ -212,11 +212,11 @@ v0.7.67 lands a Phase 3/4 CI/CD-parity refresh, a new maintainer-facing release-
 
 - **All Azure DevOps sample pipelines now share the same `azureSubscription:` placeholder.** Four files (`Step.4_assess-update-readiness.yml`, `Step.7_fleet-health-status.yml`, `Step.6_fleet-update-status.yml`, `Step.3_apply-updates-schedule-audit.yml`) previously used `'YOUR-SERVICE-CONNECTION-NAME'` while the other four ADO YAMLs used `'AzureLocal-ServiceConnection'`. All eight ADO pipelines now use `'AzureLocal-ServiceConnection'` plus a `# Update with your service connection name` comment, matching the value documented in section 3.2 of the pipeline README. An operator who follows the auth setup verbatim no longer has to find-and-replace anything in the YAMLs.
 
-### New maintainer doc: `docs/RELEASE-PROCESS.md`
+#### New maintainer doc: `docs/RELEASE-PROCESS.md`
 
 - **Documents the staged unlisted-release flow** the module uses (publish -> immediately unlist -> validate against a test repo with `REQUIRED_MODULE_VERSION` exact-pinned to the candidate -> list after validation passes), the verification commands for each stage, and the Pester guardrails the release flow relies on. This puts the release rules in the repo rather than in tribal knowledge / chat history. Pipeline consumers do not need this doc; module maintainers do.
 
-### Fixed (in-depth module review - batch 3)
+#### Fixed (in-depth module review - batch 3)
 
 Six defence-in-depth fixes following the post-PR-#36 module review. **None are user-visible behaviour changes for the happy path** - every fix closes a class of silent-drift or silent-drop bug.
 
@@ -232,11 +232,11 @@ Six defence-in-depth fixes following the post-PR-#36 module review. **None are u
 
 - **`Import-AzureLocalFleetState` now caps input at 50 MB before reading.** The helper previously called `Get-Content -Raw | ConvertFrom-Json` with no size check; pointing it at a multi-GB file (typo, mis-glob, malicious symlink) would have OOMed the runner. Real fleet-state files (`Export-AzureLocalFleetState` output) are tens of KB at most, so a 50 MB ceiling is ~3 orders of magnitude above any plausible legitimate input. The cap message names the actual file size in MB and explains what valid input looks like. Two new Pester tests (mocked-oversize trip + happy path).
 
-### Pester baseline
+#### Pester baseline
 
 **485 passed / 0 failed / 0 skipped** (was 471 at v0.7.66) - the +14 new tests cover the drift guard, `Invoke-AzCliJson` (7), cron `*/N` (4), `Reset-AzureLocalSideloadedTag` warning (1), and `Import-AzureLocalFleetState` size guard (2).
 
-### Pipeline migration
+#### Pipeline migration
 
 If you have copied any of the bundled workflows into your repo, refresh them via:
 
