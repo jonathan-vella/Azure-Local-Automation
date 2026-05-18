@@ -88,12 +88,6 @@ function Get-AzureLocalUpdateSummary {
         [ValidateSet('Auto', 'Csv', 'Json', 'JUnitXml')]
         [string]$ExportFormat = 'Auto',
 
-        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
-        [ValidateRange(1, 32)]
-        [int]$ThrottleLimit = 1,
-
         [Parameter(Mandatory = $false)]
         [switch]$PassThru
     )
@@ -138,33 +132,38 @@ function Get-AzureLocalUpdateSummary {
         return
     }
 
+    # v0.7.68: Multi-cluster mode is now ARG-only. Ensure the resource-graph
+    # extension is present before any param-set branch runs (was previously
+    # only checked in the ByTag branch).
+    if (-not (Install-AzGraphExtension)) {
+        Write-Log -Message "Failed to install Azure CLI 'resource-graph' extension." -Level Error
+        return
+    }
+
     # Build list of clusters to process
     $clustersToProcess = @()
-    
+
     if ($PSCmdlet.ParameterSetName -eq 'ByTag') {
-        if (-not (Install-AzGraphExtension)) {
-            Write-Error "Failed to install Azure CLI 'resource-graph' extension."
-            return
-        }
-        
         Write-Log -Message "Querying Azure Resource Graph for clusters with tag 'UpdateRing' = '$UpdateRingValue'..." -Level Info
-        
+
         $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingValue
         $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' $ringFilter | project id, name, resourceGroup, subscriptionId, tags"
-        
+
         try {
-            $clusterRows = Invoke-AzResourceGraphQuery -Query $argQuery
+            $argParams = @{ Query = $argQuery }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $clusterRows = Invoke-AzResourceGraphQuery @argParams
 
             if (-not $clusterRows -or $clusterRows.Count -eq 0) {
                 Write-Log -Message "No clusters found with tag 'UpdateRing' = '$UpdateRingValue'" -Level Warning
                 return @()
             }
-            
+
             Write-Log -Message "Found $($clusterRows.Count) cluster(s) matching tag criteria" -Level Success
             foreach ($cluster in $clusterRows) {
-                $clustersToProcess += @{ 
+                $clustersToProcess += @{
                     ResourceId = $cluster.id
-                    Name = $cluster.name 
+                    Name = $cluster.name
                     ResourceGroup = $cluster.resourceGroup
                     SubscriptionId = $cluster.subscriptionId
                 }
@@ -179,7 +178,7 @@ function Get-AzureLocalUpdateSummary {
         foreach ($resourceId in $ClusterResourceIds) {
             $clusterRgName = ($resourceId -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
             $clusterSubId = ($resourceId -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
-            $clustersToProcess += @{ 
+            $clustersToProcess += @{
                 ResourceId = $resourceId
                 Name = ($resourceId -split '/')[-1]
                 ResourceGroup = $clusterRgName
@@ -188,25 +187,45 @@ function Get-AzureLocalUpdateSummary {
         }
     }
     else {
-        # ByName - resolve names to resource IDs upfront to avoid per-cluster lookups
-        if (-not $SubscriptionId) {
-            $SubscriptionId = (az account show --query id -o tsv)
+        # ByName - v0.7.68: resolve all names in a SINGLE ARG batch lookup
+        # instead of one ARM REST call per cluster. Works cross-subscription
+        # when -SubscriptionId is not passed.
+        $nameListKql = ($ClusterNames | ForEach-Object { "'$_'" }) -join ','
+        $nameQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where name in~ ($nameListKql) | project id, name, resourceGroup, subscriptionId"
+        try {
+            $argParams = @{ Query = $nameQuery }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $clusterRows = Invoke-AzResourceGraphQuery @argParams
         }
+        catch {
+            Write-Log -Message "Azure Resource Graph cluster lookup failed: $($_.Exception.Message)" -Level Error
+            return
+        }
+
+        $foundNames = @($clusterRows | Select-Object -ExpandProperty name)
+        Write-Log -Message "Resolved $($foundNames.Count) of $($ClusterNames.Count) cluster name(s) via Azure Resource Graph" -Level $(if ($foundNames.Count -eq $ClusterNames.Count) { 'Success' } else { 'Warning' })
         foreach ($name in $ClusterNames) {
-            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
-                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
-            if ($clusterInfo) {
-                $clustersToProcess += @{ 
-                    ResourceId = $clusterInfo.id
-                    Name = $clusterInfo.name
-                    ResourceGroup = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
-                    SubscriptionId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+            $match = $clusterRows | Where-Object { $_.name -ieq $name } | Select-Object -First 1
+            if ($match) {
+                $clustersToProcess += @{
+                    ResourceId = $match.id
+                    Name = $match.name
+                    ResourceGroup = $match.resourceGroup
+                    SubscriptionId = $match.subscriptionId
                 }
             }
             else {
-                Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
+                Write-Log -Message "Cluster '$name' not found in Azure Resource Graph (subscription scope: $(if ($SubscriptionId) { $SubscriptionId } else { 'all readable' })) - skipping" -Level Warning
             }
         }
+        if ($ResourceGroupName) {
+            $clustersToProcess = @($clustersToProcess | Where-Object { $_.ResourceGroup -ieq $ResourceGroupName })
+        }
+    }
+
+    if ($clustersToProcess.Count -eq 0) {
+        Write-Log -Message "No clusters resolved for query - nothing to do." -Level Warning
+        return @()
     }
 
     Write-Log -Message "" -Level Info
