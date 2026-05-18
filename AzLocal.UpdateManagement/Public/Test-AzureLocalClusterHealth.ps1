@@ -107,11 +107,7 @@ function Test-AzureLocalClusterHealth {
         [object]$UpdateSummary,
 
         [Parameter(Mandatory = $false)]
-        [switch]$PassThru,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateRange(1, 16)]
-        [int]$ThrottleLimit = 1
+        [switch]$PassThru
     )
 
     # Pre-flight: Validate export path is writable before expensive operations
@@ -137,14 +133,18 @@ function Test-AzureLocalClusterHealth {
         return
     }
 
+    # Ensure resource-graph extension is installed (the cmdlet is fully
+    # ARG-driven from v0.7.68 - single batched updatesummaries query replaces
+    # the per-cluster ARM REST fan-out).
+    if (-not (Install-AzGraphExtension)) {
+        Write-Error "Failed to install Azure CLI 'resource-graph' extension. Please install manually: az extension add --name resource-graph"
+        return
+    }
+
     # Build cluster list (reuse existing patterns)
     $clustersToCheck = @()
 
     if ($PSCmdlet.ParameterSetName -eq 'ByTag') {
-        if (-not (Install-AzGraphExtension)) {
-            Write-Error "Failed to install Azure CLI 'resource-graph' extension."
-            return
-        }
         $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingValue
         $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' $ringFilter | project id, name, resourceGroup, subscriptionId"
         try {
@@ -170,13 +170,28 @@ function Test-AzureLocalClusterHealth {
         }
     }
     else {
-        # ByName - resolve names to resource IDs upfront to avoid per-cluster lookups
-        if (-not $SubscriptionId) { $SubscriptionId = (az account show --query id -o tsv) }
+        # ByName - v0.7.68: single ARG batch lookup replaces the per-name
+        # Get-AzureLocalClusterInfo ARM REST loop.
+        $nameListKql = ($ClusterNames | ForEach-Object { "'$($_.ToLower())'" }) -join ','
+        $rgFilter = ''
+        if ($ResourceGroupName) { $rgFilter = "| where tolower(resourceGroup) =~ '$($ResourceGroupName.ToLower())'" }
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tolower(name) in~ ($nameListKql) $rgFilter | project id, name, resourceGroup, subscriptionId"
+        try {
+            $argParams = @{ Query = $argQuery }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $clusterRows = Invoke-AzResourceGraphQuery @argParams
+        }
+        catch {
+            Write-Log -Message "Error resolving cluster names via Azure Resource Graph: $_" -Level Error
+            return
+        }
+        $foundNames = @{}
+        foreach ($cluster in @($clusterRows)) { $foundNames[$cluster.name.ToLower()] = $cluster }
         foreach ($name in $ClusterNames) {
-            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
-                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
-            if ($clusterInfo) {
-                $clustersToCheck += @{ ResourceId = $clusterInfo.id; Name = $clusterInfo.name }
+            $key = $name.ToLower()
+            if ($foundNames.ContainsKey($key)) {
+                $cluster = $foundNames[$key]
+                $clustersToCheck += @{ ResourceId = $cluster.id; Name = $cluster.name }
             }
             else {
                 Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
@@ -184,77 +199,55 @@ function Test-AzureLocalClusterHealth {
         }
     }
 
+    if (-not $clustersToCheck -or $clustersToCheck.Count -eq 0) {
+        Write-Log -Message "No clusters resolved for health validation." -Level Warning
+        return @()
+    }
+
     Write-Log -Message "Checking health for $($clustersToCheck.Count) cluster(s)..." -Level Info
 
     $results = @()
     $overallPassed = $true
 
-    # Parallel dispatch (v0.7.0+): when -ThrottleLimit > 1, shard clusters across background
-    # jobs. Each job re-imports the module and calls this function recursively with
-    # -ThrottleLimit 1 on its own subset. Skipped when the caller supplied a pre-fetched
-    # $UpdateSummary (single-cluster fast-path) since batches need per-cluster fetches.
-    if ($ThrottleLimit -gt 1 -and $clustersToCheck.Count -gt 1 -and -not $UpdateSummary) {
-        Write-Log -Message "Dispatching to $ThrottleLimit parallel workers..." -Level Info
-        $resourceIds = @($clustersToCheck | ForEach-Object { $_.ResourceId } | Where-Object { $_ })
-        $jobScript = {
-            param([object[]]$Batch, [string]$ApiVersionArg, [bool]$BlockingOnlyArg, [string]$ModulePath)
-            Import-Module $ModulePath -Force
-            if ($Batch.Count -eq 0) { return @() }
-            $splat = @{ ClusterResourceIds = @($Batch); ApiVersion = $ApiVersionArg; ThrottleLimit = 1; PassThru = $true }
-            if ($BlockingOnlyArg) { $splat['BlockingOnly'] = $true }
-            Test-AzureLocalClusterHealth @splat
-        }
-        $batchResults = Invoke-FleetJobsInParallel `
-            -InputItems $resourceIds `
-            -ScriptBlock $jobScript `
-            -ThrottleLimit $ThrottleLimit `
-            -ArgumentList @($ApiVersion, [bool]$BlockingOnly) `
-            -ActivityName 'ClusterHealth'
-        foreach ($br in $batchResults) {
-            if ($br.Failed) {
-                Write-Log -Message "  Parallel batch $($br.BatchIndex) failed: $($br.Error)" -Level Error
-                $overallPassed = $false
-                continue
-            }
-            if ($br.Output) { $results += @($br.Output) }
-        }
-        if (-not (@($results | Where-Object { $_.Passed -eq $true }).Count -eq $results.Count)) {
-            $overallPassed = $false
-        }
+    # v0.7.68: Batch every cluster's update summary into one Azure Resource
+    # Graph query. The previous design made one ARM REST call per cluster
+    # (optionally parallelised across Start-Job runspaces). ARG returns the
+    # same `properties.healthCheckResult` shape as the ARM REST response, so
+    # the downstream parsing logic is unchanged.
+    #
+    # Fast-path: when the caller pre-fetched the summary (used by
+    # Start-AzureLocalClusterUpdate's single-cluster invocation), skip the
+    # ARG query and use the supplied object directly.
+    $summaryByCluster = @{}
+    if ($UpdateSummary -and $clustersToCheck.Count -eq 1) {
+        $summaryByCluster[$clustersToCheck[0].ResourceId.ToLower()] = $UpdateSummary
     }
     else {
+        $idListKql = ($clustersToCheck | ForEach-Object { "'$($_.ResourceId.ToLower())'" }) -join ','
+        $summariesKql = "extensibilityresources | where type =~ 'microsoft.azurestackhci/clusters/updatesummaries' | extend ids = split(id, '/') | extend ClusterResourceId_ = tolower(strcat('/subscriptions/', tostring(ids[2]), '/resourceGroups/', tostring(ids[4]), '/providers/Microsoft.AzureStackHCI/clusters/', tostring(ids[8]))) | where ClusterResourceId_ in~ ($idListKql) | project id, name, properties, ClusterResourceId_"
+        try {
+            $argParams = @{ Query = $summariesKql }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $summaryRows = Invoke-AzResourceGraphQuery @argParams
+        }
+        catch {
+            Write-Log -Message "Azure Resource Graph query for update summaries failed: $($_.Exception.Message)" -Level Error
+            return
+        }
+        foreach ($row in @($summaryRows)) {
+            $summaryByCluster[[string]$row.ClusterResourceId_] = $row
+        }
+        Write-Log -Message "Returned $(@($summaryRows).Count) update-summary record(s) via Azure Resource Graph" -Level Success
+    }
 
     foreach ($cluster in $clustersToCheck) {
         $clusterName = $cluster.Name
         Write-Host "  Checking: $clusterName..." -ForegroundColor Gray -NoNewline
 
         try {
-            # Get resource ID if needed
-            $resourceId = $cluster.ResourceId
-            if (-not $resourceId) {
-                $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
-                    -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
-                if ($clusterInfo) { $resourceId = $clusterInfo.id }
-            }
-            if (-not $resourceId) {
-                Write-Host " Not Found" -ForegroundColor Red
-                $results += [PSCustomObject]@{
-                    ClusterName = $clusterName; HealthState = "Not Found"; Passed = $false
-                    CriticalCount = 0; WarningCount = 0; Failures = @()
-                }
-                $overallPassed = $false
-                continue
-            }
+            $key = $cluster.ResourceId.ToLower()
+            $summary = if ($summaryByCluster.ContainsKey($key)) { $summaryByCluster[$key] } else { $null }
 
-            # Get update summary (contains healthCheckResult)
-            # Use pre-fetched summary if provided, otherwise fetch from API
-            $summary = $null
-            if ($UpdateSummary -and $clustersToCheck.Count -eq 1) {
-                $summary = $UpdateSummary
-            }
-            else {
-                $summary = Get-AzureLocalUpdateSummary -ClusterResourceId $resourceId -ApiVersion $ApiVersion
-            }
             if (-not $summary -or -not $summary.properties.healthCheckResult) {
                 Write-Host " No Health Data" -ForegroundColor Yellow
                 $results += [PSCustomObject]@{
@@ -264,7 +257,7 @@ function Test-AzureLocalClusterHealth {
                 continue
             }
 
-            $healthState = if ($summary.properties.healthState) { $summary.properties.healthState } else { "Unknown" }
+            $healthState = if ($summary.properties.healthState) { [string]$summary.properties.healthState } else { "Unknown" }
             $healthChecks = $summary.properties.healthCheckResult
 
             # Extract failures (Critical and Warning only; use -BlockingOnly for Critical only)
@@ -321,7 +314,6 @@ function Test-AzureLocalClusterHealth {
             $overallPassed = $false
         }
     }
-    } # end else (serial path)
 
     # Summary
     Write-Log -Message "" -Level Info
