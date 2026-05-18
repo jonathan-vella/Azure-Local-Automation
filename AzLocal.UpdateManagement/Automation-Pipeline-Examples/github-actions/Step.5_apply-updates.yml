@@ -8,9 +8,24 @@
 #
 # For OIDC setup, see: https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect
 
-name: Apply Updates
+# Workflow name carries the same Step.N - prefix as the filename so the GitHub
+# Actions sidebar (which sorts workflows alphabetically by this `name:` field)
+# lists the eight pipelines in execution order.
+name: Step.5 - Apply Updates
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Add `schedule:` cron blocks here to drive automated update runs. The cron
+  # entries must align with your UpdateWindow tag values - use
+  # `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` (or the
+  # Step.3 schedule-audit pipeline) to generate ready-to-paste cron lines.
+  # Example:
+  #   schedule:
+  #     - cron: '0 22 * * 6'  # Saturday-night UpdateWindow=SatNight22UTC
+  # Content between BEGIN/END markers is preserved by
+  # Update-AzureLocalPipelineExample across module upgrades.
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+
   workflow_dispatch:
     inputs:
       update_ring:
@@ -31,10 +46,6 @@ on:
         options:
           - 'false'
           - 'true'
-      throttle_limit:
-        description: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16. Raise for large fleets.'
-        required: false
-        default: '4'
       # --- ITSM Connector (v0.7.4 Phase 1: ServiceNow) ---
       # Set raise_itsm_ticket=true to open ServiceNow incidents for clusters whose
       # Status matches an entry in the trigger matrix (default config:
@@ -79,7 +90,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.67'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.68'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -172,14 +183,12 @@ jobs:
       id: readiness
       env:
         INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
-        INPUT_THROTTLE_LIMIT: ${{ github.event.inputs.throttle_limit }}
       run: |
         Import-Module AzLocal.UpdateManagement -Force
         
         $updateRing = $env:INPUT_UPDATE_RING
-        $throttle = [int]($env:INPUT_THROTTLE_LIMIT); if ($throttle -lt 1) { $throttle = 4 }
         
-        Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing' (ThrottleLimit=$throttle)"
+        Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing'"
         
         # Create output directory
         $outputDir = "./artifacts"
@@ -191,7 +200,6 @@ jobs:
         $results = Get-AzureLocalClusterUpdateReadiness `
             -ScopeByUpdateRingTag `
             -UpdateRingValue $updateRing `
-            -ThrottleLimit $throttle `
             -ExportPath $csvPath `
             -PassThru
         
@@ -303,14 +311,12 @@ jobs:
         INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
         INPUT_UPDATE_NAME: ${{ github.event.inputs.update_name }}
         INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
-        INPUT_THROTTLE_LIMIT: ${{ github.event.inputs.throttle_limit }}
       run: |
         Import-Module AzLocal.UpdateManagement -Force
         
         $updateRing = $env:INPUT_UPDATE_RING
         $updateName = $env:INPUT_UPDATE_NAME
         $dryRun = $env:INPUT_DRY_RUN -eq "true"
-        $throttle = [int]($env:INPUT_THROTTLE_LIMIT); if ($throttle -lt 1) { $throttle = 4 }
         
         # Create output directory
         $outputDir = "./artifacts"
@@ -447,12 +453,16 @@ jobs:
       shell: pwsh
       id: itsm
       env:
-        # ServiceNow OAuth client_credentials grant. Reference these via
-        # env://ITSM_SN_* in azurelocal-itsm.yml. Keep these secret names
-        # stable so users only have to wire them once.
+        # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+        # Bind your ITSM connector secrets here. Defaults below assume the
+        # ServiceNow OAuth client_credentials grant naming used by
+        # azurelocal-itsm.yml (env://ITSM_SN_*). If your secret names differ,
+        # update them here - this block is preserved by
+        # Update-AzureLocalPipelineExample across module upgrades.
         ITSM_SN_INSTANCE_URL: ${{ secrets.ITSM_SN_INSTANCE_URL }}
         ITSM_SN_CLIENT_ID:    ${{ secrets.ITSM_SN_CLIENT_ID }}
         ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
+        # END-AZLOCAL-CUSTOMIZE:itsm-secrets
         INPUT_ITSM_CONFIG_PATH: ${{ github.event.inputs.itsm_config_path }}
         INPUT_ITSM_DRY_RUN:     ${{ github.event.inputs.itsm_dry_run }}
         INPUT_ITSM_FORCE_CREATE: ${{ github.event.inputs.itsm_force_create }}

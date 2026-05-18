@@ -18,9 +18,20 @@
 # NOTE: GitHub Actions does not support file uploads as workflow inputs.
 #       The edited CSV must be committed to the repository first.
 
-name: Manage UpdateRing Tags
+# Workflow name carries the same Step.N - prefix as the filename so the GitHub
+# Actions sidebar (which sorts workflows alphabetically by this `name:` field)
+# lists the eight pipelines in execution order.
+name: Step.2 - Manage UpdateRing Tags
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Add `schedule:` cron blocks here to enable automated runs, e.g.:
+  #   schedule:
+  #     - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
+  # Content between BEGIN/END markers is preserved by
+  # Update-AzureLocalPipelineExample across module upgrades.
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+
   workflow_dispatch:
     inputs:
       csv_file_path:
@@ -53,7 +64,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.67'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.68'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -105,7 +116,7 @@ jobs:
             Write-Host "STEP 1 - Generate the cluster inventory (one-off, then on demand)" -ForegroundColor Cyan
             Write-Host "  a. Go to the 'Actions' tab in this repository."
             Write-Host "  b. Open the workflow named 'Inventory Azure Local Clusters'"
-            Write-Host "     (file: .github/workflows/inventory-clusters.yml)."
+            Write-Host "     (file: .github/workflows/Step.1_inventory-clusters.yml)."
             Write-Host "  c. Click 'Run workflow' and wait for the run to finish successfully."
             Write-Host "  d. On the completed run page, scroll to the 'Artifacts' section and"
             Write-Host "     download the artifact named 'cluster-inventory'."

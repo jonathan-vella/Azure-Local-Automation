@@ -5,13 +5,13 @@
 #
 # WHY THIS PIPELINE EXISTS
 # ------------------------
-# apply-updates.yml ships with NO default schedule (workflow_dispatch only) on purpose,
+# Step.5_apply-updates.yml ships with NO default schedule (workflow_dispatch only) on purpose,
 # so customers must consciously choose when updates fire. After you have configured
-# UpdateWindow tags on your clusters and added cron entries to apply-updates.yml, this
+# UpdateWindow tags on your clusters and added cron entries to Step.5_apply-updates.yml, this
 # pipeline is the safety net that catches:
-#   - a new ring tagged with UpdateWindow that no cron in apply-updates.yml will reach
+#   - a new ring tagged with UpdateWindow that no cron in Step.5_apply-updates.yml will reach
 #   - an UpdateWindow tag value that fails to parse (typo / wrong syntax)
-#   - apply-updates.yml cron entries that the advisor cannot reason about
+#   - Step.5_apply-updates.yml cron entries that the advisor cannot reason about
 #     (DayOfMonth restrictions, step values) so you can audit them manually
 #
 # REPORTS GENERATED
@@ -27,19 +27,26 @@
 # Uses OpenID Connect (OIDC) - recommended for secretless authentication
 # See: https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect
 
-name: Apply-Updates Schedule Coverage Audit
+# Workflow name carries the same Step.N - prefix as the filename so the GitHub
+# Actions sidebar (which sorts workflows alphabetically by this `name:` field)
+# lists the eight pipelines in execution order.
+name: Step.3 - Apply-Updates Schedule Coverage Audit
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Edits inside this block are preserved across Update-AzureLocalPipelineExample
+  # module upgrades. Add or modify `schedule:` cron blocks below.
   # Weekly on Monday at 05:00 UTC - well before any common Saturday/Sunday or weekday
   # evening update window so a coverage drift report lands in the inbox before the
   # next scheduled apply-updates run.
   schedule:
     - cron: '0 5 * * 1'   # Mondays at 05:00 UTC
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
   workflow_dispatch:
     inputs:
       pipeline_path:
-        description: 'Path (file or folder) to apply-updates.yml to audit, repo-relative. Default `.github/workflows` matches the standard GitHub Actions consumer layout where you paste the bundled `apply-updates.yml` sample.'
+        description: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Default `.github/workflows` matches the standard GitHub Actions consumer layout where you paste the bundled `Step.5_apply-updates.yml` sample.'
         required: false
         default: '.github/workflows'
       lead_time_minutes:
@@ -64,7 +71,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.67'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.68'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
@@ -147,7 +154,7 @@ jobs:
 
         if (-not (Test-Path -LiteralPath $pipelinePath)) {
             $candidates = @('.github/workflows', '.azure-pipelines', 'pipelines', '.') | Where-Object { Test-Path -LiteralPath $_ }
-            $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-run via 'Run workflow' on the Actions tab and set the 'pipeline_path' input." } else { "No common pipeline folders (.github/workflows, .azure-pipelines, pipelines, repo root) were found in this repo - commit your apply-updates.yml first, or set 'pipeline_path' to wherever you keep it." }
+            $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-run via 'Run workflow' on the Actions tab and set the 'pipeline_path' input." } else { "No common pipeline folders (.github/workflows, .azure-pipelines, pipelines, repo root) were found in this repo - commit your Step.5_apply-updates.yml first, or set 'pipeline_path' to wherever you keep it." }
             throw "PipelineYamlPath '$pipelinePath' does not exist on the runner. $hint"
         }
 
@@ -297,7 +304,7 @@ jobs:
         "@
 
         if ($hasIssues -and $reco) {
-            $md += "`n### Action required - paste these cron entries into apply-updates.yml`n"
+            $md += "`n### Action required - paste these cron entries into Step.5_apply-updates.yml`n"
             $md += "`n``````yaml`n" + $reco + "`n```````n"
         }
 
@@ -320,7 +327,7 @@ jobs:
         # operators who want the canonical cron list as a reference. When there are issues
         # we already printed it at the top so skip the duplicate.
         if (-not $hasIssues) {
-            $md += "`n### Recommended Schedule (copy into apply-updates.yml)`n"
+            $md += "`n### Recommended Schedule (copy into Step.5_apply-updates.yml)`n"
             if ($reco) {
                 $md += "`n``````yaml`n" + $reco + "`n```````n"
             } else {

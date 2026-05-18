@@ -1,4 +1,4 @@
-# Fleet Health Status Monitoring Pipeline
+# Step.7 - Fleet Health Status Monitoring Pipeline
 # This pipeline surfaces 24-hour system health-check failures across every Azure Local
 # cluster the service connection can read - including clusters that are already
 # "up to date" with no available updates. The 24-hour health checks continue to run
@@ -26,6 +26,9 @@
 # AUTHENTICATION:
 # Uses Workload Identity Federation (OIDC) - recommended for secretless authentication.
 
+# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+# Edits inside this block are preserved across Update-AzureLocalPipelineExample
+# module upgrades. Add or modify `schedules:` blocks below.
 trigger: none  # Manual or scheduled only
 
 schedules:
@@ -36,6 +39,7 @@ schedules:
       include:
         - main
     always: true
+# END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
 parameters:
   - name: scope
@@ -71,7 +75,7 @@ variables:
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.67'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.68'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).

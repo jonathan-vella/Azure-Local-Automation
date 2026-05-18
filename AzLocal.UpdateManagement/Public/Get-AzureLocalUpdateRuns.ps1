@@ -6,17 +6,26 @@ function Get-AzureLocalUpdateRuns {
         Retrieves update run information for Azure Local (Azure Stack HCI) clusters.
         Update runs contain the history and status of update operations including
         start time, end time, progress, and any errors that occurred.
-        
+
         Supports multiple input methods:
-        - Single cluster by name (original behavior)
-        - Multiple clusters by name or resource ID
-        - All clusters matching an UpdateRing tag value
-        
+        - Single cluster by name (uses ARM REST against the cluster's /updateRuns endpoint)
+        - Multiple clusters by name or resource ID (single ARG query)
+        - All clusters matching an UpdateRing tag value (single ARG query)
+
+        In multi-cluster mode (v0.7.68+) all update runs are returned by ONE
+        Azure Resource Graph query against the `extensibilityresources`
+        namespace (microsoft.azurestackhci/clusters/updates/updateruns) -
+        typically completes in under 10 seconds for hundreds of clusters,
+        replacing the previous per-cluster ARM REST fan-out which took
+        minutes for moderately-sized fleets.
+
         Returns clean, human-readable objects with key information extracted from the API response.
     .PARAMETER ClusterName
         The name of a single Azure Local cluster (original behavior).
     .PARAMETER ClusterNames
-        An array of Azure Local cluster names to query.
+        An array of Azure Local cluster names to query. In v0.7.68+ these are
+        resolved cross-subscription via a single ARG batch lookup (no per-name
+        ARM REST calls).
     .PARAMETER ClusterResourceIds
         An array of full Azure Resource IDs for the clusters to query.
     .PARAMETER ScopeByUpdateRingTag
@@ -27,15 +36,19 @@ function Get-AzureLocalUpdateRuns {
     .PARAMETER ResourceGroupName
         The resource group containing the cluster. If not specified, searches all resource groups.
     .PARAMETER SubscriptionId
-        The Azure subscription ID. If not specified, uses the current subscription context.
+        Optional. The Azure subscription ID to scope queries to. When omitted,
+        the multi-cluster mode queries every subscription the caller can read
+        via Azure Resource Graph (cross-subscription default since v0.7.68).
     .PARAMETER UpdateName
         Optional. The specific update name to get runs for. If not specified, returns runs for all updates.
     .PARAMETER Latest
         Optional. Return only the most recent update run per cluster.
     .PARAMETER Raw
         Optional. Return the raw API response objects instead of formatted output.
+        Only applies to the single-cluster mode.
     .PARAMETER ApiVersion
         The Azure REST API version to use. Default is the module's default API version.
+        Only used by the single-cluster mode; the multi-cluster mode uses ARG.
     .PARAMETER ExportPath
         Path to export the results. Supports .csv, .json, and .xml (JUnit format) extensions.
     .OUTPUTS
@@ -113,12 +126,6 @@ function Get-AzureLocalUpdateRuns {
 
         [Parameter(Mandatory = $false)]
         [switch]$PassThru,
-
-        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
-        [ValidateRange(1, 32)]
-        [int]$ThrottleLimit = 1,
 
         # v0.7.1: when omitted (default), Get-AzureLocalUpdateRuns will auto-reset
         # the UpdateSideloaded tag (True->False) and clear UpdateVersionInProgress
@@ -264,33 +271,38 @@ function Get-AzureLocalUpdateRuns {
         return
     }
 
+    # v0.7.68: Multi-cluster mode is now ARG-only. Ensure the resource-graph
+    # extension is present before any param-set branch runs (was previously
+    # only checked in the ByTag branch).
+    if (-not (Install-AzGraphExtension)) {
+        Write-Log -Message "Failed to install Azure CLI 'resource-graph' extension." -Level Error
+        return
+    }
+
     # Build list of clusters to process
     $clustersToProcess = @()
-    
+
     if ($PSCmdlet.ParameterSetName -eq 'ByTag') {
-        if (-not (Install-AzGraphExtension)) {
-            Write-Error "Failed to install Azure CLI 'resource-graph' extension."
-            return
-        }
-        
         Write-Log -Message "Querying Azure Resource Graph for clusters with tag 'UpdateRing' = '$UpdateRingValue'..." -Level Info
-        
+
         $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingValue
         $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' $ringFilter | project id, name, resourceGroup, subscriptionId, tags"
-        
+
         try {
-            $clusterRows = Invoke-AzResourceGraphQuery -Query $argQuery
+            $argParams = @{ Query = $argQuery }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $clusterRows = Invoke-AzResourceGraphQuery @argParams
 
             if (-not $clusterRows -or $clusterRows.Count -eq 0) {
                 Write-Log -Message "No clusters found with tag 'UpdateRing' = '$UpdateRingValue'" -Level Warning
                 return @()
             }
-            
+
             Write-Log -Message "Found $($clusterRows.Count) cluster(s) matching tag criteria" -Level Success
             foreach ($cluster in $clusterRows) {
-                $clustersToProcess += @{ 
+                $clustersToProcess += @{
                     ResourceId = $cluster.id
-                    Name = $cluster.name 
+                    Name = $cluster.name
                     ResourceGroup = $cluster.resourceGroup
                     SubscriptionId = $cluster.subscriptionId
                 }
@@ -305,7 +317,7 @@ function Get-AzureLocalUpdateRuns {
         foreach ($resourceId in $ClusterResourceIds) {
             $clusterRgName = ($resourceId -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
             $clusterSubId = ($resourceId -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
-            $clustersToProcess += @{ 
+            $clustersToProcess += @{
                 ResourceId = $resourceId
                 Name = ($resourceId -split '/')[-1]
                 ResourceGroup = $clusterRgName
@@ -314,25 +326,45 @@ function Get-AzureLocalUpdateRuns {
         }
     }
     else {
-        # ByName - resolve names to resource IDs upfront to avoid per-cluster lookups
-        if (-not $SubscriptionId) {
-            $SubscriptionId = (az account show --query id -o tsv)
+        # ByName - v0.7.68: resolve all names in a SINGLE ARG batch lookup
+        # instead of one ARM REST call per cluster. Works cross-subscription
+        # when -SubscriptionId is not passed.
+        $nameListKql = ($ClusterNames | ForEach-Object { "'$_'" }) -join ','
+        $nameQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where name in~ ($nameListKql) | project id, name, resourceGroup, subscriptionId"
+        try {
+            $argParams = @{ Query = $nameQuery }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $clusterRows = Invoke-AzResourceGraphQuery @argParams
         }
+        catch {
+            Write-Log -Message "Azure Resource Graph cluster lookup failed: $($_.Exception.Message)" -Level Error
+            return
+        }
+
+        $foundNames = @($clusterRows | Select-Object -ExpandProperty name)
+        Write-Log -Message "Resolved $($foundNames.Count) of $($ClusterNames.Count) cluster name(s) via Azure Resource Graph" -Level $(if ($foundNames.Count -eq $ClusterNames.Count) { 'Success' } else { 'Warning' })
         foreach ($name in $ClusterNames) {
-            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
-                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
-            if ($clusterInfo) {
-                $clustersToProcess += @{ 
-                    ResourceId = $clusterInfo.id
-                    Name = $clusterInfo.name
-                    ResourceGroup = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
-                    SubscriptionId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+            $match = $clusterRows | Where-Object { $_.name -ieq $name } | Select-Object -First 1
+            if ($match) {
+                $clustersToProcess += @{
+                    ResourceId = $match.id
+                    Name = $match.name
+                    ResourceGroup = $match.resourceGroup
+                    SubscriptionId = $match.subscriptionId
                 }
             }
             else {
-                Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
+                Write-Log -Message "Cluster '$name' not found in Azure Resource Graph (subscription scope: $(if ($SubscriptionId) { $SubscriptionId } else { 'all readable' })) - skipping" -Level Warning
             }
         }
+        if ($ResourceGroupName) {
+            $clustersToProcess = @($clustersToProcess | Where-Object { $_.ResourceGroup -ieq $ResourceGroupName })
+        }
+    }
+
+    if ($clustersToProcess.Count -eq 0) {
+        Write-Log -Message "No clusters resolved for query - nothing to do." -Level Warning
+        return @()
     }
 
     Write-Log -Message "" -Level Info
@@ -342,208 +374,124 @@ function Get-AzureLocalUpdateRuns {
     $allFormattedRuns = [System.Collections.Generic.List[object]]::new()
     $stateCounts = @{}
 
-    # Per-cluster update-runs scriptblock. Runs inline (ThrottleLimit=1)
-    # or inside Start-Job (ThrottleLimit>1). Emits a structured shape the
-    # parent replays deterministically: Rows (formatted run rows already
-    # flattened) plus LatestState for tally + coloured display. Format-
-    # AzLocalUpdateRun and Get-AzLocalClusterUpdateRuns are module-private
-    # (filtered out by Export-ModuleMember), so when this scriptblock runs
-    # inside a Start-Job runspace they are NOT visible at script scope after
-    # Import-Module. We therefore re-import the module with -PassThru and
-    # invoke the private helpers via the module's own session state using
-    # & $module { ... }, which is the supported pattern for reaching
-    # non-exported helpers from a child runspace. The inline (ThrottleLimit=1)
-    # path runs in the parent runspace where the module's script scope is
-    # already active, so the same scriptblock works there too because
-    # Get-Module returns the already-loaded module.
-    $runsJob = {
-        param(
-            [object[]]$Shard,
-            [string]$ApiVer,
-            [string]$UpdateNameFilter,
-            [bool]$LatestOnly,
-            [string]$ModulePath
-        )
-        # Always resolve a module reference (PassThru import in child runspace,
-        # already-loaded module in the inline parent runspace). $mod is then
-        # used to bridge into the module's session state for private helpers.
-        $mod = Get-Module -Name AzLocal.UpdateManagement | Select-Object -First 1
-        if (-not $mod) {
-            $mod = Import-Module $ModulePath -Force -PassThru -ErrorAction Stop
-        }
-        $out = foreach ($cluster in $Shard) {
-            $clusterName = $cluster.Name
-            try {
-                $resourceId = $cluster.ResourceId
-                if (-not $resourceId) {
-                    $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
-                        -ResourceGroupName $cluster.ResourceGroup `
-                        -SubscriptionId $cluster.SubscriptionId `
-                        -ApiVersion $ApiVer
-                    if ($clusterInfo) { $resourceId = $clusterInfo.id }
-                }
+    # v0.7.68: Replaced per-cluster ARM REST fan-out with a SINGLE Azure
+    # Resource Graph query against the `extensibilityresources` namespace
+    # (microsoft.azurestackhci/clusters/updates/updateruns). One round-trip
+    # returns every update run for the entire cluster list - typically in
+    # <10 seconds for hundreds of clusters - replacing the previous design
+    # which made one ARM REST call per update per cluster (251s for 9
+    # clusters in the smoke test). The `properties` bag returned by ARG is
+    # identical in shape to the ARM REST /updateRuns response, so we can
+    # reuse Format-AzLocalUpdateRun unchanged.
 
-                if (-not $resourceId) {
-                    [PSCustomObject]@{
-                        ClusterName  = $clusterName
-                        DisplayTag   = 'NotFound'
-                        LatestState  = $null
-                        RunCount     = 0
-                        Rows         = @([PSCustomObject]@{
-                                ClusterName       = $clusterName
-                                ClusterResourceId = $null
-                                UpdateName        = 'N/A'
-                                RunId             = ''
-                                State             = 'Cluster Not Found'
-                                StartTime         = ''
-                                EndTime           = ''
-                                Duration          = ''
-                                Progress          = ''
-                                CurrentStep       = ''
-                                CurrentStepDetail = ''
-                                Location          = ''
-                            })
-                    }
-                    continue
-                }
+    # Build the KQL `in~()` literal: cluster IDs are lowercased to match the
+    # `tolower(...)` projection inside the query. PowerShell single-quoted
+    # strings in the join are valid KQL string literals because cluster IDs
+    # cannot contain apostrophes.
+    $idListKql = ($clustersToProcess | ForEach-Object { "'$($_.ResourceId.ToLower())'" }) -join ','
+    $updateNameClause = if ($UpdateName) { "| where UpdateName_ =~ '$UpdateName'" } else { '' }
 
-                $runs = @(& $mod {
-                        param($rid, $filter, $ver)
-                        Get-AzLocalClusterUpdateRuns -resourceId $rid -updateNameFilter $filter -apiVer $ver
-                    } $resourceId $UpdateNameFilter $ApiVer)
+    $runsKql = @"
+extensibilityresources
+| where type =~ 'microsoft.azurestackhci/clusters/updates/updateruns'
+| extend ids = split(id, '/')
+| extend ClusterName_ = tostring(ids[8]), UpdateName_ = tostring(ids[10])
+| extend ClusterResourceId_ = tolower(strcat('/subscriptions/', tostring(ids[2]), '/resourceGroups/', tostring(ids[4]), '/providers/Microsoft.AzureStackHCI/clusters/', ClusterName_))
+| where ClusterResourceId_ in~ ($idListKql)
+$updateNameClause
+| project id, name, type, location, properties, ClusterName_, ClusterResourceId_, UpdateName_, ts = todatetime(properties.timeStarted)
+| order by ts desc
+"@
 
-                if ($runs.Count -gt 0) {
-                    $latestRun = $runs | Sort-Object { $_.properties.timeStarted } -Descending | Select-Object -First 1
-                    $latestState = $latestRun.properties.state
-                    $runsToFormat = if ($LatestOnly) { @($latestRun) } else { $runs }
-
-                    $rows = foreach ($run in $runsToFormat) {
-                        $formatted = & $mod {
-                            param($r, $cn, $crid)
-                            Format-AzLocalUpdateRun -run $r -clusterName $cn -clusterResourceId $crid
-                        } $run $clusterName $resourceId
-                        [PSCustomObject]@{
-                            ClusterName       = $clusterName
-                            ClusterResourceId = $resourceId
-                            UpdateName        = $formatted.UpdateName
-                            RunId             = $formatted.RunId
-                            State             = $formatted.State
-                            StartTime         = $formatted.StartTime
-                            EndTime           = $formatted.EndTime
-                            Duration          = $formatted.Duration
-                            Progress          = $formatted.Progress
-                            CurrentStep       = $formatted.CurrentStep
-                            CurrentStepDetail = $formatted.CurrentStepDetail
-                            Location          = $formatted.Location
-                        }
-                    }
-
-                    [PSCustomObject]@{
-                        ClusterName = $clusterName
-                        DisplayTag  = 'Runs'
-                        LatestState = $latestState
-                        RunCount    = $runs.Count
-                        Rows        = @($rows)
-                    }
-                }
-                else {
-                    [PSCustomObject]@{
-                        ClusterName = $clusterName
-                        DisplayTag  = 'NoRuns'
-                        LatestState = $null
-                        RunCount    = 0
-                        Rows        = @([PSCustomObject]@{
-                                ClusterName       = $clusterName
-                                ClusterResourceId = $resourceId
-                                UpdateName        = 'None'
-                                RunId             = ''
-                                State             = 'No Runs'
-                                StartTime         = ''
-                                EndTime           = ''
-                                Duration          = ''
-                                Progress          = ''
-                                CurrentStep       = ''
-                                CurrentStepDetail = ''
-                                Location          = ''
-                            })
-                    }
-                }
-            }
-            catch {
-                $msg = $_.Exception.Message
-                [PSCustomObject]@{
-                    ClusterName = $clusterName
-                    DisplayTag  = "Error:$msg"
-                    LatestState = $null
-                    RunCount    = 0
-                    Rows        = @([PSCustomObject]@{
-                            ClusterName       = $clusterName
-                            ClusterResourceId = $resourceId
-                            UpdateName        = 'Error'
-                            RunId             = ''
-                            State             = 'Error'
-                            StartTime         = ''
-                            EndTime           = ''
-                            Duration          = ''
-                            Progress          = ''
-                            CurrentStep       = $msg
-                            CurrentStepDetail = $msg
-                            Location          = ''
-                        })
-                }
-            }
-        }
-        return , @($out)
+    try {
+        $argParams = @{ Query = $runsKql }
+        if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+        $allRunsRaw = Invoke-AzResourceGraphQuery @argParams
+    }
+    catch {
+        Write-Log -Message "Azure Resource Graph query for update runs failed: $($_.Exception.Message)" -Level Error
+        return
     }
 
-    $shardInputs = @($clustersToProcess | ForEach-Object {
-            [PSCustomObject]@{
-                ResourceId     = $_.ResourceId
-                Name           = $_.Name
-                ResourceGroup  = $_.ResourceGroup
-                SubscriptionId = $_.SubscriptionId
-            }
-        })
+    Write-Log -Message "Returned $($allRunsRaw.Count) update run(s) across $($clustersToProcess.Count) cluster(s) via Azure Resource Graph" -Level Success
 
-    $latestOnly = [bool]$Latest
-    $jobResults = Invoke-FleetJobsInParallel `
-        -InputItems $shardInputs `
-        -ScriptBlock $runsJob `
-        -ThrottleLimit $ThrottleLimit `
-        -ArgumentList @($ApiVersion, [string]$UpdateName, $latestOnly) `
-        -ActivityName 'UpdateRuns'
+    # Group rows by ClusterResourceId (lowercased) and build the per-cluster
+    # entry table that the downstream UX loop expects. The shape mirrors the
+    # legacy parallel-jobs output: { ClusterName, DisplayTag, LatestState,
+    # RunCount, Rows[] } where Rows[] is the Format-AzLocalUpdateRun output.
+    $runsByCluster = @{}
+    foreach ($row in $allRunsRaw) {
+        $key = [string]$row.ClusterResourceId_
+        if (-not $runsByCluster.ContainsKey($key)) { $runsByCluster[$key] = [System.Collections.Generic.List[object]]::new() }
+        $runsByCluster[$key].Add($row) | Out-Null
+    }
 
-    # Merge shard outputs into a hash keyed by ClusterName for ordered replay.
     $perCluster = @{}
-    foreach ($jr in $jobResults) {
-        if ($jr.Failed) {
-            foreach ($item in @($jr.Items)) {
-                $perCluster[$item.Name] = [PSCustomObject]@{
-                    ClusterName = $item.Name
-                    DisplayTag  = "Error:Batch job failed: $($jr.Error)"
-                    LatestState = $null
-                    RunCount    = 0
-                    Rows        = @([PSCustomObject]@{
-                            ClusterName       = $item.Name
-                            ClusterResourceId = $item.ResourceId
-                            UpdateName        = 'Error'
-                            RunId             = ''
-                            State             = 'Error'
-                            StartTime         = ''
-                            EndTime           = ''
-                            Duration          = ''
-                            Progress          = ''
-                            CurrentStep       = "Batch job failed: $($jr.Error)"
-                            CurrentStepDetail = "Batch job failed: $($jr.Error)"
-                            Location          = ''
-                        })
+    foreach ($cluster in $clustersToProcess) {
+        $key = $cluster.ResourceId.ToLower()
+        # NOTE: Do not use `$x = if (...) { @($h[$key]) } else { @() }` here -
+        # the `if` block's pipeline return unwraps single-element Object[] to
+        # the bare element under PowerShell 5.1, and PSCustomObject.Count is
+        # empty (not 1), which would silently mask any cluster having exactly
+        # one update run. Assign default then overwrite to preserve array.
+        $clusterRuns = @()
+        if ($runsByCluster.ContainsKey($key)) { $clusterRuns = @($runsByCluster[$key]) }
+
+        if ($clusterRuns.Count -gt 0) {
+            # ARG ordering is already StartTime desc but re-sort defensively
+            # in case Resource Graph re-orders rows during pagination.
+            $sorted = @($clusterRuns | Sort-Object { $_.properties.timeStarted } -Descending)
+            $latestRun = $sorted[0]
+            $latestState = [string]$latestRun.properties.state
+            $runsToFormat = if ($Latest) { @($latestRun) } else { $sorted }
+
+            $rows = foreach ($run in $runsToFormat) {
+                $formatted = Format-AzLocalUpdateRun -run $run -clusterName $cluster.Name -clusterResourceId $cluster.ResourceId
+                [PSCustomObject]@{
+                    ClusterName       = $cluster.Name
+                    ClusterResourceId = $cluster.ResourceId
+                    UpdateName        = $formatted.UpdateName
+                    RunId             = $formatted.RunId
+                    State             = $formatted.State
+                    StartTime         = $formatted.StartTime
+                    EndTime           = $formatted.EndTime
+                    Duration          = $formatted.Duration
+                    Progress          = $formatted.Progress
+                    CurrentStep       = $formatted.CurrentStep
+                    CurrentStepDetail = $formatted.CurrentStepDetail
+                    Location          = $formatted.Location
                 }
             }
-            continue
+
+            $perCluster[$cluster.Name] = [PSCustomObject]@{
+                ClusterName = $cluster.Name
+                DisplayTag  = 'Runs'
+                LatestState = $latestState
+                RunCount    = $clusterRuns.Count
+                Rows        = @($rows)
+            }
         }
-        foreach ($entry in @($jr.Output)) {
-            if (-not $entry -or -not $entry.ClusterName) { continue }
-            $perCluster[$entry.ClusterName] = $entry
+        else {
+            $perCluster[$cluster.Name] = [PSCustomObject]@{
+                ClusterName = $cluster.Name
+                DisplayTag  = 'NoRuns'
+                LatestState = $null
+                RunCount    = 0
+                Rows        = @([PSCustomObject]@{
+                        ClusterName       = $cluster.Name
+                        ClusterResourceId = $cluster.ResourceId
+                        UpdateName        = 'None'
+                        RunId             = ''
+                        State             = 'No Runs'
+                        StartTime         = ''
+                        EndTime           = ''
+                        Duration          = ''
+                        Progress          = ''
+                        CurrentStep       = ''
+                        CurrentStepDetail = ''
+                        Location          = ''
+                    })
+            }
         }
     }
 

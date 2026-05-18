@@ -140,7 +140,7 @@ Set-StrictMode -Version 1.0
 # bumps to one but not the other are caught before release. Two consumers:
 #   - Start-AzureLocalClusterUpdate emits this in the run log header.
 #   - Get-AzureLocalFleetStatusData stamps it into exported fleet-state JSON.
-$script:ModuleVersion = '0.7.67'
+$script:ModuleVersion = '0.7.68'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.UpdateManagement'
 
@@ -257,12 +257,15 @@ Export-ModuleMember -Function @(
     'Get-AzureLocalItsmConfig',
     'Test-AzureLocalItsmConnection',
     'New-AzureLocalIncident',
-    # Pipeline-Examples Convenience (v0.7.4)
+    # Pipeline-Examples Convenience (v0.7.4 / Update added v0.7.68)
     'Copy-AzureLocalPipelineExample',
+    'Update-AzureLocalPipelineExample',
     # ITSM Sample Convenience (v0.7.50)
     'Copy-AzureLocalItsmSample',
     # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
     'Get-AzureLocalFleetHealthFailures',
     # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
-    'Test-AzureLocalApplyUpdatesScheduleCoverage'
+    'Test-AzureLocalApplyUpdatesScheduleCoverage',
+    # Update Run Failures (v0.7.68) - ARG-only deep-error extraction (9 levels deep) for fleet-scale verbose error information
+    'Get-AzureLocalUpdateRunFailures'
 )

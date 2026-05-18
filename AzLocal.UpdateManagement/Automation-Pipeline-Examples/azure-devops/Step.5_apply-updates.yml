@@ -1,7 +1,15 @@
-# Apply Updates to Azure Local Clusters
+# Step.5 - Apply Updates to Azure Local Clusters
 # This pipeline applies updates to clusters filtered by UpdateRing tag value
 
+# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+# Add or modify `schedules:` cron blocks here to drive automated update runs.
+# The cron entries must align with your UpdateWindow tag values - use
+# `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` (or the Step.3
+# schedule-audit pipeline) to generate ready-to-paste cron lines. Content
+# between BEGIN/END markers is preserved by Update-AzureLocalPipelineExample
+# across module upgrades.
 trigger: none
+# END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
 parameters:
   - name: updateRing
@@ -22,11 +30,6 @@ parameters:
     displayName: 'Preview which clusters would be updated (WhatIf mode)'
     type: boolean
     default: true
-
-  - name: throttleLimit
-    displayName: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
-    type: number
-    default: 4
 
   # --- ITSM Connector (v0.7.4 Phase 1: ServiceNow) ---
   # Opt-in ticket creation. Defaults preserve the previous pipeline behaviour
@@ -63,7 +66,7 @@ variables:
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
-    value: '0.7.67'
+    value: '0.7.68'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -153,9 +156,8 @@ stages:
                 Import-Module AzLocal.UpdateManagement -Force
                 
                 $updateRing = "${{ parameters.updateRing }}"
-                $throttle = [int]"${{ parameters.throttleLimit }}"; if ($throttle -lt 1) { $throttle = 4 }
                 
-                Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing' (ThrottleLimit=$throttle)"
+                Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing'"
                 
                 # Create output directory
                 $outputDir = "$(Build.ArtifactStagingDirectory)"
@@ -165,7 +167,6 @@ stages:
                 $results = Get-AzureLocalClusterUpdateReadiness `
                     -ScopeByUpdateRingTag `
                     -UpdateRingValue $updateRing `
-                    -ThrottleLimit $throttle `
                     -ExportPath $csvPath `
                     -PassThru
                 
@@ -476,13 +477,16 @@ stages:
             name: itsm
             condition: and(succeeded(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
             env:
-              # Secrets sourced from the variable group above. Mapping them
-              # here keeps them off the PowerShell command line (no process-
-              # listing or log leakage) and lets the module pick them up via
-              # env:// references in azurelocal-itsm.yml.
+              # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+              # Bind your ITSM connector secrets from the variable group above.
+              # Defaults assume the ServiceNow OAuth client_credentials naming
+              # used by azurelocal-itsm.yml (env://ITSM_SN_*). If your secret
+              # names differ, update them here - this block is preserved by
+              # Update-AzureLocalPipelineExample across module upgrades.
               ITSM_SN_INSTANCE_URL: $(ITSM_SN_INSTANCE_URL)
               ITSM_SN_CLIENT_ID: $(ITSM_SN_CLIENT_ID)
               ITSM_SN_CLIENT_SECRET: $(ITSM_SN_CLIENT_SECRET)
+              # END-AZLOCAL-CUSTOMIZE:itsm-secrets
             inputs:
               azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
               scriptType: 'pscore'

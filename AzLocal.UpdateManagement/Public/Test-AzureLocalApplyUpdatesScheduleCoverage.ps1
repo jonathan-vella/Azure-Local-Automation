@@ -29,7 +29,7 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
                        advisor would generate for it.
           Recommend  - YAML snippet (one per platform) that covers every
                        distinct UpdateWindow value found in the fleet, ready
-                       to paste into apply-updates.yml.
+                       to paste into Step.5_apply-updates.yml.
 
         Status values (Audit):
           Covered            - at least one cron in the YAML fires during the window
@@ -45,7 +45,7 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
     .PARAMETER View
         'Audit' (default), 'Matrix', or 'Recommend'.
     .PARAMETER PipelineYamlPath
-        Required for -View Audit. Path to a single apply-updates.yml file, or to
+        Required for -View Audit. Path to a single Step.5_apply-updates.yml file, or to
         a folder that contains apply-updates*.yml files (typically the
         Automation-Pipeline-Examples folder of your forked module).
     .PARAMETER Platform
@@ -117,7 +117,7 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
 
     # Pre-flight: -View Audit requires a YAML path to audit against.
     if ($View -eq 'Audit' -and [string]::IsNullOrWhiteSpace($PipelineYamlPath)) {
-        throw "-PipelineYamlPath is required when -View is 'Audit'. Point it at apply-updates.yml or the Automation-Pipeline-Examples folder."
+        throw "-PipelineYamlPath is required when -View is 'Audit'. Point it at Step.5_apply-updates.yml or the Automation-Pipeline-Examples folder."
     }
     if ($PipelineYamlPath -and -not (Test-Path -LiteralPath $PipelineYamlPath)) {
         throw "PipelineYamlPath not found: $PipelineYamlPath"
@@ -128,6 +128,14 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
     }
 
     # 1. Pull every cluster's UpdateRing + UpdateWindow tags via Resource Graph.
+    # NOTE on multi-line KQL: a here-string with embedded newlines used to be
+    # silently truncated to its first line on Windows because az.cmd's CMD
+    # argument parser stops at the first CR/LF. That caused this audit to
+    # report "No tagged clusters found" even when clusters were tagged
+    # correctly. Fixed in v0.7.68 by normalising the query string inside
+    # Invoke-AzResourceGraphQuery (collapses any whitespace into single spaces
+    # before invoking az). KQL is whitespace-agnostic so the projection,
+    # filtering and ordering semantics are preserved.
     $kql = @"
 resources
 | where type =~ 'microsoft.azurestackhci/clusters'
@@ -265,7 +273,7 @@ resources
 
             $sb = New-Object System.Text.StringBuilder
             if ($Platform -in @('GitHubActions','Both')) {
-                [void]$sb.AppendLine('# --- GitHub Actions: paste under apply-updates.yml `on:` ---')
+                [void]$sb.AppendLine('# --- GitHub Actions: paste under Step.5_apply-updates.yml `on:` ---')
                 [void]$sb.AppendLine('# schedule:')
                 foreach ($k in ($byCron.Keys | Sort-Object)) {
                     $entry = $byCron[$k]
@@ -274,7 +282,7 @@ resources
                 [void]$sb.AppendLine()
             }
             if ($Platform -in @('AzureDevOps','Both')) {
-                [void]$sb.AppendLine('# --- Azure DevOps: paste at the top level of apply-updates.yml ---')
+                [void]$sb.AppendLine('# --- Azure DevOps: paste at the top level of Step.5_apply-updates.yml ---')
                 [void]$sb.AppendLine('# schedules:')
                 foreach ($k in ($byCron.Keys | Sort-Object)) {
                     $entry = $byCron[$k]

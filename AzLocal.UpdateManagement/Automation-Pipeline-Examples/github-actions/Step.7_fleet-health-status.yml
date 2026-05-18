@@ -27,13 +27,20 @@
 # Uses OpenID Connect (OIDC) - recommended for secretless authentication
 # See: https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect
 
-name: Fleet Health Status
+# Workflow name carries the same Step.N - prefix as the filename so the GitHub
+# Actions sidebar (which sorts workflows alphabetically by this `name:` field)
+# lists the eight pipelines in execution order.
+name: Step.7 - Fleet Health Status
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Edits inside this block are preserved across Update-AzureLocalPipelineExample
+  # module upgrades. Add or modify `schedule:` cron blocks below.
   # Run on schedule (e.g., daily at 7 AM UTC, offset from Fleet Update Status so the two
   # do not start their CLI shell-outs in the same minute).
   schedule:
     - cron: '0 7 * * *'  # Daily at 7:00 AM UTC
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
   # Manual trigger with options
   workflow_dispatch:
@@ -71,7 +78,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.67'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.68'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).

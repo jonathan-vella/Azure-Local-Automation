@@ -136,10 +136,6 @@ function New-AzureLocalFleetStatusHtmlReport {
         [Parameter(Mandatory = $false)]
         [PSCustomObject]$StatusData,
 
-        [Parameter(Mandatory = $false)]
-        [ValidateRange(1, 8)]
-        [int]$ThrottleLimit = 4,
-
         # Optional cap on clusters returned by -AllClusters discovery. Default 0 (no cap).
         [Parameter(Mandatory = $false, ParameterSetName = 'All')]
         [ValidateRange(0, 100000)]
@@ -180,8 +176,8 @@ function New-AzureLocalFleetStatusHtmlReport {
         if ($IncludeUpdateRuns) { [array]$updateRuns = @($latestRuns) }
     }
     else {
-        # Collect data via Get-AzureLocalFleetStatusData (single-pass, parallel-capable)
-        $collectParams = @{ ThrottleLimit = $ThrottleLimit }
+        # Collect data via Get-AzureLocalFleetStatusData (sequential single-pass)
+        $collectParams = @{}
         if ($IncludeUpdateRuns) { $collectParams['IncludeUpdateRuns'] = $true }
         if ($IncludeHealthDetails) { $collectParams['IncludeHealthDetails'] = $true }
 

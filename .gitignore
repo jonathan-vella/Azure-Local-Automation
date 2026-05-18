@@ -28,3 +28,6 @@ Thumbs.db
 # Agent scratch files (never commit)
 _tmp_*
 
+# Agent-generated planning / review docs (kept locally, never committed)
+**/COMBINED-REVIEW-ACTION-PLAN.md
+

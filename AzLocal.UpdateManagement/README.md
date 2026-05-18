@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.67 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.67)
+**Latest Version:** v0.7.68 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.68)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.67](#whats-new-in-v0767)
+- [What's New in v0.7.68](#whats-new-in-v0768)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -43,6 +43,7 @@ Azure Local REST API specification (includes update management endpoints): https
   - [7a. Sideloaded Payload Workflow (v0.7.1)](#7a-sideloaded-payload-workflow-v071)
   - [8. Assess Readiness and Health BEFORE Applying Updates (Recommended)](#8-assess-readiness-and-health-before-applying-updates-recommended)
 - [Available Functions](#available-functions)
+  - [Cmdlet Inventory & Design (Reads vs Writes)](#cmdlet-inventory--design-reads-vs-writes)
   - [`Connect-AzureLocalServicePrincipal`](#connect-azurelocalserviceprincipal)
   - [`Start-AzureLocalClusterUpdate`](#start-azurelocalclusterupdate)
   - [`Get-AzureLocalClusterUpdateReadiness`](#get-azurelocalclusterupdatereadiness)
@@ -85,6 +86,7 @@ Azure Local REST API specification (includes update management endpoints): https
   - [Verbose Logging](#verbose-logging)
 - [License](#license)
 - [Release History](#release-history)
+  - [What's New in v0.7.67](#whats-new-in-v0767)
   - [What's New in v0.7.66](#whats-new-in-v0766)
   - [What's New in v0.7.65](#whats-new-in-v0765)
   - [What's New in v0.7.64](#whats-new-in-v0764)
@@ -133,7 +135,7 @@ If you are new to this module, work through these in order from a regular PowerS
 | 5 | Apply the update | [`Start-AzureLocalClusterUpdate`](#start-azurelocalclusterupdate) (single cluster or `-ScopeByUpdateRingTag` for a wave) |
 | 6 | Monitor and report | [`Get-AzureLocalUpdateRuns`](#get-azurelocalupdateruns), [`Get-AzureLocalFleetProgress`](#get-azurelocalfleetprogress), [`New-AzureLocalFleetStatusHtmlReport`](#new-azurelocalfleetstatushtmlreport) |
 
-> **For CI/CD?** Skip this table and go straight to [Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md) - it covers OIDC / Managed Identity / Service Principal setup, federated credentials, seven GitHub Actions workflows, and seven Azure DevOps pipelines (including the two new pipelines introduced in v0.7.65: `fleet-health-status` and `apply-updates-schedule-audit`).
+> **For CI/CD?** Skip this table and go straight to [Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md) - it covers OIDC / Managed Identity / Service Principal setup, federated credentials, eight GitHub Actions workflows, and eight Azure DevOps pipelines (including the two pipelines introduced in v0.7.65: `Step.7_fleet-health-status` and `Step.3_apply-updates-schedule-audit`).
 
 ### Common workflows (function-invocation order)
 
@@ -143,7 +145,7 @@ If you are new to this module, work through these in order from a regular PowerS
 | **Staged wave deployment** | `Get-AzureLocalClusterInventory` -> `Set-AzureLocalClusterUpdateRingTag` -> `Get-AzureLocalClusterUpdateReadiness -ScopeByUpdateRingTag` -> `Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag` -> `Get-AzureLocalFleetProgress` -> `New-AzureLocalFleetStatusHtmlReport` |
 | **Daily fleet status report** | `Get-AzureLocalFleetStatusData -AllClusters -IncludeUpdateRuns -IncludeHealthDetails -ExportPath ...` -> `New-AzureLocalFleetStatusHtmlReport -StatusData $data -OutputPath ...` |
 | **Daily fleet health audit (v0.7.65)** | `Get-AzureLocalFleetHealthFailures -View Summary -ExportPath fleet-health-summary.csv` -> review top failure reasons by cluster impact -> drill into [`Get-AzureLocalFleetHealthFailures -View Detail`](#get-azurelocalfleethealthfailures) for per-cluster remediation |
-| **Schedule coverage drift audit (v0.7.65)** | `Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath .\.github\workflows` -> for any `Uncovered` rows, copy the `RequiredCronUTC` value and paste it into `apply-updates.yml` -> re-run `-View Audit` to confirm `Covered` -> wire the bundled `apply-updates-schedule-audit.yml` pipeline (weekly Mon 05:00 UTC) so future tag drift is caught automatically. Full runbook: [`Automation-Pipeline-Examples/README.md` section 8.3](./Automation-Pipeline-Examples/README.md#83-end-to-end-runbook-apply-updates-schedule-coverage-audit) |
+| **Schedule coverage drift audit (v0.7.65)** | `Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath .\.github\workflows` -> for any `Uncovered` rows, copy the `RequiredCronUTC` value and paste it into `Step.5_apply-updates.yml` -> re-run `-View Audit` to confirm `Covered` -> wire the bundled `Step.3_apply-updates-schedule-audit.yml` pipeline (weekly Mon 05:00 UTC) so future tag drift is caught automatically. Full runbook: [`Automation-Pipeline-Examples/README.md` section 8.3](./Automation-Pipeline-Examples/README.md#83-end-to-end-runbook-apply-updates-schedule-coverage-audit) |
 | **Pre-update health gate (CI/CD)** | `Test-AzureLocalClusterHealth -BlockingOnly` -> `Test-AzureLocalUpdateScheduleAllowed` -> `Test-AzureLocalFleetHealthGate` -> proceed only on pass |
 | **Sideloaded payload (v0.7.1)** | Operator sets `UpdateSideloaded=False` -> stage payload out-of-band -> operator flips `UpdateSideloaded=True` -> `Start-AzureLocalClusterUpdate` (auto-stamps `UpdateVersionInProgress`) -> `Get-AzureLocalUpdateRuns` (auto-resets tags on success) -> `Reset-AzureLocalSideloadedTag -Force` only if a tag gets stuck |
 | **Pause / resume long fleet run** | `Stop-AzureLocalFleetUpdate -SaveState` -> ... -> `Resume-AzureLocalFleetUpdate -StateFilePath ...` |
@@ -151,27 +153,85 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.67
+## What's New in v0.7.68
+
+v0.7.68 is the **ARG-first refactor** and **pipeline-rename** release. Seven fleet-scale read cmdlets were collapsed onto a single Azure Resource Graph batch read each (removing the silent `-ThrottleLimit` no-op), all 16 bundled pipeline YAMLs were renamed with a `Step.X_` ordering prefix so an alphabetic listing tells the story end-to-end, and a new `Get-AzureLocalUpdateRunFailures` cmdlet exposes the deep-error breadcrumb path from update-run telemetry without per-cluster shell-outs. **Backwards-compatible** for already-deployed consumers: `Read-AzLocalApplyUpdatesYamlCrons` matches both new (`Step.X_*.yml`) and legacy filenames.
+
+### ARG-first refactor
+
+- **Seven cmdlets are now single-batch ARG reads with `-ThrottleLimit` removed.** `-ThrottleLimit` was a meaningless flag against the ARG batched read path; carrying it implied (incorrectly) that the cmdlet was doing a per-cluster fan-out and could be tuned for throttle. The new shape removes the parameter and collapses the call onto one ARG query, which (a) cuts subscription-level ARM call volume 5-10x on the common fleet-status pipelines and (b) lets the helper apply uniform 429/`Retry-After` retry logic in one place. Affected cmdlets: `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalFleetProgress`, `Get-AzureLocalFleetStatusData`, `New-AzureLocalFleetStatusHtmlReport`. All bundled pipeline YAMLs were updated to stop passing `-ThrottleLimit`.
+
+- **`Invoke-AzResourceGraphQuery` now retries on HTTP 429 (throttle).** Inspects the `Retry-After` response header when present and otherwise applies bounded exponential backoff (capped at the documented Azure Resource Graph throttling envelope). Large fleet sweeps no longer fall over at the throttling boundary; happy-path latency is unchanged.
+
+- **`Invoke-AzResourceGraphQuery` hardened against `az.cmd` CR/LF stdout truncation.** A latent bug in `az.cmd` (Windows runners) could chop the JSON payload at the first chunked-write boundary when stdout was piped through PowerShell, producing the N-row collapse where a 27-cluster fleet would surface as 24 rows. The helper now decodes the full UTF-8 payload explicitly; existing Pester tests pin the regression.
+
+- **`Get-AzureLocalFleetProgress` no longer silently returns stale state when ARG returns zero rows.** The previous code-path treated an empty ARG response as "no change" and returned the last cached state; consumers (including the `Step.6_fleet-update-status.yml` JUnit emitter) therefore reported "everything green" on fleets that had been completely de-tagged or that hit a transient ARG error. The cmdlet now surfaces the empty-fleet condition explicitly so the operator can act on it.
+
+### New: `Get-AzureLocalUpdateRunFailures`
+
+- **ARG-only deep-error extraction** (9 levels deep into the `properties.state.progress` tree of `microsoft.azurestackhci/clusters/updates/updateRuns`) returns verbose error information at fleet scale without per-cluster Az SDK or REST shell-outs. Two views: `-View Summary` (one row per failed update run) and `-View Detail` (one row per leaf failure with the full breadcrumb to the failed step). Useful in `Step.5_apply-updates.yml` post-mortem reports and as a follow-up call after `Get-AzureLocalFleetProgress` reports failures.
+
+### New: `Update-AzureLocalPipelineExample` (marker-aware upgrade tool)
+
+- **Marker-aware merge tool** that refreshes a customer's copy of any bundled pipeline YAML to the version shipped with the current module **while preserving operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs**. Customer-side cron schedules in `schedule-triggers` and ITSM secret bindings in `itsm-secrets` (Step.5 only) survive a module upgrade; everything outside the markers is replaced with the new bundled content. Supports `-WhatIf`, `-DryRun`, multi-file batch mode, and emits a per-file change manifest so the operator can review the merge before committing. This is the operator-friendly upgrade path that `Copy-AzureLocalPipelineExample` (clean overwrite) does not provide.
+
+### Pipeline samples - `Step.X_` rename
+
+- **All 16 bundled pipeline YAMLs renamed with a `Step.X_` ordering prefix** so they sort by execution order in a customer's repo (`Step.0_authentication-test.yml`, `Step.1_inventory-clusters.yml`, `Step.2_manage-updatering-tags.yml`, `Step.3_apply-updates-schedule-audit.yml`, `Step.4_assess-update-readiness.yml`, `Step.5_apply-updates.yml`, `Step.6_fleet-update-status.yml`, `Step.7_fleet-health-status.yml`). Both platforms (GitHub Actions + Azure DevOps). The rename matches the documented operator runbook order so an alphabetic listing in the consumer's IDE / repo browser tells the story end-to-end.
+
+- **Backwards compatibility for already-deployed consumers:** `Read-AzLocalApplyUpdatesYamlCrons` (the schedule-audit scanner) glob list expanded to match both new (`Step.5_apply-updates*.yml`) and legacy (`apply-updates*.yml`) names. A customer who upgrades the module but has not yet re-run `Copy-AzureLocalPipelineExample` will still see correct schedule-coverage audits.
+
+- **Each YAML's workflow display name now also carries the `Step.N - ` prefix.** GitHub Actions sidebar sorts workflows alphabetically by the YAML's top-level `name:` field, so the 8 workflows now read `Step.0 - Auth Smoke Test` ... `Step.7 - Fleet Health Status` and list in execution order. For Azure DevOps the leading title comment in each YAML carries the same prefix so the import wizard prefills the suggested pipeline definition name correctly. See [`Automation-Pipeline-Examples/README.md` section 1.1](./Automation-Pipeline-Examples/README.md#11-why-the-pipelines-are-named-stepn---description) for the full convention.
+
+### Pipeline samples - Layer 1 customisation markers (scaffolding)
+
+- **Seven YAMLs now carry named `AZLOCAL-CUSTOMIZE` marker pairs** (6 main pipelines x `schedule-triggers`, plus `Step.5_apply-updates.yml` x `itsm-secrets`) wrapping the YAML regions operators commonly customise. Markers are pure YAML comments and have no runtime effect; they back the new `Update-AzureLocalPipelineExample` cmdlet (also new in v0.7.68) that performs a marker-aware merge so operator edits inside the marker pairs survive a module upgrade. `Copy-AzureLocalPipelineExample` remains the clean-overwrite tool for first-time install / forced refresh.
+
+### Pipeline migration
+
+If you have copied any of the bundled workflows into your repo, the recommended upgrade path is the new marker-aware merge:
+
+```powershell
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+(Add `-WhatIf` first to preview the merge before writing files; add `-Force` to skip the per-file confirm prompt for non-interactive runs.)
+
+This brings in the new file names *and* the Layer 1 marker scaffolding **while preserving** operator-customised cron schedules and ITSM secret bindings inside `BEGIN-AZLOCAL-CUSTOMIZE` / `END-AZLOCAL-CUSTOMIZE` marker pairs in your already-deployed YAMLs.
+
+For a clean overwrite (first-time install or forced refresh that discards local edits), keep using `Copy-AzureLocalPipelineExample`:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+```
+
+### Inventory & design doc
+
+- **New `docs/Cmdlet-Inventory-And-Design.md`** documents which cmdlets read vs write, which back-end they use (ARG vs Az SDK vs az CLI), and the design rules that keep read paths ARG-first (no `-ThrottleLimit`, no per-cluster Get-AzResource fan-out). Removes ambiguity about which back-end a new cmdlet should take.
+
+### What's New in v0.7.67
 
 v0.7.67 lands a Phase 3/4 CI/CD-parity refresh, a new maintainer-facing release-process document, and a six-item batch of in-depth-review fixes. **No public surface change** - every pre-existing pipeline and cmdlet keeps the same contract.
 
-### CI/CD parity + UX
+#### CI/CD parity + UX
 
-- **GitHub Actions schedule-audit pipeline now emits a passing testcase when the fleet has no tagged clusters.** Previously the GH variant of `apply-updates-schedule-audit.yml` wrote an empty `<testsuite>` whenever there were no `(UpdateRing, UpdateWindow)` rows to evaluate; `dorny/test-reporter` then reported "no tests found", indistinguishable from a misconfigured reporter step. The pipeline now writes `<testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />` for the zero-row case, matching the long-standing Azure DevOps behaviour. The Tests tab reads cleanly as "passed (1/1)" regardless of whether the fleet has any tagged clusters yet, removing the daily false-alarm during onboarding and after fleet-wide tag clean-ups.
+- **GitHub Actions schedule-audit pipeline now emits a passing testcase when the fleet has no tagged clusters.** Previously the GH variant of `Step.3_apply-updates-schedule-audit.yml` wrote an empty `<testsuite>` whenever there were no `(UpdateRing, UpdateWindow)` rows to evaluate; `dorny/test-reporter` then reported "no tests found", indistinguishable from a misconfigured reporter step. The pipeline now writes `<testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />` for the zero-row case, matching the long-standing Azure DevOps behaviour. The Tests tab reads cleanly as "passed (1/1)" regardless of whether the fleet has any tagged clusters yet, removing the daily false-alarm during onboarding and after fleet-wide tag clean-ups.
 
-- **Schedule-audit summary now surfaces the cron recommendation block at the TOP when coverage drift exists.** Both `apply-updates-schedule-audit.yml` files (GitHub Actions and Azure DevOps) previously emitted the recommended cron block at the bottom of the run summary, after the audit detail table. When the audit reported any `Uncovered` / `PartiallyCovered` / `MalformedTag` / `UnparseableCron` rows, operators had to scroll past the detail table to find the actionable fix. The pipelines now render an `### Action required - paste these cron entries into apply-updates.yml` section immediately below the counts table when issues exist; when the fleet is fully covered, the recommendation block stays at the bottom as a reference. A new Pester guard asserts both YAMLs carry the conditional structure and the ordering.
+- **Schedule-audit summary now surfaces the cron recommendation block at the TOP when coverage drift exists.** Both `Step.3_apply-updates-schedule-audit.yml` files (GitHub Actions and Azure DevOps) previously emitted the recommended cron block at the bottom of the run summary, after the audit detail table. When the audit reported any `Uncovered` / `PartiallyCovered` / `MalformedTag` / `UnparseableCron` rows, operators had to scroll past the detail table to find the actionable fix. The pipelines now render an `### Action required - paste these cron entries into Step.5_apply-updates.yml` section immediately below the counts table when issues exist; when the fleet is fully covered, the recommendation block stays at the bottom as a reference. A new Pester guard asserts both YAMLs carry the conditional structure and the ordering.
 
-- **Pipeline README now includes an artifact-handoff data-flow diagram.** Section 6 of [`Automation-Pipeline-Examples/README.md`](Automation-Pipeline-Examples/README.md) already carried a phase-oriented flow diagram (Inventory -> Tag -> Rollout -> Steady-state); the new "Artifact handoffs at a glance" subsection makes the data flow explicit, showing which artifact each pipeline emits and which downstream pipeline consumes it (e.g. `cluster-inventory.csv` -> manual tagging edit + manage-tags pipeline; `cluster-readiness.csv` -> apply-updates; `schedule-coverage-recommend.md` -> manual paste into `apply-updates.yml`). Calls out the four artifacts operators most commonly trip on.
+- **Pipeline README now includes an artifact-handoff data-flow diagram.** Section 6 of [`Automation-Pipeline-Examples/README.md`](Automation-Pipeline-Examples/README.md) already carried a phase-oriented flow diagram (Inventory -> Tag -> Rollout -> Steady-state); the new "Artifact handoffs at a glance" subsection makes the data flow explicit, showing which artifact each pipeline emits and which downstream pipeline consumes it (e.g. `cluster-inventory.csv` -> manual tagging edit + manage-tags pipeline; `cluster-readiness.csv` -> apply-updates; `schedule-coverage-recommend.md` -> manual paste into `Step.5_apply-updates.yml`). Calls out the four artifacts operators most commonly trip on.
 
 - **Pipeline README section 11 (Security model) now documents per-job `permissions:` blocks as an intentional security feature.** Every shipped GitHub Actions workflow declares its own job-level `permissions:` block (`id-token: write`, `contents: read`, `checks: write` only where needed). The new bullet calls out that consumers should not lift these blocks to a top-level `permissions:` block when copying samples, explains how the per-job shape (a) limits token scope to exactly the job that needs the write and (b) lets you keep `id-token: write` off read-only summary jobs, and documents that the samples are compatible with the recommended *Settings -> Actions -> General -> Workflow permissions = Read repository contents and packages permissions* hardening.
 
-- **All Azure DevOps sample pipelines now share the same `azureSubscription:` placeholder.** Four files (`assess-update-readiness.yml`, `fleet-health-status.yml`, `fleet-update-status.yml`, `apply-updates-schedule-audit.yml`) previously used `'YOUR-SERVICE-CONNECTION-NAME'` while the other four ADO YAMLs used `'AzureLocal-ServiceConnection'`. All eight ADO pipelines now use `'AzureLocal-ServiceConnection'` plus a `# Update with your service connection name` comment, matching the value documented in section 3.2 of the pipeline README. An operator who follows the auth setup verbatim no longer has to find-and-replace anything in the YAMLs.
+- **All Azure DevOps sample pipelines now share the same `azureSubscription:` placeholder.** Four files (`Step.4_assess-update-readiness.yml`, `Step.7_fleet-health-status.yml`, `Step.6_fleet-update-status.yml`, `Step.3_apply-updates-schedule-audit.yml`) previously used `'YOUR-SERVICE-CONNECTION-NAME'` while the other four ADO YAMLs used `'AzureLocal-ServiceConnection'`. All eight ADO pipelines now use `'AzureLocal-ServiceConnection'` plus a `# Update with your service connection name` comment, matching the value documented in section 3.2 of the pipeline README. An operator who follows the auth setup verbatim no longer has to find-and-replace anything in the YAMLs.
 
-### New maintainer doc: `docs/RELEASE-PROCESS.md`
+#### New maintainer doc: `docs/RELEASE-PROCESS.md`
 
 - **Documents the staged unlisted-release flow** the module uses (publish -> immediately unlist -> validate against a test repo with `REQUIRED_MODULE_VERSION` exact-pinned to the candidate -> list after validation passes), the verification commands for each stage, and the Pester guardrails the release flow relies on. This puts the release rules in the repo rather than in tribal knowledge / chat history. Pipeline consumers do not need this doc; module maintainers do.
 
-### Fixed (in-depth module review - batch 3)
+#### Fixed (in-depth module review - batch 3)
 
 Six defence-in-depth fixes following the post-PR-#36 module review. **None are user-visible behaviour changes for the happy path** - every fix closes a class of silent-drift or silent-drop bug.
 
@@ -187,11 +247,11 @@ Six defence-in-depth fixes following the post-PR-#36 module review. **None are u
 
 - **`Import-AzureLocalFleetState` now caps input at 50 MB before reading.** The helper previously called `Get-Content -Raw | ConvertFrom-Json` with no size check; pointing it at a multi-GB file (typo, mis-glob, malicious symlink) would have OOMed the runner. Real fleet-state files (`Export-AzureLocalFleetState` output) are tens of KB at most, so a 50 MB ceiling is ~3 orders of magnitude above any plausible legitimate input. The cap message names the actual file size in MB and explains what valid input looks like. Two new Pester tests (mocked-oversize trip + happy path).
 
-### Pester baseline
+#### Pester baseline
 
 **485 passed / 0 failed / 0 skipped** (was 471 at v0.7.66) - the +14 new tests cover the drift guard, `Invoke-AzCliJson` (7), cron `*/N` (4), `Reset-AzureLocalSideloadedTag` warning (1), and `Import-AzureLocalFleetState` size guard (2).
 
-### Pipeline migration
+#### Pipeline migration
 
 If you have copied any of the bundled workflows into your repo, refresh them via:
 
@@ -729,9 +789,72 @@ New-AzureLocalFleetStatusHtmlReport `
     -IncludeHealthDetails -IncludeUpdateRuns
 ```
 
-> 💡 **CI/CD**: this same assess -> remediate -> apply flow is wired into the pipeline examples under `Automation-Pipeline-Examples/`: see the `assess-update-readiness.yml` pipeline (report-only) and the `check-readiness` job inside `apply-updates.yml`.
+> 💡 **CI/CD**: this same assess -> remediate -> apply flow is wired into the pipeline examples under `Automation-Pipeline-Examples/`: see the `Step.4_assess-update-readiness.yml` pipeline (report-only) and the `check-readiness` job inside `Step.5_apply-updates.yml`.
 
 ## Available Functions
+
+### Cmdlet Inventory & Design (Reads vs Writes)
+
+This table is the canonical index of every public cmdlet the module ships. It is the answer to "what does each function actually do, and does it touch Azure?"
+
+**Design principle.** This module is **ARG-first for READs and ARM-fan-out for WRITEs**. Read cmdlets converge on a single Azure Resource Graph query no matter how many clusters are in scope, so they finish in seconds and do not need parallelism (no `-ThrottleLimit` parameter). Write cmdlets still call ARM (or Azure REST) once per cluster - ARG is a read-only plane and cannot mutate resources - so write cmdlets keep `-ThrottleLimit` to bound concurrent fan-out. Composite cmdlets that only delegate to other module cmdlets inherit the type of the cmdlets they call.
+
+**Type legend:**
+
+- **READ** - calls only Azure Resource Graph and/or Azure REST GET. No state changes.
+- **READ (composite)** - calls other READ cmdlets in this module, optionally writes a local report file.
+- **READ (validation)** - evaluates local inputs (schedules, pipeline YAML); no Azure calls.
+- **WRITE** - mutates Azure resources via ARM PUT/POST/PATCH or tag update.
+- **WRITE (local)** - writes only to the local filesystem (scaffolding/templates).
+- **AUTH** - establishes an Azure context; no data-plane calls.
+
+#### Azure data-plane: READ cmdlets
+
+| Cmdlet | Type | Target |
+|---|---|---|
+| [`Get-AzureLocalClusterInfo`](#get-azurelocalclusterinfo) | READ | Azure REST (single cluster lookup) |
+| [`Get-AzureLocalClusterInventory`](#get-azurelocalclusterinventory) | READ | Azure Resource Graph |
+| [`Get-AzureLocalAvailableUpdates`](#get-azurelocalavailableupdates) | READ | Azure Resource Graph |
+| [`Get-AzureLocalUpdateSummary`](#get-azurelocalupdatesummary) | READ | Azure Resource Graph |
+| [`Get-AzureLocalUpdateRuns`](#get-azurelocalupdateruns) | READ | Azure Resource Graph |
+| `Get-AzureLocalUpdateRunFailures` | READ | Azure Resource Graph |
+| [`Get-AzureLocalClusterUpdateReadiness`](#get-azurelocalclusterupdatereadiness) | READ | Azure Resource Graph |
+| [`Get-AzureLocalFleetHealthFailures`](#get-azurelocalfleethealthfailures) | READ | Azure Resource Graph |
+| [`Get-AzureLocalFleetProgress`](#get-azurelocalfleetprogress) | READ | Azure Resource Graph |
+| [`Test-AzureLocalClusterHealth`](#test-azurelocalclusterhealth) | READ | Azure Resource Graph |
+| [`Test-AzureLocalFleetHealthGate`](#test-azurelocalfleethealthgate) | READ (composite) | Azure (via `Test-AzureLocalClusterHealth`) |
+| [`Get-AzureLocalFleetStatusData`](#get-azurelocalfleetstatusdata) | READ (composite) | Azure (delegates to four READ cmdlets above) |
+| [`New-AzureLocalFleetStatusHtmlReport`](#new-azurelocalfleetstatushtmlreport) | READ (composite) | Azure + local HTML report file |
+| [`Export-AzureLocalFleetState`](#export-azurelocalfleetstate) | READ (composite) | Azure + local JSON state file |
+
+#### Azure data-plane: WRITE cmdlets
+
+| Cmdlet | Type | Target |
+|---|---|---|
+| [`Start-AzureLocalClusterUpdate`](#start-azurelocalclusterupdate) | **WRITE** | Azure REST (ARM `PUT .../updateRuns/{id}`) |
+| [`Stop-AzureLocalFleetUpdate`](#stop-azurelocalfleetupdate) | **WRITE** | Azure REST (ARM `POST .../updateRuns/{id}/cancel`) |
+| [`Resume-AzureLocalFleetUpdate`](#resume-azurelocalfleetupdate) | **WRITE** | Azure REST (ARM `POST .../updateRuns/{id}/retry`) |
+| [`Invoke-AzureLocalFleetOperation`](#invoke-azurelocalfleetoperation) | **WRITE** | Azure REST (generic per-cluster mutation) |
+| [`Set-AzureLocalClusterUpdateRingTag`](#set-azurelocalclusterupdateringtag) | **WRITE** | Azure tags (`UpdateRing`, `UpdateWindow`) |
+| [`Reset-AzureLocalSideloadedTag`](#reset-azurelocalsideloadedtag) | **WRITE** | Azure tags (`UpdateSideloaded`, `UpdateVersionInProgress`) |
+
+#### Local-only validation and scaffolding
+
+| Cmdlet | Type | Target |
+|---|---|---|
+| [`Test-AzureLocalApplyUpdatesScheduleCoverage`](#test-azurelocalapplyupdatesschedulecoverage) | READ (validation) | Local pipeline YAML + tag inputs |
+| [`Test-AzureLocalUpdateScheduleAllowed`](#test-azurelocalupdatescheduleallowed) | READ (validation) | Local schedule input |
+| [`Connect-AzureLocalServicePrincipal`](#connect-azurelocalserviceprincipal) | AUTH | Az PowerShell context (no data-plane calls) |
+| [`Copy-AzureLocalPipelineExample`](#copy-azurelocalpipelineexample) | WRITE (local) | Local file scaffold |
+| `Copy-AzureLocalItsmSample` | WRITE (local) | Local file scaffold |
+
+#### ITSM integration
+
+| Cmdlet | Type | Target |
+|---|---|---|
+| `Get-AzureLocalItsmConfig` | READ | Local ITSM config file |
+| `Test-AzureLocalItsmConnection` | READ | External ITSM endpoint |
+| `New-AzureLocalIncident` | **WRITE** | External ITSM (creates ticket) |
 
 ### `Copy-AzureLocalPipelineExample`
 
@@ -1932,7 +2055,7 @@ $detail  = Get-AzureLocalFleetHealthFailures -View Detail  -ExportPath .\reports
 $summary = Get-AzureLocalFleetHealthFailures -View Summary -ExportPath .\reports\fleet-health-summary.csv -PassThru
 ```
 
-> **CI/CD**: the bundled `fleet-health-status.yml` pipeline samples (GitHub Actions and Azure DevOps) wire this cmdlet into a daily-scheduled run that emits JUnit XML, CSV/JSON exports, and a Markdown step summary. See [Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md).
+> **CI/CD**: the bundled `Step.7_fleet-health-status.yml` pipeline samples (GitHub Actions and Azure DevOps) wire this cmdlet into a daily-scheduled run that emits JUnit XML, CSV/JSON exports, and a Markdown step summary. See [Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md).
 
 **Required permissions** (read-only):
 - `Microsoft.AzureStackHCI/clusters/read`
@@ -1947,7 +2070,7 @@ $summary = Get-AzureLocalFleetHealthFailures -View Summary -ExportPath .\reports
 
 *Added in v0.7.65.*
 
-Read-only **schedule-coverage advisor**. Compares the cron schedule(s) declared in your `apply-updates.yml` pipeline (GitHub Actions and/or Azure DevOps) to the `UpdateWindow` tag values actually present on your clusters, and flags every `(UpdateRing, UpdateWindow)` pair that no cron in the pipeline will ever reach. Never edits cluster tags. Never edits pipeline YAML. It is the safety net that closes the loop between section 8 of [`Automation-Pipeline-Examples/README.md`](./Automation-Pipeline-Examples/README.md) (the `UpdateWindow` tag is a *gate*, not a *trigger*) and `Test-AzureLocalUpdateScheduleAllowed` (the runtime per-cluster gate inside `Start-AzureLocalClusterUpdate`).
+Read-only **schedule-coverage advisor**. Compares the cron schedule(s) declared in your `Step.5_apply-updates.yml` pipeline (GitHub Actions and/or Azure DevOps) to the `UpdateWindow` tag values actually present on your clusters, and flags every `(UpdateRing, UpdateWindow)` pair that no cron in the pipeline will ever reach. Never edits cluster tags. Never edits pipeline YAML. It is the safety net that closes the loop between section 8 of [`Automation-Pipeline-Examples/README.md`](./Automation-Pipeline-Examples/README.md) (the `UpdateWindow` tag is a *gate*, not a *trigger*) and `Test-AzureLocalUpdateScheduleAllowed` (the runtime per-cluster gate inside `Start-AzureLocalClusterUpdate`).
 
 Under the covers it pre-scans the pipeline YAML file(s) with a regex (no `powershell-yaml` dependency), runs a single Azure Resource Graph query against `resources` for clusters with `UpdateWindow` / `UpdateRing` tags, parses each tag value with the same `ConvertFrom-AzLocalUpdateWindow` helper used by the runtime gate, then enumerates every cron fire time over a reference week and compares it to each parsed window (with a configurable lead-time buffer).
 
@@ -1957,7 +2080,7 @@ Under the covers it pre-scans the pipeline YAML file(s) with a regex (no `powers
 |---|---|---|---|---|
 | `-SubscriptionId` | String | No | All accessible | Optional. Limit the ARG query to a single subscription. |
 | `-View` | String | No | `Audit` | `Audit` (one row per `(Ring, Window)` pair with `Covered` / `Uncovered` / `PartiallyCovered` / `MalformedTag` / `NoWindowTag` / `UnparseableCron` status + remediation), `Matrix` (every distinct `(Ring, Window)` pair with the cron expression the advisor would generate for it), or `Recommend` (ready-to-paste GH Actions + Azure DevOps cron blocks). |
-| `-PipelineYamlPath` | String | Audit only | - | Path to `apply-updates.yml` file(s) or a folder containing them. Required when `-View Audit`. |
+| `-PipelineYamlPath` | String | Audit only | - | Path to `Step.5_apply-updates.yml` file(s) or a folder containing them. Required when `-View Audit`. |
 | `-Platform` | String | No | `Both` | `GitHubActions`, `AzureDevOps`, or `Both`. Filters which YAML files are scanned and which cron blocks the Recommend view emits. |
 | `-LeadTimeMinutes` | Int | No | `5` | Range 0-60. How many minutes the cron should fire **before** the window opens (so cluster enumeration + auth completes before `Test-AzureLocalUpdateScheduleAllowed` evaluates). |
 | `-UpdateRingTag` | String[] | No | - | Optional. Narrow the audit to one or more `UpdateRing` tag values. |
@@ -1980,7 +2103,7 @@ Test-AzureLocalApplyUpdatesScheduleCoverage `
 
 # Audit only the GitHub Actions sample, with a 10-minute lead time
 Test-AzureLocalApplyUpdatesScheduleCoverage `
-    -PipelineYamlPath .\.github\workflows\apply-updates.yml `
+    -PipelineYamlPath .\.github\workflows\Step.5_apply-updates.yml `
     -Platform GitHubActions `
     -LeadTimeMinutes 10
 
@@ -1996,7 +2119,7 @@ $matrix = Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -ExportPath .
 $rec    = Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -ExportPath .\schedule-coverage-recommend.md -PassThru
 ```
 
-> **CI/CD**: the bundled `apply-updates-schedule-audit.yml` pipeline samples (GitHub Actions and Azure DevOps) wire this cmdlet into a weekly-scheduled run (Mon 05:00 UTC) that emits JUnit XML, three CSV/MD exports, and a Markdown step summary. Full end-to-end runbook in [`Automation-Pipeline-Examples/README.md` section 8.3](./Automation-Pipeline-Examples/README.md#83-end-to-end-runbook-apply-updates-schedule-coverage-audit).
+> **CI/CD**: the bundled `Step.3_apply-updates-schedule-audit.yml` pipeline samples (GitHub Actions and Azure DevOps) wire this cmdlet into a weekly-scheduled run (Mon 05:00 UTC) that emits JUnit XML, three CSV/MD exports, and a Markdown step summary. Full end-to-end runbook in [`Automation-Pipeline-Examples/README.md` section 8.3](./Automation-Pipeline-Examples/README.md#83-end-to-end-runbook-apply-updates-schedule-coverage-audit).
 
 **Required permissions** (read-only):
 - `Microsoft.Resources/subscriptions/resourceGroups/read`
@@ -2327,22 +2450,22 @@ v0.7.66 is a CI/CD hotfix release. Two errors were observed on production runs o
 
   The shared `Invoke-AzResourceGraphQuery` helper was capturing `& az graph query ... 2>&1` as a single merged stream and feeding the entire thing to `ConvertFrom-Json`. The WARNING line therefore got prepended to the JSON body and the cmdlet threw `Conversion from JSON failed with error: Unexpected character encountered while parsing value: W. Path '', line 0, position 0.` This is the same class of bug that the v0.7.2 hardening of `Invoke-AzRestJson` already handled - the fix never made it into `Invoke-AzResourceGraphQuery` when that helper was split out. **The actual fix in v0.7.66** is the post-capture stream split: the helper splits the merged `2>&1` stream by element type, surfacing stderr lines as `[System.Management.Automation.ErrorRecord]` objects (which `2>&1` boxes them as) and stdout lines as strings; only the string stream is fed to `ConvertFrom-Json`. (The helper already passed `--only-show-errors` since v0.7.2, but the cp1252 encode warning can still leak through on some character paths, hence the belt-and-braces split.) The helper also sets `$env:PYTHONIOENCODING = 'utf-8'` for the duration of the call as **cosmetic defence-in-depth only** - this is a structural no-op for stock `az.cmd` because `az.cmd` launches Python with the `-I` (isolated) flag, which implies `-E` and causes Python to ignore every `PYTHON*` env var (confirmed in [Azure/azure-cli#28497](https://github.com/Azure/azure-cli/issues/28497) and the v0.7.2 root-cause analysis). The assignment only takes effect on hosts that have manually patched `az.cmd` to remove `-I`. The previous value is restored in a `finally` block. Every fleet-health-status pipeline run on a Windows runner is now resilient to this stderr warning.
 
-- **Fixed (critical) - `apply-updates-schedule-audit.yml` (both GitHub Actions and Azure DevOps) shipped with a default `pipeline_path` that only exists in *this* module's source repo.** The shipped default was `AzLocal.UpdateManagement/Automation-Pipeline-Examples`. In a consumer repo - where `apply-updates.yml` lives under `.github/workflows/` (GH) or `.azure-pipelines/` (ADO) - that path does not exist and every default-trigger run failed with `PipelineYamlPath '...' does not exist on the runner` before the schedule advisor could write its JUnit XML, which then crashed `dorny/test-reporter` with `No test report files were found`. The defaults now match the standard consumer layout: `.github/workflows` on GitHub Actions, `.azure-pipelines` on Azure DevOps. When the resolved path is still missing on the runner, the audit step now lists which common pipeline folders **do** exist in the checked-out repo (`.github/workflows`, `.azure-pipelines`, `pipelines`, repo root) so the operator immediately knows what value to pass via `workflow_dispatch` / queue-time override.
+- **Fixed (critical) - `Step.3_apply-updates-schedule-audit.yml` (both GitHub Actions and Azure DevOps) shipped with a default `pipeline_path` that only exists in *this* module's source repo.** The shipped default was `AzLocal.UpdateManagement/Automation-Pipeline-Examples`. In a consumer repo - where `Step.5_apply-updates.yml` lives under `.github/workflows/` (GH) or `.azure-pipelines/` (ADO) - that path does not exist and every default-trigger run failed with `PipelineYamlPath '...' does not exist on the runner` before the schedule advisor could write its JUnit XML, which then crashed `dorny/test-reporter` with `No test report files were found`. The defaults now match the standard consumer layout: `.github/workflows` on GitHub Actions, `.azure-pipelines` on Azure DevOps. When the resolved path is still missing on the runner, the audit step now lists which common pipeline folders **do** exist in the checked-out repo (`.github/workflows`, `.azure-pipelines`, `pipelines`, repo root) so the operator immediately knows what value to pass via `workflow_dispatch` / queue-time override.
 
 #### v0.7.66 UX + capability refresh
 
 In addition to the two hotfixes above, v0.7.66 ships a focused UX refresh of the `fleet-update-status` summary, timestamped artifact downloads across every pipeline, and multi-value / wildcard `UpdateRing` inputs on every exposed pipeline parameter and cmdlet.
 
-- **Status emojis in the Fleet Update Status summary.** `fleet-update-status.yml` (GitHub Actions and Azure DevOps) now renders the `Critical Health` and `Primary Status` summary tables with a green tick / red cross / refresh / yellow circle / info glyph - the same visual language operators already use to read JUnit dashboards. The legacy `[ok] / [fail] / [ready] / [running] / [blocked] / [info]` bracket markers are gone. Plain markdown, so it renders identically on the GH Actions step summary, the ADO pipeline run extension, and any markdown viewer (no JS, no images).
-- **Generation timestamp in the Fleet Update Status H2 heading.** Both `fleet-update-status.yml` files now render the H2 heading as `## Fleet Update Status Summary  _(generated YYYY-MM-DD HH:MM:SS UTC)_`. Operators no longer have to cross-reference the pipeline run start time to know when the data was collected.
-- **Failed clusters appear before passing clusters in the JUnit per-cluster block.** The per-cluster `<testcase>` ordering in `fleet-update-status.yml` (both platforms) is now bucketed: failed first (sorted alphabetically by `ClusterName`), then passed (sorted alphabetically). Failing clusters lead the dorny/test-reporter view (GitHub) and the Tests tab (Azure DevOps).
+- **Status emojis in the Fleet Update Status summary.** `Step.6_fleet-update-status.yml` (GitHub Actions and Azure DevOps) now renders the `Critical Health` and `Primary Status` summary tables with a green tick / red cross / refresh / yellow circle / info glyph - the same visual language operators already use to read JUnit dashboards. The legacy `[ok] / [fail] / [ready] / [running] / [blocked] / [info]` bracket markers are gone. Plain markdown, so it renders identically on the GH Actions step summary, the ADO pipeline run extension, and any markdown viewer (no JS, no images).
+- **Generation timestamp in the Fleet Update Status H2 heading.** Both `Step.6_fleet-update-status.yml` files now render the H2 heading as `## Fleet Update Status Summary  _(generated YYYY-MM-DD HH:MM:SS UTC)_`. Operators no longer have to cross-reference the pipeline run start time to know when the data was collected.
+- **Failed clusters appear before passing clusters in the JUnit per-cluster block.** The per-cluster `<testcase>` ordering in `Step.6_fleet-update-status.yml` (both platforms) is now bucketed: failed first (sorted alphabetically by `ClusterName`), then passed (sorted alphabetically). Failing clusters lead the dorny/test-reporter view (GitHub) and the Tests tab (Azure DevOps).
 - **Every downloadable pipeline artifact now carries a UTC timestamp suffix.** All `actions/upload-artifact` steps (GH) and `PublishBuildArtifacts@1` / `PublishPipelineArtifact@1` tasks (ADO) now declare `name:` / `ArtifactName:` of the form `azlocal-<purpose>_yyyyMMdd_HHmmss`. Each job computes the timestamp once in a dedicated `Compute Artifact Timestamp` step. Two runs of the same pipeline on the same day now produce distinct zip downloads (`azlocal-fleet-update-status-report_20260518_140000.zip` vs `azlocal-fleet-update-status-report_20260518_180000.zip`) instead of clobbering each other in the operator's downloads folder.
 - **Pipeline `UpdateRing` inputs accept multi-value lists and the literal `***` wildcard.** Every pipeline that exposes `update_ring:` (GH `workflow_dispatch`) or `updateRing:` (ADO `parameters:`) now accepts:
   - A single ring (unchanged): `Wave1`
   - A semicolon-delimited list: `Prod;Ring2` (whitespace around each ring is trimmed)
   - The wildcard `***` (three stars, deliberate gesture) to match every cluster that **has** a non-empty `UpdateRing` tag. **Untagged clusters are excluded**, preserving the existing opt-in gate. A single `*`, double `**`, or quadruple `****` are all REJECTED by the cmdlet's `[ValidatePattern]` so a one-character typo can no longer accidentally scope a fleet-wide write.
 
-  The ADO `apply-updates.yml` lost its closed `values:` enum (kept `type: string` so users still get a free-text editor in the ADO run dialog).
+  The ADO `Step.5_apply-updates.yml` lost its closed `values:` enum (kept `type: string` so users still get a free-text editor in the ADO run dialog).
 - **`[ValidatePattern]` tightened on 15 cmdlets** to match: `^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$`. Each individual ring segment keeps the same 1-64 character `[A-Za-z0-9_-]` policy as v0.7.65; the changes are (a) `;`-delimited lists are now accepted, and (b) **only the exact three-character `***` token is accepted as a wildcard** (single/double/quad stars are rejected). Hostile/malformed inputs (spaces, embedded quotes, `<script>`, leading/trailing `;`) are still rejected at the parameter binder before any Azure call is made.
 - **New private helper `ConvertTo-AzLocalUpdateRingKqlFilter`** centralises the KQL clause construction for the three input forms above. Returns `| where isnotempty(tags['UpdateRing'])` for `***` (matches only tagged clusters), a `| where tags['UpdateRing'] =~ 'single'` clause for a single value, and a `| where tags['UpdateRing'] in~ ('a','b')` clause for a list. Embedded single quotes are doubled (KQL string-literal escape). All 12 ARG-query call sites in the public cmdlets now go through this helper.
 - **Pester regression coverage** for every v0.7.66 feature: a `Describe 'v0.7.66 UpdateRing ValidatePattern accepts list & wildcard forms'` that reflects on every cmdlet's `ValidatePatternAttribute` and asserts both the acceptance set (`Wave1`, `Prod;Ring2`, `***`, ...) **and the rejection set including the easy-to-mistype `*` / `**` / `****` / `*Wave1` variants**, plus the existing hostile inputs (`Foo bar`, `abc'def`, `<script>`, empty, leading/trailing `;`); a `Describe 'v0.7.66 ConvertTo-AzLocalUpdateRingKqlFilter helper'` exercising every branch including the new `***` -> `isnotempty(...)` path (both default `tags['UpdateRing']` and `tostring(tags['UpdateRing'])` accessors); a `Describe 'v0.7.66 Artifact download names carry a UTC timestamp suffix'` that scans every `Automation-Pipeline-Examples/**/*.yml` and fails if any upload step is missing the `azlocal-` prefix or the `<timestamp>` token (plus four guards against the legacy non-stamped names regressing); a `Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups failures first'` that asserts the U+2705 and U+274C glyphs are present and that the legacy `[ok]/[fail]` markers are gone, that the `_(generated $generatedUtc)_` heading is present, and that the `$failedClusters` / `$passedClusters` / `$orderedClusters` bucketing tokens all appear; and a `Describe 'v0.7.66 Pipeline update_ring inputs document multi-value and wildcard support'` that asserts every input description mentions both `Prod;Ring2` and `'***'`.
@@ -2360,11 +2483,11 @@ Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureD
 
 - **New - `Get-AzureLocalFleetHealthFailures` cmdlet.** Surfaces the in-flight **24-hour system health-check failures** across every Azure Local cluster the caller can read, via a single Azure Resource Graph query. The 24-hour health checks run on Azure Local clusters **independently of update activity** - which means clusters that are already "up to date" can still surface Critical or Warning issues that need triage. This cmdlet (and the new pipeline below) are the dedicated entry point for that workflow. Two views: `-View Detail` (one row per (cluster, failing check)) and `-View Summary` (aggregated by `FailureReason` + `Severity`, ordered "most widespread first" so administrators can target the highest-impact fixes). `-Severity Critical|Warning|All` filters at the ARG side; Informational entries are always excluded. `-UpdateRingTag` narrows to a specific wave. The function reuses the existing `Invoke-AzResourceGraphQuery` helper for paginated CLI shell-out, so it inherits the same skip-token / error-scrubbing behaviour as every other fleet-wide query in the module.
 
-- **New - "Fleet Health Status" CI/CD pipeline samples** in `Automation-Pipeline-Examples/github-actions/fleet-health-status.yml` and `Automation-Pipeline-Examples/azure-devops/fleet-health-status.yml`. Daily 07:00 UTC schedule (offset from `fleet-update-status` at 06:00). Each run produces:
+- **New - "Fleet Health Status" CI/CD pipeline samples** in `Automation-Pipeline-Examples/github-actions/Step.7_fleet-health-status.yml` and `Automation-Pipeline-Examples/azure-devops/Step.7_fleet-health-status.yml`. Daily 07:00 UTC schedule (offset from `fleet-update-status` at 06:00). Each run produces:
   - **Pipeline run summary**: pivoted by `FailureReason` (top failures by cluster impact), with a per-cluster "Detailed Results" table mirroring the standard "24-Hour System Health Checks - Detailed Results" view.
   - **JUnit XML**: one `<testcase>` per (cluster, failing health check), grouped under `Critical Health Failures` / `Warning Health Failures` testsuites for two-level drill-down in dorny/test-reporter (GitHub) and PublishTestResults@2 (Azure DevOps). dorny is configured `list-suites: failed` + `list-tests: failed` so the Test Reporter block is collapsed by default and only expands the failures.
   - **CSV exports**: `fleet-health-detail.csv` (per-cluster, per-failure) and `fleet-health-summary.csv` (one row per failure reason, ordered by cluster impact). Both are uploaded as build artifacts and are ready-made payloads for ITSM hand-off.
-  Together with `fleet-update-status.yml`, administrators now have **two dedicated pipelines**: one for "is each cluster up-to-date?" (Update Status) and one for "do clusters have actionable health issues even when up-to-date?" (Health Status).
+  Together with `Step.6_fleet-update-status.yml`, administrators now have **two dedicated pipelines**: one for "is each cluster up-to-date?" (Update Status) and one for "do clusters have actionable health issues even when up-to-date?" (Health Status).
 
 - **New - Pester guardrail prevents pipeline-YAML version drift.** A new Pester `Context 'Pipeline YAML version pin (v0.7.65)'` test discovers every `*.yml` file under `Automation-Pipeline-Examples/` that installs the module from PSGallery and asserts that the `GENERATED_AGAINST_MODULE_VERSION` constant in that YAML matches the module manifest version. Supports both the inline GitHub Actions shape and the two-line Azure DevOps shape. The test fails the build if any sample YAML is forgotten when the manifest is bumped.
 
@@ -2374,19 +2497,19 @@ Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureD
   1. `Up to Date` only counted `UpdateState -eq "UpToDate"` and missed clusters reporting the (equally healthy) `AppliedSuccessfully` state. Both states now count as "Up to Date".
   2. The bucket counters were not mutually exclusive and there was no catch-all, so a fleet of 20 healthy + 8 failed clusters could render as `Up to Date: 0`, `Health Failures: 8`, with the remaining 12 unaccounted for. Each cluster is now assigned to **exactly one** primary status using a priority cascade (`Update Failed` -> `Health Failure` -> `SBE Prerequisite Blocked` -> `Update In Progress` -> `Ready for Update` -> `Up to Date` -> `Needs Investigation`), so the rows always sum to `Total Clusters`.
 
-- **Changed - JUnit / step-summary ordering is now: Summary FIRST, Test Results SECOND** in both `fleet-update-status.yml` and `fleet-health-status.yml` (GitHub + Azure DevOps). The markdown step summary is created before the JUnit XML is published, so the run-extensions / job-summary view leads with the operator-facing numbers rather than the raw test list.
+- **Changed - JUnit / step-summary ordering is now: Summary FIRST, Test Results SECOND** in both `Step.6_fleet-update-status.yml` and `Step.7_fleet-health-status.yml` (GitHub + Azure DevOps). The markdown step summary is created before the JUnit XML is published, so the run-extensions / job-summary view leads with the operator-facing numbers rather than the raw test list.
 
 - **Changed - "Fleet Update Status" failure message now reads `UpdateState: ..., Health: ...`** (was `Health: ..., UpdateState: ...`) so the Update Status leads in both the JUnit `<failure>` message and the markdown summary. The Update Status is the primary signal for that pipeline.
 
 - **Documentation - `Set-AzureLocalClusterUpdateRingTag` help and the Automation-Pipeline-Examples RBAC guidance now both recommend the built-in `Tag Contributor` role for tag-management automation.**
 
-- **New - `Test-AzureLocalApplyUpdatesScheduleCoverage` cmdlet + matching CI/CD pipeline samples.** Read-only schedule-coverage advisor that compares the cron schedule(s) in your `apply-updates.yml` pipeline to the `UpdateWindow` tag values present on your clusters and flags any `(UpdateRing, UpdateWindow)` pair that no cron will ever reach. Three views: `-View Audit` (one row per `(Ring, Window)` pair with `Covered` / `Uncovered` / `PartiallyCovered` / `MalformedTag` / `UnparseableCron` plus a `Recommendation` column), `-View Matrix` (every distinct `(Ring, Window)` pair with the cron expression the advisor would generate for it), `-View Recommend` (ready-to-paste GH Actions and Azure DevOps cron blocks that cover every distinct `UpdateWindow` in the fleet). Per-segment cron generation handles multi-window tag values (`Sat-Sun_02:00-06:00;Mon-Fri_22:00-04:00`), day ranges (`Fri-Mon`), and configurable lead-time via `-LeadTimeMinutes` (default 5, 0-60). Pipeline samples ship at `Automation-Pipeline-Examples/github-actions/apply-updates-schedule-audit.yml` and `Automation-Pipeline-Examples/azure-devops/apply-updates-schedule-audit.yml`, scheduled weekly Mondays at 05:00 UTC (before the daily fleet pipelines) so drift annotations land at the top of the Monday-morning operator queue. Each run produces a JUnit XML (one `<testcase>` per `(Ring, Window)` pair), three CSV/MD exports (`schedule-coverage-audit.csv`, `schedule-coverage-matrix.csv`, `schedule-coverage-recommend.md`), and a markdown step summary. Full end-to-end runbook (tag a ring -> see drift -> copy recommended cron -> verify) in [`Automation-Pipeline-Examples/README.md` section 8.3](Automation-Pipeline-Examples/README.md#83-end-to-end-runbook-apply-updates-schedule-coverage-audit).
+- **New - `Test-AzureLocalApplyUpdatesScheduleCoverage` cmdlet + matching CI/CD pipeline samples.** Read-only schedule-coverage advisor that compares the cron schedule(s) in your `Step.5_apply-updates.yml` pipeline to the `UpdateWindow` tag values present on your clusters and flags any `(UpdateRing, UpdateWindow)` pair that no cron will ever reach. Three views: `-View Audit` (one row per `(Ring, Window)` pair with `Covered` / `Uncovered` / `PartiallyCovered` / `MalformedTag` / `UnparseableCron` plus a `Recommendation` column), `-View Matrix` (every distinct `(Ring, Window)` pair with the cron expression the advisor would generate for it), `-View Recommend` (ready-to-paste GH Actions and Azure DevOps cron blocks that cover every distinct `UpdateWindow` in the fleet). Per-segment cron generation handles multi-window tag values (`Sat-Sun_02:00-06:00;Mon-Fri_22:00-04:00`), day ranges (`Fri-Mon`), and configurable lead-time via `-LeadTimeMinutes` (default 5, 0-60). Pipeline samples ship at `Automation-Pipeline-Examples/github-actions/Step.3_apply-updates-schedule-audit.yml` and `Automation-Pipeline-Examples/azure-devops/Step.3_apply-updates-schedule-audit.yml`, scheduled weekly Mondays at 05:00 UTC (before the daily fleet pipelines) so drift annotations land at the top of the Monday-morning operator queue. Each run produces a JUnit XML (one `<testcase>` per `(Ring, Window)` pair), three CSV/MD exports (`schedule-coverage-audit.csv`, `schedule-coverage-matrix.csv`, `schedule-coverage-recommend.md`), and a markdown step summary. Full end-to-end runbook (tag a ring -> see drift -> copy recommended cron -> verify) in [`Automation-Pipeline-Examples/README.md` section 8.3](Automation-Pipeline-Examples/README.md#83-end-to-end-runbook-apply-updates-schedule-coverage-audit).
 
-- **Module version pin bumped to 0.7.65 in all 13 sample workflow YAMLs** (11 pre-existing + the two new `apply-updates-schedule-audit.yml` files). Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh the samples in your repo.
+- **Module version pin bumped to 0.7.65 in all 13 sample workflow YAMLs** (11 pre-existing + the two new `Step.3_apply-updates-schedule-audit.yml` files). Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh the samples in your repo.
 
 ### What's New in v0.7.64
 
-- **Fixed (critical) - pipeline-sample YAMLs (10 files across GitHub Actions and Azure DevOps) had accumulated cp1252 mojibake from previous emoji-edit round-trips.** One of the multi-byte sequences in `manage-updatering-tags.yml` contained a YAML 1.2 forbidden C1 control character (U+008F), which caused GitHub Actions to reject the workflow at recent commits with `Invalid workflow file` / generic YAML syntax error and the affected step never ran. The root cause was UTF-8 emoji bytes (e.g. `F0 9F 93 84` = `[document]`) being misread as cp1252 by a previous editor session, then re-saved as UTF-8 - producing `C3 B0 C2 9F C2 93 C2 84`, which contains `C2 8F` -> U+008F. YAML 1.2 disallows raw C1 control characters U+0080-U+009F (except U+0085 NEL) in scalar content. **All non-ASCII bytes have been stripped from every sample workflow** (`[^\x09\x0A\x0D\x20-\x7E]`), the affected Markdown step-summary sections restored with plain-ASCII status labels (`[info]`, `[ok]`, `[running]`, `[ready]`, `[blocked]`, `[fail]`), and the YAMLs verified to round-trip cleanly through the GitHub Actions and Azure DevOps validators. No module code paths are affected; only the sample YAMLs.
+- **Fixed (critical) - pipeline-sample YAMLs (10 files across GitHub Actions and Azure DevOps) had accumulated cp1252 mojibake from previous emoji-edit round-trips.** One of the multi-byte sequences in `Step.2_manage-updatering-tags.yml` contained a YAML 1.2 forbidden C1 control character (U+008F), which caused GitHub Actions to reject the workflow at recent commits with `Invalid workflow file` / generic YAML syntax error and the affected step never ran. The root cause was UTF-8 emoji bytes (e.g. `F0 9F 93 84` = `[document]`) being misread as cp1252 by a previous editor session, then re-saved as UTF-8 - producing `C3 B0 C2 9F C2 93 C2 84`, which contains `C2 8F` -> U+008F. YAML 1.2 disallows raw C1 control characters U+0080-U+009F (except U+0085 NEL) in scalar content. **All non-ASCII bytes have been stripped from every sample workflow** (`[^\x09\x0A\x0D\x20-\x7E]`), the affected Markdown step-summary sections restored with plain-ASCII status labels (`[info]`, `[ok]`, `[running]`, `[ready]`, `[blocked]`, `[fail]`), and the YAMLs verified to round-trip cleanly through the GitHub Actions and Azure DevOps validators. No module code paths are affected; only the sample YAMLs.
 
 - **Security hardening (Medium) - `Connect-AzureLocalServicePrincipal` and six additional direct `az rest` callers now scrub raw CLI output through `ConvertTo-ScrubbedCliOutput` before logging or throwing.** A stray `refresh_token` / `access_token` / cookie that the `az` CLI might emit on a failure can no longer reach the host logs verbatim. Sites: `Set-AzLocalClusterTagsMerge` (3 throw paths), `Invoke-AzLocalSideloadedAutoResetForCluster`, `Invoke-AzureLocalUpdateApply` (verbose), `Set-AzureLocalClusterUpdateRingTag` (failure path), `Start-AzureLocalClusterUpdate` (subscription-set and validate paths), and `Connect-AzureLocalServicePrincipal`. This closes the same Bearer-token leak class that was already handled inside `Invoke-AzRestJson` / `Invoke-AzResourceGraphQuery` but missed by the seven sites that call `az rest` / `az account set` directly.
 
@@ -2408,19 +2531,19 @@ Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureD
 
 - **Fixed (critical) - JUnit XML `Status` mapping no longer reports skipped clusters as passed.** `Export-ResultsToJUnitXml` previously rendered `NotReady`, `NotConnected`, `NoUpdatesAvailable`, and `NoReadyUpdates` as `<system-out>` (passed in `dorny/test-reporter`), producing misleading *all green* CI summaries when apply had actually skipped clusters. They now render as `<skipped>`. `UpdateNotFound` now renders as `<error type="UpdateNotFound">` instead of `<system-out>`.
 
-- **Changed - `apply-updates` pipeline samples now consume the readiness CSV.** Both [`Automation-Pipeline-Examples/github-actions/apply-updates.yml`](Automation-Pipeline-Examples/github-actions/apply-updates.yml) and [`Automation-Pipeline-Examples/azure-devops/apply-updates.yml`](Automation-Pipeline-Examples/azure-devops/apply-updates.yml) now download the `readiness-report` artifact from the `check-readiness` job, filter rows where `ReadyForUpdate=True`, and pass `-ClusterResourceIds @(...)` to `Start-AzureLocalClusterUpdate` instead of re-discovering clusters by `UpdateRing` tag. This guarantees the readiness gate's decision is **enforced** rather than advisory: a cluster flagged Blocked in readiness will not be touched by apply even if its tag still matches the ring. Apply still re-validates each cluster (Step 1b connectivity, Step 3b health, Step 3c schedule, Step 3b1 sideloaded) as defence in depth.
+- **Changed - `apply-updates` pipeline samples now consume the readiness CSV.** Both [`Automation-Pipeline-Examples/github-actions/Step.5_apply-updates.yml`](Automation-Pipeline-Examples/github-actions/Step.5_apply-updates.yml) and [`Automation-Pipeline-Examples/azure-devops/Step.5_apply-updates.yml`](Automation-Pipeline-Examples/azure-devops/Step.5_apply-updates.yml) now download the `readiness-report` artifact from the `check-readiness` job, filter rows where `ReadyForUpdate=True`, and pass `-ClusterResourceIds @(...)` to `Start-AzureLocalClusterUpdate` instead of re-discovering clusters by `UpdateRing` tag. This guarantees the readiness gate's decision is **enforced** rather than advisory: a cluster flagged Blocked in readiness will not be touched by apply even if its tag still matches the ring. Apply still re-validates each cluster (Step 1b connectivity, Step 3b health, Step 3c schedule, Step 3b1 sideloaded) as defence in depth.
 
 - **Changed - Readiness output gains a `ClusterResourceId` column.** [`Get-AzureLocalClusterUpdateReadiness`](Public/Get-AzureLocalClusterUpdateReadiness.ps1) emits the full ARM resource ID on every row (including `NotFound`/`Error` rows) so the apply step can pass it straight to `Start-AzureLocalClusterUpdate -ClusterResourceIds` without a second Resource Graph query. **The CSV column is additive** - existing consumers that parse by header name keep working.
 
 - **Module version pin bumped to 0.7.62 in all 10 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading.
 
-**What a successful `apply-updates.yml` run looks like** (dry-run against the Prod ring on a 9-cluster sandbox - 4 ready, 5 skipped, zero failures):
+**What a successful `Step.5_apply-updates.yml` run looks like** (dry-run against the Prod ring on a 9-cluster sandbox - 4 ready, 5 skipped, zero failures):
 
-![apply-updates.yml run Summary tab: target UpdateRing Prod, dry-run, Readiness section showing Total Clusters 9 / Ready for Update 4, Results section showing Updates Started 0 / Skipped 5 / Failed 0 / Health Blocked 0 / Schedule Blocked 0 / Sideloaded Blocked 0](docs/images/apply-updates-summary.png)
+![Step.5_apply-updates.yml run Summary tab: target UpdateRing Prod, dry-run, Readiness section showing Total Clusters 9 / Ready for Update 4, Results section showing Updates Started 0 / Skipped 5 / Failed 0 / Health Blocked 0 / Schedule Blocked 0 / Sideloaded Blocked 0](docs/images/apply-updates-summary.png)
 
 ### What's New in v0.7.63
 
-- **Fixed (critical) - `fleet-update-status.yml` pipeline samples failed with `ParserError` under PowerShell 7.** Inside the PS double-quoted here-string that builds the Markdown step summary, Markdown code-span backticks before file names like `` `update-summaries.csv` `` were interpreted by the PS 7 parser as the new `` `u{xxxx} `` Unicode escape (which expects `{` immediately after `` `u ``). PS 5.1 had silently consumed the backtick; PS 7 hard-errors. Latent corruption also affected `` `readiness-status.csv` `` (`` `r `` -> CR), `` `available-updates.csv` `` (`` `a `` -> BEL), and `` `cluster-inventory.csv` `` (`` `c `` -> backtick dropped) - producing rendered job summaries with stray control characters and missing code-span formatting even on PS 5.1. All Markdown code-span backticks in the affected here-strings have been doubled; under both PS 5.1 and PS 7 two consecutive backticks in a double-quoted string produce exactly one literal backtick. No module code paths affected; only the pipeline-sample YAMLs.
+- **Fixed (critical) - `Step.6_fleet-update-status.yml` pipeline samples failed with `ParserError` under PowerShell 7.** Inside the PS double-quoted here-string that builds the Markdown step summary, Markdown code-span backticks before file names like `` `update-summaries.csv` `` were interpreted by the PS 7 parser as the new `` `u{xxxx} `` Unicode escape (which expects `{` immediately after `` `u ``). PS 5.1 had silently consumed the backtick; PS 7 hard-errors. Latent corruption also affected `` `readiness-status.csv` `` (`` `r `` -> CR), `` `available-updates.csv` `` (`` `a `` -> BEL), and `` `cluster-inventory.csv` `` (`` `c `` -> backtick dropped) - producing rendered job summaries with stray control characters and missing code-span formatting even on PS 5.1. All Markdown code-span backticks in the affected here-strings have been doubled; under both PS 5.1 and PS 7 two consecutive backticks in a double-quoted string produce exactly one literal backtick. No module code paths affected; only the pipeline-sample YAMLs.
 
 - **Module version pin bumped to 0.7.63 in all 10 sample workflow YAMLs.**
 
@@ -2448,20 +2571,20 @@ Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureD
 
   Already-deployed pipelines continue working on the older majors until Sept 16 2026. To pull the refreshed YAMLs into your existing `.github\workflows\` folder after upgrading the module, run `Copy-AzureLocalPipelineExample -Update -Platform GitHub -Destination .\.github\workflows`.
 
-- **Fixed - `dorny/test-reporter` 403 on `apply-updates.yml` (GitHub Actions sample).** Both jobs (`check-readiness` and `apply-updates`) only granted `id-token: write` + `contents: read` in their `permissions:` block, missing the `checks: write` permission that `dorny/test-reporter` needs to create the Check Run that publishes JUnit results. Symptom: the test-reporter step failed with `HttpError: Resource not accessible by integration` (HTTP 403) on every `workflow_dispatch` run, because `workflow_dispatch` contexts have no PR check-run context to write back to by default. The run itself was unaffected - readiness assessment and the subsequent apply still completed - this only restored the Check Run summary surface so the JUnit XML actually shows up in the GitHub UI. Sibling workflows (`assess-update-readiness.yml`, `fleet-update-status.yml`) already declared `checks: write` from v0.7.50; only `apply-updates.yml` was missing it.
+- **Fixed - `dorny/test-reporter` 403 on `Step.5_apply-updates.yml` (GitHub Actions sample).** Both jobs (`check-readiness` and `apply-updates`) only granted `id-token: write` + `contents: read` in their `permissions:` block, missing the `checks: write` permission that `dorny/test-reporter` needs to create the Check Run that publishes JUnit results. Symptom: the test-reporter step failed with `HttpError: Resource not accessible by integration` (HTTP 403) on every `workflow_dispatch` run, because `workflow_dispatch` contexts have no PR check-run context to write back to by default. The run itself was unaffected - readiness assessment and the subsequent apply still completed - this only restored the Check Run summary surface so the JUnit XML actually shows up in the GitHub UI. Sibling workflows (`Step.4_assess-update-readiness.yml`, `Step.6_fleet-update-status.yml`) already declared `checks: write` from v0.7.50; only `Step.5_apply-updates.yml` was missing it.
 
 - **Module version pin bumped to 0.7.60 in all 10 sample workflow YAMLs.** `GENERATED_AGAINST_MODULE_VERSION` is the value the in-pipeline install step compares the actually-installed module version against, then warns if your local copy of the YAML is stale (see [Automation-Pipeline-Examples/README.md section 5.3](Automation-Pipeline-Examples/README.md#53-version-pinning--staleness-warnings)). All five GitHub Actions YAMLs and all five Azure DevOps YAMLs have been bumped in lock-step.
 
 ### What's New in v0.7.50
 
-- **`Copy-AzureLocalItsmSample` (new convenience function)**: copies the bundled ITSM connector sample (`azurelocal-itsm.yml` + `templates/incident-body.md`) out of the module install location into a user-chosen destination. Default `-Destination` is `.\.itsm` - the exact relative path that both `apply-updates.yml` workflows default `itsm_config_path` / `itsmConfigPath` to (resolved relative to the repo root at job runtime). Same overwrite semantics as `Copy-AzureLocalPipelineExample`: refuses by default, `-Update` opts into per-file `ShouldContinue` prompts (with `Yes-to-All` / `No-to-All` that survive across iterations), `-Confirm:$false` bypasses the prompts for unattended use, `-WhatIf` previews without changing anything, `-PassThru` returns the destination `[DirectoryInfo]`. Closes the gap where running `Copy-AzureLocalPipelineExample -Platform GitHub` (or `-Platform AzureDevOps`) deliberately did not bring the `.itsm/` sample along - the two functions now compose for a one-paragraph setup. The ITSM YAML itself is CI-platform-agnostic; both GitHub Actions and Azure DevOps consume it identically, only the secret source differs (repo / environment secrets vs. variable group).
+- **`Copy-AzureLocalItsmSample` (new convenience function)**: copies the bundled ITSM connector sample (`azurelocal-itsm.yml` + `templates/incident-body.md`) out of the module install location into a user-chosen destination. Default `-Destination` is `.\.itsm` - the exact relative path that both `Step.5_apply-updates.yml` workflows default `itsm_config_path` / `itsmConfigPath` to (resolved relative to the repo root at job runtime). Same overwrite semantics as `Copy-AzureLocalPipelineExample`: refuses by default, `-Update` opts into per-file `ShouldContinue` prompts (with `Yes-to-All` / `No-to-All` that survive across iterations), `-Confirm:$false` bypasses the prompts for unattended use, `-WhatIf` previews without changing anything, `-PassThru` returns the destination `[DirectoryInfo]`. Closes the gap where running `Copy-AzureLocalPipelineExample -Platform GitHub` (or `-Platform AzureDevOps`) deliberately did not bring the `.itsm/` sample along - the two functions now compose for a one-paragraph setup. The ITSM YAML itself is CI-platform-agnostic; both GitHub Actions and Azure DevOps consume it identically, only the secret source differs (repo / environment secrets vs. variable group).
 - **`Copy-AzureLocalPipelineExample` - simpler, safer copy semantics.** First real-world run of the v0.7.4 surface exposed two issues with the GitHub Actions path: (1) `-Platform GitHub -Flatten` left an intermediate `github-actions\` subfolder, so workflows landed at `.github\workflows\github-actions\*.yml` where the GitHub Actions runner cannot see them (the runner only scans `.github/workflows/*.yml`, non-recursively); (2) the `-Force` flag's directory-level pre-flight refused to copy whenever `.github\workflows\` contained any unrelated user workflow, making `-Force` effectively mandatory and meaningless. Both flags have been removed and the function has been reshaped around the user's actual intent:
   - `-Platform GitHub` now copies ONLY the `*.yml` workflow files from the source `github-actions/` folder directly into `-Destination` (flat - no wrapper folder, no README, no `.itsm/`). Canonical call: `Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`.
   - `-Platform AzureDevOps` behaves the same way against the source `azure-devops/` folder.
   - `-Platform All` (the default) is unchanged - copies the full source tree under a `.\Automation-Pipeline-Examples\` child folder for browsing.
   - **Controlled refresh via `-Update`** (new in v0.7.50): the function still refuses to overwrite by default and lists every conflict in the error message - but the error now points at the `-Update` switch instead of asking the user to `Remove-Item` first. With `-Update` the function emits a per-file `ShouldContinue` prompt (`Y` / `A` / `N` / `L` / `S` / `?`) before each overwrite. Pair with `-Confirm:$false` to suppress the prompts entirely (the documented automation / CI bypass), or use `-WhatIf` to preview without changing anything. Pipeline files are expected to live under git source control so `git diff` is the second safety net after `ShouldContinue`. There is **deliberately no `-Force`**: `-Update` is the narrower, more explicit replacement.
   - Pre-existing unrelated files in `-Destination` (e.g. your repo's own `build.yml`, `codeql.yml`) are now left untouched; the function only writes the files it is bringing over from the source tree.
-  - **Next-steps output** is now platform-aware and detects when `-Destination` is already `.github\workflows\` ("you're done, commit and push") vs. somewhere else ("move the YAMLs into `.github\workflows\`"). For both platform-specific values the output points at `auth-smoke-test.yml` as the recommended first run (see sections 5.1 and 5.2 of the [Automation-Pipeline-Examples README](Automation-Pipeline-Examples/README.md)) so the user validates the auth chain before wiring the other five workflows.
+  - **Next-steps output** is now platform-aware and detects when `-Destination` is already `.github\workflows\` ("you're done, commit and push") vs. somewhere else ("move the YAMLs into `.github\workflows\`"). For both platform-specific values the output points at `Step.0_authentication-test.yml` as the recommended first run (see sections 5.1 and 5.2 of the [Automation-Pipeline-Examples README](Automation-Pipeline-Examples/README.md)) so the user validates the auth chain before wiring the other five workflows.
   - Note: this is **not** marked as a breaking change because the v0.7.4 surface had not been adopted by any consumer at the time of removal (the feature shipped on 2026-05-13 and was found broken on first real-world use).
 
 ### What's New in v0.7.41
@@ -2776,7 +2899,7 @@ Get-AzureLocalUpdateRuns -ScopeByUpdateRingTag -UpdateRingValue "Ring2" -Latest
 ```
 
 #### 📊 Fleet Update Status Monitoring
-- **New CI/CD Pipeline**: Added `fleet-update-status.yml` for both GitHub Actions and Azure DevOps
+- **New CI/CD Pipeline**: Added `Step.6_fleet-update-status.yml` for both GitHub Actions and Azure DevOps
 - **JUnit XML Reports**: Each cluster appears as a test case in CI/CD dashboards (passed=healthy, failed=issues)
 - **Multiple Output Formats**: CSV, JSON, and JUnit XML exports for different use cases
 - **Scheduled Monitoring**: Automated daily checks at 6 AM UTC with configurable scope

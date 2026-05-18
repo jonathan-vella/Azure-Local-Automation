@@ -107,13 +107,7 @@ function Get-AzureLocalAvailableUpdates {
         [switch]$PassThru,
 
         [Parameter(Mandatory = $false, ParameterSetName = 'SingleCluster')]
-        [switch]$Raw,
-
-        [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
-        [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
-        [ValidateRange(1, 16)]
-        [int]$ThrottleLimit = 1
+        [switch]$Raw
     )
 
     # Pre-flight: Validate export path is writable before expensive operations
@@ -237,33 +231,38 @@ function Get-AzureLocalAvailableUpdates {
         return
     }
 
+    # v0.7.68: Multi-cluster mode is now ARG-only. Ensure the resource-graph
+    # extension is present before any param-set branch runs (was previously
+    # only checked in the ByTag branch).
+    if (-not (Install-AzGraphExtension)) {
+        Write-Log -Message "Failed to install Azure CLI 'resource-graph' extension." -Level Error
+        return
+    }
+
     # Build list of clusters to process
     $clustersToProcess = @()
-    
+
     if ($PSCmdlet.ParameterSetName -eq 'ByTag') {
-        if (-not (Install-AzGraphExtension)) {
-            Write-Error "Failed to install Azure CLI 'resource-graph' extension."
-            return
-        }
-        
         Write-Log -Message "Querying Azure Resource Graph for clusters with tag 'UpdateRing' = '$UpdateRingValue'..." -Level Info
-        
+
         $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingValue
         $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' $ringFilter | project id, name, resourceGroup, subscriptionId, tags"
-        
+
         try {
-            $clusterRows = Invoke-AzResourceGraphQuery -Query $argQuery
+            $argParams = @{ Query = $argQuery }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $clusterRows = Invoke-AzResourceGraphQuery @argParams
 
             if (-not $clusterRows -or $clusterRows.Count -eq 0) {
                 Write-Log -Message "No clusters found with tag 'UpdateRing' = '$UpdateRingValue'" -Level Warning
                 return @()
             }
-            
+
             Write-Log -Message "Found $($clusterRows.Count) cluster(s) matching tag criteria" -Level Success
             foreach ($cluster in $clusterRows) {
-                $clustersToProcess += @{ 
+                $clustersToProcess += @{
                     ResourceId = $cluster.id
-                    Name = $cluster.name 
+                    Name = $cluster.name
                     ResourceGroup = $cluster.resourceGroup
                     SubscriptionId = $cluster.subscriptionId
                 }
@@ -278,7 +277,7 @@ function Get-AzureLocalAvailableUpdates {
         foreach ($resourceId in $ClusterResourceIds) {
             $clusterRgName = ($resourceId -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
             $clusterSubId = ($resourceId -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
-            $clustersToProcess += @{ 
+            $clustersToProcess += @{
                 ResourceId = $resourceId
                 Name = ($resourceId -split '/')[-1]
                 ResourceGroup = $clusterRgName
@@ -287,25 +286,45 @@ function Get-AzureLocalAvailableUpdates {
         }
     }
     else {
-        # ByName - resolve names to resource IDs upfront to avoid per-cluster lookups
-        if (-not $SubscriptionId) {
-            $SubscriptionId = (az account show --query id -o tsv)
+        # ByName - v0.7.68: resolve all names in a SINGLE ARG batch lookup
+        # instead of one ARM REST call per cluster. Works cross-subscription
+        # when -SubscriptionId is not passed.
+        $nameListKql = ($ClusterNames | ForEach-Object { "'$_'" }) -join ','
+        $nameQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where name in~ ($nameListKql) | project id, name, resourceGroup, subscriptionId"
+        try {
+            $argParams = @{ Query = $nameQuery }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $clusterRows = Invoke-AzResourceGraphQuery @argParams
         }
+        catch {
+            Write-Log -Message "Azure Resource Graph cluster lookup failed: $($_.Exception.Message)" -Level Error
+            return
+        }
+
+        $foundNames = @($clusterRows | Select-Object -ExpandProperty name)
+        Write-Log -Message "Resolved $($foundNames.Count) of $($ClusterNames.Count) cluster name(s) via Azure Resource Graph" -Level $(if ($foundNames.Count -eq $ClusterNames.Count) { 'Success' } else { 'Warning' })
         foreach ($name in $ClusterNames) {
-            $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $name `
-                -ResourceGroupName $ResourceGroupName -SubscriptionId $SubscriptionId -ApiVersion $ApiVersion
-            if ($clusterInfo) {
-                $clustersToProcess += @{ 
-                    ResourceId = $clusterInfo.id
-                    Name = $clusterInfo.name
-                    ResourceGroup = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
-                    SubscriptionId = ($clusterInfo.id -split '/subscriptions/')[1] -split '/' | Select-Object -First 1
+            $match = $clusterRows | Where-Object { $_.name -ieq $name } | Select-Object -First 1
+            if ($match) {
+                $clustersToProcess += @{
+                    ResourceId = $match.id
+                    Name = $match.name
+                    ResourceGroup = $match.resourceGroup
+                    SubscriptionId = $match.subscriptionId
                 }
             }
             else {
-                Write-Log -Message "Cluster '$name' not found - skipping" -Level Warning
+                Write-Log -Message "Cluster '$name' not found in Azure Resource Graph (subscription scope: $(if ($SubscriptionId) { $SubscriptionId } else { 'all readable' })) - skipping" -Level Warning
             }
         }
+        if ($ResourceGroupName) {
+            $clustersToProcess = @($clustersToProcess | Where-Object { $_.ResourceGroup -ieq $ResourceGroupName })
+        }
+    }
+
+    if ($clustersToProcess.Count -eq 0) {
+        Write-Log -Message "No clusters resolved for query - nothing to do." -Level Warning
+        return @()
     }
 
     Write-Log -Message "" -Level Info
@@ -315,166 +334,123 @@ function Get-AzureLocalAvailableUpdates {
     $results = @()
     $updateVersionCounts = @{}
 
-    # Parallel dispatch (v0.7.0+): when -ThrottleLimit > 1 and we have multiple clusters,
-    # shard them across background jobs. Each job re-imports the module and calls this
-    # function recursively with -ThrottleLimit 1 on its own subset, then returns the
-    # flattened per-cluster rows. This avoids parallelising shared state (Write-Host
-    # progress, $results accumulation, $updateVersionCounts hashtable) inside a single
-    # runspace while still giving an N-way speedup on large fleets.
-    if ($ThrottleLimit -gt 1 -and $clustersToProcess.Count -gt 1) {
-        Write-Log -Message "Dispatching to $ThrottleLimit parallel workers..." -Level Info
-        $jobScript = {
-            param([object[]]$Batch, [string]$ApiVersionArg, [string]$ModulePath)
-            Import-Module $ModulePath -Force
-            $resourceIds = @($Batch | ForEach-Object { $_.ResourceId } | Where-Object { $_ })
-            if ($resourceIds.Count -eq 0) { return @() }
-            Get-AzureLocalAvailableUpdates -ClusterResourceIds $resourceIds `
-                -ApiVersion $ApiVersionArg -ThrottleLimit 1 -PassThru
-        }
-        $batchResults = Invoke-FleetJobsInParallel `
-            -InputItems $clustersToProcess `
-            -ScriptBlock $jobScript `
-            -ThrottleLimit $ThrottleLimit `
-            -ArgumentList @($ApiVersion) `
-            -ActivityName 'AvailableUpdates'
-        foreach ($br in $batchResults) {
-            if ($br.Failed) {
-                Write-Log -Message "  Parallel batch $($br.BatchIndex) failed: $($br.Error)" -Level Error
-                continue
-            }
-            if ($br.Output) { $results += @($br.Output) }
-        }
-        # Re-build version counts from the merged results
-        foreach ($row in $results) {
-            if ($row.UpdateState -in $script:ReadyStates -and $row.UpdateName) {
-                if ($updateVersionCounts.ContainsKey($row.UpdateName)) { $updateVersionCounts[$row.UpdateName]++ }
-                else { $updateVersionCounts[$row.UpdateName] = 1 }
-            }
-        }
-    }
-    else {
+    # v0.7.68: Replaced per-cluster ARM REST fan-out (parallel + serial paths
+    # via Invoke-FleetJobsInParallel) with a SINGLE Azure Resource Graph query
+    # against the `extensibilityresources` namespace
+    # (microsoft.azurestackhci/clusters/updates). One round-trip returns every
+    # available-update record across the entire cluster list - typically
+    # sub-second for fleets of hundreds of clusters - replacing the previous
+    # design which made one /updates ARM REST call per cluster (and optionally
+    # batched them across Start-Job runspaces). The `properties` bag returned
+    # by ARG is identical in shape to the ARM REST /updates response, with one
+    # minor field gap: ARG snapshots do not expose `description`, so we fall
+    # back to `displayName` when description is unavailable.
 
+    $idListKql = ($clustersToProcess | ForEach-Object { "'$($_.ResourceId.ToLower())'" }) -join ','
+    $updatesKql = "extensibilityresources | where type =~ 'microsoft.azurestackhci/clusters/updates' | extend ids = split(id, '/') | extend ClusterName_ = tostring(ids[8]), UpdateName_ = tostring(ids[10]) | extend ClusterResourceId_ = tolower(strcat('/subscriptions/', tostring(ids[2]), '/resourceGroups/', tostring(ids[4]), '/providers/Microsoft.AzureStackHCI/clusters/', ClusterName_)) | where ClusterResourceId_ in~ ($idListKql) | project id, name, type, location, properties, ClusterName_, ClusterResourceId_, UpdateName_"
+
+    try {
+        $argParams = @{ Query = $updatesKql }
+        if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+        $allUpdatesRaw = Invoke-AzResourceGraphQuery @argParams
+    }
+    catch {
+        Write-Log -Message "Azure Resource Graph query for available updates failed: $($_.Exception.Message)" -Level Error
+        return
+    }
+
+    Write-Log -Message "Returned $($allUpdatesRaw.Count) available-update record(s) across $($clustersToProcess.Count) cluster(s) via Azure Resource Graph" -Level Success
+
+    # Index updates by lowercased cluster resource id.
+    $updatesByCluster = @{}
+    foreach ($row in $allUpdatesRaw) {
+        $key = [string]$row.ClusterResourceId_
+        if (-not $updatesByCluster.ContainsKey($key)) { $updatesByCluster[$key] = [System.Collections.Generic.List[object]]::new() }
+        $updatesByCluster[$key].Add($row) | Out-Null
+    }
+
+    # Build per-cluster output rows in input order so display + export are
+    # deterministic. Mirrors the legacy per-cluster colourised "X update(s)
+    # (Y ready, Z prereq)" header line.
     foreach ($cluster in $clustersToProcess) {
         $clusterName = $cluster.Name
         Write-Host "  Checking: $clusterName..." -ForegroundColor Gray -NoNewline
+        $key = $cluster.ResourceId.ToLower()
+        $clusterUpdates = if ($updatesByCluster.ContainsKey($key)) { @($updatesByCluster[$key]) } else { @() }
 
-        try {
-            # Get cluster info if we don't have ResourceId
-            $resourceId = $cluster.ResourceId
-            if (-not $resourceId) {
-                $clusterInfo = Get-AzureLocalClusterInfo -ClusterName $clusterName `
-                    -ResourceGroupName $cluster.ResourceGroup `
-                    -SubscriptionId $cluster.SubscriptionId `
-                    -ApiVersion $ApiVersion
-                if ($clusterInfo) {
-                    $resourceId = $clusterInfo.id
-                }
-            }
-
-            if (-not $resourceId) {
-                Write-Host " Not Found" -ForegroundColor Red
-                $results += [PSCustomObject]@{
-                    ClusterName      = $clusterName
-                    ResourceGroup    = $cluster.ResourceGroup
-                    SubscriptionId   = $cluster.SubscriptionId
-                    UpdateName       = "N/A"
-                    UpdateState      = "Cluster Not Found"
-                    Version          = ""
-                    PackageType      = ""
-                    SBEDependency    = ""
-                    Description      = ""
-                }
-                continue
-            }
-
-            # Get available updates
-            $uri = "https://management.azure.com$resourceId/updates?api-version=$ApiVersion"
-            $response = (Invoke-AzRestJson -Uri $uri).Data
-
-            if ($LASTEXITCODE -eq 0 -and $response.value -and $response.value.Count -gt 0) {
-                $updates = $response.value
-                $readyCount = @($updates | Where-Object { $_.properties.state -in $script:ReadyStates }).Count
-                $prereqCount = @($updates | Where-Object { $_.properties.state -in $script:PrereqStates }).Count
-                
-                $statusParts = @("$readyCount ready")
-                if ($prereqCount -gt 0) { $statusParts += "$prereqCount has prerequisite" }
-                $statusText = $statusParts -join ', '
-                $statusColor = if ($readyCount -gt 0) { "Green" } elseif ($prereqCount -gt 0) { "Yellow" } else { "Yellow" }
-                Write-Host " $($updates.Count) update(s) ($statusText)" -ForegroundColor $statusColor
-                
-                foreach ($update in $updates) {
-                    $props = $update.properties
-                    $state = if ($props.state) { $props.state } else { "Unknown" }
-                    
-                    # Track update versions
-                    if ($state -in $script:ReadyStates) {
-                        if ($updateVersionCounts.ContainsKey($update.name)) {
-                            $updateVersionCounts[$update.name]++
-                        }
-                        else {
-                            $updateVersionCounts[$update.name] = 1
-                        }
-                    }
-
-                    # Extract SBE dependency info for HasPrerequisite/AdditionalContentRequired updates
-                    $packageType = if ($props.packageType) { $props.packageType } else { "" }
-                    $sbeDependency = ""
-                    if ($state -in @("HasPrerequisite", "AdditionalContentRequired") -and $packageType -eq "SBE") {
-                        $additionalProps = ConvertTo-AzLocalAdditionalProperties -InputObject $props.additionalProperties
-                        $sbePublisher = if ($additionalProps -and $additionalProps.SBEPublisher) { $additionalProps.SBEPublisher } else { "" }
-                        $sbeFamily = if ($additionalProps -and $additionalProps.SBEFamily) { $additionalProps.SBEFamily } else { "" }
-                        $sbeReleaseLink = if ($additionalProps -and $additionalProps.SBEReleaseLink) { $additionalProps.SBEReleaseLink } else { "" }
-                        $sbeParts = @()
-                        if ($sbePublisher) { $sbeParts += "Publisher: $sbePublisher" }
-                        if ($sbeFamily) { $sbeParts += "Family: $sbeFamily" }
-                        if ($sbeReleaseLink) { $sbeParts += "ReleaseNotes: $sbeReleaseLink" }
-                        if ($sbeParts.Count -gt 0) { $sbeDependency = $sbeParts -join '; ' }
-                    }
-                    
-                    $results += [PSCustomObject]@{
-                        ClusterName      = $clusterName
-                        ResourceGroup    = $cluster.ResourceGroup
-                        SubscriptionId   = $cluster.SubscriptionId
-                        UpdateName       = $update.name
-                        UpdateState      = $state
-                        Version          = if ($props.version) { $props.version } else { "" }
-                        PackageType      = $packageType
-                        SBEDependency    = $sbeDependency
-                        Description      = if ($props.description) { $props.description.Substring(0, [Math]::Min(100, $props.description.Length)) } else { "" }
-                    }
-                }
-            }
-            else {
-                Write-Host " No updates available" -ForegroundColor Gray
-                $results += [PSCustomObject]@{
-                    ClusterName      = $clusterName
-                    ResourceGroup    = $cluster.ResourceGroup
-                    SubscriptionId   = $cluster.SubscriptionId
-                    UpdateName       = "None"
-                    UpdateState      = "No Updates"
-                    Version          = ""
-                    PackageType      = ""
-                    SBEDependency    = ""
-                    Description      = ""
-                }
-            }
-        }
-        catch {
-            Write-Host " Error: $($_.Exception.Message)" -ForegroundColor Red
+        if ($clusterUpdates.Count -eq 0) {
+            Write-Host " No updates available" -ForegroundColor Gray
             $results += [PSCustomObject]@{
                 ClusterName      = $clusterName
                 ResourceGroup    = $cluster.ResourceGroup
                 SubscriptionId   = $cluster.SubscriptionId
-                UpdateName       = "Error"
-                UpdateState      = "Error"
+                UpdateName       = "None"
+                UpdateState      = "No Updates"
                 Version          = ""
                 PackageType      = ""
                 SBEDependency    = ""
-                Description      = $_.Exception.Message
+                Description      = ""
+            }
+            continue
+        }
+
+        $readyCount = @($clusterUpdates | Where-Object { $_.properties.state -in $script:ReadyStates }).Count
+        $prereqCount = @($clusterUpdates | Where-Object { $_.properties.state -in $script:PrereqStates }).Count
+
+        $statusParts = @("$readyCount ready")
+        if ($prereqCount -gt 0) { $statusParts += "$prereqCount has prerequisite" }
+        $statusText = $statusParts -join ', '
+        $statusColor = if ($readyCount -gt 0) { "Green" } elseif ($prereqCount -gt 0) { "Yellow" } else { "Yellow" }
+        Write-Host " $($clusterUpdates.Count) update(s) ($statusText)" -ForegroundColor $statusColor
+
+        foreach ($update in $clusterUpdates) {
+            $props = $update.properties
+            $state = if ($props.state) { [string]$props.state } else { "Unknown" }
+
+            # Track update versions
+            if ($state -in $script:ReadyStates) {
+                $updateName = [string]$update.UpdateName_
+                if ($updateVersionCounts.ContainsKey($updateName)) {
+                    $updateVersionCounts[$updateName]++
+                }
+                else {
+                    $updateVersionCounts[$updateName] = 1
+                }
+            }
+
+            # Extract SBE dependency info for HasPrerequisite/AdditionalContentRequired updates
+            $packageType = if ($props.packageType) { [string]$props.packageType } else { "" }
+            $sbeDependency = ""
+            if ($state -in @("HasPrerequisite", "AdditionalContentRequired") -and $packageType -eq "SBE") {
+                $additionalProps = ConvertTo-AzLocalAdditionalProperties -InputObject $props.additionalProperties
+                $sbePublisher = if ($additionalProps -and $additionalProps.SBEPublisher) { $additionalProps.SBEPublisher } else { "" }
+                $sbeFamily = if ($additionalProps -and $additionalProps.SBEFamily) { $additionalProps.SBEFamily } else { "" }
+                $sbeReleaseLink = if ($additionalProps -and $additionalProps.SBEReleaseLink) { $additionalProps.SBEReleaseLink } else { "" }
+                $sbeParts = @()
+                if ($sbePublisher) { $sbeParts += "Publisher: $sbePublisher" }
+                if ($sbeFamily) { $sbeParts += "Family: $sbeFamily" }
+                if ($sbeReleaseLink) { $sbeParts += "ReleaseNotes: $sbeReleaseLink" }
+                if ($sbeParts.Count -gt 0) { $sbeDependency = $sbeParts -join '; ' }
+            }
+
+            # Description fallback: ARG does not surface `description`; use
+            # `displayName` when description is unavailable.
+            $descSource = if ($props.description) { $props.description } elseif ($props.displayName) { $props.displayName } else { "" }
+            $descTrimmed = if ($descSource) { ([string]$descSource).Substring(0, [Math]::Min(100, ([string]$descSource).Length)) } else { "" }
+
+            $results += [PSCustomObject]@{
+                ClusterName      = $clusterName
+                ResourceGroup    = $cluster.ResourceGroup
+                SubscriptionId   = $cluster.SubscriptionId
+                UpdateName       = [string]$update.UpdateName_
+                UpdateState      = $state
+                Version          = if ($props.version) { [string]$props.version } else { "" }
+                PackageType      = $packageType
+                SBEDependency    = $sbeDependency
+                Description      = $descTrimmed
             }
         }
     }
-    } # end else (serial path)
 
     # Display Summary
     Write-Log -Message "" -Level Info
@@ -520,7 +496,7 @@ function Get-AzureLocalAvailableUpdates {
     # Display results table
     Write-Log -Message "" -Level Info
     Write-Log -Message "Detailed Results:" -Level Header
-    $results | Format-Table ClusterName, UpdateName, UpdateState, Version, PackageType -AutoSize
+    $results | Format-Table ClusterName, UpdateName, UpdateState, Version, PackageType -AutoSize | Out-Host
 
     # Export if path specified
     if ($ExportPath) {

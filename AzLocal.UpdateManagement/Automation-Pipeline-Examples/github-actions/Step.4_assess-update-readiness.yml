@@ -1,7 +1,7 @@
 # Assess Update Readiness (Pre-flight go/no-go gate)
 # --------------------------------------------------
 # Runs Get-AzureLocalClusterUpdateReadiness and Test-AzureLocalClusterHealth -BlockingOnly
-# against a target UpdateRing (or the whole fleet) BEFORE apply-updates.yml runs.
+# against a target UpdateRing (or the whole fleet) BEFORE Step.5_apply-updates.yml runs.
 #
 # Outputs two JUnit XML artifacts consumed by the Actions test reporter:
 #   - readiness.xml       (one test per cluster; fails if ReadyForUpdate = $false)
@@ -16,7 +16,7 @@
 # summary - but it does NOT block downstream runs. In large fleets, day-to-day
 # environmental issues (transient storage noise, a single node out, etc.) routinely affect
 # a small subset of clusters; blocking the entire wave for one unhealthy cluster is rarely
-# the desired behavior. apply-updates.yml is itself per-cluster scoped, so clusters that
+# the desired behavior. Step.5_apply-updates.yml is itself per-cluster scoped, so clusters that
 # are not ready will simply no-op there too.
 #
 # If you want a hard pass/fail signal for a chained gate, read the job outputs
@@ -26,9 +26,20 @@
 # Remediation of Critical health failures is out of scope for this module - see the module
 # README "Assess Readiness and Health BEFORE Applying Updates" section for pointers.
 
-name: Assess Update Readiness
+# Workflow name carries the same Step.N - prefix as the filename so the GitHub
+# Actions sidebar (which sorts workflows alphabetically by this `name:` field)
+# lists the eight pipelines in execution order.
+name: Step.4 - Assess Update Readiness
 
 on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Add `schedule:` cron blocks here to enable automated readiness checks, e.g.:
+  #   schedule:
+  #     - cron: '0 4 * * *'  # Daily at 04:00 UTC, before apply-updates windows
+  # Content between BEGIN/END markers is preserved by
+  # Update-AzureLocalPipelineExample across module upgrades.
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+
   workflow_dispatch:
     inputs:
       scope:
@@ -45,10 +56,6 @@ on:
         description: "UpdateRing tag value (only used when scope=by-update-ring). Single ring, 'Prod;Ring2', or '***'."
         required: false
         default: 'Wave1'
-      throttle_limit:
-        description: 'Parallel per-cluster ARM calls (v0.7.0). Default 4, range 1-16.'
-        required: false
-        default: '4'
       module_version:
         description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
         required: false
@@ -59,7 +66,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.67'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.68'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -135,13 +142,11 @@ jobs:
         env:
           INPUT_SCOPE: ${{ github.event.inputs.scope }}
           INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
-          INPUT_THROTTLE_LIMIT: ${{ github.event.inputs.throttle_limit }}
         run: |
           Import-Module AzLocal.UpdateManagement -Force
 
           $scope = $env:INPUT_SCOPE
           $updateRing = $env:INPUT_UPDATE_RING
-          $throttle = [int]($env:INPUT_THROTTLE_LIMIT); if ($throttle -lt 1) { $throttle = 4 }
 
           $outputDir = './artifacts'
           New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
@@ -175,13 +180,11 @@ jobs:
 
           # CSV for humans
           $readiness = Get-AzureLocalClusterUpdateReadiness @scopeParams `
-              -ThrottleLimit $throttle `
               -ExportPath $readinessCsv `
               -PassThru
 
           # JUnit XML for the test reporter (ExportPath .xml auto-detects JUnitXml)
           $null = Get-AzureLocalClusterUpdateReadiness @scopeParams `
-              -ThrottleLimit $throttle `
               -ExportPath $readinessXml
 
           $notReady = @($readiness | Where-Object { $_.ReadyForUpdate -ne $true }).Count
@@ -233,12 +236,11 @@ jobs:
           $scopeLabel = $scope
           if ($updateRing) { $scopeLabel = "$scope (UpdateRing = $updateRing)" }
           $lines.Add("**Scope**: $scopeLabel")
-          $lines.Add("**ThrottleLimit**: $throttle")
           $lines.Add('')
           if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
-              $lines.Add("> **Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Review the JUnit results in the Checks tab and the CSV artifacts; remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. **The healthy clusters are safe to proceed** - apply-updates.yml is per-cluster scoped.")
+              $lines.Add("> **Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Review the JUnit results in the Checks tab and the CSV artifacts; remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. **The healthy clusters are safe to proceed** - Step.5_apply-updates.yml is per-cluster scoped.")
           } else {
-              $lines.Add('> **All clear**: every cluster in scope is ready for update. Safe to proceed with apply-updates.yml for this ring.')
+              $lines.Add('> **All clear**: every cluster in scope is ready for update. Safe to proceed with Step.5_apply-updates.yml for this ring.')
           }
 
           # Per-cluster detail table (installed version is useful for operators even

@@ -1,4 +1,4 @@
-# Manage UpdateRing Tags
+# Step.2 - Manage UpdateRing Tags
 # This pipeline creates or updates UpdateRing tags on Azure Local clusters from a CSV file
 #
 # WORKFLOW:
@@ -11,7 +11,12 @@
 # NOTE: Azure DevOps does not support file uploads as pipeline parameters.
 #       The edited CSV must be committed to the repository first.
 
+# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+# Add or modify `schedules:` blocks here to enable cron-driven runs. Content
+# between BEGIN/END markers is preserved by Update-AzureLocalPipelineExample
+# across module upgrades.
 trigger: none
+# END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
 parameters:
   - name: csvFilePath
@@ -40,7 +45,7 @@ variables:
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
-    value: '0.7.67'
+    value: '0.7.68'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -79,7 +84,7 @@ stages:
                     Write-Host "STEP 1 - Generate the cluster inventory (one-off, then on demand)" -ForegroundColor Cyan
                     Write-Host "  a. Open Azure DevOps Pipelines in this project."
                     Write-Host "  b. Run the pipeline named 'Inventory Azure Local Clusters'"
-                    Write-Host "     (file: azure-pipelines/inventory-clusters.yml or similar)."
+                    Write-Host "     (file: azure-pipelines/Step.1_inventory-clusters.yml or similar)."
                     Write-Host "  c. Wait for the run to finish successfully."
                     Write-Host "  d. On the completed run summary, open the published artifact"
                     Write-Host "     named 'cluster-inventory' and download it."

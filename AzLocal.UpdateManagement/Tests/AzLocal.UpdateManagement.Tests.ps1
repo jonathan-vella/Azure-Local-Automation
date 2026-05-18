@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.67' {
-            $script:ModuleInfo.Version | Should -Be '0.7.67'
+        It 'Should have version 0.7.68' {
+            $script:ModuleInfo.Version | Should -Be '0.7.68'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -110,8 +110,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $h2Matches[0] | Should -Be "## What's New in v$manifestVersion" -Because 'the sole main-body What''s New section must match the current manifest ModuleVersion'
         }
 
-        It 'Should export exactly 27 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 27
+        It 'Should export exactly 29 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 29
         }
 
         It 'Should export the expected functions' {
@@ -149,10 +149,13 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 'Get-AzureLocalItsmConfig',
                 'Test-AzureLocalItsmConnection',
                 'New-AzureLocalIncident',
-                # Pipeline-Examples Convenience (v0.7.4)
+                # Pipeline-Examples Convenience (v0.7.4 / Update added v0.7.68)
                 'Copy-AzureLocalPipelineExample',
+                'Update-AzureLocalPipelineExample',
                 # ITSM Sample Convenience (v0.7.50)
-                'Copy-AzureLocalItsmSample'
+                'Copy-AzureLocalItsmSample',
+                # Update Run Failures Deep-Error Extraction (v0.7.68)
+                'Get-AzureLocalUpdateRunFailures'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -288,23 +291,23 @@ Describe 'Module: AzLocal.UpdateManagement' {
     }
 
     Context 'Schedule-audit pipeline_path default is consumer-friendly (v0.7.66 regression)' {
-        # v0.7.66 regression guard: apply-updates-schedule-audit.yml (GH + ADO)
+        # v0.7.66 regression guard: Step.3_apply-updates-schedule-audit.yml (GH + ADO)
         # shipped with a default pipeline_path of
         # 'AzLocal.UpdateManagement/Automation-Pipeline-Examples' - a path that
         # only exists in this module's source repo. In a consumer repo (where
-        # apply-updates.yml lives under .github/workflows or .azure-pipelines),
+        # Step.5_apply-updates.yml lives under .github/workflows or .azure-pipelines),
         # the default-trigger run failed with
         #   PipelineYamlPath '...' does not exist on the runner
         # before the schedule advisor could emit JUnit XML. The defaults are
         # now '.github/workflows' on GH and '.azure-pipelines' on ADO.
         # This test guards both files from ever regressing to the in-source path.
-        It 'Neither apply-updates-schedule-audit.yml defaults to the in-source examples folder' {
+        It 'Neither Step.3_apply-updates-schedule-audit.yml defaults to the in-source examples folder' {
             $examplesRoot = Join-Path -Path $PSScriptRoot -ChildPath '..\Automation-Pipeline-Examples'
             $examplesRoot = (Resolve-Path -Path $examplesRoot).Path
 
             $auditYamls = @(
-                Join-Path $examplesRoot 'github-actions\apply-updates-schedule-audit.yml'
-                Join-Path $examplesRoot 'azure-devops\apply-updates-schedule-audit.yml'
+                Join-Path $examplesRoot 'github-actions\Step.3_apply-updates-schedule-audit.yml'
+                Join-Path $examplesRoot 'azure-devops\Step.3_apply-updates-schedule-audit.yml'
             )
 
             $offenders = New-Object System.Collections.Generic.List[string]
@@ -2514,6 +2517,102 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
             }
         }
     }
+
+    Context 'Throttle handling (v0.7.68)' {
+        # v0.7.68 introduced a per-page retry loop for ARG 429 / RateLimitingException
+        # responses. The retry budget is -MaxRetries (default 5); the backoff is
+        # exponential with +/-20% jitter; non-throttle errors are NOT retried; and
+        # two module-scope diagnostic flags ($script:LastResourceGraphThrottled,
+        # $script:LastResourceGraphRetryCount) are reset per call and readable
+        # by callers/tests.
+
+        It 'Should retry on 429 / RateLimitingException and eventually succeed' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:ThrottleCalls = 0
+                function az {
+                    $script:ThrottleCalls++
+                    if ($script:ThrottleCalls -le 2) {
+                        Write-Error 'ERROR: RateLimitingException (429): Too many requests. Please retry after some time.'
+                        $global:LASTEXITCODE = 1
+                        return
+                    }
+                    $global:LASTEXITCODE = 0
+                    return '{"count":1,"data":[{"id":"recovered"}],"total_records":1}'
+                }
+
+                $rows = Invoke-AzResourceGraphQuery -Query 'resources' -RetryBaseSeconds 0.1 -WarningAction SilentlyContinue
+                $rows | Should -HaveCount 1
+                $rows[0].id | Should -Be 'recovered'
+                $script:ThrottleCalls | Should -Be 3
+                $script:LastResourceGraphThrottled | Should -BeTrue
+                $script:LastResourceGraphRetryCount | Should -Be 2
+            }
+        }
+
+        It 'Should give up and throw once -MaxRetries is exhausted on persistent throttling' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az {
+                    Write-Error 'ERROR: 429 TooManyRequests - rate limit exceeded'
+                    $global:LASTEXITCODE = 1
+                    return
+                }
+
+                {
+                    Invoke-AzResourceGraphQuery -Query 'resources' -MaxRetries 2 -RetryBaseSeconds 0.1 -WarningAction SilentlyContinue
+                } | Should -Throw -ExpectedMessage '*Azure Resource Graph query failed*'
+                $script:LastResourceGraphThrottled | Should -BeTrue
+                $script:LastResourceGraphRetryCount | Should -Be 2
+            }
+        }
+
+        It 'Should NOT retry on non-throttle errors (auth, bad KQL, permissions)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:NonThrottleCalls = 0
+                function az {
+                    $script:NonThrottleCalls++
+                    Write-Error 'ERROR: AuthenticationFailed - the access token is invalid'
+                    $global:LASTEXITCODE = 1
+                    return
+                }
+
+                {
+                    Invoke-AzResourceGraphQuery -Query 'resources' -MaxRetries 5 -RetryBaseSeconds 0.1
+                } | Should -Throw -ExpectedMessage '*Azure Resource Graph query failed*'
+                $script:NonThrottleCalls | Should -Be 1
+                $script:LastResourceGraphThrottled | Should -BeFalse
+                $script:LastResourceGraphRetryCount | Should -Be 0
+            }
+        }
+
+        It 'Should reset throttle diagnostic flags at the start of every call' {
+            InModuleScope AzLocal.UpdateManagement {
+                # First call: triggers a throttle + retry to set flags TRUE / >0.
+                $script:Phase1Calls = 0
+                function az {
+                    $script:Phase1Calls++
+                    if ($script:Phase1Calls -eq 1) {
+                        Write-Error 'ERROR: 429 throttled'
+                        $global:LASTEXITCODE = 1
+                        return
+                    }
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -RetryBaseSeconds 0.1 -WarningAction SilentlyContinue)
+                $script:LastResourceGraphThrottled | Should -BeTrue
+                $script:LastResourceGraphRetryCount | Should -Be 1
+
+                # Second call: clean (no throttle). Flags must reset back to FALSE / 0.
+                function az {
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                [void](Invoke-AzResourceGraphQuery -Query 'resources')
+                $script:LastResourceGraphThrottled | Should -BeFalse
+                $script:LastResourceGraphRetryCount | Should -Be 0
+            }
+        }
+    }
 }
 
 #endregion Internal Helper: Invoke-AzResourceGraphQuery
@@ -3256,23 +3355,35 @@ Describe 'Invoke-AzureLocalFleetOperation (parallel dispatch via helpers)' {
 
 #region Integration: Get-AzureLocalFleetProgress parallel dispatch
 
-Describe 'Get-AzureLocalFleetProgress (parallel dispatch via helpers)' {
+# v0.7.68 ARG-first refactor: rewritten to mock Invoke-AzResourceGraphQuery (the
+# cmdlet now reads fleet state in a single ARG batch against
+# microsoft.azurestackhci/clusters/updatesummaries, no per-cluster fan-out).
+Describe 'Get-AzureLocalFleetProgress (ARG-batch dispatch)' {
 
-    Context 'ThrottleLimit=1 inline fast-path' {
+    Context 'Single ARG batch read against updatesummaries' {
 
-        It 'Should aggregate counts across clusters using Get-AzureLocalUpdateSummary' {
+        It 'Aggregates Succeeded / UpdateInProgress / NeedsAttention counts across clusters from one ARG batch' {
             InModuleScope AzLocal.UpdateManagement {
-                Mock Get-AzureLocalUpdateSummary {
-                    param($ClusterResourceId)
-                    if ($ClusterResourceId -like '*/c1') {
-                        return [PSCustomObject]@{ State = 'Succeeded'; HealthState = 'Success'; LastUpdatedTime = '2025-01-01' }
-                    }
-                    elseif ($ClusterResourceId -like '*/c2') {
-                        return [PSCustomObject]@{ State = 'UpdateInProgress'; HealthState = 'Success'; LastUpdatedTime = '2025-01-01' }
-                    }
-                    else {
-                        return [PSCustomObject]@{ State = 'Failed'; HealthState = 'Failure'; LastUpdatedTime = '2025-01-01' }
-                    }
+                Mock Install-AzGraphExtension { return $true }
+
+                # Single ARG call returns one row per cluster shaped per the
+                # cmdlet's projection: properties bag + ClusterResourceId_
+                # (already lowercased by the KQL).
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/c1'
+                            properties = [PSCustomObject]@{ state = 'AppliedSuccessfully'; healthState = 'Success'; lastUpdated = '2025-10-01T00:00:00Z' }
+                        }
+                        [PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/c2'
+                            properties = [PSCustomObject]@{ state = 'UpdateInProgress'; healthState = 'Success'; lastUpdated = '2025-10-01T00:00:00Z' }
+                        }
+                        [PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/c3'
+                            properties = [PSCustomObject]@{ state = 'UpdateFailed'; healthState = 'Failure'; lastUpdated = '2025-10-01T00:00:00Z' }
+                        }
+                    )
                 }
 
                 $fakeState = [PSCustomObject]@{
@@ -3284,14 +3395,47 @@ Describe 'Get-AzureLocalFleetProgress (parallel dispatch via helpers)' {
                     )
                 }
 
-                $progress = Get-AzureLocalFleetProgress -State $fakeState -Detailed -ThrottleLimit 1
+                $progress = Get-AzureLocalFleetProgress -State $fakeState -Detailed
 
                 $progress.TotalClusters | Should -Be 3
-                $progress.Succeeded | Should -Be 1
-                $progress.InProgress | Should -Be 1
-                $progress.Failed | Should -Be 1
-                $progress.Completed | Should -Be 1   # succeeded + upToDate
+                $progress.Succeeded     | Should -Be 1
+                $progress.InProgress    | Should -Be 1
+                $progress.Failed        | Should -Be 1
+                $progress.Completed     | Should -Be 1   # succeeded + upToDate
                 $progress.ClusterStatuses | Should -HaveCount 3
+
+                # ARG-first contract: exactly ONE Invoke-AzResourceGraphQuery call
+                # for the entire fleet, regardless of cluster count.
+                Assert-MockCalled Invoke-AzResourceGraphQuery -Times 1 -Exactly
+            }
+        }
+
+        It 'Maps clusters missing from the ARG response to UpdateState=Unknown' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Install-AzGraphExtension { return $true }
+                Mock Invoke-AzResourceGraphQuery {
+                    # Only c1 returns; c2 is missing (e.g. ARG indexing lag,
+                    # or no updateSummaries/default has been created yet).
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/c1'
+                            properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success'; lastUpdated = '2025-10-01T00:00:00Z' }
+                        }
+                    )
+                }
+
+                $fakeState = [PSCustomObject]@{
+                    RunId    = 'test'
+                    Clusters = @(
+                        [PSCustomObject]@{ ClusterName = 'c1'; ResourceId = '/subscriptions/s/resourceGroups/r/providers/microsoft.azurestackhci/clusters/c1'; ResourceGroup = 'r'; SubscriptionId = 's' }
+                        [PSCustomObject]@{ ClusterName = 'c2'; ResourceId = '/subscriptions/s/resourceGroups/r/providers/microsoft.azurestackhci/clusters/c2'; ResourceGroup = 'r'; SubscriptionId = 's' }
+                    )
+                }
+
+                $progress = Get-AzureLocalFleetProgress -State $fakeState -Detailed
+
+                $progress.TotalClusters | Should -Be 2
+                ($progress.ClusterStatuses | Where-Object ClusterName -eq 'c2').UpdateState | Should -Be 'Unknown'
             }
         }
     }
@@ -3299,35 +3443,160 @@ Describe 'Get-AzureLocalFleetProgress (parallel dispatch via helpers)' {
 
 #endregion Integration: Get-AzureLocalFleetProgress parallel dispatch
 
-#region Integration: Get-AzureLocalUpdateSummary parallel dispatch
+#region Schema contract: Get-AzureLocalFleetStatusData
 
-Describe 'Get-AzureLocalUpdateSummary (multi-cluster parallel dispatch)' {
+# v0.7.68: schema-contract Pester tests for the top-level shape of the object
+# returned by Get-AzureLocalFleetStatusData. These tests do NOT exercise the
+# per-cluster collection logic (covered elsewhere) - they only assert the
+# documented public schema so consumers (the HTML report, downstream JSON,
+# automation harnesses) cannot be silently broken by an internal refactor.
+Describe 'Get-AzureLocalFleetStatusData (schema contract)' {
 
-    Context 'ThrottleLimit=1 inline fast-path' {
+    Context 'Top-level shape of the returned PSCustomObject' {
 
-        It 'Should return one row per input cluster and route through Invoke-AzRestJson with correct API version' {
+        It 'Returns the documented top-level keys with the expected types' {
             InModuleScope AzLocal.UpdateManagement {
-                # Shadow the native `az` exe so `az account show` succeeds without a real login
+                # Shadow native az so any incidental probe (account show etc.) succeeds.
                 function global:az { $global:LASTEXITCODE = 0; return '{}' }
-                $script:seenUris = [System.Collections.Generic.List[string]]::new()
                 Mock Test-AzCliAvailable { return $true }
+                Mock Install-AzGraphExtension { return $true }
+
+                # Stub the per-cluster ARM reads with minimal-but-valid payloads.
                 Mock Invoke-AzRestJson {
                     param($Uri)
-                    [void]$script:seenUris.Add($Uri)
-                    $global:LASTEXITCODE = 0
-                    return [PSCustomObject]@{
-                        Ok = $true
-                        Data = [PSCustomObject]@{
+                    if ($Uri -match '/updateSummaries/default') {
+                        return [PSCustomObject]@{ Data = [PSCustomObject]@{ properties = [PSCustomObject]@{
+                            state = 'AppliedSuccessfully'; healthState = 'Success'
+                            currentVersion = '12.2402.0'; currentSbeVersion = 'N/A'
+                            lastChecked = '2025-10-01T00:00:00Z'; lastUpdated = '2025-10-01T00:00:00Z'
+                            healthCheckResult = @()
+                        } } }
+                    }
+                    if ($Uri -match '/updates\?api-version') {
+                        return [PSCustomObject]@{ Data = [PSCustomObject]@{ value = @() } }
+                    }
+                    if ($Uri -match '/updateRuns\?api-version') {
+                        return [PSCustomObject]@{ Data = [PSCustomObject]@{ value = @() } }
+                    }
+                    # Cluster info
+                    return [PSCustomObject]@{ Data = [PSCustomObject]@{
+                        properties = [PSCustomObject]@{ status = 'Succeeded' }
+                    } }
+                }
+
+                $rid = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/c1'
+                $result = Get-AzureLocalFleetStatusData -ClusterResourceIds @($rid)
+
+                $result | Should -Not -BeNullOrEmpty
+                # The documented top-level schema. If any of these names change,
+                # the HTML report and any JSON consumer will silently break.
+                $expectedKeys = @(
+                    'SchemaVersion','Timestamp','ModuleVersion','Scope','TotalClusters',
+                    'Readiness','ClusterDetails','LatestRuns','HealthResults','FailedClusters'
+                )
+                $actualKeys = @($result.PSObject.Properties.Name)
+                foreach ($k in $expectedKeys) { $actualKeys | Should -Contain $k }
+
+                $result.SchemaVersion  | Should -Be '1.0'
+                $result.ModuleVersion  | Should -Be $script:ModuleVersion
+                $result.TotalClusters  | Should -Be 1
+                $result.Scope          | Should -Match 'cluster\(s\) by Resource ID'
+                # Array-typed members must always be arrays (never $null), even
+                # when empty - downstream consumers .Count them without guards.
+                ,$result.Readiness      | Should -BeOfType ([object[]])
+                ,$result.ClusterDetails | Should -BeOfType ([object[]])
+                ,$result.LatestRuns     | Should -BeOfType ([object[]])
+                ,$result.HealthResults  | Should -BeOfType ([object[]])
+                ,$result.FailedClusters | Should -BeOfType ([object[]])
+                # Timestamp is an ISO-8601 UTC string the consumer .ParseExact()s.
+                $result.Timestamp | Should -Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
+            }
+        }
+
+        It 'Rejects an empty -ClusterResourceIds array at the parameter binder' {
+            InModuleScope AzLocal.UpdateManagement {
+                # The empty-fleet condition does NOT surface as a stale skeleton
+                # object (SchemaVersion=1.0, TotalClusters=0) - the parameter is
+                # decorated with [ValidateNotNullOrEmpty] so an explicitly empty
+                # caller is rejected at bind time. Callers that want the empty
+                # case must reach it via -AllClusters returning 0 resources,
+                # which surfaces a documented Write-Log warning + $null return.
+                {
+                    Get-AzureLocalFleetStatusData -ClusterResourceIds @() -WarningAction SilentlyContinue
+                } | Should -Throw
+            }
+        }
+
+        It 'ModuleVersion field tracks the module-scope $script:ModuleVersion constant' {
+            InModuleScope AzLocal.UpdateManagement {
+                # The HTML report and JSON consumers display this field as the
+                # provenance of the data file. It must reflect the actual loaded
+                # module - not a hardcoded literal that the maintainer forgot to
+                # bump.
+                $script:ModuleVersion | Should -Not -BeNullOrEmpty
+                $script:ModuleVersion | Should -Match '^\d+\.\d+\.\d+$'
+            }
+        }
+    }
+}
+
+#endregion Schema contract: Get-AzureLocalFleetStatusData
+
+#region Integration: Get-AzureLocalUpdateSummary parallel dispatch
+
+# v0.7.68 ARG-first refactor: the multi-cluster path now reads via a single
+# Invoke-AzResourceGraphQuery batch against
+# microsoft.azurestackhci/clusters/updatesummaries instead of per-cluster
+# Invoke-AzRestJson fan-out. Tests rewritten accordingly.
+Describe 'Get-AzureLocalUpdateSummary (ARG-batch dispatch)' {
+
+    Context 'Single ARG batch read for multi-cluster -ClusterResourceIds' {
+
+        It 'Returns one row per input cluster from a single ARG batch and strips internal __DisplayTag' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Shadow native `az` so `az account show` returns success.
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                Mock Test-AzCliAvailable { return $true }
+                Mock Install-AzGraphExtension { return $true }
+
+                $script:seenQueries = [System.Collections.Generic.List[string]]::new()
+                Mock Invoke-AzResourceGraphQuery {
+                    param($Query)
+                    [void]$script:seenQueries.Add([string]$Query)
+                    return @(
+                        [PSCustomObject]@{
+                            id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-a/providers/Microsoft.AzureStackHCI/updateSummaries/default'
+                            name = 'default'
+                            type = 'microsoft.azurestackhci/clusters/updatesummaries'
+                            location = 'eastus'
+                            ClusterName_       = 'cluster-a'
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-a'
                             properties = [PSCustomObject]@{
-                                state       = if ($Uri -like '*cluster-a*') { 'UpToDate' } else { 'UpdateAvailable' }
-                                healthState = 'Success'
-                                currentVersion = '10.2506.0.28'
-                                lastUpdatedTime = '2025-10-01T10:00:00Z'
-                                lastCheckedTime = '2025-10-01T11:00:00Z'
+                                state           = 'UpToDate'
+                                healthState     = 'Success'
+                                currentVersion  = '10.2506.0.28'
+                                lastUpdated     = '2025-10-01T10:00:00Z'
+                                lastChecked     = '2025-10-01T11:00:00Z'
                                 updateStateProperties = [PSCustomObject]@{ availableUpdates = 0 }
                             }
                         }
-                    }
+                        [PSCustomObject]@{
+                            id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b/providers/Microsoft.AzureStackHCI/updateSummaries/default'
+                            name = 'default'
+                            type = 'microsoft.azurestackhci/clusters/updatesummaries'
+                            location = 'eastus'
+                            ClusterName_       = 'cluster-b'
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-b'
+                            properties = [PSCustomObject]@{
+                                state           = 'UpdateAvailable'
+                                healthState     = 'Success'
+                                currentVersion  = '10.2502.0.10'
+                                lastUpdated     = '2025-10-01T10:00:00Z'
+                                lastChecked     = '2025-10-01T11:00:00Z'
+                                updateStateProperties = [PSCustomObject]@{ availableUpdates = 2 }
+                            }
+                        }
+                    )
                 }
 
                 $ids = @(
@@ -3335,43 +3604,59 @@ Describe 'Get-AzureLocalUpdateSummary (multi-cluster parallel dispatch)' {
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
                 )
 
-                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -ApiVersion '2025-10-01' -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -PassThru
 
                 $results | Should -HaveCount 2
                 ($results | Where-Object ClusterName -eq 'cluster-a').UpdateState | Should -Be 'UpToDate'
                 ($results | Where-Object ClusterName -eq 'cluster-b').UpdateState | Should -Be 'UpdateAvailable'
-                $script:seenUris.Count | Should -Be 2
-                # Ensure the API version threaded through parallel dispatch matches caller's -ApiVersion
-                $script:seenUris | ForEach-Object { $_ | Should -Match 'api-version=2025-10-01' }
-                # Output rows should not contain the internal __DisplayTag field
+
+                # Exactly one ARG batch fired for the whole fleet, regardless of
+                # the number of cluster IDs supplied.
+                Assert-MockCalled Invoke-AzResourceGraphQuery -Times 1 -Exactly
+                # And the KQL targets the updatesummaries namespace with the
+                # cluster IDs lower-cased into an in~() literal.
+                $script:seenQueries[0] | Should -Match "microsoft\.azurestackhci/clusters/updatesummaries"
+                $script:seenQueries[0] | Should -Match "cluster-a"
+                $script:seenQueries[0] | Should -Match "cluster-b"
+
+                # Output rows must not leak internal projection columns.
                 foreach ($r in $results) {
                     $r.PSObject.Properties.Name | Should -Not -Contain '__DisplayTag'
+                    $r.PSObject.Properties.Name | Should -Not -Contain 'ClusterResourceId_'
+                    $r.PSObject.Properties.Name | Should -Not -Contain 'ClusterName_'
                 }
             }
         }
 
-        It 'Should produce a row with UpdateState=Error when Invoke-AzRestJson throws for a cluster' {
+        It 'Produces UpdateState=No Summary when a cluster has no record in the ARG response' {
             InModuleScope AzLocal.UpdateManagement {
                 function global:az { $global:LASTEXITCODE = 0; return '{}' }
                 Mock Test-AzCliAvailable { return $true }
-                Mock Invoke-AzRestJson {
-                    param($Uri)
-                    if ($Uri -like '*cluster-bad*') { throw 'simulated REST error' }
-                    $global:LASTEXITCODE = 0
-                    return [PSCustomObject]@{
-                        Ok = $true
-                        Data = [PSCustomObject]@{
+                Mock Install-AzGraphExtension { return $true }
+                Mock Invoke-AzResourceGraphQuery {
+                    # Only cluster-good has an updateSummaries record - the new
+                    # ARG-first design replaces the legacy per-cluster Error
+                    # status with a "No Summary" row when ARG returns no record
+                    # for that cluster id.
+                    return @(
+                        [PSCustomObject]@{
+                            id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-good/providers/Microsoft.AzureStackHCI/updateSummaries/default'
+                            name = 'default'
+                            type = 'microsoft.azurestackhci/clusters/updatesummaries'
+                            location = 'eastus'
+                            ClusterName_       = 'cluster-good'
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-good'
                             properties = [PSCustomObject]@{ state = 'UpToDate'; healthState = 'Success' }
                         }
-                    }
+                    )
                 }
                 $ids = @(
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-good'
-                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-bad'
+                    '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-missing'
                 )
-                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
-                ($results | Where-Object ClusterName -eq 'cluster-good').UpdateState | Should -Be 'UpToDate'
-                ($results | Where-Object ClusterName -eq 'cluster-bad').UpdateState  | Should -Be 'Error'
+                $results = Get-AzureLocalUpdateSummary -ClusterResourceIds $ids -PassThru
+                ($results | Where-Object ClusterName -eq 'cluster-good').UpdateState   | Should -Be 'UpToDate'
+                ($results | Where-Object ClusterName -eq 'cluster-missing').UpdateState | Should -Be 'No Summary'
             }
         }
     }
@@ -3475,60 +3760,79 @@ Describe 'Start-AzureLocalClusterUpdate (prefetched pass-through)' {
 
 #region Integration: Get-AzureLocalClusterUpdateReadiness parallel dispatch
 
-Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)' {
+# v0.7.68 ARG-first refactor: multi-cluster readiness now issues three ARG
+# queries (cluster lookup, updatesummaries, updates) instead of per-cluster
+# ARM REST fan-out. Rewritten to mock Invoke-AzResourceGraphQuery and to
+# discriminate by query text (resources vs updatesummaries vs updates).
+Describe 'Get-AzureLocalClusterUpdateReadiness (ARG-batch dispatch)' {
 
-    Context 'ThrottleLimit=1 inline fast-path' {
-        It 'Should aggregate one row per cluster and tally recommended update versions only for ready clusters' {
+    Context 'Three ARG batches (clusters, updatesummaries, updates)' {
+
+        It 'Aggregates one row per cluster, tallies recommended versions, and strips internal __ columns' {
             InModuleScope AzLocal.UpdateManagement {
                 function global:az { $global:LASTEXITCODE = 0; return '{}' }
-                Mock Test-AzCliAvailable { return $true }
+                Mock Test-AzCliAvailable      { return $true }
+                Mock Install-AzGraphExtension { return $true }
+                # The readiness gates query healthCheckResult only on Failure rows.
+                Mock Get-HealthCheckFailureSummary { return '' }
 
-                # cluster-a is ready with 10.2506.0.28; cluster-b is Downloading
-                # (updates exist but none ready); cluster-c is already UpToDate.
-                Mock Invoke-AzRestJson {
-                    param($Uri)
-                    $global:LASTEXITCODE = 0
-                    # Cluster GET (no /updateSummaries, no /updates)
-                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
-                        $name = $matches[1]
-                        return [PSCustomObject]@{
-                            Ok = $true
-                            Data = [PSCustomObject]@{
-                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$name"
-                                name = $name
-                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
-                                tags = $null
+                # cluster-a is Connected + UpdateAvailable with one Ready update,
+                # cluster-b is Connected + UpdateAvailable with one Downloading update,
+                # cluster-c is Connected + UpToDate (no updates).
+                Mock Invoke-AzResourceGraphQuery {
+                    param($Query)
+                    if ($Query -match 'updatesummaries') {
+                        return @(
+                            [PSCustomObject]@{
+                                ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-a'
+                                properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
                             }
-                        }
+                            [PSCustomObject]@{
+                                ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-b'
+                                properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
+                            }
+                            [PSCustomObject]@{
+                                ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-c'
+                                properties = [PSCustomObject]@{ state = 'UpToDate'; healthState = 'Success' }
+                            }
+                        )
                     }
-                    return [PSCustomObject]@{ Ok = $true; Data = $null }
-                }
-                Mock Get-AzureLocalUpdateSummary {
-                    param($ClusterResourceId)
-                    if ($ClusterResourceId -like '*/cluster-c') {
-                        return [PSCustomObject]@{
-                            properties = [PSCustomObject]@{ state = 'UpToDate'; healthState = 'Success' }
-                        }
+                    elseif ($Query -match "clusters/updates'") {
+                        return @(
+                            [PSCustomObject]@{
+                                ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-a'
+                                UpdateName_ = '10.2506.0.28'
+                                name = '10.2506.0.28'
+                                properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                            }
+                            [PSCustomObject]@{
+                                ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-b'
+                                UpdateName_ = '10.2506.0.28'
+                                name = '10.2506.0.28'
+                                properties = [PSCustomObject]@{ state = 'Downloading'; packageType = 'Solution' }
+                            }
+                        )
                     }
-                    return [PSCustomObject]@{
-                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
+                    else {
+                        # Cluster lookup against `resources`.
+                        return @(
+                            [PSCustomObject]@{
+                                id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-a'
+                                name = 'cluster-a'; resourceGroup = 'r'; subscriptionId = 's'; tags = $null
+                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                            }
+                            [PSCustomObject]@{
+                                id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
+                                name = 'cluster-b'; resourceGroup = 'r'; subscriptionId = 's'; tags = $null
+                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                            }
+                            [PSCustomObject]@{
+                                id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-c'
+                                name = 'cluster-c'; resourceGroup = 'r'; subscriptionId = 's'; tags = $null
+                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                            }
+                        )
                     }
-                }
-                Mock Get-AzureLocalAvailableUpdates {
-                    param($ClusterResourceId)
-                    if ($ClusterResourceId -like '*/cluster-a') {
-                        return @([PSCustomObject]@{
-                            name = '10.2506.0.28'
-                            properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
-                        })
-                    }
-                    if ($ClusterResourceId -like '*/cluster-b') {
-                        return @([PSCustomObject]@{
-                            name = '10.2506.0.28'
-                            properties = [PSCustomObject]@{ state = 'Downloading'; packageType = 'Solution' }
-                        })
-                    }
-                    return @()
                 }
 
                 $ids = @(
@@ -3536,26 +3840,31 @@ Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-c'
                 )
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
 
                 $results | Should -HaveCount 3
-                ($results | Where-Object ClusterName -eq 'cluster-a').ReadyForUpdate | Should -BeTrue
+                ($results | Where-Object ClusterName -eq 'cluster-a').ReadyForUpdate    | Should -BeTrue
                 ($results | Where-Object ClusterName -eq 'cluster-a').RecommendedUpdate | Should -Be '10.2506.0.28'
-                ($results | Where-Object ClusterName -eq 'cluster-b').ReadyForUpdate | Should -BeFalse
-                ($results | Where-Object ClusterName -eq 'cluster-c').ReadyForUpdate | Should -BeFalse
+                ($results | Where-Object ClusterName -eq 'cluster-b').ReadyForUpdate    | Should -BeFalse
+                ($results | Where-Object ClusterName -eq 'cluster-c').ReadyForUpdate    | Should -BeFalse
+
                 # v0.7.62: every output row must carry ClusterResourceId so the
-                # apply-updates pipeline step can call
-                # Start-AzureLocalClusterUpdate -ClusterResourceIds directly
-                # from the readiness CSV.
+                # apply-updates pipeline step can call Start-AzureLocalClusterUpdate
+                # directly from the readiness CSV.
                 foreach ($r in $results) {
                     $r.PSObject.Properties.Name | Should -Contain 'ClusterResourceId'
-                    $r.ClusterResourceId | Should -Match '^/subscriptions/.+/clusters/[^/]+$'
+                    $r.ClusterResourceId        | Should -Match '^/subscriptions/.+/clusters/[^/]+$'
                 }
-                # Internal tally fields must not leak to caller output
+                # Internal tally fields must not leak to caller output.
                 foreach ($r in $results) {
                     $r.PSObject.Properties.Name | Should -Not -Contain '__DisplayTag'
                     $r.PSObject.Properties.Name | Should -Not -Contain '__CountedRecommendedUpdate'
+                    $r.PSObject.Properties.Name | Should -Not -Contain 'ClusterResourceId_'
                 }
+
+                # ARG-first contract: exactly 3 ARG calls (cluster lookup +
+                # updateSummaries + updates) for the entire fleet.
+                Assert-MockCalled Invoke-AzResourceGraphQuery -Times 3 -Exactly
             }
         }
     }
@@ -3565,186 +3874,183 @@ Describe 'Get-AzureLocalClusterUpdateReadiness (multi-cluster parallel dispatch)
 
 #region Readiness gates (v0.7.61: ClusterState + Critical health checks)
 
+# v0.7.68 ARG-first refactor: rewritten to mock Invoke-AzResourceGraphQuery
+# (the cmdlet issues 3 ARG batches: cluster lookup, updatesummaries, updates).
 Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' {
 
     Context 'BlockingReasons column and ReadyForUpdate gating' {
 
-        It 'Should downgrade ReadyForUpdate to False when ClusterState is NotConnectedRecently' {
+        BeforeEach {
+            # Common helper: build a $script:argMockFactory that the test
+            # bodies pass to `Mock Invoke-AzResourceGraphQuery` so each test
+            # can vary cluster status / health / updates independently.
+        }
+
+        It 'Downgrades ReadyForUpdate to False when ClusterState is NotConnectedRecently' {
             InModuleScope AzLocal.UpdateManagement {
                 function global:az { $global:LASTEXITCODE = 0; return '{}' }
-                Mock Test-AzCliAvailable { return $true }
-
-                Mock Invoke-AzRestJson {
-                    param($Uri)
-                    $global:LASTEXITCODE = 0
-                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
-                        return [PSCustomObject]@{
-                            Ok = $true
-                            Data = [PSCustomObject]@{
-                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$($matches[1])"
-                                name = $matches[1]
-                                properties = [PSCustomObject]@{ status = 'NotConnectedRecently' }
-                                tags = $null
-                            }
-                        }
-                    }
-                    return [PSCustomObject]@{ Ok = $true; Data = $null }
-                }
-                Mock Get-AzureLocalUpdateSummary {
-                    return [PSCustomObject]@{
-                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
-                    }
-                }
-                Mock Get-AzureLocalAvailableUpdates {
-                    return @([PSCustomObject]@{
-                        name = '10.2506.0.28'
-                        properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
-                    })
-                }
+                Mock Test-AzCliAvailable      { return $true }
+                Mock Install-AzGraphExtension { return $true }
                 Mock Get-HealthCheckFailureSummary { return '' }
 
+                Mock Invoke-AzResourceGraphQuery {
+                    param($Query)
+                    if ($Query -match 'updatesummaries') {
+                        return @([PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/gated-conn'
+                            properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
+                        })
+                    }
+                    elseif ($Query -match "clusters/updates'") {
+                        return @([PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/gated-conn'
+                            UpdateName_ = '10.2506.0.28'
+                            name = '10.2506.0.28'
+                            properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                        })
+                    }
+                    else {
+                        return @([PSCustomObject]@{
+                            id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-conn'
+                            name = 'gated-conn'; resourceGroup = 'r'; subscriptionId = 's'; tags = $null
+                            properties = [PSCustomObject]@{ status = 'NotConnectedRecently' }
+                        })
+                    }
+                }
+
                 $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-conn')
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
 
                 $results | Should -HaveCount 1
                 $row = $results[0]
-                $row.ReadyForUpdate | Should -BeFalse
+                $row.ReadyForUpdate           | Should -BeFalse
                 $row.PSObject.Properties.Name | Should -Contain 'BlockingReasons'
-                $row.BlockingReasons | Should -Match 'NotConnectedRecently'
-                $row.ClusterState | Should -Be 'NotConnectedRecently'
+                $row.BlockingReasons          | Should -Match 'NotConnectedRecently'
+                $row.ClusterState             | Should -Be 'NotConnectedRecently'
             }
         }
 
-        It 'Should downgrade ReadyForUpdate to False when HealthCheckFailures contains [Critical]' {
+        It 'Downgrades ReadyForUpdate to False when HealthCheckFailures contains [Critical]' {
             InModuleScope AzLocal.UpdateManagement {
                 function global:az { $global:LASTEXITCODE = 0; return '{}' }
-                Mock Test-AzCliAvailable { return $true }
-
-                Mock Invoke-AzRestJson {
-                    param($Uri)
-                    $global:LASTEXITCODE = 0
-                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
-                        return [PSCustomObject]@{
-                            Ok = $true
-                            Data = [PSCustomObject]@{
-                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$($matches[1])"
-                                name = $matches[1]
-                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
-                                tags = $null
-                            }
-                        }
-                    }
-                    return [PSCustomObject]@{ Ok = $true; Data = $null }
-                }
-                Mock Get-AzureLocalUpdateSummary {
-                    return [PSCustomObject]@{
-                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Failure' }
-                    }
-                }
-                Mock Get-AzureLocalAvailableUpdates {
-                    return @([PSCustomObject]@{
-                        name = '10.2506.0.28'
-                        properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
-                    })
-                }
+                Mock Test-AzCliAvailable      { return $true }
+                Mock Install-AzGraphExtension { return $true }
                 Mock Get-HealthCheckFailureSummary { return '[Critical] Storage Services Health Check (NodeA)' }
 
-                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-health')
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                Mock Invoke-AzResourceGraphQuery {
+                    param($Query)
+                    if ($Query -match 'updatesummaries') {
+                        return @([PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/gated-health'
+                            properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Failure' }
+                        })
+                    }
+                    elseif ($Query -match "clusters/updates'") {
+                        return @([PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/gated-health'
+                            UpdateName_ = '10.2506.0.28'
+                            name = '10.2506.0.28'
+                            properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                        })
+                    }
+                    else {
+                        return @([PSCustomObject]@{
+                            id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-health'
+                            name = 'gated-health'; resourceGroup = 'r'; subscriptionId = 's'; tags = $null
+                            properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                        })
+                    }
+                }
 
-                $results | Should -HaveCount 1
+                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-health')
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
+
                 $row = $results[0]
-                $row.ReadyForUpdate | Should -BeFalse
-                $row.BlockingReasons | Should -Match 'CriticalHealthCheck'
+                $row.ReadyForUpdate      | Should -BeFalse
+                $row.BlockingReasons     | Should -Match 'CriticalHealthCheck'
                 $row.HealthCheckFailures | Should -Match '\[Critical\]'
             }
         }
 
-        It 'Should combine both reasons when both gates fire' {
+        It 'Combines both reasons when both gates fire' {
             InModuleScope AzLocal.UpdateManagement {
                 function global:az { $global:LASTEXITCODE = 0; return '{}' }
-                Mock Test-AzCliAvailable { return $true }
-
-                Mock Invoke-AzRestJson {
-                    param($Uri)
-                    $global:LASTEXITCODE = 0
-                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
-                        return [PSCustomObject]@{
-                            Ok = $true
-                            Data = [PSCustomObject]@{
-                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$($matches[1])"
-                                name = $matches[1]
-                                properties = [PSCustomObject]@{ status = 'NotConnectedRecently' }
-                                tags = $null
-                            }
-                        }
-                    }
-                    return [PSCustomObject]@{ Ok = $true; Data = $null }
-                }
-                Mock Get-AzureLocalUpdateSummary {
-                    return [PSCustomObject]@{
-                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Failure' }
-                    }
-                }
-                Mock Get-AzureLocalAvailableUpdates {
-                    return @([PSCustomObject]@{
-                        name = '10.2506.0.28'
-                        properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
-                    })
-                }
+                Mock Test-AzCliAvailable      { return $true }
+                Mock Install-AzGraphExtension { return $true }
                 Mock Get-HealthCheckFailureSummary { return '[Critical] Storage Services Health Check (NodeA)' }
 
-                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-both')
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                Mock Invoke-AzResourceGraphQuery {
+                    param($Query)
+                    if ($Query -match 'updatesummaries') {
+                        return @([PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/gated-both'
+                            properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Failure' }
+                        })
+                    }
+                    elseif ($Query -match "clusters/updates'") {
+                        return @([PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/gated-both'
+                            UpdateName_ = '10.2506.0.28'
+                            name = '10.2506.0.28'
+                            properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                        })
+                    }
+                    else {
+                        return @([PSCustomObject]@{
+                            id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-both'
+                            name = 'gated-both'; resourceGroup = 'r'; subscriptionId = 's'; tags = $null
+                            properties = [PSCustomObject]@{ status = 'NotConnectedRecently' }
+                        })
+                    }
+                }
 
-                $results | Should -HaveCount 1
+                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/gated-both')
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
+
                 $row = $results[0]
-                $row.ReadyForUpdate | Should -BeFalse
+                $row.ReadyForUpdate  | Should -BeFalse
                 $row.BlockingReasons | Should -Match 'CriticalHealthCheck'
                 $row.BlockingReasons | Should -Match 'NotConnectedRecently'
             }
         }
 
-        It 'Should leave ReadyForUpdate True when Connected and no Critical health checks' {
+        It 'Leaves ReadyForUpdate True when Connected and no Critical health checks' {
             InModuleScope AzLocal.UpdateManagement {
                 function global:az { $global:LASTEXITCODE = 0; return '{}' }
-                Mock Test-AzCliAvailable { return $true }
-
-                Mock Invoke-AzRestJson {
-                    param($Uri)
-                    $global:LASTEXITCODE = 0
-                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
-                        return [PSCustomObject]@{
-                            Ok = $true
-                            Data = [PSCustomObject]@{
-                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$($matches[1])"
-                                name = $matches[1]
-                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
-                                tags = $null
-                            }
-                        }
-                    }
-                    return [PSCustomObject]@{ Ok = $true; Data = $null }
-                }
-                Mock Get-AzureLocalUpdateSummary {
-                    return [PSCustomObject]@{
-                        properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
-                    }
-                }
-                Mock Get-AzureLocalAvailableUpdates {
-                    return @([PSCustomObject]@{
-                        name = '10.2506.0.28'
-                        properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
-                    })
-                }
+                Mock Test-AzCliAvailable      { return $true }
+                Mock Install-AzGraphExtension { return $true }
                 Mock Get-HealthCheckFailureSummary { return '' }
 
-                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/happy')
-                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru -ThrottleLimit 1
+                Mock Invoke-AzResourceGraphQuery {
+                    param($Query)
+                    if ($Query -match 'updatesummaries') {
+                        return @([PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/happy'
+                            properties = [PSCustomObject]@{ state = 'UpdateAvailable'; healthState = 'Success' }
+                        })
+                    }
+                    elseif ($Query -match "clusters/updates'") {
+                        return @([PSCustomObject]@{
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/happy'
+                            UpdateName_ = '10.2506.0.28'
+                            name = '10.2506.0.28'
+                            properties = [PSCustomObject]@{ state = 'Ready'; packageType = 'Solution' }
+                        })
+                    }
+                    else {
+                        return @([PSCustomObject]@{
+                            id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/happy'
+                            name = 'happy'; resourceGroup = 'r'; subscriptionId = 's'; tags = $null
+                            properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
+                        })
+                    }
+                }
 
-                $results | Should -HaveCount 1
+                $ids = @('/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/happy')
+                $results = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds $ids -PassThru
+
                 $row = $results[0]
-                $row.ReadyForUpdate | Should -BeTrue
+                $row.ReadyForUpdate  | Should -BeTrue
                 $row.BlockingReasons | Should -Be ''
             }
         }
@@ -3755,74 +4061,88 @@ Describe 'Get-AzureLocalClusterUpdateReadiness readiness gates' {
 
 #region Integration: Get-AzureLocalUpdateRuns parallel dispatch
 
+# v0.7.68 ARG-first refactor: rewritten to mock Invoke-AzResourceGraphQuery
+# (the cmdlet issues a single ARG batch against
+# microsoft.azurestackhci/clusters/updates/updateruns instead of per-cluster
+# /updateRuns ARM REST fan-out).
 Describe 'Integration: Get-AzureLocalUpdateRuns parallel dispatch' {
-    Context 'ThrottleLimit=1 inline fast-path' {
-        It 'Should aggregate runs per cluster with state tally and strip internal fields' {
+    Context 'Single ARG batch read against updateruns' {
+        It 'Aggregates one row per cluster with correct State + RunId and strips internal fields' {
             InModuleScope AzLocal.UpdateManagement {
                 function global:az { $global:LASTEXITCODE = 0; return '{}' }
-                Mock Test-AzCliAvailable { return $true }
+                Mock Test-AzCliAvailable      { return $true }
+                Mock Install-AzGraphExtension { return $true }
 
-                # cluster-a has a single Succeeded run; cluster-b has an InProgress run.
-                Mock Invoke-AzRestJson {
-                    param($Uri)
-                    $global:LASTEXITCODE = 0
-                    if ($Uri -match '/updateRuns\?api-version') {
-                        $clusterName = if ($Uri -match '/clusters/([^/]+)/updates/') { $matches[1] } else { 'unknown' }
-                        $state = if ($clusterName -eq 'cluster-a') { 'Succeeded' } else { 'InProgress' }
-                        return [PSCustomObject]@{
-                            Ok = $true
-                            Data = [PSCustomObject]@{
-                                value = @(
-                                    [PSCustomObject]@{
-                                        id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$clusterName/updates/10.2506.0.28/updateRuns/run-1"
-                                        name = "$clusterName/10.2506.0.28/run-1"
-                                        properties = [PSCustomObject]@{
-                                            state           = $state
-                                            timeStarted     = (Get-Date).AddHours(-2).ToString('o')
-                                            lastUpdatedTime = (Get-Date).AddHours(-1).ToString('o')
-                                            location        = 'eastus'
-                                            progress        = [PSCustomObject]@{
-                                                steps = @(
-                                                    [PSCustomObject]@{ name = 'Step1'; status = 'Success' }
-                                                )
-                                            }
-                                        }
-                                    }
-                                )
+                Mock Invoke-AzResourceGraphQuery {
+                    # Single ARG call returns one updateruns row per cluster
+                    # shaped per the cmdlet's projection (id carries the
+                    # /updates/<name>/updateRuns/<runId> tail so the private
+                    # Format-AzLocalUpdateRun helper can extract RunId).
+                    $rows = @(
+                        [PSCustomObject]@{
+                            id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-a/providers/Microsoft.AzureStackHCI/updates/10.2506.0.28/updateRuns/run-1'
+                            name = 'run-1'
+                            type = 'microsoft.azurestackhci/clusters/updates/updateruns'
+                            location = 'eastus'
+                            ClusterName_       = 'cluster-a'
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-a'
+                            UpdateName_        = '10.2506.0.28'
+                            ts = (Get-Date).AddHours(-2)
+                            properties = [PSCustomObject]@{
+                                state           = 'Succeeded'
+                                timeStarted     = (Get-Date).AddHours(-2).ToString('o')
+                                lastUpdatedTime = (Get-Date).AddHours(-1).ToString('o')
+                                location        = 'eastus'
+                                progress        = [PSCustomObject]@{
+                                    steps = @([PSCustomObject]@{ name = 'Step1'; status = 'Success' })
+                                }
                             }
                         }
-                    }
-                    if ($Uri -match '/clusters/([^/?]+)\?api-version') {
-                        $name = $matches[1]
-                        return [PSCustomObject]@{
-                            Ok = $true
-                            Data = [PSCustomObject]@{
-                                id = "/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/$name"
-                                name = $name
-                                properties = [PSCustomObject]@{ status = 'ConnectedRecently' }
-                                tags = $null
+                        [PSCustomObject]@{
+                            id = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b/providers/Microsoft.AzureStackHCI/updates/10.2506.0.28/updateRuns/run-1'
+                            name = 'run-1'
+                            type = 'microsoft.azurestackhci/clusters/updates/updateruns'
+                            location = 'eastus'
+                            ClusterName_       = 'cluster-b'
+                            ClusterResourceId_ = '/subscriptions/s/resourcegroups/r/providers/microsoft.azurestackhci/clusters/cluster-b'
+                            UpdateName_        = '10.2506.0.28'
+                            ts = (Get-Date).AddHours(-2)
+                            properties = [PSCustomObject]@{
+                                state           = 'InProgress'
+                                timeStarted     = (Get-Date).AddHours(-2).ToString('o')
+                                lastUpdatedTime = (Get-Date).AddHours(-1).ToString('o')
+                                location        = 'eastus'
+                                progress        = [PSCustomObject]@{
+                                    steps = @([PSCustomObject]@{ name = 'Step1'; status = 'InProgress' })
+                                }
                             }
                         }
-                    }
-                    return [PSCustomObject]@{ Ok = $true; Data = $null }
+                    )
+                    # Return as array (comma-prefix preserves array semantics
+                    # when Pester's mock framework passes the value back to caller).
+                    return ,$rows
                 }
 
                 $ids = @(
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-a'
                     '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/cluster-b'
                 )
-
-                $results = Get-AzureLocalUpdateRuns -ClusterResourceIds $ids -UpdateName '10.2506.0.28' -Latest -PassThru -ThrottleLimit 1
+                $results = Get-AzureLocalUpdateRuns -ClusterResourceIds $ids -UpdateName '10.2506.0.28' -Latest -PassThru
 
                 $results | Should -HaveCount 2
                 ($results | Where-Object ClusterName -eq 'cluster-a').State | Should -Be 'Succeeded'
                 ($results | Where-Object ClusterName -eq 'cluster-b').State | Should -Be 'InProgress'
                 ($results | Where-Object ClusterName -eq 'cluster-a').RunId | Should -Be 'run-1'
 
+                # ARG-first contract: exactly ONE ARG call regardless of fleet
+                # size (replaces N ARM REST calls in pre-0.7.68 design).
+                Assert-MockCalled Invoke-AzResourceGraphQuery -Times 1 -Exactly
+
                 foreach ($r in $results) {
                     $r.PSObject.Properties.Name | Should -Not -Contain '__DisplayTag'
                     $r.PSObject.Properties.Name | Should -Not -Contain '__CountedState'
                     $r.PSObject.Properties.Name | Should -Not -Contain 'DisplayTag'
+                    $r.PSObject.Properties.Name | Should -Not -Contain 'ClusterResourceId_'
                 }
             }
         }
@@ -4899,7 +5219,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         # YAMLs landed directly in $dest
         $yamls = @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File)
         $yamls.Count | Should -BeGreaterThan 0
-        $yamls.Name | Should -Contain 'auth-smoke-test.yml'
+        $yamls.Name | Should -Contain 'Step.0_authentication-test.yml'
 
         # No platform-named subfolder, no Automation-Pipeline-Examples wrapper
         Test-Path (Join-Path $dest 'github-actions') | Should -BeFalse
@@ -4921,7 +5241,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
 
         $yamls = @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File)
         $yamls.Count | Should -BeGreaterThan 0
-        $yamls.Name | Should -Contain 'auth-smoke-test.yml'
+        $yamls.Name | Should -Contain 'Step.0_authentication-test.yml'
 
         Test-Path (Join-Path $dest 'azure-devops')   | Should -BeFalse
         Test-Path (Join-Path $dest 'github-actions') | Should -BeFalse
@@ -4969,7 +5289,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
 
         # Mutate one destination file so we can prove it gets overwritten
-        $target = Join-Path $dest 'auth-smoke-test.yml'
+        $target = Join-Path $dest 'Step.0_authentication-test.yml'
         $sentinel = '# SENTINEL - if this comment survives, -Update did not overwrite'
         Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
         (Get-Content -LiteralPath $target -Raw) | Should -Match 'SENTINEL'
@@ -5011,7 +5331,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
 
         # Seed and then mutate
         Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
-        $target = Join-Path $dest 'auth-smoke-test.yml'
+        $target = Join-Path $dest 'Step.0_authentication-test.yml'
         $sentinel = '# WHATIF SENTINEL - -WhatIf must preserve this'
         Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
 
@@ -5394,7 +5714,7 @@ on:
   schedule:
     - cron: '55 1 * * 6,0'
     - cron: "0 22 * * 5"
-"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'github-actions\apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
             @"
 trigger: none
 schedules:
@@ -5402,7 +5722,7 @@ schedules:
     displayName: Weekday early-morning
     branches:
       include: [ main ]
-"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'azure-devops\apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'azure-devops\Step.5_apply-updates.yml') -Encoding ASCII
         }
         AfterAll {
             Remove-Item -Path $script:tmpYamlDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -5438,7 +5758,7 @@ schedules:
 on:
   schedule:
     - cron: '50 1 * * 6,0'
-"@ | Set-Content -Path (Join-Path $script:tmpYamlDir2 'github-actions\apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir2 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
         }
         AfterAll {
             Remove-Item -Path $script:tmpYamlDir2 -Recurse -Force -ErrorAction SilentlyContinue
@@ -5705,7 +6025,7 @@ Describe 'v0.7.66 Artifact download names carry a UTC timestamp suffix' {
                 }
                 # Accept either the in-stage step-output form (`$(stamp.artifactStamp)`)
                 # OR a cross-stage variable that ends in `ArtifactStamp)`, which is
-                # how `apply-updates.yml` consumes the CheckReadiness stage's stamp
+                # how `Step.5_apply-updates.yml` consumes the CheckReadiness stage's stamp
                 # via the `readinessArtifactStamp` mapped variable.
                 if ($name -notmatch '\$\(.+?[Aa]rtifactStamp\)') {
                     $offenders.Add("$($yml.Name): ${key} '$name' missing a `$(...artifactStamp) suffix")
@@ -5770,7 +6090,7 @@ Describe 'v0.7.66 Artifact download names carry a UTC timestamp suffix' {
 }
 
 Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups failures first' {
-    # Guards the v0.7.66 UX refresh of fleet-update-status.yml summary blocks
+    # Guards the v0.7.66 UX refresh of Step.6_fleet-update-status.yml summary blocks
     # on both GH and ADO. The summary now uses 'red cross / green tick' emojis
     # instead of '[ok]/[fail]/...' bracket markers, and the per-cluster JUnit
     # block orders failed clusters first.
@@ -5778,12 +6098,12 @@ Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups fail
     BeforeAll {
         $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
         $script:fleetStatusFiles = @(
-            Join-Path $script:examplesRoot 'github-actions\fleet-update-status.yml'
-            Join-Path $script:examplesRoot 'azure-devops\fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'github-actions\Step.6_fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'azure-devops\Step.6_fleet-update-status.yml'
         )
     }
 
-    It "Both fleet-update-status.yml files contain success and failure status emojis" {
+    It "Both Step.6_fleet-update-status.yml files contain success and failure status emojis" {
         foreach ($yml in $script:fleetStatusFiles) {
             # Must read explicitly as UTF-8; the YAML has no BOM, and PS 5.1
             # Get-Content -Raw without -Encoding defaults to Default (cp1252),
@@ -5800,7 +6120,7 @@ Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups fail
         }
     }
 
-    It "Both fleet-update-status.yml files render a UTC timestamp in the summary heading" {
+    It "Both Step.6_fleet-update-status.yml files render a UTC timestamp in the summary heading" {
         foreach ($yml in $script:fleetStatusFiles) {
             $content = Get-Content -LiteralPath $yml -Raw
             ($content -match 'Fleet Update Status Summary\s*_\(generated \$generatedUtc\)_') | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must include the generated UTC timestamp in the H2 heading"
@@ -5808,7 +6128,7 @@ Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups fail
         }
     }
 
-    It "Both fleet-update-status.yml files bucket failed clusters ahead of passed clusters before emitting the JUnit table" {
+    It "Both Step.6_fleet-update-status.yml files bucket failed clusters ahead of passed clusters before emitting the JUnit table" {
         foreach ($yml in $script:fleetStatusFiles) {
             $content = Get-Content -LiteralPath $yml -Raw
             ($content -match '\$failedClusters')    | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must build a `$failedClusters bucket"
@@ -5849,7 +6169,7 @@ Describe 'v0.7.66 Pipeline update_ring inputs document multi-value and wildcard 
 #region v0.7.67 CI/CD parity + doc-drift regression suite
 
 Describe 'v0.7.67 schedule-audit zero-row JUnit parity' {
-    # v0.7.67 regression guard: apply-updates-schedule-audit.yml previously
+    # v0.7.67 regression guard: Step.3_apply-updates-schedule-audit.yml previously
     # behaved differently across CI platforms when the fleet had no tagged
     # clusters. Azure DevOps emitted a passing testcase ("No tagged clusters
     # found - nothing to audit") so the run rendered as passed (1/1) in the
@@ -5863,14 +6183,14 @@ Describe 'v0.7.67 schedule-audit zero-row JUnit parity' {
     }
 
     It 'GitHub Actions schedule-audit YAML emits the zero-row testcase' {
-        $yml = Join-Path $script:examplesRoot 'github-actions\apply-updates-schedule-audit.yml'
+        $yml = Join-Path $script:examplesRoot 'github-actions\Step.3_apply-updates-schedule-audit.yml'
         Test-Path -LiteralPath $yml | Should -BeTrue -Because "the GH schedule-audit YAML should exist at $yml"
         $content = Get-Content -LiteralPath $yml -Raw
         $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'v0.7.67 added the zero-row JUnit testcase to the GH schedule-audit YAML to match ADO parity'
     }
 
     It 'Azure DevOps schedule-audit YAML still emits the zero-row testcase' {
-        $yml = Join-Path $script:examplesRoot 'azure-devops\apply-updates-schedule-audit.yml'
+        $yml = Join-Path $script:examplesRoot 'azure-devops\Step.3_apply-updates-schedule-audit.yml'
         Test-Path -LiteralPath $yml | Should -BeTrue -Because "the ADO schedule-audit YAML should exist at $yml"
         $content = Get-Content -LiteralPath $yml -Raw
         $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'the ADO schedule-audit YAML has emitted the zero-row JUnit testcase since v0.7.0; the v0.7.67 parity work must not regress it'
@@ -5917,11 +6237,11 @@ Describe 'v0.7.67 schedule-audit summary - cron fixes first when issues exist' {
     $yamlCases = @(
         @{
             Platform = 'github-actions'
-            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\github-actions\apply-updates-schedule-audit.yml')
+            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\github-actions\Step.3_apply-updates-schedule-audit.yml')
         }
         @{
             Platform = 'azure-devops'
-            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\azure-devops\apply-updates-schedule-audit.yml')
+            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\azure-devops\Step.3_apply-updates-schedule-audit.yml')
         }
     )
 
@@ -5929,7 +6249,7 @@ Describe 'v0.7.67 schedule-audit summary - cron fixes first when issues exist' {
         Test-Path $YamlPath | Should -BeTrue -Because "expected schedule-audit YAML at $YamlPath"
         $content = Get-Content -Path $YamlPath -Raw
         $content | Should -Match '\$hasIssues\s*=\s*\(\(\[int\]\$uncovered\)' -Because 'Phase 4.3 conditional must compute $hasIssues from the four issue counts.'
-        $content | Should -Match 'Action required - paste these cron entries into apply-updates\.yml' -Because 'Phase 4.3 must surface a top-of-summary "Action required" header when issues exist.'
+        $content | Should -Match 'Action required - paste these cron entries into Step\.5_apply-updates\.yml' -Because 'Phase 4.3 must surface a top-of-summary "Action required" header when issues exist.'
         $idxActionRequired = $content.IndexOf('Action required - paste these cron entries')
         $idxAuditDetail    = $content.IndexOf('### Audit Detail')
         $idxActionRequired | Should -BeGreaterThan -1
@@ -6015,3 +6335,233 @@ Describe 'v0.7.67 Import-AzureLocalFleetState size guard' {
 
 #endregion v0.7.67 CI/CD parity + doc-drift regression suite
 
+
+
+#region v0.7.68 Update-AzureLocalPipelineExample + marker parser
+
+Describe 'Helper Function: Get-AzLocalPipelineCustomiseMarkers (Internal)' {
+
+    It 'Returns an empty hashtable on empty input' {
+        InModuleScope AzLocal.UpdateManagement {
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text ''
+            $r | Should -BeOfType [hashtable]
+            $r.Count | Should -Be 0
+        }
+    }
+
+    It 'Returns an empty hashtable when no markers are present' {
+        InModuleScope AzLocal.UpdateManagement {
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text @"
+name: My Workflow
+on:
+  push:
+    branches: [main]
+"@
+            $r.Count | Should -Be 0
+        }
+    }
+
+    It 'Parses a single marker block with multi-line body' {
+        InModuleScope AzLocal.UpdateManagement {
+            $text = @"
+on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  schedule:
+    - cron: '0 22 * * 6'
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+  workflow_dispatch:
+"@
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text $text
+            $r.Count | Should -Be 1
+            $r.ContainsKey('schedule-triggers') | Should -BeTrue
+            $r['schedule-triggers'].BeginLine | Should -Match 'BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers'
+            $r['schedule-triggers'].EndLine   | Should -Match 'END-AZLOCAL-CUSTOMIZE:schedule-triggers'
+            $r['schedule-triggers'].Body      | Should -Match "cron: '0 22 \* \* 6'"
+        }
+    }
+
+    It 'Parses multiple distinct markers in the same file' {
+        InModuleScope AzLocal.UpdateManagement {
+            $text = @"
+on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  schedule: []
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+env:
+  # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+  TOKEN: `${{ secrets.MY_TOKEN }}
+  # END-AZLOCAL-CUSTOMIZE:itsm-secrets
+"@
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text $text
+            $r.Count | Should -Be 2
+            $r.ContainsKey('schedule-triggers') | Should -BeTrue
+            $r.ContainsKey('itsm-secrets')      | Should -BeTrue
+        }
+    }
+
+    It 'Reconstructing BeginLine + Body + EndLine reproduces the original span exactly' {
+        InModuleScope AzLocal.UpdateManagement {
+            $text = "preamble`n  # BEGIN-AZLOCAL-CUSTOMIZE:demo`nline1`nline2`n  # END-AZLOCAL-CUSTOMIZE:demo`ntail"
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text $text
+            $r.Count | Should -Be 1
+            $b = $r['demo']
+            $reassembled = $b.BeginLine + $b.Body + $b.EndLine
+            $text.Substring($b.Index, $b.Length) | Should -BeExactly $reassembled
+        }
+    }
+
+    It 'Skips duplicate marker names and keeps the first occurrence' {
+        InModuleScope AzLocal.UpdateManagement {
+            $text = @"
+# BEGIN-AZLOCAL-CUSTOMIZE:dup
+first
+# END-AZLOCAL-CUSTOMIZE:dup
+# BEGIN-AZLOCAL-CUSTOMIZE:dup
+second
+# END-AZLOCAL-CUSTOMIZE:dup
+"@
+            $r = Get-AzLocalPipelineCustomiseMarkers -Text $text 3>$null
+            $r.Count | Should -Be 1
+            $r['dup'].Body | Should -Match 'first'
+        }
+    }
+}
+
+Describe 'Function: Update-AzureLocalPipelineExample' {
+
+    BeforeAll {
+        # The cmdlet resolves -Platform 'GitHub' to <ModuleBase>/Automation-Pipeline-Examples/github-actions
+        # so all tests below operate against the development checkout's bundled samples.
+        $script:UpePlatformSrcGh  = Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples\github-actions'
+        $script:UpePlatformSrcAdo = Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples\azure-devops'
+    }
+
+    Context 'Parameter surface' {
+        It 'Has Destination, Platform, Force, PassThru parameters' {
+            $cmd = Get-Command Update-AzureLocalPipelineExample
+            $cmd.Parameters.Keys | Should -Contain 'Destination'
+            $cmd.Parameters.Keys | Should -Contain 'Platform'
+            $cmd.Parameters.Keys | Should -Contain 'Force'
+            $cmd.Parameters.Keys | Should -Contain 'PassThru'
+        }
+        It 'Supports ShouldProcess (WhatIf / Confirm)' {
+            $cmd = Get-Command Update-AzureLocalPipelineExample
+            $cmd.Parameters.Keys | Should -Contain 'WhatIf'
+            $cmd.Parameters.Keys | Should -Contain 'Confirm'
+        }
+        It 'Platform is ValidateSet GitHub|AzureDevOps' {
+            $cmd = Get-Command Update-AzureLocalPipelineExample
+            $attr = $cmd.Parameters['Platform'].Attributes |
+                Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+            $attr | Should -Not -BeNullOrEmpty
+            ($attr.ValidValues | Sort-Object) -join ',' | Should -Be 'AzureDevOps,GitHub'
+        }
+        It 'Throws when -Destination does not exist' {
+            { Update-AzureLocalPipelineExample -Destination "$env:TEMP\does-not-exist-$([guid]::NewGuid())" -Platform GitHub -PassThru } |
+                Should -Throw -ExpectedMessage '*Destination*does not exist*'
+        }
+    }
+
+    Context 'Net-new files are Created on the first run into an empty folder' {
+        It 'Copies every bundled GitHub Actions YAML into an empty destination' {
+            $temp = Join-Path $env:TEMP "upe-create-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                $r = Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Confirm:$false
+                $r | Should -Not -BeNullOrEmpty
+                ($r | Where-Object Action -eq 'Created').Count | Should -BeGreaterThan 0
+                ($r | Where-Object Action -eq 'Updated').Count | Should -Be 0
+                # Every bundled GitHub Actions sample should now exist in the destination.
+                $expected = Get-ChildItem -Path $script:UpePlatformSrcGh -Filter '*.yml' -File | Select-Object -ExpandProperty Name
+                foreach ($name in $expected) {
+                    Test-Path -LiteralPath (Join-Path $temp $name) | Should -BeTrue
+                }
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'Marker-aware merge preserves destination customisations' {
+        It 'Replaces the schedule-triggers body with the destination body in Step.5_apply-updates.yml' {
+            $temp = Join-Path $env:TEMP "upe-merge-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                # 1. Copy the bundled Step.5_apply-updates.yml to the destination.
+                $src = Join-Path $script:UpePlatformSrcGh 'Step.5_apply-updates.yml'
+                Copy-Item -Path $src -Destination $temp
+                $destFile = Join-Path $temp 'Step.5_apply-updates.yml'
+
+                # 2. Inject a customer cron INSIDE the schedule-triggers marker block.
+                $customerBody = "`r`n  schedule:`r`n    - cron: '0 22 * * 6'  # Wave1 SatNight22UTC`r`n  "
+                $destTextOriginal = [System.IO.File]::ReadAllText($destFile, [System.Text.UTF8Encoding]::new($false))
+                $pattern = '(?ms)(BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers[^\r\n]*)(.*?)(  # END-AZLOCAL-CUSTOMIZE:schedule-triggers)'
+                $destTextCustom = [regex]::Replace($destTextOriginal, $pattern, ('${1}' + [System.Text.RegularExpressions.Regex]::Escape($customerBody).Replace('\\','\').Replace('$','$$') + '${3}'), 1)
+                # Simpler: do the substitution by string slice, not regex - the regex with .Escape is brittle.
+                $marker = '# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers'
+                $endMark = '# END-AZLOCAL-CUSTOMIZE:schedule-triggers'
+                $iStart = $destTextOriginal.IndexOf($marker) + $marker.Length
+                $iEnd   = $destTextOriginal.IndexOf($endMark)
+                $destTextCustom = $destTextOriginal.Substring(0,$iStart) + $customerBody + '  ' + $destTextOriginal.Substring($iEnd)
+                [System.IO.File]::WriteAllText($destFile, $destTextCustom, [System.Text.UTF8Encoding]::new($false))
+
+                # 3. Run the cmdlet. Source body should be REPLACED with customer body.
+                $r = Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Confirm:$false
+                $row = $r | Where-Object { $_.File -like '*Step.5_apply-updates.yml' }
+                $row.Action            | Should -Match 'Updated|Unchanged'
+                # Customer cron MUST survive
+                $newText = [System.IO.File]::ReadAllText($destFile, [System.Text.UTF8Encoding]::new($false))
+                $newText | Should -Match "cron: '0 22 \* \* 6'"
+                $row.PreservedMarkers | Should -Contain 'schedule-triggers'
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'WhatIf does not write to disk' {
+        It 'Reports Created for net-new files without creating them' {
+            $temp = Join-Path $env:TEMP "upe-whatif-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -WhatIf 6>$null 4>$null
+                (Get-ChildItem -Path $temp -File -ErrorAction SilentlyContinue).Count | Should -Be 0
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Context 'First-migration (destination has no markers) requires -Force' {
+        It 'Refuses to write without -Force and emits Skipped-NeedsForce' {
+            $temp = Join-Path $env:TEMP "upe-firstmig-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                # Place a stripped-down YAML at dest with NO markers, same filename as a bundled file.
+                $destFile = Join-Path $temp 'Step.5_apply-updates.yml'
+                'name: legacy file with no markers' | Set-Content -LiteralPath $destFile -Encoding utf8
+
+                $r = Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Confirm:$false 3>$null
+                $row = $r | Where-Object { $_.File -like '*Step.5_apply-updates.yml' }
+                $row.Action | Should -Be 'Skipped-NeedsForce'
+                # Dest file unchanged
+                (Get-Content -Raw -LiteralPath $destFile) | Should -Match 'legacy file with no markers'
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        It 'Overwrites and records the new marker names when -Force is supplied' {
+            $temp = Join-Path $env:TEMP "upe-firstmig-force-$([guid]::NewGuid())"
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            try {
+                $destFile = Join-Path $temp 'Step.5_apply-updates.yml'
+                'name: legacy file with no markers' | Set-Content -LiteralPath $destFile -Encoding utf8
+
+                $r = Update-AzureLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Force -Confirm:$false 3>$null
+                $row = $r | Where-Object { $_.File -like '*Step.5_apply-updates.yml' }
+                $row.Action | Should -Be 'Overwritten'
+                $row.NewMarkers | Should -Contain 'schedule-triggers'
+                (Get-Content -Raw -LiteralPath $destFile) | Should -Match 'BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers'
+            }
+            finally { Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+#endregion v0.7.68 Update-AzureLocalPipelineExample + marker parser
