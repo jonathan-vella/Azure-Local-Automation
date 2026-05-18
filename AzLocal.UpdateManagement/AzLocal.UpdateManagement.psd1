@@ -32,8 +32,10 @@
         'Private/Convert-AzLocalUpdateWindowToCron.ps1',
         'Private/ConvertFrom-AzLocalCronExpression.ps1',
         'Private/ConvertFrom-AzLocalUpdateExclusion.ps1',
+        'Private/ConvertFrom-AzLocalScheduleYaml.ps1',
         'Private/ConvertFrom-AzLocalUpdateSideloaded.ps1',
         'Private/ConvertFrom-AzLocalUpdateWindow.ps1',
+        'Private/Convert-AzLocalScheduleSchemaVersion.ps1',
         'Private/ConvertTo-AzLocalAdditionalProperties.ps1',
         'Private/ConvertTo-SafeCsvCollection.ps1',
         'Private/ConvertTo-SafeCsvField.ps1',
@@ -88,6 +90,8 @@
         'Public/Copy-AzureLocalItsmSample.ps1',
         'Public/Copy-AzureLocalPipelineExample.ps1',
         'Public/Export-AzureLocalFleetState.ps1',
+        'Public/Get-AzLocalApplyUpdatesScheduleConfig.ps1',
+        'Public/Get-AzLocalApplyUpdatesScheduleNextFirings.ps1',
         'Public/Get-AzureLocalAvailableUpdates.ps1',
         'Public/Get-AzureLocalClusterInfo.ps1',
         'Public/Get-AzureLocalClusterInventory.ps1',
@@ -100,9 +104,11 @@
         'Public/Get-AzureLocalUpdateRuns.ps1',
         'Public/Get-AzureLocalUpdateSummary.ps1',
         'Public/Invoke-AzureLocalFleetOperation.ps1',
+        'Public/New-AzLocalApplyUpdatesScheduleConfig.ps1',
         'Public/New-AzureLocalFleetStatusHtmlReport.ps1',
         'Public/New-AzureLocalIncident.ps1',
         'Public/Reset-AzureLocalSideloadedTag.ps1',
+        'Public/Resolve-AzLocalCurrentUpdateRing.ps1',
         'Public/Resume-AzureLocalFleetUpdate.ps1',
         'Public/Set-AzureLocalClusterUpdateRingTag.ps1',
         'Public/Start-AzureLocalClusterUpdate.ps1',
@@ -155,7 +161,12 @@
         # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
         'Test-AzureLocalApplyUpdatesScheduleCoverage',
         # Update Run Failures (v0.7.68) - ARG-only deep-error extraction (9 levels deep) for fleet-scale verbose error information
-        'Get-AzureLocalUpdateRunFailures'
+        'Get-AzureLocalUpdateRunFailures',
+        # Ring-Aware Apply-Updates Schedule (v0.7.69) - human-readable schedule file + cycle-based resolver
+        'Get-AzLocalApplyUpdatesScheduleConfig',
+        'Resolve-AzLocalCurrentUpdateRing',
+        'Get-AzLocalApplyUpdatesScheduleNextFirings',
+        'New-AzLocalApplyUpdatesScheduleConfig'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.

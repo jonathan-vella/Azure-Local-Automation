@@ -194,6 +194,15 @@ $script:UpdateSideloadedTagName = 'UpdateSideloaded'
 
 $script:UpdateVersionInProgressTagName = 'UpdateVersionInProgress'
 
+# Current apply-updates-schedule.yml schema version produced + consumed by
+# this module. Incremented when a non-additive change to the schedule file
+# format ships. Customer files on a LOWER version are auto-migrated by
+# Update-AzureLocalPipelineExample via the per-hop recipes registered in
+# Private/Convert-AzLocalScheduleSchemaVersion.ps1. Customer files on a
+# HIGHER version cause the migrator to refuse with a remediation message
+# pointing at PSGallery.
+$script:ScheduleSchemaCurrentVersion = 1
+
 $script:DayMap = [ordered]@{
     'Mon' = [DayOfWeek]::Monday
     'Tue' = [DayOfWeek]::Tuesday
@@ -267,5 +276,10 @@ Export-ModuleMember -Function @(
     # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
     'Test-AzureLocalApplyUpdatesScheduleCoverage',
     # Update Run Failures (v0.7.68) - ARG-only deep-error extraction (9 levels deep) for fleet-scale verbose error information
-    'Get-AzureLocalUpdateRunFailures'
+    'Get-AzureLocalUpdateRunFailures',
+    # Ring-Aware Apply-Updates Schedule (v0.7.69) - human-readable schedule file + cycle-based resolver
+    'Get-AzLocalApplyUpdatesScheduleConfig',
+    'Resolve-AzLocalCurrentUpdateRing',
+    'Get-AzLocalApplyUpdatesScheduleNextFirings',
+    'New-AzLocalApplyUpdatesScheduleConfig'
 )
