@@ -161,6 +161,60 @@ Describe 'Module: AzLocal.UpdateManagement' {
         }
     }
 
+    Context 'Pipeline YAML installed-older-than-generated guard (v0.7.66)' {
+        # v0.7.66: every pipeline YAML that installs the module at runtime must
+        # warn when the runtime-installed module version is OLDER than
+        # GENERATED_AGAINST_MODULE_VERSION. The existing version-check block
+        # already handles 'installed -gt generated' (YAML stale) and
+        # 'latest -gt installed' (newer module on PSGallery), but the
+        # 'installed -lt generated' branch was missing. That is exactly the
+        # case that matters during a staged unlisted-release flow (publish
+        # candidate, immediately unlist, pin REQUIRED_MODULE_VERSION in the
+        # test repo, validate, then list) and during emergency rollbacks. A
+        # YAML that references cmdlets / parameters added in the generated-
+        # against version would otherwise fail with a confusing
+        # 'parameter not found' or 'cmdlet not recognized' error mid-job
+        # instead of a clear warning at install time.
+        It 'Every pipeline YAML that installs the module also warns when installed < generated' {
+            $examplesRoot = Join-Path -Path $PSScriptRoot -ChildPath '..\Automation-Pipeline-Examples'
+            $examplesRoot = (Resolve-Path -Path $examplesRoot).Path
+
+            $ymlFiles = Get-ChildItem -Path $examplesRoot -Recurse -Filter '*.yml' -File
+            $ymlFiles.Count | Should -BeGreaterThan 0 -Because 'sample pipeline YAMLs ship under Automation-Pipeline-Examples/{github-actions,azure-devops}/'
+
+            $issues = New-Object System.Collections.Generic.List[string]
+            foreach ($yml in $ymlFiles) {
+                $content = Get-Content -LiteralPath $yml.FullName -Raw
+
+                # The drift detector only runs in pipelines that install the
+                # module at runtime. Auth-smoke-test YAMLs and ITSM sample
+                # YAMLs do not install the module, so they are not expected to
+                # carry the check.
+                $installsModule = $content -match 'Install-Module\s+@installArgs'
+                if (-not $installsModule) { continue }
+
+                # The drift guard has two equally valid emitter shapes:
+                #   GH Actions: '::warning title=AzLocal.UpdateManagement is older than workflow YAML expects'
+                #   Azure DevOps: '##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER'
+                # Both are anchored on the '$installed -lt $generated' comparison.
+                $hasComparison = $content -match '\$installed\s+-lt\s+\$generated'
+
+                $relPath = $yml.FullName.Substring($examplesRoot.Length).TrimStart('\','/')
+
+                if (-not $hasComparison) {
+                    $issues.Add("${relPath}: installs the module but is MISSING the 'installed -lt generated' drift guard")
+                }
+            }
+
+            if ($issues.Count -gt 0) {
+                $detail = ($issues -join [Environment]::NewLine)
+            } else {
+                $detail = '(no findings)'
+            }
+            $issues.Count | Should -Be 0 -Because "every pipeline YAML under Automation-Pipeline-Examples/ that installs AzLocal.UpdateManagement must warn when the installed module version is older than GENERATED_AGAINST_MODULE_VERSION. Findings:$([Environment]::NewLine)$detail"
+        }
+    }
+
     Context 'Schedule-audit pipeline_path default is consumer-friendly (v0.7.66 regression)' {
         # v0.7.66 regression guard: apply-updates-schedule-audit.yml (GH + ADO)
         # shipped with a default pipeline_path of

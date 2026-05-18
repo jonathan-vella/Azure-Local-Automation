@@ -123,7 +123,7 @@ Then assign **one** of the following. The custom role is recommended for product
 
 **Option A (recommended) - assign the least-privilege custom role**
 
-This pattern grants the Service Principal only the actions the five pipelines need (read clusters, read/apply updates, read update runs, read/write tags, Resource Graph queries). The full JSON role definition and `az role definition create` command live in [section 4 below](#4-required-azure-permissions) - run that block once per tenant first, then assign:
+This pattern grants the Service Principal only the actions the seven pipelines need (read clusters, read/apply updates, read update runs, read/write tags, Resource Graph queries). The full JSON role definition and `az role definition create` command live in [section 4 below](#4-required-azure-permissions) - run that block once per tenant first, then assign:
 
 ```bash
 az role assignment create `
@@ -825,11 +825,11 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 
 ### 5.1 GitHub Actions
 
-1. **Smoke-test auth first (strongly recommended).** Before exercising all five workflows, validate that the App Registration, federated credentials, GitHub secrets, environments, and RBAC role assignment all line up by running a one-shot **auth smoke test** workflow. This narrows any failure to *one* small YAML file instead of debugging five interacting workflows simultaneously.
+1. **Smoke-test auth first (strongly recommended).** Before exercising all seven workflows, validate that the App Registration, federated credentials, GitHub secrets, environments, and RBAC role assignment all line up by running a one-shot **auth smoke test** workflow. This narrows any failure to *one* small YAML file instead of debugging seven interacting workflows simultaneously.
 
    The smoke-test workflow ships with the module at [`github-actions/auth-smoke-test.yml`](./github-actions/auth-smoke-test.yml).
 
-   - **If you used the `Copy-AzureLocalPipelineExample` shortcut above**: the file is already in `.github/workflows/` alongside the other five workflow YAMLs - those will ride along on the commit but stay dormant until you trigger them manually (`gh workflow run`) or their schedules fire. Commit and push to the default branch, then run the trigger commands below.
+   - **If you used the `Copy-AzureLocalPipelineExample` shortcut above**: the file is already in `.github/workflows/` alongside the other seven workflow YAMLs - those will ride along on the commit but stay dormant until you trigger them manually (`gh workflow run`) or their schedules fire. Commit and push to the default branch, then run the trigger commands below.
    - **If you didn't use the shortcut**: copy just that one file into your repo's `.github/workflows/`, commit, and push to the default branch.
 
    Then trigger it twice - once branch-scoped, once environment-scoped - to prove **both** federated credential types work end-to-end:
@@ -896,7 +896,7 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    | `Error: Could not fetch access token for Azure` (no AADSTS code) | The workflow lacks `permissions: id-token: write` or the secrets are missing/misspelt. | Confirm the `permissions:` block is present and run `gh secret list --repo $repo` shows all three `AZURE_*` secrets. |
    | Environment-scoped run hangs in **Waiting for review** | The environment has required-reviewers protection (good!) and is waiting for you to approve. | Approve in the **Actions** tab, or remove required reviewers from the smoke-test run via the environment settings. |
 
-   Once both runs are green, delete `auth-smoke-test.yml` (it has no purpose after validation). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other five workflows are already on the default branch - skip to step 4 to run them. Otherwise, proceed to step 2 to copy the remaining workflow files.
+   Once both runs are green, delete `auth-smoke-test.yml` (it has no purpose after validation). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other seven workflows are already on the default branch - skip to step 4 to run them. Otherwise, proceed to step 2 to copy the remaining workflow files.
 
 2. Copy every file from [`github-actions/`](./github-actions/) into `.github/workflows/` in your repo:
     ```text
@@ -915,9 +915,9 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 
 ### 5.2 Azure DevOps
 
-1. **Smoke-test auth first (strongly recommended).** Before importing all five pipelines, validate that the service connection (Workload Identity Federation), App Registration, and RBAC role assignment all line up by running a one-shot **auth smoke test** pipeline. This narrows any failure to *one* small YAML file instead of debugging five interacting pipelines simultaneously.
+1. **Smoke-test auth first (strongly recommended).** Before importing all seven pipelines, validate that the service connection (Workload Identity Federation), App Registration, and RBAC role assignment all line up by running a one-shot **auth smoke test** pipeline. This narrows any failure to *one* small YAML file instead of debugging seven interacting pipelines simultaneously.
 
-   The smoke-test pipeline ships with the module at [`azure-devops/auth-smoke-test.yml`](./azure-devops/auth-smoke-test.yml). If you used the `Copy-AzureLocalPipelineExample` shortcut above, the file is already in your chosen pipelines folder alongside the other five pipeline YAMLs - those YAMLs sit dormant until you import each one as a pipeline, so they're harmless at rest. Otherwise, copy just that one file into your repo. Either way, import it as a new pipeline:
+   The smoke-test pipeline ships with the module at [`azure-devops/auth-smoke-test.yml`](./azure-devops/auth-smoke-test.yml). If you used the `Copy-AzureLocalPipelineExample` shortcut above, the file is already in your chosen pipelines folder alongside the other seven pipeline YAMLs - those YAMLs sit dormant until you import each one as a pipeline, so they're harmless at rest. Otherwise, copy just that one file into your repo. Either way, import it as a new pipeline:
 
    - **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file -> `/azure-devops/auth-smoke-test.yml`**.
    - **Save and run**. If your service connection has a name other than `AzureLocal-ServiceConnection`, edit `azureSubscription:` in the YAML first (the only configurable line).
@@ -950,10 +950,10 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    | `AuthorizationFailed` on `az graph query` (but `az account show` succeeded) | Auth works, but the role assignment is missing, scoped wrong, or not yet propagated. | Re-check section 3.2 ran against the correct subscription, then re-run the smoke test - role propagation can take 1-2 minutes. |
    | `(InvalidScope) The scope '/subscriptions/<id>' is not valid` from `az role assignment list` | The service connection scope is set narrower than the role assignment, e.g. resource-group-scoped. | Widen the service connection scope to the subscription, or pass `--scope` explicitly to `az role assignment list`. |
 
-   Once the run is green, delete `auth-smoke-test.yml` (and its imported pipeline). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other five YAML files are already in your repo - skip to step 3 to import each as a pipeline. Otherwise, proceed to step 2 to copy the remaining pipeline files.
+   Once the run is green, delete `auth-smoke-test.yml` (and its imported pipeline). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other seven YAML files are already in your repo - skip to step 3 to import each as a pipeline. Otherwise, proceed to step 2 to copy the remaining pipeline files.
 
 2. Copy every file from [`azure-devops/`](./azure-devops/) into your repository at a path of your choice (the README assumes the same folder layout as this repo).
-3. **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file**, then point at the path of each file. Repeat for all five.
+3. **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file**, then point at the path of each file. Repeat for all seven.
 4. After the pipeline is created, click **Save** (not **Run**) until you are ready to execute.
 5. Each pipeline references a service connection named `AzureLocal-ServiceConnection`. Either name your service connection to match, or change `azureSubscription:` in each YAML.
 
@@ -1377,7 +1377,7 @@ Repeat for the rest of the ring.
 - **GitHub Actions**: *Actions -> Apply-Updates Schedule Coverage Audit -> Run workflow*.
 - **Azure DevOps**: *Pipelines -> Apply-Updates Schedule Coverage Audit -> Run pipeline*.
 
-Both default `pipelinePath` to `AzLocal.UpdateManagement/Automation-Pipeline-Examples` so the audit runs against the in-repo samples on the first try. Once you have an `apply-updates.yml` in your own pipelines folder, override `pipelinePath` to point at it (e.g. `.\.github\workflows` or `.\pipelines`).
+Both default `pipelinePath` to the standard consumer location for the platform: `.github/workflows` on GitHub Actions, `.azure-pipelines` on Azure DevOps. If you copied `apply-updates.yml` into one of those folders (the recommended layout), the audit finds it on the first run. Override `pipelinePath` only if your copied `apply-updates.yml` lives somewhere else (e.g. `.\pipelines`).
 
 #### Step 4 - Read the run summary
 
@@ -1656,7 +1656,7 @@ The table below is the ground truth for what each shipped YAML does **out of the
 | Aspect | Value |
 |---|---|
 | **Purpose** | Read-only advisor that compares the cron schedule(s) in your `apply-updates.yml` to the `UpdateWindow` tag values present on your clusters, and flags any `(UpdateRing, UpdateWindow)` pair that no cron in `apply-updates.yml` will ever reach. Never edits tags or YAML. Calls the [`Test-AzureLocalApplyUpdatesScheduleCoverage`](../README.md#test-azurelocalapplyupdatesschedulecoverage) cmdlet under the covers. |
-| **Inputs** | `pipeline_path` (file or folder; default `AzLocal.UpdateManagement/Automation-Pipeline-Examples`), `lead_time_minutes` (0-60, default 5), `include_untagged` (default false), `module_version` (optional). |
+| **Inputs** | `pipeline_path` (file or folder; default `.github/workflows` on GitHub Actions, `.azure-pipelines` on Azure DevOps - the standard consumer locations for the bundled `apply-updates.yml` sample), `lead_time_minutes` (0-60, default 5), `include_untagged` (default false), `module_version` (optional). |
 | **Trigger** | Manual (`workflow_dispatch` / **Run pipeline** button) **plus** scheduled weekly on Mondays at 05:00 UTC (`cron '0 5 * * 1'`). Deliberately runs before the daily `fleet-update-status` (06:00 UTC) and `fleet-health-status` (07:00 UTC) pipelines so its drift annotations land at the top of the operator's Monday-morning inbox. Edit the cron in the YAML to change cadence. |
 | **Artefacts** | `schedule-coverage-audit.xml` (JUnit, one `<testcase>` per `(UpdateRing, UpdateWindow)` pair, uncovered = `<failure>`), `schedule-coverage-audit.csv` (full Audit view with `Status` / `Recommendation` columns), `schedule-coverage-matrix.csv` (every distinct `(Ring, Window)` pair with its required cron), `schedule-coverage-recommend.md` (ready-to-paste GH Actions + Azure DevOps cron blocks), markdown step summary. |
 | **When to run** | Hands-off scheduled. Trigger manually whenever you have just tagged a new ring or changed a maintenance window - see the [end-to-end runbook in section 8.3](#83-end-to-end-runbook-apply-updates-schedule-coverage-audit). |
@@ -1672,7 +1672,7 @@ The body of this document tracks **v0.7.66** behaviour. Older versions are prese
 
 - **Fixed (critical) - `Get-AzureLocalFleetHealthFailures` failed JSON parsing on hosted Windows runners when the Azure CLI emitted a cp1252 encoding warning to stderr.** On `windows-latest` GitHub Actions runners (and any ADO Windows agent whose console code page is `cp1252`) the Azure CLI's underlying Python layer can surface `WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.` to stderr; the shared `Invoke-AzResourceGraphQuery` helper was capturing `2>&1` into a single merged stream and feeding it to `ConvertFrom-Json`, which then threw `Unexpected character encountered while parsing value: W. Path '', line 0, position 0.` **The actual fix** is the post-capture stream split: stderr lines surface as `[System.Management.Automation.ErrorRecord]` objects under `2>&1`, stdout lines as strings, and only the string stream is fed to `ConvertFrom-Json`. (The helper already passed `--only-show-errors` since v0.7.2, matching the existing `Invoke-AzRestJson` hardening, but the cp1252 encode warning can still leak through on some character paths, hence the belt-and-braces split.) The helper also sets `PYTHONIOENCODING=utf-8` as **cosmetic defence-in-depth only** - this is a structural no-op for stock `az.cmd` because `az.cmd` launches Python with `-I` (isolated) which implies `-E` and forces Python to ignore every `PYTHON*` env var per [Azure/azure-cli#28497](https://github.com/Azure/azure-cli/issues/28497) and the v0.7.2 root-cause analysis; it only takes effect on hosts that have manually patched `az.cmd` to remove `-I`.
 - **Fixed (critical) - `apply-updates-schedule-audit.yml` default `pipeline_path` only existed in this module's source repo.** The shipped default was `AzLocal.UpdateManagement/Automation-Pipeline-Examples` (i.e. the in-source path for *this* repo); every default-trigger run in a consumer repo therefore failed with `PipelineYamlPath '...' does not exist on the runner` before the schedule advisor could emit its JUnit XML, which then crashed `dorny/test-reporter` with `No test report files were found`. Defaults are now `'.github/workflows'` on GH Actions and `'.azure-pipelines'` on Azure DevOps - the standard consumer locations - and the path-missing error message now lists which common pipeline folders **do** exist in the checked-out repo so the operator knows what value to pass via `workflow_dispatch` / queue-time override.
-- **Module version pin bumped to 0.7.66 in all 13 sample workflow YAMLs.** Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh the samples in your repo.
+- **Module version pin bumped to 0.7.66 in every production sample YAML that installs the module from PowerShell Gallery (14 across GitHub Actions and Azure DevOps; the two auth-smoke-test YAMLs do not install the module and so are not version-pinned).** Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh the samples in your repo.
 
 #### v0.7.66 UX + capability refresh
 

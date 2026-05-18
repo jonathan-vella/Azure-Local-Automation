@@ -1926,7 +1926,7 @@ Under the covers it executes a single Azure Resource Graph query against the `ex
 | `-SubscriptionId` | String | No | All accessible | Optional. Limit the query to a single subscription. |
 | `-Severity` | String | No | `All` | `Critical`, `Warning`, or `All` (Critical + Warning). Informational entries are always excluded. |
 | `-View` | String | No | `Detail` | `Detail` (one row per (cluster, failing check)) or `Summary` (aggregated by `FailureReason` + `Severity`, ordered "most widespread first"). |
-| `-UpdateRingTag` | String | No | - | Optional. Narrow to clusters whose `UpdateRing` tag matches. Validated `^[A-Za-z0-9_-]{1,64}$`. |
+| `-UpdateRingTag` | String | No | - | Optional. Narrow to clusters whose `UpdateRing` tag matches. Accepts a single ring (`Wave1`), a semicolon-delimited list (`Prod;Ring2`), or the literal `***` wildcard for every cluster with a non-empty `UpdateRing` tag (untagged clusters are excluded). Single `*`, double `**`, and quadruple `****` are deliberately rejected. Validated `^(\*\*\*\|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$`. |
 | `-ExportPath` | String | No | - | Optional `.csv` or `.json` path; format auto-detected from extension. |
 | `-PassThru` | Switch | No | - | Emit objects to the pipeline **even when** `-ExportPath` is used. |
 

@@ -142,11 +142,15 @@ $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.
 # Best-effort default for PYTHONIOENCODING. az.cmd launches python with the -I
 # (isolated) flag which implies -E and so causes python to IGNORE all PYTHON*
 # environment variables - meaning this assignment alone is NOT sufficient to
-# stop the cp1252 encode warning. The actual fix is the --only-show-errors
-# flag passed to every az invocation in Invoke-AzRestJson. This module-load
-# assignment is retained as harmless defence-in-depth for the case where the
-# user has manually patched az.cmd to remove -I, or is running in an
-# environment that respects the env var. See:
+# stop the cp1252 encode warning. The actual fixes live in two helpers:
+#   1. Invoke-AzRestJson passes --only-show-errors to every az invocation
+#      (v0.7.2 hardening) so warning lines stay out of stdout.
+#   2. Invoke-AzResourceGraphQuery splits the merged 2>&1 capture by element
+#      type after capture (v0.7.66): stderr surfaces as ErrorRecord objects
+#      and only the string stdout is fed to ConvertFrom-Json.
+# This module-load assignment is retained as harmless defence-in-depth for
+# the case where the user has manually patched az.cmd to remove -I, or is
+# running in an environment that respects the env var. See:
 # https://github.com/Azure/azure-cli/issues/14426 (recommended workaround),
 # https://github.com/Azure/azure-cli/issues/28497 (-I behaviour confirmation).
 if (-not $env:PYTHONIOENCODING) {
