@@ -32,22 +32,38 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
                        to paste into Step.5_apply-updates.yml.
 
         Status values (Audit):
-          Covered            - at least one cron in the YAML fires during the window
-          Uncovered          - no cron in the YAML fires during the window
-          PartiallyCovered   - multi-segment window where some segments are covered and others are not
-          NoWindowTag        - cluster(s) have no UpdateWindow tag (only emitted when -IncludeUntagged is supplied)
-          MalformedTag       - the UpdateWindow tag value failed to parse
-          UnparseableCron    - a cron in the YAML used syntax the advisor cannot evaluate
-                               (e.g. DayOfMonth restrictions, step values); manual review required
+          Covered                  - at least one cron in the YAML fires during the window
+          Uncovered                - no cron in the YAML fires during the window
+          PartiallyCovered         - multi-segment window where some segments are covered and others are not
+          NoWindowTag              - cluster(s) have no UpdateWindow tag (only emitted when -IncludeUntagged is supplied)
+          MalformedTag             - the UpdateWindow tag value failed to parse
+          UnparseableCron          - a cron in the YAML used syntax the advisor cannot evaluate
+                                     (e.g. DayOfMonth restrictions, step values); manual review required
+          RingMissingFromSchedule  - a ring on at least one cluster's UpdateRing tag has no matching
+                                     row in the v1 schedule file (only emitted when -SchedulePath is supplied)
+          RingOrphanedInSchedule   - a ring listed in the v1 schedule file's `rings` column does NOT
+                                     appear on any cluster's UpdateRing tag (only emitted when -SchedulePath is supplied)
     .PARAMETER SubscriptionId
         Optional subscription scope passed to Resource Graph. If omitted, the
         query runs against every subscription the caller can read.
     .PARAMETER View
         'Audit' (default), 'Matrix', or 'Recommend'.
     .PARAMETER PipelineYamlPath
-        Required for -View Audit. Path to a single Step.5_apply-updates.yml file, or to
+        Optional for -View Audit. Path to a single Step.5_apply-updates.yml file, or to
         a folder that contains apply-updates*.yml files (typically the
-        Automation-Pipeline-Examples folder of your forked module).
+        Automation-Pipeline-Examples folder of your forked module). Drives the
+        cron-vs-UpdateWindow coverage check. May be supplied together with
+        -SchedulePath; at least one of the two is required for -View Audit.
+    .PARAMETER SchedulePath
+        Optional for -View Audit. Path to a v1 apply-updates-schedule.yml
+        (the file consumed by Resolve-AzLocalCurrentUpdateRing). When supplied,
+        the advisor performs a two-way ring diff between the schedule's `rings`
+        column and the fleet's UpdateRing tag values and emits one extra row
+        per discrepancy (RingMissingFromSchedule / RingOrphanedInSchedule).
+        Generate a starter schedule from the live fleet via:
+          New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\apply-updates-schedule.yml
+        Migrate an existing schedule to the current schema via:
+          Update-AzLocalApplyUpdatesScheduleConfig -Path .\apply-updates-schedule.yml -SchemaMigrate
     .PARAMETER Platform
         Which platform's recommendation to emit (-View Recommend). Default 'Both'.
     .PARAMETER LeadTimeMinutes
@@ -95,6 +111,9 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
         [string]$PipelineYamlPath,
 
         [Parameter(Mandatory = $false)]
+        [string]$SchedulePath,
+
+        [Parameter(Mandatory = $false)]
         [ValidateSet('GitHubActions', 'AzureDevOps', 'Both')]
         [string]$Platform = 'Both',
 
@@ -115,12 +134,22 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
         [switch]$PassThru
     )
 
-    # Pre-flight: -View Audit requires a YAML path to audit against.
-    if ($View -eq 'Audit' -and [string]::IsNullOrWhiteSpace($PipelineYamlPath)) {
-        throw "-PipelineYamlPath is required when -View is 'Audit'. Point it at Step.5_apply-updates.yml or the Automation-Pipeline-Examples folder."
+    # Pre-flight: -View Audit requires AT LEAST ONE of -PipelineYamlPath or -SchedulePath.
+    if ($View -eq 'Audit' -and
+        [string]::IsNullOrWhiteSpace($PipelineYamlPath) -and
+        [string]::IsNullOrWhiteSpace($SchedulePath)) {
+        throw "-View 'Audit' requires at least one of -PipelineYamlPath or -SchedulePath. Point -PipelineYamlPath at Step.5_apply-updates.yml (or the Automation-Pipeline-Examples folder) and/or -SchedulePath at your apply-updates-schedule.yml."
     }
     if ($PipelineYamlPath -and -not (Test-Path -LiteralPath $PipelineYamlPath)) {
         throw "PipelineYamlPath not found: $PipelineYamlPath"
+    }
+    if ($SchedulePath) {
+        if (-not (Test-Path -LiteralPath $SchedulePath)) {
+            throw "SchedulePath not found: $SchedulePath"
+        }
+        if ((Get-Item -LiteralPath $SchedulePath).PSIsContainer) {
+            throw "SchedulePath must point at a single apply-updates-schedule.yml file, not a folder: $SchedulePath"
+        }
     }
     if ($ExportPath) {
         try { Test-ExportPathWritable -Path $ExportPath | Out-Null }
@@ -163,6 +192,17 @@ resources
     if (-not $clusters) { $clusters = @() }
     Write-Log -Message "Resource Graph returned $($clusters.Count) cluster(s)." -Level Info
 
+    # Snapshot every distinct fleet UpdateRing BEFORE the optional -UpdateRingTag
+    # filter. The two-way ring diff (when -SchedulePath is supplied) compares
+    # the schedule file against the FULL fleet, not just the rings the operator
+    # chose to focus this run on.
+    $allFleetRings = @(
+        $clusters |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_.UpdateRing) } |
+            ForEach-Object { $_.UpdateRing.Trim() } |
+            Sort-Object -Unique
+    )
+
     # Optional UpdateRing filter.
     if ($UpdateRingTag) {
         $allowed = @{}
@@ -203,9 +243,12 @@ resources
     }
 
     # 4. If Audit: load YAML crons and check coverage.
+    #    -PipelineYamlPath is optional now (it can be omitted when only the
+    #    -SchedulePath two-way ring diff is wanted), so the YAML read is
+    #    guarded.
     $yamlCrons        = @()
     $parsedYamlCrons  = @()
-    if ($View -eq 'Audit') {
+    if ($View -eq 'Audit' -and -not [string]::IsNullOrWhiteSpace($PipelineYamlPath)) {
         $yamlCrons = @(Read-AzLocalApplyUpdatesYamlCrons -Path $PipelineYamlPath)
         Write-Log -Message "Discovered $($yamlCrons.Count) cron entry(ies) across apply-updates YAML file(s)." -Level Info
         $parsedYamlCrons = @($yamlCrons | ForEach-Object {
@@ -465,7 +508,82 @@ resources
                     })
                 }
             }
-            , @($rows | Sort-Object @{Expression={ switch ($_.Status) { 'Uncovered' {1} 'PartiallyCovered' {2} 'MalformedTag' {3} 'NoWindowTag' {4} 'UnparseableCron' {5} 'Covered' {6} default {7} } }}, UpdateRing, UpdateWindow)
+
+            # Two-way ring diff: schedule.rings vs fleet UpdateRing tags.
+            # Only runs when -SchedulePath is supplied. Uses $allFleetRings
+            # (the pre-filter snapshot) so the diff reflects the whole fleet,
+            # not just the rings the operator scoped this run to via
+            # -UpdateRingTag.
+            if (-not [string]::IsNullOrWhiteSpace($SchedulePath)) {
+                try {
+                    $scheduleCfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $SchedulePath
+                }
+                catch {
+                    Write-Log -Message "Failed to load schedule from '$SchedulePath': $($_.Exception.Message)" -Level Error
+                    throw
+                }
+
+                # Collect distinct rings referenced by the schedule. Each row's
+                # `rings` cell is a ';'-separated string (same convention used
+                # by Resolve-AzLocalCurrentUpdateRing).
+                $scheduleRingSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($srow in @($scheduleCfg.Schedule)) {
+                    foreach ($r in ($srow.rings -split ';')) {
+                        $tr = $r.Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($tr)) { [void]$scheduleRingSet.Add($tr) }
+                    }
+                }
+                $scheduleRings = @($scheduleRingSet)
+                Write-Log -Message "Schedule '$SchedulePath' references $($scheduleRings.Count) distinct ring(s): $($scheduleRings -join ', ')." -Level Info
+                Write-Log -Message "Fleet has $($allFleetRings.Count) distinct UpdateRing tag value(s): $($allFleetRings -join ', ')." -Level Info
+
+                # Wildcard handling: the example.yml mentions '***' (every
+                # cluster carrying an UpdateRing tag). The current resolver
+                # treats it as a literal string, so the audit also treats it
+                # as a literal - if you put '***' in your schedule, it shows
+                # up as an orphan ring unless your fleet has a cluster
+                # tagged literally '***'. This is intentional: it keeps the
+                # audit and the resolver in sync. When the resolver gains
+                # wildcard support, update this block accordingly.
+
+                $fleetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($fr in $allFleetRings) { [void]$fleetSet.Add($fr) }
+
+                # Rings on at least one cluster but absent from the schedule.
+                $missingFromSchedule = @($allFleetRings | Where-Object { -not $scheduleRingSet.Contains($_) })
+                # Rings in the schedule file but absent from the fleet.
+                $orphanedInSchedule  = @($scheduleRings  | Where-Object { -not $fleetSet.Contains($_) })
+
+                foreach ($ring in $missingFromSchedule) {
+                    $clusterCount = @($clusters | Where-Object { $_.UpdateRing -and ($_.UpdateRing.Trim() -ieq $ring) }).Count
+                    $rows.Add([PSCustomObject]@{
+                        UpdateRing      = $ring
+                        UpdateWindow    = ''
+                        ClusterCount    = $clusterCount
+                        Status          = 'RingMissingFromSchedule'
+                        Issue           = "Ring '$ring' is tagged on $clusterCount cluster(s) but no row in '$SchedulePath' lists it in its `rings` column. Resolve-AzLocalCurrentUpdateRing will NEVER return this ring, so apply-updates will never fire for these cluster(s)."
+                        Recommendation  = "Either add '$ring' to an existing schedule row's rings column (semicolon-separated) or run Update-AzLocalApplyUpdatesScheduleConfig (when a v1->vN migration recipe ships) to regenerate. Alternatively, retag the cluster(s) onto an existing scheduled ring."
+                        MatchingCrons   = @()
+                        RequiredCronUTC = ''
+                    })
+                }
+                foreach ($ring in $orphanedInSchedule) {
+                    $rows.Add([PSCustomObject]@{
+                        UpdateRing      = $ring
+                        UpdateWindow    = ''
+                        ClusterCount    = 0
+                        Status          = 'RingOrphanedInSchedule'
+                        Issue           = "Ring '$ring' is listed in '$SchedulePath' but no cluster in the fleet carries an UpdateRing='$ring' tag. The schedule row(s) that reference it will resolve to a ring nothing will match."
+                        Recommendation  = "Either tag at least one cluster with UpdateRing='$ring' (e.g. Set-AzureLocalClusterUpdateRingTag) or remove '$ring' from the schedule file's rings column(s)."
+                        MatchingCrons   = @()
+                        RequiredCronUTC = ''
+                    })
+                }
+                if ($missingFromSchedule.Count -eq 0 -and $orphanedInSchedule.Count -eq 0) {
+                    Write-Log -Message "Two-way ring diff: schedule and fleet ring sets match." -Level Success
+                }
+            }
+            , @($rows | Sort-Object @{Expression={ switch ($_.Status) { 'Uncovered' {1} 'PartiallyCovered' {2} 'MalformedTag' {3} 'RingMissingFromSchedule' {4} 'RingOrphanedInSchedule' {5} 'NoWindowTag' {6} 'UnparseableCron' {7} 'Covered' {8} default {9} } }}, UpdateRing, UpdateWindow)
         }
     }
 
@@ -475,10 +593,22 @@ resources
     if ($View -eq 'Audit') {
         $uncovered = @($output | Where-Object { $_.Status -in @('Uncovered','PartiallyCovered','MalformedTag') })
         $covered   = @($output | Where-Object { $_.Status -eq 'Covered' })
+        $missing   = @($output | Where-Object { $_.Status -eq 'RingMissingFromSchedule' })
+        $orphans   = @($output | Where-Object { $_.Status -eq 'RingOrphanedInSchedule' })
         Write-Log -Message ("  Covered (Ring,Window) pairs:   {0}" -f $covered.Count)   -Level Info
         Write-Log -Message ("  Uncovered (Ring,Window) pairs: {0}" -f $uncovered.Count) -Level $(if ($uncovered.Count -gt 0) { 'Warning' } else { 'Success' })
+        if (-not [string]::IsNullOrWhiteSpace($SchedulePath)) {
+            Write-Log -Message ("  Rings missing from schedule:   {0}" -f $missing.Count) -Level $(if ($missing.Count -gt 0) { 'Warning' } else { 'Success' })
+            Write-Log -Message ("  Rings orphaned in schedule:    {0}" -f $orphans.Count) -Level $(if ($orphans.Count -gt 0) { 'Warning' } else { 'Success' })
+        }
         foreach ($u in $uncovered) {
             Write-Log -Message ("    [{0}] {1} / {2} ({3} cluster(s)) -> {4}" -f $u.Status, $u.UpdateRing, $u.UpdateWindow, $u.ClusterCount, $u.Recommendation) -Level Warning
+        }
+        foreach ($m in $missing) {
+            Write-Log -Message ("    [{0}] {1} ({2} cluster(s)) -> {3}" -f $m.Status, $m.UpdateRing, $m.ClusterCount, $m.Recommendation) -Level Warning
+        }
+        foreach ($o in $orphans) {
+            Write-Log -Message ("    [{0}] {1} -> {2}" -f $o.Status, $o.UpdateRing, $o.Recommendation) -Level Warning
         }
     }
     elseif ($View -eq 'Matrix') {
