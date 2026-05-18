@@ -43,6 +43,7 @@ Azure Local REST API specification (includes update management endpoints): https
   - [7a. Sideloaded Payload Workflow (v0.7.1)](#7a-sideloaded-payload-workflow-v071)
   - [8. Assess Readiness and Health BEFORE Applying Updates (Recommended)](#8-assess-readiness-and-health-before-applying-updates-recommended)
 - [Available Functions](#available-functions)
+  - [Cmdlet Inventory & Design (Reads vs Writes)](#cmdlet-inventory--design-reads-vs-writes)
   - [`Connect-AzureLocalServicePrincipal`](#connect-azurelocalserviceprincipal)
   - [`Start-AzureLocalClusterUpdate`](#start-azurelocalclusterupdate)
   - [`Get-AzureLocalClusterUpdateReadiness`](#get-azurelocalclusterupdatereadiness)
@@ -732,6 +733,69 @@ New-AzureLocalFleetStatusHtmlReport `
 > 💡 **CI/CD**: this same assess -> remediate -> apply flow is wired into the pipeline examples under `Automation-Pipeline-Examples/`: see the `assess-update-readiness.yml` pipeline (report-only) and the `check-readiness` job inside `apply-updates.yml`.
 
 ## Available Functions
+
+### Cmdlet Inventory & Design (Reads vs Writes)
+
+This table is the canonical index of every public cmdlet the module ships. It is the answer to "what does each function actually do, and does it touch Azure?"
+
+**Design principle.** This module is **ARG-first for READs and ARM-fan-out for WRITEs**. Read cmdlets converge on a single Azure Resource Graph query no matter how many clusters are in scope, so they finish in seconds and do not need parallelism (no `-ThrottleLimit` parameter). Write cmdlets still call ARM (or Azure REST) once per cluster - ARG is a read-only plane and cannot mutate resources - so write cmdlets keep `-ThrottleLimit` to bound concurrent fan-out. Composite cmdlets that only delegate to other module cmdlets inherit the type of the cmdlets they call.
+
+**Type legend:**
+
+- **READ** - calls only Azure Resource Graph and/or Azure REST GET. No state changes.
+- **READ (composite)** - calls other READ cmdlets in this module, optionally writes a local report file.
+- **READ (validation)** - evaluates local inputs (schedules, pipeline YAML); no Azure calls.
+- **WRITE** - mutates Azure resources via ARM PUT/POST/PATCH or tag update.
+- **WRITE (local)** - writes only to the local filesystem (scaffolding/templates).
+- **AUTH** - establishes an Azure context; no data-plane calls.
+
+#### Azure data-plane: READ cmdlets
+
+| Cmdlet | Type | Target |
+|---|---|---|
+| [`Get-AzureLocalClusterInfo`](#get-azurelocalclusterinfo) | READ | Azure REST (single cluster lookup) |
+| [`Get-AzureLocalClusterInventory`](#get-azurelocalclusterinventory) | READ | Azure Resource Graph |
+| [`Get-AzureLocalAvailableUpdates`](#get-azurelocalavailableupdates) | READ | Azure Resource Graph |
+| [`Get-AzureLocalUpdateSummary`](#get-azurelocalupdatesummary) | READ | Azure Resource Graph |
+| [`Get-AzureLocalUpdateRuns`](#get-azurelocalupdateruns) | READ | Azure Resource Graph |
+| `Get-AzureLocalUpdateRunFailures` | READ | Azure Resource Graph |
+| [`Get-AzureLocalClusterUpdateReadiness`](#get-azurelocalclusterupdatereadiness) | READ | Azure Resource Graph |
+| [`Get-AzureLocalFleetHealthFailures`](#get-azurelocalfleethealthfailures) | READ | Azure Resource Graph |
+| [`Get-AzureLocalFleetProgress`](#get-azurelocalfleetprogress) | READ | Azure Resource Graph |
+| [`Test-AzureLocalClusterHealth`](#test-azurelocalclusterhealth) | READ | Azure Resource Graph |
+| [`Test-AzureLocalFleetHealthGate`](#test-azurelocalfleethealthgate) | READ (composite) | Azure (via `Test-AzureLocalClusterHealth`) |
+| [`Get-AzureLocalFleetStatusData`](#get-azurelocalfleetstatusdata) | READ (composite) | Azure (delegates to four READ cmdlets above) |
+| [`New-AzureLocalFleetStatusHtmlReport`](#new-azurelocalfleetstatushtmlreport) | READ (composite) | Azure + local HTML report file |
+| [`Export-AzureLocalFleetState`](#export-azurelocalfleetstate) | READ (composite) | Azure + local JSON state file |
+
+#### Azure data-plane: WRITE cmdlets
+
+| Cmdlet | Type | Target |
+|---|---|---|
+| [`Start-AzureLocalClusterUpdate`](#start-azurelocalclusterupdate) | **WRITE** | Azure REST (ARM `PUT .../updateRuns/{id}`) |
+| [`Stop-AzureLocalFleetUpdate`](#stop-azurelocalfleetupdate) | **WRITE** | Azure REST (ARM `POST .../updateRuns/{id}/cancel`) |
+| [`Resume-AzureLocalFleetUpdate`](#resume-azurelocalfleetupdate) | **WRITE** | Azure REST (ARM `POST .../updateRuns/{id}/retry`) |
+| [`Invoke-AzureLocalFleetOperation`](#invoke-azurelocalfleetoperation) | **WRITE** | Azure REST (generic per-cluster mutation) |
+| [`Set-AzureLocalClusterUpdateRingTag`](#set-azurelocalclusterupdateringtag) | **WRITE** | Azure tags (`UpdateRing`, `UpdateWindow`) |
+| [`Reset-AzureLocalSideloadedTag`](#reset-azurelocalsideloadedtag) | **WRITE** | Azure tags (`UpdateSideloaded`, `UpdateVersionInProgress`) |
+
+#### Local-only validation and scaffolding
+
+| Cmdlet | Type | Target |
+|---|---|---|
+| [`Test-AzureLocalApplyUpdatesScheduleCoverage`](#test-azurelocalapplyupdatesschedulecoverage) | READ (validation) | Local pipeline YAML + tag inputs |
+| [`Test-AzureLocalUpdateScheduleAllowed`](#test-azurelocalupdatescheduleallowed) | READ (validation) | Local schedule input |
+| [`Connect-AzureLocalServicePrincipal`](#connect-azurelocalserviceprincipal) | AUTH | Az PowerShell context (no data-plane calls) |
+| [`Copy-AzureLocalPipelineExample`](#copy-azurelocalpipelineexample) | WRITE (local) | Local file scaffold |
+| `Copy-AzureLocalItsmSample` | WRITE (local) | Local file scaffold |
+
+#### ITSM integration
+
+| Cmdlet | Type | Target |
+|---|---|---|
+| `Get-AzureLocalItsmConfig` | READ | Local ITSM config file |
+| `Test-AzureLocalItsmConnection` | READ | External ITSM endpoint |
+| `New-AzureLocalIncident` | **WRITE** | External ITSM (creates ticket) |
 
 ### `Copy-AzureLocalPipelineExample`
 
