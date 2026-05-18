@@ -5,6 +5,59 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.69] - 2026-05-18
+
+> **Hard break vs v0.7.68.** Schema `schemaVersion: 1` for the new `apply-updates-schedule.yml` is the first stable version of this file. There are no v0 -> v1 migration recipes shipped (the framework is in place; the recipes table is intentionally empty). If you were running an experimental schedule from earlier development builds, regenerate via `New-AzLocalApplyUpdatesScheduleConfig`.
+
+### Added
+
+- **Ring-aware apply-updates schedule (5 new cmdlets).** Day-grain `apply-updates-schedule.yml` (schema v1) is now the single source of truth for "which `UpdateRing` is eligible on a given UTC date". Three independent layers control "what runs when":
+  1. **This file (day-grain)** says WHICH `UpdateRing` tag values are eligible TODAY.
+  2. **The Step.5 cron schedule (intra-day-grain)** says HOW OFTEN the apply-updates job wakes up.
+  3. **The per-cluster `UpdateWindow` tag (minute-grain)** says WHEN, during an eligible day, the actual update is allowed to start.
+- `Get-AzLocalApplyUpdatesScheduleConfig` - parses + validates a schedule file. **Hard-fails with `'schedule:' list is empty - at least one row is required`** when the schedule has no active rows; this is the safety gate the apply-updates pipeline depends on (see the strawman generator below).
+- `Resolve-AzLocalApplyUpdatesScheduleRing` - maps a UTC date to the matching `UpdateRing(s)` using cycle-week math anchored at `cycleAnchorISOWeek` / `cycleAnchorYear`. **Union semantics**: when multiple rows match, the resolver concatenates their `rings` columns with `;` and passes the deduplicated result to `-UpdateRingValue`.
+- `Get-AzLocalApplyUpdatesScheduleNextFirings` - previews the next N days of resolved firings so operators can sanity-check the rotation before committing.
+- `New-AzLocalApplyUpdatesScheduleConfig` - generates a **STRAWMAN** schedule from the live fleet's `UpdateRing` tag values (or from `-Rings` for offline use). Every generated schedule row is emitted **commented out by design**, so the apply-updates pipeline hard-stops at the reader until the operator reviews and uncomments at least one row. Output mirrors the bundled `apply-updates-schedule.example.yml` instructional comments verbatim, including the Wikipedia ISO-week link and the 3-layer key concept; the worked example anchor is computed dynamically (`ISO Week 1 of <year> began on Monday, <date>`) but the actual anchor is the current ISO week so "week 1 of the cycle = the week you ran the generator".
+- `Update-AzLocalApplyUpdatesScheduleConfig` - idempotent migrator that walks an existing schedule through registered migration recipes. v0.7.69 ships the recipes table empty (no migrations needed yet); the framework is in place for future schema bumps.
+- **`Test-AzureLocalApplyUpdatesScheduleCoverage` gained `-SchedulePath`** (two-way ring diff). When supplied, the audit emits two new status rows: `RingMissingFromSchedule` (fleet ring with no schedule row) and `RingOrphanedInSchedule` (schedule ring no cluster carries). Both are surfaced in the summary table, the JUnit XML failure list, and the Markdown summary at the top of the Step.3 run page.
+
+### Changed (pipeline samples)
+
+- **`Step.5_apply-updates.yml` (GH + ADO)** now resolves the `UpdateRing` value from `apply-updates-schedule.yml` on every **scheduled** firing. Manual `workflow_dispatch` (GH) / non-`Schedule` `Build.Reason` (ADO) runs still honour the operator-supplied `-UpdateRingValue` input verbatim, so back-compat for ad-hoc maintenance is preserved.
+- **Concurrency:** Step.5 gained a workflow-level `concurrency:` block on GitHub Actions to prevent overlapping cron firings. Azure DevOps has no first-class YAML concurrency primitive; the ADO version documents the equivalent **Pipeline Settings -> Triggers -> Limit concurrent runs** option in a banner comment.
+- **`Step.3_apply-updates-schedule-audit.yml` (GH + ADO)** gained a `schedule_path` / `schedulePath` input (defaulted to the standard layout), a `debug` toggle for self-service triage (`$VerbosePreference=Continue`, `$DebugPreference=Continue`, plus a one-shot environment snapshot), and surfaces the new `RingMissingFromSchedule` / `RingOrphanedInSchedule` counts in the summary table + JUnit failure list. When `pipeline_path` is empty and `schedule_path` is set, the audit runs schedule-file-only (no cron-vs-tags audit).
+- **`apply-updates-schedule.example.yml`** ships as documentation only; pipeline-deployment cmdlets (`Copy-AzureLocalPipelineExample` / `Update-AzureLocalPipelineExample`) do **not** touch it. Operators run `New-AzLocalApplyUpdatesScheduleConfig` to generate a strawman starting from their live fleet's `UpdateRing` tag values.
+
+### Migration
+
+For a fleet that has already been tagged via `Set-AzureLocalClusterUpdateRingTag`:
+
+```powershell
+# 1. Generate a strawman schedule (all rows commented out by design)
+New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
+
+# 2. Open the file, REVIEW each strawman row, then UNCOMMENT the rows
+#    that match your change-control policy. Edit weeksInCycle /
+#    daysOfWeek / rings / notes as needed.
+
+# 3. Preview the rotation BEFORE committing
+Get-AzLocalApplyUpdatesScheduleNextFirings `
+  -Schedule (Get-AzLocalApplyUpdatesScheduleConfig -Path .\.github\apply-updates-schedule.yml)
+
+# 4. Refresh the pipeline YAMLs so they pick up the v0.7.69 resolver wiring
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+
+# 5. Audit the fleet against the schedule (two-way ring diff)
+Test-AzureLocalApplyUpdatesScheduleCoverage `
+  -PipelineYamlPath .\.github\workflows\Step.5_apply-updates.yml `
+  -SchedulePath     .\.github\apply-updates-schedule.yml `
+  -View Audit
+```
+
+Without an active (uncommented) row the apply-updates pipeline will hard-fail at the reader step with the exact remediation message; this is the v0.7.69 safety gate, not a regression.
+
 ## [0.7.68] - 2026-05-18
 
 ### Added
