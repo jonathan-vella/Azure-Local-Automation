@@ -2517,6 +2517,102 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
             }
         }
     }
+
+    Context 'Throttle handling (v0.7.68)' {
+        # v0.7.68 introduced a per-page retry loop for ARG 429 / RateLimitingException
+        # responses. The retry budget is -MaxRetries (default 5); the backoff is
+        # exponential with +/-20% jitter; non-throttle errors are NOT retried; and
+        # two module-scope diagnostic flags ($script:LastResourceGraphThrottled,
+        # $script:LastResourceGraphRetryCount) are reset per call and readable
+        # by callers/tests.
+
+        It 'Should retry on 429 / RateLimitingException and eventually succeed' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:ThrottleCalls = 0
+                function az {
+                    $script:ThrottleCalls++
+                    if ($script:ThrottleCalls -le 2) {
+                        Write-Error 'ERROR: RateLimitingException (429): Too many requests. Please retry after some time.'
+                        $global:LASTEXITCODE = 1
+                        return
+                    }
+                    $global:LASTEXITCODE = 0
+                    return '{"count":1,"data":[{"id":"recovered"}],"total_records":1}'
+                }
+
+                $rows = Invoke-AzResourceGraphQuery -Query 'resources' -RetryBaseSeconds 0.1 -WarningAction SilentlyContinue
+                $rows | Should -HaveCount 1
+                $rows[0].id | Should -Be 'recovered'
+                $script:ThrottleCalls | Should -Be 3
+                $script:LastResourceGraphThrottled | Should -BeTrue
+                $script:LastResourceGraphRetryCount | Should -Be 2
+            }
+        }
+
+        It 'Should give up and throw once -MaxRetries is exhausted on persistent throttling' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az {
+                    Write-Error 'ERROR: 429 TooManyRequests - rate limit exceeded'
+                    $global:LASTEXITCODE = 1
+                    return
+                }
+
+                {
+                    Invoke-AzResourceGraphQuery -Query 'resources' -MaxRetries 2 -RetryBaseSeconds 0.1 -WarningAction SilentlyContinue
+                } | Should -Throw -ExpectedMessage '*Azure Resource Graph query failed*'
+                $script:LastResourceGraphThrottled | Should -BeTrue
+                $script:LastResourceGraphRetryCount | Should -Be 2
+            }
+        }
+
+        It 'Should NOT retry on non-throttle errors (auth, bad KQL, permissions)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:NonThrottleCalls = 0
+                function az {
+                    $script:NonThrottleCalls++
+                    Write-Error 'ERROR: AuthenticationFailed - the access token is invalid'
+                    $global:LASTEXITCODE = 1
+                    return
+                }
+
+                {
+                    Invoke-AzResourceGraphQuery -Query 'resources' -MaxRetries 5 -RetryBaseSeconds 0.1
+                } | Should -Throw -ExpectedMessage '*Azure Resource Graph query failed*'
+                $script:NonThrottleCalls | Should -Be 1
+                $script:LastResourceGraphThrottled | Should -BeFalse
+                $script:LastResourceGraphRetryCount | Should -Be 0
+            }
+        }
+
+        It 'Should reset throttle diagnostic flags at the start of every call' {
+            InModuleScope AzLocal.UpdateManagement {
+                # First call: triggers a throttle + retry to set flags TRUE / >0.
+                $script:Phase1Calls = 0
+                function az {
+                    $script:Phase1Calls++
+                    if ($script:Phase1Calls -eq 1) {
+                        Write-Error 'ERROR: 429 throttled'
+                        $global:LASTEXITCODE = 1
+                        return
+                    }
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -RetryBaseSeconds 0.1 -WarningAction SilentlyContinue)
+                $script:LastResourceGraphThrottled | Should -BeTrue
+                $script:LastResourceGraphRetryCount | Should -Be 1
+
+                # Second call: clean (no throttle). Flags must reset back to FALSE / 0.
+                function az {
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                [void](Invoke-AzResourceGraphQuery -Query 'resources')
+                $script:LastResourceGraphThrottled | Should -BeFalse
+                $script:LastResourceGraphRetryCount | Should -Be 0
+            }
+        }
+    }
 }
 
 #endregion Internal Helper: Invoke-AzResourceGraphQuery
@@ -3346,6 +3442,105 @@ Describe 'Get-AzureLocalFleetProgress (ARG-batch dispatch)' {
 }
 
 #endregion Integration: Get-AzureLocalFleetProgress parallel dispatch
+
+#region Schema contract: Get-AzureLocalFleetStatusData
+
+# v0.7.68: schema-contract Pester tests for the top-level shape of the object
+# returned by Get-AzureLocalFleetStatusData. These tests do NOT exercise the
+# per-cluster collection logic (covered elsewhere) - they only assert the
+# documented public schema so consumers (the HTML report, downstream JSON,
+# automation harnesses) cannot be silently broken by an internal refactor.
+Describe 'Get-AzureLocalFleetStatusData (schema contract)' {
+
+    Context 'Top-level shape of the returned PSCustomObject' {
+
+        It 'Returns the documented top-level keys with the expected types' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Shadow native az so any incidental probe (account show etc.) succeeds.
+                function global:az { $global:LASTEXITCODE = 0; return '{}' }
+                Mock Test-AzCliAvailable { return $true }
+                Mock Install-AzGraphExtension { return $true }
+
+                # Stub the per-cluster ARM reads with minimal-but-valid payloads.
+                Mock Invoke-AzRestJson {
+                    param($Uri)
+                    if ($Uri -match '/updateSummaries/default') {
+                        return [PSCustomObject]@{ Data = [PSCustomObject]@{ properties = [PSCustomObject]@{
+                            state = 'AppliedSuccessfully'; healthState = 'Success'
+                            currentVersion = '12.2402.0'; currentSbeVersion = 'N/A'
+                            lastChecked = '2025-10-01T00:00:00Z'; lastUpdated = '2025-10-01T00:00:00Z'
+                            healthCheckResult = @()
+                        } } }
+                    }
+                    if ($Uri -match '/updates\?api-version') {
+                        return [PSCustomObject]@{ Data = [PSCustomObject]@{ value = @() } }
+                    }
+                    if ($Uri -match '/updateRuns\?api-version') {
+                        return [PSCustomObject]@{ Data = [PSCustomObject]@{ value = @() } }
+                    }
+                    # Cluster info
+                    return [PSCustomObject]@{ Data = [PSCustomObject]@{
+                        properties = [PSCustomObject]@{ status = 'Succeeded' }
+                    } }
+                }
+
+                $rid = '/subscriptions/s/resourceGroups/r/providers/Microsoft.AzureStackHCI/clusters/c1'
+                $result = Get-AzureLocalFleetStatusData -ClusterResourceIds @($rid)
+
+                $result | Should -Not -BeNullOrEmpty
+                # The documented top-level schema. If any of these names change,
+                # the HTML report and any JSON consumer will silently break.
+                $expectedKeys = @(
+                    'SchemaVersion','Timestamp','ModuleVersion','Scope','TotalClusters',
+                    'Readiness','ClusterDetails','LatestRuns','HealthResults','FailedClusters'
+                )
+                $actualKeys = @($result.PSObject.Properties.Name)
+                foreach ($k in $expectedKeys) { $actualKeys | Should -Contain $k }
+
+                $result.SchemaVersion  | Should -Be '1.0'
+                $result.ModuleVersion  | Should -Be $script:ModuleVersion
+                $result.TotalClusters  | Should -Be 1
+                $result.Scope          | Should -Match 'cluster\(s\) by Resource ID'
+                # Array-typed members must always be arrays (never $null), even
+                # when empty - downstream consumers .Count them without guards.
+                ,$result.Readiness      | Should -BeOfType ([object[]])
+                ,$result.ClusterDetails | Should -BeOfType ([object[]])
+                ,$result.LatestRuns     | Should -BeOfType ([object[]])
+                ,$result.HealthResults  | Should -BeOfType ([object[]])
+                ,$result.FailedClusters | Should -BeOfType ([object[]])
+                # Timestamp is an ISO-8601 UTC string the consumer .ParseExact()s.
+                $result.Timestamp | Should -Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
+            }
+        }
+
+        It 'Rejects an empty -ClusterResourceIds array at the parameter binder' {
+            InModuleScope AzLocal.UpdateManagement {
+                # The empty-fleet condition does NOT surface as a stale skeleton
+                # object (SchemaVersion=1.0, TotalClusters=0) - the parameter is
+                # decorated with [ValidateNotNullOrEmpty] so an explicitly empty
+                # caller is rejected at bind time. Callers that want the empty
+                # case must reach it via -AllClusters returning 0 resources,
+                # which surfaces a documented Write-Log warning + $null return.
+                {
+                    Get-AzureLocalFleetStatusData -ClusterResourceIds @() -WarningAction SilentlyContinue
+                } | Should -Throw
+            }
+        }
+
+        It 'ModuleVersion field tracks the module-scope $script:ModuleVersion constant' {
+            InModuleScope AzLocal.UpdateManagement {
+                # The HTML report and JSON consumers display this field as the
+                # provenance of the data file. It must reflect the actual loaded
+                # module - not a hardcoded literal that the maintainer forgot to
+                # bump.
+                $script:ModuleVersion | Should -Not -BeNullOrEmpty
+                $script:ModuleVersion | Should -Match '^\d+\.\d+\.\d+$'
+            }
+        }
+    }
+}
+
+#endregion Schema contract: Get-AzureLocalFleetStatusData
 
 #region Integration: Get-AzureLocalUpdateSummary parallel dispatch
 

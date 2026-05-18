@@ -135,7 +135,7 @@ If you are new to this module, work through these in order from a regular PowerS
 | 5 | Apply the update | [`Start-AzureLocalClusterUpdate`](#start-azurelocalclusterupdate) (single cluster or `-ScopeByUpdateRingTag` for a wave) |
 | 6 | Monitor and report | [`Get-AzureLocalUpdateRuns`](#get-azurelocalupdateruns), [`Get-AzureLocalFleetProgress`](#get-azurelocalfleetprogress), [`New-AzureLocalFleetStatusHtmlReport`](#new-azurelocalfleetstatushtmlreport) |
 
-> **For CI/CD?** Skip this table and go straight to [Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md) - it covers OIDC / Managed Identity / Service Principal setup, federated credentials, seven GitHub Actions workflows, and seven Azure DevOps pipelines (including the two new pipelines introduced in v0.7.65: `fleet-health-status` and `apply-updates-schedule-audit`).
+> **For CI/CD?** Skip this table and go straight to [Automation-Pipeline-Examples/README.md](./Automation-Pipeline-Examples/README.md) - it covers OIDC / Managed Identity / Service Principal setup, federated credentials, eight GitHub Actions workflows, and eight Azure DevOps pipelines (including the two pipelines introduced in v0.7.65: `Step.7_fleet-health-status` and `Step.3_apply-updates-schedule-audit`).
 
 ### Common workflows (function-invocation order)
 
@@ -171,26 +171,41 @@ v0.7.68 is the **ARG-first refactor** and **pipeline-rename** release. Seven fle
 
 - **ARG-only deep-error extraction** (9 levels deep into the `properties.state.progress` tree of `microsoft.azurestackhci/clusters/updates/updateRuns`) returns verbose error information at fleet scale without per-cluster Az SDK or REST shell-outs. Two views: `-View Summary` (one row per failed update run) and `-View Detail` (one row per leaf failure with the full breadcrumb to the failed step). Useful in `Step.5_apply-updates.yml` post-mortem reports and as a follow-up call after `Get-AzureLocalFleetProgress` reports failures.
 
+### New: `Update-AzureLocalPipelineExample` (marker-aware upgrade tool)
+
+- **Marker-aware merge tool** that refreshes a customer's copy of any bundled pipeline YAML to the version shipped with the current module **while preserving operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs**. Customer-side cron schedules in `schedule-triggers` and ITSM secret bindings in `itsm-secrets` (Step.5 only) survive a module upgrade; everything outside the markers is replaced with the new bundled content. Supports `-WhatIf`, `-DryRun`, multi-file batch mode, and emits a per-file change manifest so the operator can review the merge before committing. This is the operator-friendly upgrade path that `Copy-AzureLocalPipelineExample` (clean overwrite) does not provide.
+
 ### Pipeline samples - `Step.X_` rename
 
 - **All 16 bundled pipeline YAMLs renamed with a `Step.X_` ordering prefix** so they sort by execution order in a customer's repo (`Step.0_authentication-test.yml`, `Step.1_inventory-clusters.yml`, `Step.2_manage-updatering-tags.yml`, `Step.3_apply-updates-schedule-audit.yml`, `Step.4_assess-update-readiness.yml`, `Step.5_apply-updates.yml`, `Step.6_fleet-update-status.yml`, `Step.7_fleet-health-status.yml`). Both platforms (GitHub Actions + Azure DevOps). The rename matches the documented operator runbook order so an alphabetic listing in the consumer's IDE / repo browser tells the story end-to-end.
 
 - **Backwards compatibility for already-deployed consumers:** `Read-AzLocalApplyUpdatesYamlCrons` (the schedule-audit scanner) glob list expanded to match both new (`Step.5_apply-updates*.yml`) and legacy (`apply-updates*.yml`) names. A customer who upgrades the module but has not yet re-run `Copy-AzureLocalPipelineExample` will still see correct schedule-coverage audits.
 
+- **Each YAML's workflow display name now also carries the `Step.N - ` prefix.** GitHub Actions sidebar sorts workflows alphabetically by the YAML's top-level `name:` field, so the 8 workflows now read `Step.0 - Auth Smoke Test` ... `Step.7 - Fleet Health Status` and list in execution order. For Azure DevOps the leading title comment in each YAML carries the same prefix so the import wizard prefills the suggested pipeline definition name correctly. See [`Automation-Pipeline-Examples/README.md` section 1.1](./Automation-Pipeline-Examples/README.md#11-why-the-pipelines-are-named-stepn---description) for the full convention.
+
 ### Pipeline samples - Layer 1 customisation markers (scaffolding)
 
-- **Seven YAMLs now carry named `AZLOCAL-CUSTOMIZE` marker pairs** (6 main pipelines x `schedule-triggers`, plus `Step.5_apply-updates.yml` x `itsm-secrets`) wrapping the YAML regions operators commonly customise. Markers are pure YAML comments and have no runtime effect; they are scaffolding for a forthcoming `Update-AzureLocalPipelineExample` cmdlet that will do a marker-aware merge of operator edits across module upgrades. `Copy-AzureLocalPipelineExample` remains a clean overwrite tool.
+- **Seven YAMLs now carry named `AZLOCAL-CUSTOMIZE` marker pairs** (6 main pipelines x `schedule-triggers`, plus `Step.5_apply-updates.yml` x `itsm-secrets`) wrapping the YAML regions operators commonly customise. Markers are pure YAML comments and have no runtime effect; they back the new `Update-AzureLocalPipelineExample` cmdlet (also new in v0.7.68) that performs a marker-aware merge so operator edits inside the marker pairs survive a module upgrade. `Copy-AzureLocalPipelineExample` remains the clean-overwrite tool for first-time install / forced refresh.
 
 ### Pipeline migration
 
-If you have copied any of the bundled workflows into your repo, refresh them via:
+If you have copied any of the bundled workflows into your repo, the recommended upgrade path is the new marker-aware merge:
+
+```powershell
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+(Add `-WhatIf` first to preview the merge before writing files; add `-Force` to skip the per-file confirm prompt for non-interactive runs.)
+
+This brings in the new file names *and* the Layer 1 marker scaffolding **while preserving** operator-customised cron schedules and ITSM secret bindings inside `BEGIN-AZLOCAL-CUSTOMIZE` / `END-AZLOCAL-CUSTOMIZE` marker pairs in your already-deployed YAMLs.
+
+For a clean overwrite (first-time install or forced refresh that discards local edits), keep using `Copy-AzureLocalPipelineExample`:
 
 ```powershell
 Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
 Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
 ```
-
-This brings in the new file names *and* the Layer 1 marker scaffolding. Operator-customised cron schedules and ITSM secret bindings in your already-deployed YAMLs are **not** automatically preserved by `Copy-AzureLocalPipelineExample` (which is a clean overwrite); the forthcoming `Update-AzureLocalPipelineExample` cmdlet will provide the marker-aware merge.
 
 ### Inventory & design doc
 
