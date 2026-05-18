@@ -1053,6 +1053,83 @@ This is the canonical "nothing wired -> staged rollout working" sequence. Follow
 +-----------------------------------------------------------------------+
 ```
 
+#### Artifact handoffs at a glance
+
+Every pipeline emits one or more artifacts (CSV / Markdown / JUnit XML / HTML). Downstream pipelines consume these artifacts as inputs. The map below shows which artifact crosses which boundary - useful when you are wiring approvals, audit trails, or ITSM forwarding (section 7) around the runbook.
+
+```text
+                                            +-------------------------------+
+                                            |  inventory-clusters.yml       |
+                                            |  (read-only ARG)              |
+                                            +-------------------------------+
+                                                          |
+                                                          v  out: cluster-inventory.csv
+                                                          |  (one row per cluster, current tags)
+                                                          |
+                                            +-------------------------------+
+                                            |  Operator: edit CSV           |
+                                            |  (UpdateRing / UpdateWindow / |
+                                            |   UpdateExclusions columns)   |
+                                            +-------------------------------+
+                                                          |
+                                                          v  in:  cluster-inventory.csv (edited)
+                                                          |  out: cluster-inventory.csv (echoed
+                                                          |       as run artifact for audit)
+                                                          |
+                                            +-------------------------------+
+                                            |  manage-updatering-tags.yml   |
+                                            |  (writes Microsoft.Resources/ |
+                                            |   tags - DryRun first)        |
+                                            +-------------------------------+
+                                                          |
+                                                          v  (cluster tags now committed)
+                                                          |
+                                            +-------------------------------+
+                                            |  assess-update-readiness.yml  |
+                                            |  (read-only; per-ring         |
+                                            |   gating evaluation)          |
+                                            +-------------------------------+
+                                                          |
+                                                          v  out: cluster-readiness.csv
+                                                          |  (ClusterResourceId, ReadyForUpdate,
+                                                          |   BlockingReasons, HealthState, ...)
+                                                          |
+                                            +-------------------------------+
+                                            |  apply-updates.yml            |
+                                            |  in:  cluster-readiness.csv   |
+                                            |  (consumes ClusterResourceId  |
+                                            |   filtered to ReadyForUpdate) |
+                                            +-------------------------------+
+                                                          |
+                                                          v  out: apply-updates-results.csv
+                                                          |       apply-updates-results.xml (JUnit)
+                                                          |       apply-updates-summary.html
+                                                          |
+                  +------------------------+--------------+---------------+--------------------------+
+                  |                        |                              |                          |
+                  v                        v                              v                          v
+   +-------------------------+ +---------------------------+ +-------------------------------+ +---------------------------+
+   | fleet-update-status.yml | | fleet-health-status.yml   | | apply-updates-schedule-audit  | | (Optional) ITSM forwarder |
+   | daily 06:00 UTC         | | daily 07:00 UTC           | | .yml                          | | (section 7)               |
+   | out: fleet-update-      | | out: fleet-health-        | | weekly Mon 05:00 UTC          | | consumes:                 |
+   |      status.csv         | |      failures.csv         | | in:  apply-updates.yml        | |  - apply-updates-         |
+   |      fleet-update-      | |      fleet-health-        | |      cron entries             | |    results.csv            |
+   |      status.html        | |      summary.html         | | out: schedule-coverage-       | |  - fleet-health-          |
+   +-------------------------+ +---------------------------+ |      audit.csv                | |    failures.csv           |
+                                                             |      schedule-coverage-       | +---------------------------+
+                                                             |      recommend.md             |
+                                                             |      schedule-coverage-       |
+                                                             |      audit.xml (JUnit)        |
+                                                             +-------------------------------+
+```
+
+Key handoffs to remember:
+
+- **`cluster-inventory.csv`** is the only artifact the operator edits by hand. Everything downstream is machine-generated.
+- **`cluster-readiness.csv`** carries `ClusterResourceId` from Assess into Apply. Apply does not re-query ARG to pick targets - it consumes the ID column directly, so a stale or malformed readiness CSV silently produces zero ready clusters. Always treat the most recent readiness run as the source of truth for the next Apply.
+- **`apply-updates-results.xml`** (JUnit) is what surfaces in the Tests tab on GH Actions and Azure DevOps. Failed-first ordering means actionable rows appear at the top of the reporter UI.
+- **`schedule-coverage-recommend.md`** is the only artifact intended to be pasted by hand - directly back into `apply-updates.yml`'s `on.schedule` / ADO trigger block when the audit reports `Uncovered` or `PartiallyCovered` rows.
+
 ### 6.1 Inventory the estate
 
 Run **Inventory Clusters** with no parameters. It exports a CSV with one row per cluster and the current value of every update-management tag.

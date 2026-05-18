@@ -5700,5 +5700,35 @@ Describe 'v0.7.67 doc drift - old UpdateRing regex' {
     }
 }
 
+Describe 'v0.7.67 schedule-audit summary - cron fixes first when issues exist' {
+    # Phase 4.3: when Uncovered / PartiallyCovered / MalformedTag / UnparseableCron > 0,
+    # the schedule-audit pipelines must surface the recommended cron block ABOVE the
+    # detail table so operators can act without scrolling. Guardrail asserts that both
+    # YAMLs carry the conditional structure (hasIssues + 'Action required' header).
+    $moduleRoot = Split-Path $PSScriptRoot -Parent
+    $yamlCases = @(
+        @{
+            Platform = 'github-actions'
+            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\github-actions\apply-updates-schedule-audit.yml')
+        }
+        @{
+            Platform = 'azure-devops'
+            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\azure-devops\apply-updates-schedule-audit.yml')
+        }
+    )
+
+    It '[<Platform>] schedule-audit YAML emits recommendation before audit detail when issues exist' -ForEach $yamlCases {
+        Test-Path $YamlPath | Should -BeTrue -Because "expected schedule-audit YAML at $YamlPath"
+        $content = Get-Content -Path $YamlPath -Raw
+        $content | Should -Match '\$hasIssues\s*=\s*\(\(\[int\]\$uncovered\)' -Because 'Phase 4.3 conditional must compute $hasIssues from the four issue counts.'
+        $content | Should -Match 'Action required - paste these cron entries into apply-updates\.yml' -Because 'Phase 4.3 must surface a top-of-summary "Action required" header when issues exist.'
+        $idxActionRequired = $content.IndexOf('Action required - paste these cron entries')
+        $idxAuditDetail    = $content.IndexOf('### Audit Detail')
+        $idxActionRequired | Should -BeGreaterThan -1
+        $idxAuditDetail    | Should -BeGreaterThan -1
+        $idxActionRequired | Should -BeLessThan $idxAuditDetail -Because 'When issues exist, recommendation block must precede the detail table in the summary script.'
+    }
+}
+
 #endregion v0.7.67 CI/CD parity + doc-drift regression suite
 

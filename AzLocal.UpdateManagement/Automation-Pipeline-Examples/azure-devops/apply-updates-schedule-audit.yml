@@ -247,6 +247,12 @@ stages:
         $rows = if (Test-Path $rowsPath) { @(Import-Csv -Path $rowsPath) } else { @() }
         $reco = if (Test-Path $recoPath) { Get-Content -Path $recoPath -Raw } else { '' }
 
+        # v0.7.67: when there is at least one Uncovered / PartiallyCovered / MalformedTag /
+        # UnparseableCron row, surface the ready-to-paste cron block at the TOP of the summary
+        # so operators can act without scrolling past the detail table first. Counts table
+        # remains the very first thing so the run status is still readable at a glance.
+        $hasIssues = (([int]$uncovered) + ([int]$partial) + ([int]$malformed) + ([int]$unparseable)) -gt 0
+
         $md = @"
         ## Apply-Updates Schedule Coverage Audit
 
@@ -259,13 +265,19 @@ stages:
         | **MalformedTag** | $malformed |
         | **UnparseableCron** | $unparseable |
 
-        ### Audit Detail
         "@
 
+        if ($hasIssues -and $reco) {
+            $md += "`n### Action required - paste these cron entries into apply-updates.yml`n"
+            $md += "`n``````yaml`n" + $reco + "`n```````n"
+        }
+
+        $md += "`n### Audit Detail`n"
+
         if ($rows.Count -eq 0) {
-            $md += "`n`n*No tagged clusters found - nothing to audit.*`n"
+            $md += "`n*No tagged clusters found - nothing to audit.*`n"
         } else {
-            $md += "`n`n| Status | UpdateRing | UpdateWindow | Clusters | Required Cron (UTC) | Recommendation |`n"
+            $md += "`n| Status | UpdateRing | UpdateWindow | Clusters | Required Cron (UTC) | Recommendation |`n"
             $md += "|--------|------------|--------------|---------:|----------------------|----------------|`n"
             foreach ($r in ($rows | Select-Object -First 100)) {
                 $md += ('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $r.Status, $r.UpdateRing, $r.UpdateWindow, $r.ClusterCount, $r.RequiredCronUTC, $r.Recommendation) + "`n"
@@ -275,11 +287,16 @@ stages:
             }
         }
 
-        $md += "`n### Recommended Schedule (copy into apply-updates.yml)`n"
-        if ($reco) {
-            $md += "`n``````yaml`n" + $reco + "`n```````n"
-        } else {
-            $md += "`n*Recommendation output unavailable.*`n"
+        # When there are no issues, still print the recommendation block at the bottom for
+        # operators who want the canonical cron list as a reference. When there are issues
+        # we already printed it at the top so skip the duplicate.
+        if (-not $hasIssues) {
+            $md += "`n### Recommended Schedule (copy into apply-updates.yml)`n"
+            if ($reco) {
+                $md += "`n``````yaml`n" + $reco + "`n```````n"
+            } else {
+                $md += "`n*Recommendation output unavailable.*`n"
+            }
         }
 
         $summaryFile = Join-Path '$(reportsPath)' 'schedule-coverage-summary.md'
