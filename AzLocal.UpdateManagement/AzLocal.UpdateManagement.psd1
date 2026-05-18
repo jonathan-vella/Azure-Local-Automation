@@ -95,6 +95,7 @@
         'Public/Get-AzureLocalFleetStatusData.ps1',
         'Public/Get-AzureLocalFleetHealthFailures.ps1',
         'Public/Get-AzureLocalItsmConfig.ps1',
+        'Public/Get-AzureLocalUpdateRunFailures.ps1',
         'Public/Get-AzureLocalUpdateRuns.ps1',
         'Public/Get-AzureLocalUpdateSummary.ps1',
         'Public/Invoke-AzureLocalFleetOperation.ps1',
@@ -149,7 +150,9 @@
         # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
         'Get-AzureLocalFleetHealthFailures',
         # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
-        'Test-AzureLocalApplyUpdatesScheduleCoverage'
+        'Test-AzureLocalApplyUpdatesScheduleCoverage',
+        # Update Run Failures (v0.7.68) - ARG-only deep-error extraction (9 levels deep) for fleet-scale verbose error information
+        'Get-AzureLocalUpdateRunFailures'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.

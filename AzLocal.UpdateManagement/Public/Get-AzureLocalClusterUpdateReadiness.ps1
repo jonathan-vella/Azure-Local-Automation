@@ -84,6 +84,8 @@ function Get-AzureLocalClusterUpdateReadiness {
         [string]$ResourceGroupName,
 
         [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
         [string]$SubscriptionId,
 
         [Parameter(Mandatory = $false)]
@@ -138,7 +140,9 @@ function Get-AzureLocalClusterUpdateReadiness {
         $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' $ringFilter | project id, name, resourceGroup, subscriptionId, tags"
         
         try {
-            $clusterRows = Invoke-AzResourceGraphQuery -Query $argQuery
+            $argParams = @{ Query = $argQuery }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $clusterRows = Invoke-AzResourceGraphQuery @argParams
 
             if (-not $clusterRows -or $clusterRows.Count -eq 0) {
                 Write-Log -Message "No clusters found with tag 'UpdateRing' = '$UpdateRingValue'" -Level Warning

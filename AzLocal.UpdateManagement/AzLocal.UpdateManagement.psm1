@@ -264,5 +264,7 @@ Export-ModuleMember -Function @(
     # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
     'Get-AzureLocalFleetHealthFailures',
     # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
-    'Test-AzureLocalApplyUpdatesScheduleCoverage'
+    'Test-AzureLocalApplyUpdatesScheduleCoverage',
+    # Update Run Failures (v0.7.68) - ARG-only deep-error extraction (9 levels deep) for fleet-scale verbose error information
+    'Get-AzureLocalUpdateRunFailures'
 )

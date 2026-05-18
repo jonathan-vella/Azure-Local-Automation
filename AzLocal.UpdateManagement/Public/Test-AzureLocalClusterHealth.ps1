@@ -86,6 +86,8 @@ function Test-AzureLocalClusterHealth {
         [string]$ResourceGroupName,
 
         [Parameter(Mandatory = $false, ParameterSetName = 'ByName')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByResourceId')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'ByTag')]
         [string]$SubscriptionId,
 
         [Parameter(Mandatory = $false)]
@@ -146,7 +148,9 @@ function Test-AzureLocalClusterHealth {
         $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingValue
         $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' $ringFilter | project id, name, resourceGroup, subscriptionId"
         try {
-            $clusters = Invoke-AzResourceGraphQuery -Query $argQuery
+            $argParams = @{ Query = $argQuery }
+            if ($SubscriptionId) { $argParams['SubscriptionId'] = $SubscriptionId }
+            $clusters = Invoke-AzResourceGraphQuery @argParams
         }
         catch {
             Write-Log -Message "Azure Resource Graph query failed: $($_.Exception.Message)" -Level Error
