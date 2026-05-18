@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.66'
+    ModuleVersion = '0.7.67'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')

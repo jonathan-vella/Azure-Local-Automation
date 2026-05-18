@@ -64,7 +64,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.66'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.67'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
@@ -210,6 +210,12 @@ jobs:
                 [void]$sb.AppendLine(("      <failure type=`"{0}`" message=`"{1}`">Recommendation: {2}{3}Cluster count: {4}</failure>" -f $row.Status, $issue, $reco, [Environment]::NewLine, $row.ClusterCount))
             }
             [void]$sb.AppendLine('    </testcase>')
+        }
+        # v0.7.67: emit a single passing testcase when the fleet has no tagged
+        # clusters so the GitHub Actions test reporter shows the audit as
+        # "passed (1/1)" instead of "no tests found". Matches the ADO behaviour.
+        if ($audit.Count -eq 0) {
+            [void]$sb.AppendLine('    <testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />')
         }
         [void]$sb.AppendLine('  </testsuite>')
         [void]$sb.AppendLine('</testsuites>')

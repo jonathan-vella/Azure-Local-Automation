@@ -5,6 +5,29 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.67] - 2026-05-18
+
+### Added (CI/CD parity and documentation)
+
+- **GitHub Actions schedule-audit pipeline now emits a passing testcase when the fleet has no tagged clusters.** `apply-updates-schedule-audit.yml` (GitHub Actions) previously wrote an empty `<testsuite>` to `schedule-coverage-audit.xml` whenever there were no `(UpdateRing, UpdateWindow)` rows to evaluate. `dorny/test-reporter` then surfaced the run as "no tests found", which is indistinguishable from a misconfigured reporter step. The pipeline now writes `<testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />` for the zero-row case, matching the existing Azure DevOps behaviour. Operators get a clean "passed (1/1)" reading in the Tests tab regardless of whether the fleet has any tagged clusters yet, which removes the daily false-alarm during onboarding (no clusters tagged) and after fleet-wide tag clean-ups.
+
+- **New maintainer doc: [`docs/RELEASE-PROCESS.md`](docs/RELEASE-PROCESS.md).** Documents the staged unlisted-release flow the module uses (publish -> immediately unlist -> validate against a test repo with `REQUIRED_MODULE_VERSION` exact-pinned to the candidate -> list after validation passes), the verification commands for each stage, and the Pester guardrails that the release flow relies on. This puts the release rules in the repo rather than in tribal knowledge / chat history. Pipeline consumers do not need this doc; module maintainers do.
+
+- **`Automation-Pipeline-Examples/README.md` section 11 (Security model) now documents per-job `permissions:` blocks as an intentional security feature.** Every shipped GitHub Actions workflow declares its own job-level `permissions:` block (`id-token: write`, `contents: read`, `checks: write` only where needed). The new bullet calls out that consumers should not lift those blocks to a top-level `permissions:` block when copying samples, and explains how the per-job shape (a) limits token scope to exactly the job that needs the write and (b) lets you keep `id-token: write` off read-only summary jobs. Also documents that the samples are compatible with the recommended *Settings -> Actions -> General -> Workflow permissions = Read repository contents and packages permissions* hardening, because every job that needs a write already declares it explicitly.
+
+### Changed (consistency)
+
+- **All Azure DevOps sample pipelines now use the same `azureSubscription:` placeholder.** Four files (`assess-update-readiness.yml`, `fleet-health-status.yml`, `fleet-update-status.yml`, `apply-updates-schedule-audit.yml`) previously used `'YOUR-SERVICE-CONNECTION-NAME'` while the other four ADO YAMLs (`apply-updates.yml`, `manage-updatering-tags.yml`, `inventory-clusters.yml`, `auth-smoke-test.yml`) used `'AzureLocal-ServiceConnection'` with an `# Update with your service connection name` comment. All eight ADO pipelines now use `'AzureLocal-ServiceConnection'` + comment - the placeholder matches the value documented in section 3.2 of the pipeline README (and matches the `New-AzureServiceConnection` example name), so an operator who follows the auth setup verbatim no longer has to find-and-replace anything in the YAMLs. Consumers who keep an existing service connection with a different name override at copy time.
+
+### Pipeline migration
+
+If you have copied any of the bundled workflows into your repo, refresh them via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+```
+
 ## [0.7.66] - 2026-05-18
 
 ### Fixed (critical)

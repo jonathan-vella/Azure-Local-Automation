@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.66' {
-            $script:ModuleInfo.Version | Should -Be '0.7.66'
+        It 'Should have version 0.7.67' {
+            $script:ModuleInfo.Version | Should -Be '0.7.67'
         }
 
         It 'Should export exactly 27 functions' {
@@ -5637,4 +5637,68 @@ Describe 'v0.7.66 Pipeline update_ring inputs document multi-value and wildcard 
 
 #endregion v0.7.66 UX + Multi-Value UpdateRing regression suite
 
+
+#region v0.7.67 CI/CD parity + doc-drift regression suite
+
+Describe 'v0.7.67 schedule-audit zero-row JUnit parity' {
+    # v0.7.67 regression guard: apply-updates-schedule-audit.yml previously
+    # behaved differently across CI platforms when the fleet had no tagged
+    # clusters. Azure DevOps emitted a passing testcase ("No tagged clusters
+    # found - nothing to audit") so the run rendered as passed (1/1) in the
+    # Tests tab. GitHub Actions wrote an EMPTY <testsuite>, which
+    # dorny/test-reporter surfaced as "no tests found" - indistinguishable
+    # from a broken reporter step. v0.7.67 brings the GH workflow into parity
+    # by writing the same passing testcase for the zero-row case. This test
+    # guards both files so neither side regresses.
+    BeforeAll {
+        $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
+    }
+
+    It 'GitHub Actions schedule-audit YAML emits the zero-row testcase' {
+        $yml = Join-Path $script:examplesRoot 'github-actions\apply-updates-schedule-audit.yml'
+        Test-Path -LiteralPath $yml | Should -BeTrue -Because "the GH schedule-audit YAML should exist at $yml"
+        $content = Get-Content -LiteralPath $yml -Raw
+        $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'v0.7.67 added the zero-row JUnit testcase to the GH schedule-audit YAML to match ADO parity'
+    }
+
+    It 'Azure DevOps schedule-audit YAML still emits the zero-row testcase' {
+        $yml = Join-Path $script:examplesRoot 'azure-devops\apply-updates-schedule-audit.yml'
+        Test-Path -LiteralPath $yml | Should -BeTrue -Because "the ADO schedule-audit YAML should exist at $yml"
+        $content = Get-Content -LiteralPath $yml -Raw
+        $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'the ADO schedule-audit YAML has emitted the zero-row JUnit testcase since v0.7.0; the v0.7.67 parity work must not regress it'
+    }
+}
+
+Describe 'v0.7.67 doc drift - old UpdateRing regex' {
+    # v0.7.67 doc-drift guard: v0.7.66 widened the UpdateRing ValidatePattern
+    # from the strict single-token form '^[A-Za-z0-9_-]{1,64}$' to the
+    # semicolon-list + wildcard form
+    # '^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$'. The strict
+    # regex must NOT appear in any consumer-facing README. The CHANGELOG.md
+    # historical entry for the regex change is the only legitimate place
+    # where the old regex may still appear (as a historical reference).
+    # This test scans non-CHANGELOG markdown for the literal old regex.
+    It 'No consumer-facing README documents the v0.7.65 strict-single-token UpdateRing regex' {
+        $oldRegexLiteral = '^[A-Za-z0-9_-]{1,64}$'
+        $moduleRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..')).Path
+        # CHANGELOG.md is the historical record - it MAY contain the old
+        # regex when documenting the change. Everywhere else, it is drift.
+        $targets = @(
+            Join-Path $moduleRoot 'README.md'
+            Join-Path $moduleRoot 'Automation-Pipeline-Examples\README.md'
+        )
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($md in $targets) {
+            if (-not (Test-Path -LiteralPath $md)) { continue }
+            $content = Get-Content -LiteralPath $md -Raw
+            if ($content -and $content.Contains($oldRegexLiteral)) {
+                $offenders.Add($md.Substring($moduleRoot.Length).TrimStart('\','/'))
+            }
+        }
+        $detail = if ($offenders.Count -gt 0) { $offenders -join [Environment]::NewLine } else { '(no offenders)' }
+        $offenders.Count | Should -Be 0 -Because "v0.7.66 widened the UpdateRing regex to accept semicolon-separated lists and the '***' wildcard. Any non-CHANGELOG README that still documents the strict single-token regex '$oldRegexLiteral' will mislead consumers. Findings:$([Environment]::NewLine)$detail"
+    }
+}
+
+#endregion v0.7.67 CI/CD parity + doc-drift regression suite
 
