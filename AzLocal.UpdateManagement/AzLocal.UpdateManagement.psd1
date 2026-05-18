@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.65'
+    ModuleVersion = '0.7.66'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -38,6 +38,7 @@
         'Private/ConvertTo-SafeCsvCollection.ps1',
         'Private/ConvertTo-SafeCsvField.ps1',
         'Private/ConvertTo-ScrubbedCliOutput.ps1',
+        'Private/ConvertTo-AzLocalUpdateRingKqlFilter.ps1',
         'Private/Export-ResultsToJUnitXml.ps1',
         'Private/Format-AzLocalDurationHuman.ps1',
         'Private/Format-AzLocalIncidentBody.ps1',
@@ -176,189 +177,185 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.65 - Tag-write RBAC narrowed; fleet status summary fix; new Fleet Health Status + Apply-Updates Schedule Coverage Audit pipelines
+## Version 0.7.66 - cp1252 stderr leak in fleet health ARG calls + schedule-audit pipeline default path fix
+
+### Fixed (critical)
+
+- Get-AzureLocalFleetHealthFailures (and any other caller of the
+  private Invoke-AzResourceGraphQuery helper) failed JSON parsing
+  on hosted Windows runners when the Azure CLI Python layer emitted
+  a cp1252 encoding warning to stderr ("WARNING: Unable to encode
+  the output with cp1252 encoding..."). The captured 2>&1 stream
+  prepended the WARNING line to the JSON body, and ConvertFrom-Json
+  threw "Unexpected character encountered while parsing value: W."
+  THE ACTUAL FIX is the post-capture stream split: stderr lines
+  surface as ErrorRecord objects under 2>&1, stdout lines as
+  strings, and only the string stream is fed to ConvertFrom-Json.
+  (--only-show-errors was already passed since v0.7.2 but the
+  cp1252 encode warning still leaks through on some character
+  paths.) PYTHONIOENCODING=utf-8 is set as cosmetic defence-in-
+  depth only - structural no-op for stock az.cmd which launches
+  python -I (forces python to ignore PYTHON* env vars per
+  Azure/azure-cli#28497 and the v0.7.2 analysis). Matches the
+  existing Invoke-AzRestJson hardening from v0.7.2.
+- apply-updates-schedule-audit pipeline samples (GitHub Actions and
+  Azure DevOps) shipped with a pipeline_path default of
+  'AzLocal.UpdateManagement/Automation-Pipeline-Examples' - a path
+  that only exists in this module's source repo, never in a
+  consumer repo. Every default-trigger run therefore failed with
+  "PipelineYamlPath '...' does not exist on the runner" before the
+  schedule advisor could write its JUnit, which then crashed
+  dorny/test-reporter with "No test report files were found".
+  Defaults now match the standard consumer layout:
+  '.github/workflows' on GH, '.azure-pipelines' on ADO. The
+  path-missing error message also lists which common pipeline
+  folders DO exist in the repo so the operator knows what to
+  pass via workflow_dispatch / queue-time override.
+
+### Pipeline migration
+
+If you have copied apply-updates-schedule-audit.yml into your repo,
+refresh via:
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
+  Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+
+### Added (UX + capability)
+
+- Status emojis in the Fleet Update Status summary. Both
+  fleet-update-status.yml files now render the Critical Health
+  and Primary Status tables with green tick / red cross / refresh
+  / yellow circle / info glyphs in place of the legacy
+  [ok]/[fail]/[ready]/[running]/[blocked] bracket markers.
+- Generation timestamp in the Fleet Update Status H2 heading
+  ("## Fleet Update Status Summary  _(generated YYYY-MM-DD
+  HH:MM:SS UTC)_") so operators see at a glance when the data
+  was collected.
+- Failed clusters appear before passing clusters in the
+  fleet-update-status JUnit per-cluster block (failed first then
+  passed, both alphabetical).
+- Every downloadable artifact across all pipelines now carries a
+  unique UTC timestamp suffix (azlocal-<purpose>_yyyyMMdd_HHmmss).
+  Re-running on the same day no longer clobbers earlier downloads.
+  Affected: fleet-status-reports, fleet-health-reports, cluster-
+  inventory, updatering-tag-logs, ScheduleCoverageReports,
+  readiness-report, readiness-assessment, update-logs, itsm-results.
+- Pipeline UpdateRing inputs now accept a single value, a
+  semicolon-delimited list (Prod;Ring2), or the literal '***'
+  (three stars - deliberate gesture) to match every cluster
+  that HAS a non-empty UpdateRing tag. Untagged clusters are
+  excluded so the wildcard preserves the existing opt-in gate.
+  Single '*' / '**' / '****' / '*Wave1' are REJECTED by the
+  cmdlet's [ValidatePattern] so a one-char typo cannot scope
+  a fleet-wide write. The 14 cmdlets that take -UpdateRingValue
+  and Get-AzureLocalFleetHealthFailures (-UpdateRingTag) now
+  share regex ^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$.
+  The ADO apply-updates.yml lost its closed values: enum so the
+  new forms can be used at queue time.
+- New private helper ConvertTo-AzLocalUpdateRingKqlFilter centralises
+  KQL clause construction for the three forms above. Returns
+  '| where isnotempty(tags[''UpdateRing''])' for '***' (matches
+  only tagged clusters), a =~ clause for a single ring, and an
+  in~ clause for a list. Embedded single quotes are KQL-escaped.
+  All 12 ARG-query call sites in the public cmdlets now go
+  through this helper.
+- Pester regression coverage for every v0.7.66 feature (emoji
+  glyphs, generated timestamp heading, failed-first bucketing,
+  artifact timestamp suffix on GH + ADO, ValidatePattern accept/
+  reject incl. '*'/'**'/'****' rejection cases, ConvertTo-
+  AzLocalUpdateRingKqlFilter helper incl. '***' -> isnotempty,
+  '***' wildcard doc on every exposed update_ring input).
+
+## Version 0.7.65 - Tag-write RBAC narrowed; fleet status summary fix; new Fleet Health Status + Schedule Coverage Audit pipelines
 
 ### Added
 
 - Get-AzureLocalFleetHealthFailures: new cmdlet that surfaces 24h
   health-check failures fleet-wide via Azure Resource Graph.
   -View Detail|Summary, -Severity Critical|Warning|All,
-  -UpdateRingTag, -ExportPath. The 24h health checks run on
-  Azure Local clusters even when no update is in flight, so this
-  is the dedicated entry point for fleet-wide health triage that
-  exists outside the update workflow.
-- Test-AzureLocalApplyUpdatesScheduleCoverage: new read-only
-  cmdlet + apply-updates-schedule-audit.yml pipelines (GH + ADO,
-  weekly Mon 05:00 UTC). Flags (UpdateRing,UpdateWindow) tag
-  pairs no cron in apply-updates.yml will reach. Three views:
-  Audit, Matrix, Recommend. See README section 8.3 for the
-  end-to-end runbook.
+  -UpdateRingTag, -ExportPath. Dedicated entry point for
+  fleet-wide health triage that exists outside the update workflow.
+- Test-AzureLocalApplyUpdatesScheduleCoverage: new read-only cmdlet
+  + apply-updates-schedule-audit.yml pipelines (GH + ADO, weekly
+  Mon 05:00 UTC). Flags (UpdateRing,UpdateWindow) tag pairs no
+  cron in apply-updates.yml will reach. Three views:
+  Audit, Matrix, Recommend. See README section 8.3.
 - New Fleet Health Status pipeline samples (GitHub + Azure DevOps):
-  fleet-health-status.yml. Daily 07:00 UTC; emits JUnit XML +
-  CSV/JSON + markdown summary. Complements fleet-update-status.yml.
+  fleet-health-status.yml. Daily 07:00 UTC; emits JUnit XML + CSV/
+  JSON + markdown summary. Complements fleet-update-status.yml.
 - Pester guardrail: GENERATED_AGAINST_MODULE_VERSION in every
-  sample YAML that installs the module must match the manifest.
-- Automation-Pipeline-Examples README: new "Default triggers and
-  schedules" table in Appendix A covering all 7 pipelines (incl.
-  new A.6 Fleet Health Status + A.7 Schedule Coverage Audit).
-  Apply Updates (A.4) + Section 8 carry a mandatory-customisation
-  callout: UpdateWindow / UpdateExclusions tags only GATE updates
-  while the pipeline runs - they do NOT start it. If apply-updates.yml
-  is left at its shipped default and you rely on UpdateWindow tags,
-  no updates will ever apply automatically. Section 8 has worked GH
-  / ADO cron examples; section 8.3 is the end-to-end runbook.
+  sample YAML must match the manifest.
 
 ### Fixed
 
-- Set-AzureLocalClusterUpdateRingTag now uses the dedicated
-  Microsoft.Resources/tags/default PATCH endpoint instead of PATCH-ing
-  the cluster resource. The previous code issued
-  PATCH https://management.azure.com/<clusterId>?api-version=2025-10-01
-  with { "tags": {...} }, which Azure RBAC routes through the
-  microsoft.azurestackhci/clusters/write action - i.e. full cluster
-  Contributor. CI/CD service principals scoped to Tag Contributor (only
-  Microsoft.Resources/tags/* actions) therefore failed with
-  "AuthorizationFailed: action 'microsoft.azurestackhci/clusters/write'"
-  even though they should have been able to write tags. The function
-  now PATCHes
-  https://management.azure.com/<clusterId>/providers/Microsoft.Resources/tags/default?api-version=2021-04-01
-  with { "operation": "Merge", "properties": { "tags": {...} } }, which
-  Azure routes through Microsoft.Resources/tags/write only. The Merge
-  operation preserves all other existing tags on the cluster without us
-  having to re-send them. Aligns with the v0.7.62 fix that already moved
-  internal tag writes (Set-AzLocalClusterTagsMerge) to the same
-  endpoint.
-- "Fleet Update Status" pipeline summary now reconciles with the JUnit
-  pass/fail counts. Two related bugs in both fleet-update-status.yml
-  samples (GitHub Actions and Azure DevOps) produced summary tables that
-  did not add up to Total Clusters:
-  1. "Up to Date" only counted UpdateState=UpToDate and missed clusters
-     reporting the (equally healthy) AppliedSuccessfully state. Both
-     states now count as "Up to Date".
-  2. The bucket counters were not mutually exclusive and there was no
-     catch-all, so a fleet of 12 healthy + 8 failed clusters could
-     render as "Up to Date: 0", "Health Failures: 8", with the
-     remaining 12 unaccounted for. Each cluster is now assigned to
-     exactly one primary status using a priority cascade (Update Failed,
-     Health Failure, SBE Prerequisite Blocked, Update In Progress,
-     Ready for Update, Up to Date, Needs Investigation), so the rows
-     always sum to Total Clusters.
-
-### Changed
-
-- JUnit pass/fail semantics in fleet-update-status are now explicit:
-  a "Critical Health Status" line sits at the top of the summary, and
-  the <testsuite> carries a CriticalHealthStatus testCategory property.
-  Failure message is now "Critical Health Status: Failed"
-  (was "Cluster has update issues").
-- Set-AzureLocalClusterUpdateRingTag help and the
-  Automation-Pipeline-Examples RBAC guidance now both recommend the
-  built-in Tag Contributor role for tag-management automation.
-
-### Pipeline migration
-
-If you have copied any of these sample workflows into your repo,
-refresh them via:
-  Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
-  Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+- Set-AzureLocalClusterUpdateRingTag now PATCHes the dedicated
+  Microsoft.Resources/tags/default endpoint (Merge operation)
+  instead of PATCH-ing the cluster resource directly. Previously
+  routed through microsoft.azurestackhci/clusters/write (full
+  cluster Contributor); now routes through
+  Microsoft.Resources/tags/write only, so service principals
+  scoped to the built-in Tag Contributor role can write update-
+  ring tags. Aligns with the v0.7.62 fix for Set-AzLocalCluster-
+  TagsMerge.
+- Fleet Update Status pipeline summary now reconciles with JUnit
+  pass/fail counts. "Up to Date" counts both UpdateState=UpToDate
+  and AppliedSuccessfully; status buckets are now mutually
+  exclusive via a priority cascade so rows always sum to Total
+  Clusters.
 
 ## Version 0.7.64 - Security hardening + pipeline-YAML UTF-8 mojibake repair
 
-### Fixed (critical)
-
-- Sample pipeline YAMLs (10 files across GitHub Actions and Azure
-  DevOps) had accumulated cp1252 mojibake from earlier emoji-edit
-  round-trips, one of which contained YAML 1.2-forbidden C1 control
-  byte U+008F that caused GitHub Actions to reject
-  manage-updatering-tags.yml as "Invalid workflow file". All
-  non-ASCII bytes have been stripped from every sample workflow and
-  step-summaries restored with plain-ASCII labels.
-
-### Security hardening (medium)
-
-- Seven direct callers of `az rest` / `az account set` /
-  `az login --service-principal` now route raw CLI output through
-  ConvertTo-ScrubbedCliOutput before logging/throwing, closing the
-  Bearer-token leak class that was previously handled inside
-  Invoke-AzRestJson but missed by the sites that called `az rest`
-  directly. README and ITSM/README also document residual exposures
-  (SP+secret command-line, in-memory plaintext during ServiceNow
-  OAuth client_credentials).
-
-### Fixed (low)
-
-- Invoke-AzureLocalUpdateApply HTTP 202 detection switched from
-  array-filter `-match` to single-string check on
-  ($result | Out-String).Trim() + scrubbed Write-Verbose path.
-- Invoke-AzLocalItsmHttp throw path now uses $redactedUri to match
-  the existing Write-Verbose redaction.
-- Two Pester tests that wrote to fixed temp filenames now append a
-  per-invocation GUID to remove parallel/back-to-back collision risk.
-
-### Pipeline migration
-
-If you have copied any of these sample workflows into your repo,
-refresh them via:
-  Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
-  Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+Sample pipeline YAMLs (10 files) had accumulated cp1252 mojibake
+from earlier emoji-edit round-trips, one of which contained YAML
+1.2-forbidden C1 control byte U+008F that caused GitHub Actions to
+reject manage-updatering-tags.yml as "Invalid workflow file". All
+non-ASCII bytes have been stripped from every sample workflow.
+Security hardening: seven direct callers of `az rest` /
+`az account set` / `az login --service-principal` now route raw
+CLI output through ConvertTo-ScrubbedCliOutput before logging or
+throwing, closing the Bearer-token leak class that was previously
+handled inside Invoke-AzRestJson but missed by the sites that
+called `az rest` directly. README and ITSM/README also document
+residual exposures.
 
 ## Version 0.7.63 - PowerShell 7 ParserError fix in fleet-update-status pipeline samples
 
-### Fixed (critical)
-
-- fleet-update-status.yml samples (GitHub Actions and Azure DevOps)
-  failed on the Create Status Summary step under pwsh 7 (default
-  shell on GH-hosted Windows runners) with
-  "ParserError: The Unicode escape sequence is not valid". Inside
-  the PS double-quoted here-string that builds the Markdown summary,
-  Markdown code-span backticks before file names like
-  update-summaries.csv and update-runs.csv were interpreted as the
-  PS 7 `u{xxxx} Unicode escape (which expects `{` next); PS 5.1 had
-  silently swallowed the backtick. Other file refs in the same block
-  had latent corruption under both shells (`r -> CR, `a -> BEL,
-  `c -> dropped backtick). All Markdown code-span backticks in the
-  affected blocks have been doubled, which renders as a literal
-  backtick in the output string under both PS 5.1 and PS 7. No
-  module code paths are affected; only the sample YAMLs.
-
-### Pipeline migration
-
-If you have copied fleet-update-status.yml into your repo, refresh
-the samples via:
-  Copy-AzureLocalPipelineExample -Destination <path> -Platform GitHub      -Update
-  Copy-AzureLocalPipelineExample -Destination <path> -Platform AzureDevOps -Update
+fleet-update-status.yml samples (GitHub Actions and Azure DevOps)
+failed on the Create Status Summary step under pwsh 7 with
+"ParserError: The Unicode escape sequence is not valid". Markdown
+code-span backticks before file names like update-summaries.csv
+were interpreted as the PS 7 `u{xxxx} Unicode escape (which
+expects `{` next); PS 5.1 had silently swallowed the backtick.
+All Markdown code-span backticks in the affected blocks have been
+doubled to render as literal backticks under both shells.
 
 ## Version 0.7.62 and earlier
 
-0.7.62 made apply-updates consume the readiness CSV (the readiness
-gate is now enforced, not advisory); fixed Start-AzureLocalCluster-
-Update's critical-health gate that was being silently bypassed
-because Test-AzureLocalClusterHealth was called without -PassThru;
-migrated Set-AzLocalClusterTagsMerge to the Microsoft.Resources/tags/
-default endpoint (Tag Contributor only); fixed Export-ResultsToJUnit-
-Xml so NotReady / NotConnected / NoUpdatesAvailable / NoReadyUpdates
-render as `<skipped>` and UpdateNotFound as `<error>`; and ensured
-Get-HealthCheckFailureSummary emits Critical-severity entries before
-Warning.
+0.7.62 made apply-updates consume the readiness CSV (gate is now
+enforced, not advisory); fixed Start-AzureLocalClusterUpdate's
+critical-health gate that was being silently bypassed because
+Test-AzureLocalClusterHealth was called without -PassThru;
+migrated Set-AzLocalClusterTagsMerge to the
+Microsoft.Resources/tags/default endpoint (Tag Contributor only);
+fixed Export-ResultsToJUnitXml so NotReady / NotConnected /
+NoUpdatesAvailable / NoReadyUpdates render as `<skipped>` and
+UpdateNotFound as `<error>`; ensured Get-HealthCheckFailureSummary
+emits Critical-severity entries before Warning.
 0.7.61 added two readiness gates - ClusterState !=
-'ConnectedRecently' and any [Critical] health-check entry now block
-ReadyForUpdate, with new BlockingReasons CSV column and a Step 1b
-connectivity gate in Start-AzureLocalClusterUpdate; JUnit Status
-emission for Ready clusters was fixed.
-0.7.60 refreshed all GitHub Actions samples to Node 24 action majors
-and granted `checks: write` to apply-updates GH job.
+'ConnectedRecently' and any [Critical] health-check entry now
+block ReadyForUpdate, with new BlockingReasons CSV column and a
+Step 1b connectivity gate in Start-AzureLocalClusterUpdate;
+JUnit Status emission for Ready clusters was fixed.
+0.7.60 refreshed all GitHub Actions samples to Node 24 action
+majors and granted `checks: write` to the apply-updates GH job.
 0.7.50 reshaped Copy-AzureLocalPipelineExample (-Flatten/-Force
 removed, -Update added) and introduced Copy-AzureLocalItsmSample;
 pipelines now install the module from PSGallery at runtime instead
 of importing a vendored copy. 0.7.41 hotfix made parallel fleet
-reads work again under -ThrottleLimit > 1 against PSGallery-installed
-nested-module layout. 0.7.4 added ITSM ticketing (ServiceNow phase 1).
-0.7.3 renamed module from AzStackHci.ManageUpdates to
-AzLocal.UpdateManagement and split the monolithic .psm1 into
-Public/Private NestedModules. Earlier: EndTime column on
-Get-AzureLocalUpdateRuns, UpdateSideloaded auto-reset workflow, ARG
-pagination beyond 1000 results, mid-run token refresh, CSV-injection
-sanitisation. Full notes in CHANGELOG.md.
+reads work again under -ThrottleLimit > 1 against PSGallery-
+installed nested-module layout. 0.7.4 added ITSM ticketing
+(ServiceNow phase 1). 0.7.3 renamed module from
+AzStackHci.ManageUpdates to AzLocal.UpdateManagement and split
+the monolithic .psm1 into Public/Private NestedModules.
 
 For full release notes on this and previous versions, see:
 https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md

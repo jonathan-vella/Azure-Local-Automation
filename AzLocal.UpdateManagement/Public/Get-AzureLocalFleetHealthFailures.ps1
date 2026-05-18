@@ -100,7 +100,7 @@ function Get-AzureLocalFleetHealthFailures {
         [string]$Severity = 'All',
 
         [Parameter(Mandatory = $false)]
-        [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
+        [ValidatePattern('^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$')]
         [string]$UpdateRingTag,
 
         [Parameter(Mandatory = $false)]
@@ -189,10 +189,12 @@ $severityClause
     # the cluster's tags - tags live on the cluster resource itself. A
     # separate ARG hop is required to map ResourceId -> UpdateRing.
     if ($UpdateRingTag) {
+        # v0.7.66: support semicolon-delimited rings and '*' (match all).
+        $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingTag -TagAccessor "tostring(tags['UpdateRing'])"
         $tagKql = @"
 resources
 | where type =~ 'microsoft.azurestackhci/clusters'
-| where tostring(tags['UpdateRing']) =~ '$UpdateRingTag'
+$ringFilter
 | project id = tolower(id)
 "@
         try {

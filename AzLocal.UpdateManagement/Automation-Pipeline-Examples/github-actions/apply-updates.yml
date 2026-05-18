@@ -14,7 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       update_ring:
-        description: 'UpdateRing tag value to target (e.g., Wave1, Pilot, Production)'
+        # v0.7.66: accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+        # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
+        description: "UpdateRing tag value (e.g. 'Wave1', 'Prod;Ring2', or '***' for ALL clusters)."
         required: true
         default: 'Wave1'
       update_name:
@@ -77,7 +79,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.65'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.66'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -96,6 +98,10 @@ jobs:
     outputs:
       ready_count: ${{ steps.readiness.outputs.READY_COUNT }}
       total_count: ${{ steps.readiness.outputs.TOTAL_COUNT }}
+      # v0.7.66: surface the timestamped readiness-artifact name so the downstream
+      # apply-updates job can download it (cross-job step outputs are not visible -
+      # everything passed to the next job has to go through the job 'outputs' map).
+      readiness_artifact: azlocal-apply-updates-readiness-report_${{ steps.artifact-stamp.outputs.timestamp }}
     
     steps:
     - name: Checkout repository
@@ -198,10 +204,21 @@ jobs:
         echo "READY_COUNT=$readyCount" >> $env:GITHUB_OUTPUT
         echo "TOTAL_COUNT=$totalCount" >> $env:GITHUB_OUTPUT
     
+    - name: Compute Artifact Timestamp
+      if: always()
+      id: artifact-stamp
+      shell: pwsh
+      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # the same day produce distinct zip names.
+      run: |
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        "timestamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        Write-Host "Artifact timestamp: $stamp"
+
     - name: Upload Readiness Report
       uses: actions/upload-artifact@v6
       with:
-        name: readiness-report
+        name: azlocal-apply-updates-readiness-report_${{ steps.artifact-stamp.outputs.timestamp }}
         path: ./artifacts/readiness-report.csv
         retention-days: 30
 
@@ -268,7 +285,10 @@ jobs:
     - name: Download Readiness Report
       uses: actions/download-artifact@v6
       with:
-        name: readiness-report
+        # v0.7.66: artifact name now carries a UTC timestamp - resolve via the
+        # upstream job's outputs.readiness_artifact so re-runs on the same day
+        # don't collide.
+        name: ${{ needs.check-readiness.outputs.readiness_artifact }}
         path: ./artifacts
     
     - name: Apply Updates
@@ -370,10 +390,21 @@ jobs:
         echo "SCHEDULE_BLOCKED=$scheduleBlocked" >> $env:GITHUB_OUTPUT
         echo "SIDELOADED_BLOCKED=$sideloadedBlocked" >> $env:GITHUB_OUTPUT
     
+    - name: Compute Artifact Timestamp
+      if: always()
+      id: artifact-stamp
+      shell: pwsh
+      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # the same day produce distinct zip names. Both update-logs and itsm-results use this stamp.
+      run: |
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        "timestamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        Write-Host "Artifact timestamp: $stamp"
+
     - name: Upload Update Logs
       uses: actions/upload-artifact@v6
       with:
-        name: update-logs
+        name: azlocal-apply-updates-logs_${{ steps.artifact-stamp.outputs.timestamp }}
         path: ./artifacts/*
         retention-days: 30
     
@@ -462,7 +493,7 @@ jobs:
       if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
       uses: actions/upload-artifact@v6
       with:
-        name: itsm-results
+        name: azlocal-apply-updates-itsm-results_${{ steps.artifact-stamp.outputs.timestamp }}
         path: ./artifacts/itsm-*.*
         retention-days: 30
       continue-on-error: true

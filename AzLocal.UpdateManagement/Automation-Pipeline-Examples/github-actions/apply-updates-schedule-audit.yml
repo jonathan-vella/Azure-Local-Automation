@@ -39,9 +39,9 @@ on:
   workflow_dispatch:
     inputs:
       pipeline_path:
-        description: 'Path (file or folder) to apply-updates.yml to audit. Defaults to the in-repo Automation-Pipeline-Examples folder.'
+        description: 'Path (file or folder) to apply-updates.yml to audit, repo-relative. Default `.github/workflows` matches the standard GitHub Actions consumer layout where you paste the bundled `apply-updates.yml` sample.'
         required: false
-        default: 'AzLocal.UpdateManagement/Automation-Pipeline-Examples'
+        default: '.github/workflows'
       lead_time_minutes:
         description: 'Minutes before UpdateWindow opens that the pipeline should fire (0-60). Default 5.'
         required: false
@@ -64,7 +64,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.65'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.66'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
@@ -126,7 +126,7 @@ jobs:
       shell: pwsh
       id: audit
       env:
-        INPUT_PIPELINE_PATH:     ${{ github.event.inputs.pipeline_path || 'AzLocal.UpdateManagement/Automation-Pipeline-Examples' }}
+        INPUT_PIPELINE_PATH:     ${{ github.event.inputs.pipeline_path || '.github/workflows' }}
         INPUT_LEAD_TIME_MINUTES: ${{ github.event.inputs.lead_time_minutes || '5' }}
         INPUT_INCLUDE_UNTAGGED:  ${{ github.event.inputs.include_untagged || 'false' }}
       run: |
@@ -141,7 +141,9 @@ jobs:
         $includeUnt   = ($env:INPUT_INCLUDE_UNTAGGED -eq 'true')
 
         if (-not (Test-Path -LiteralPath $pipelinePath)) {
-            throw "PipelineYamlPath '$pipelinePath' does not exist on the runner. Either commit the folder to the repo or pass a different -pipeline_path via workflow_dispatch."
+            $candidates = @('.github/workflows', '.azure-pipelines', 'pipelines', '.') | Where-Object { Test-Path -LiteralPath $_ }
+            $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-run via 'Run workflow' on the Actions tab and set the 'pipeline_path' input." } else { "No common pipeline folders (.github/workflows, .azure-pipelines, pipelines, repo root) were found in this repo - commit your apply-updates.yml first, or set 'pipeline_path' to wherever you keep it." }
+            throw "PipelineYamlPath '$pipelinePath' does not exist on the runner. $hint"
         }
 
         Write-Host "========================================"
@@ -224,11 +226,22 @@ jobs:
         Write-Host "  MalformedTag      : $($malformed.Count)"
         Write-Host "  UnparseableCron   : $($unparseable.Count)"
 
+    - name: Compute Artifact Timestamp
+      if: always()
+      id: artifact-stamp
+      shell: pwsh
+      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # the same day produce distinct zip names. UTC keeps Azure DevOps + GitHub Actions in sync.
+      run: |
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        "timestamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        Write-Host "Artifact timestamp: $stamp"
+
     - name: Upload Schedule Coverage Reports
       if: always()
       uses: actions/upload-artifact@v6
       with:
-        name: schedule-coverage-reports
+        name: azlocal-apply-updates-schedule-audit-report_${{ steps.artifact-stamp.outputs.timestamp }}
         path: ./reports/
         retention-days: 90
 

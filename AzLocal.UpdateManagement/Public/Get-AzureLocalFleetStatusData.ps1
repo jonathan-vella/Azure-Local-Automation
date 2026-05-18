@@ -89,7 +89,7 @@ function Get-AzureLocalFleetStatusData {
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [switch]$ScopeByUpdateRingTag,
 
-        [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
+        [ValidatePattern('^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$')]
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [string]$UpdateRingValue,
 
@@ -150,7 +150,8 @@ function Get-AzureLocalFleetStatusData {
                 Write-Log -Message "Failed to install 'resource-graph' extension." -Level Error
                 return $null
             }
-            $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id"
+            $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingValue
+            $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' $ringFilter | project id"
             try {
                 $tagData = Invoke-AzResourceGraphQuery -Query $argQuery
             }

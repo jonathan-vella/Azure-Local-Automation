@@ -5,6 +5,73 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.66] - 2026-05-18
+
+### Fixed (critical)
+
+- **`Get-AzureLocalFleetHealthFailures` failed JSON parsing on hosted Windows runners when the Azure CLI emitted a cp1252 encoding warning.** Any call into `Invoke-AzResourceGraphQuery` (currently used by `Get-AzureLocalFleetHealthFailures` and indirectly by every consumer of the `fleet-health-status.yml` pipeline) on a `windows-latest` GitHub Actions runner (or any ADO Windows agent whose console code page is `cp1252`) could surface the following stderr line from the Azure CLI's underlying Python layer:
+
+  ```
+  WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.
+  ```
+
+  The helper captured `& az graph query ... 2>&1` as a single merged stream and passed the entire thing to `ConvertFrom-Json`, so the WARNING line got prepended to the JSON body and the cmdlet threw:
+
+  ```
+  Conversion from JSON failed with error: Unexpected character encountered while parsing value: W. Path '', line 0, position 0.; raw: WARNING: Unable to encode the output with cp1252 encoding. ...
+  ```
+
+  This was the same class of bug that the v0.7.2 hardening of `Invoke-AzRestJson` already handled - the fix never made it into `Invoke-AzResourceGraphQuery` when that helper was split out. The helper has now been updated to:
+  1. **The actual fix:** split the merged `2>&1` stream by element type after capture. Stderr lines surface as `[System.Management.Automation.ErrorRecord]` objects when captured via `2>&1`; stdout lines surface as strings. Only the string stream is fed to `ConvertFrom-Json`. The error-throwing path likewise renders the stderr stream separately so token-scrubbing still applies. (`--only-show-errors` was already passed by this helper since v0.7.2, but in some non-cp1252 character paths the encode warning still leaks through, hence the belt-and-braces stream split.)
+  2. **Cosmetic defence-in-depth:** set `$env:PYTHONIOENCODING = 'utf-8'` for the duration of the call (previous value restored in a `finally` block). **Note: this is a structural no-op for stock `az.cmd`** - it launches Python with the `-I` (isolated) flag which implies `-E` and causes Python to ignore every `PYTHON*` env var, per [Azure/azure-cli#28497](https://github.com/Azure/azure-cli/issues/28497) and the v0.7.2 root-cause analysis. The assignment only takes effect if the host has manually patched `az.cmd` to remove `-I`. It is retained purely so that those (rare) hosts get the same UTF-8 behaviour as the stream-split path.
+
+  No public surface change. Every fleet-health-status pipeline run on a Windows runner is now resilient to this stderr warning regardless of the runner's console code page.
+
+- **`apply-updates-schedule-audit.yml` (both GitHub Actions and Azure DevOps) shipped with a default `pipeline_path` of `AzLocal.UpdateManagement/Automation-Pipeline-Examples` - a path that only exists in *this* module's source repo, never in a consumer repo.** Every default-trigger run of the schedule audit therefore failed with:
+
+  ```
+  PipelineYamlPath 'AzLocal.UpdateManagement/Automation-Pipeline-Examples' does not exist on the runner.
+  Either commit the folder to the repo or pass a different -pipeline_path via workflow_dispatch.
+  ```
+
+  before the schedule advisor could write its JUnit XML. The next step (`dorny/test-reporter` on GH, `PublishTestResults@2` on ADO) then failed with `Error: No test report files were found matching the pattern 'reports/schedule-coverage-audit.xml'`, making the entire job red. Both YAMLs now default to the standard consumer layout:
+  - GitHub Actions: `.github/workflows` (the folder where consumers paste the bundled `apply-updates.yml` sample).
+  - Azure DevOps: `.azure-pipelines` (the convention recommended by the ADO docs; consumers who keep apply-updates.yml elsewhere can still override via the `pipelinePath` parameter at queue time).
+
+  When the resolved path still does not exist on the runner (operator override pointed at a missing folder, etc.) the audit step now lists which common pipeline folders **do** exist in the checked-out repo (`.github/workflows`, `.azure-pipelines`, `pipelines`, repo root) so the operator immediately knows what value to pass.
+
+### Added (UX + capability)
+
+- **Status emojis in the Fleet Update Status summary.** `fleet-update-status.yml` (GitHub Actions and Azure DevOps) now renders the `Critical Health` and `Primary Status` summary tables with the same visual language operators already use to read JUnit dashboards: a green tick for "no failures / ready / passing", a red cross for "failed / in error", a refresh glyph for "running / in progress", a yellow circle for "blocked / waiting", and an info glyph for everything else. The legacy `[ok] / [fail] / [ready] / [running] / [blocked] / [info]` bracket markers are gone. The summary block is plain markdown so it renders identically on the GH Actions step summary, the ADO pipeline run extension, and any markdown viewer (no JS, no images).
+
+- **Generation timestamp in the Fleet Update Status summary heading.** Both `fleet-update-status.yml` files now render the H2 heading as `## Fleet Update Status Summary  _(generated 2026-MM-DD HH:MM:SS UTC)_` so downstream consumers can tell at a glance when the data was collected. The timestamp is computed with `(Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC')` to keep GitHub Actions and Azure DevOps in sync.
+
+- **Failed clusters now appear before passing clusters in the JUnit per-cluster block.** The per-cluster `<testcase>` entries emitted by both `fleet-update-status.yml` files used to be emitted in arrival order (i.e. ARG response order). They are now bucketed into a `$failedClusters` collection vs a `$passedClusters` collection, each sorted alphabetically by `ClusterName`, then concatenated with failed-first into `$orderedClusters` and emitted in that order. Failing clusters are therefore the first things operators see in the dorny/test-reporter view (GitHub) and the Tests tab (Azure DevOps).
+
+- **Every downloadable pipeline artifact now carries a UTC timestamp suffix.** All `actions/upload-artifact` steps (GitHub Actions) and all `PublishBuildArtifacts@1` / `PublishPipelineArtifact@1` tasks (Azure DevOps) now declare `name:` / `ArtifactName:` of the form `azlocal-<purpose>_yyyyMMdd_HHmmss`. The timestamp is computed once per job in a dedicated `Compute Artifact Timestamp` step (GH: `id: artifact-stamp` writing `timestamp=...` to `$GITHUB_OUTPUT`; ADO: `name: stamp` writing `##vso[task.setvariable variable=artifactStamp;isOutput=true]...`). Two runs of the same pipeline on the same day now produce distinct zip downloads (`azlocal-fleet-update-status-report_20260518_140000.zip` vs `azlocal-fleet-update-status-report_20260518_180000.zip`) instead of clobbering each other in the operator's downloads folder. Renamed artifacts: `fleet-status-reports` -> `azlocal-fleet-update-status-report`, `fleet-health-reports` -> `azlocal-fleet-health-status-report`, `cluster-inventory` -> `azlocal-cluster-inventory`, `updatering-tag-logs` -> `azlocal-updatering-tag-logs`, `schedule-coverage-reports` / `ScheduleCoverageReports` -> `azlocal-apply-updates-schedule-audit-report`, `readiness-report` -> `azlocal-apply-updates-readiness-report`, `readiness-assessment` -> `azlocal-readiness-assessment-report`, `update-logs` -> `azlocal-apply-updates-logs`, `itsm-results` -> `azlocal-apply-updates-itsm-results`.
+
+- **Pipeline `UpdateRing` inputs now accept a single value, a semicolon-delimited list, or the literal `***` wildcard for ALL tagged clusters.** Every pipeline that exposes `update_ring:` (GH workflow_dispatch) or `updateRing:` (ADO parameters) is updated:
+  - Single value (unchanged): `Wave1`
+  - Multiple rings: `Prod;Ring2` (semicolon separator; whitespace around each ring is trimmed)
+  - Wildcard: `***` (three stars, deliberate gesture) matches every cluster that **has** a non-empty `UpdateRing` tag. Untagged clusters are excluded so the wildcard preserves the existing opt-in gate. **A single `*`, double `**`, or quadruple `****` are all REJECTED by the cmdlet's `[ValidatePattern]`** - a one-character typo can no longer accidentally scope a fleet-wide write.
+
+  The ADO `apply-updates.yml` lost its closed `values:` enum (it kept `type: string` so users still get a free-text editor in the ADO run dialog).
+
+- **`ValidatePattern` tightened on 15 cmdlets.** The 14 cmdlets that take `-UpdateRingValue` and the 1 cmdlet that takes `-UpdateRingTag` (`Get-AzureLocalFleetHealthFailures`) now share the regex `^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$`. Each individual ring segment still has the same 1-64 character `[A-Za-z0-9_-]` policy as v0.7.65; the changes are (a) `;`-separated lists are now accepted, and (b) **only the exact three-character `***` token is accepted as a wildcard** (single/double/quad stars are rejected). Hostile/malformed inputs (spaces, embedded quotes, `<script>`, leading/trailing `;`) are still rejected at the parameter binder before any Azure call is made.
+
+- **New private helper `ConvertTo-AzLocalUpdateRingKqlFilter`.** Centralises the KQL clause construction for the three forms above. Returns `| where isnotempty(tags['UpdateRing'])` for `***` (matches only tagged clusters), a `| where tags['UpdateRing'] =~ 'single'` clause for a single value, and a `| where tags['UpdateRing'] in~ ('a','b')` clause for a list. Embedded single quotes are doubled (KQL string-literal escape). The 10 ARG-query call sites and the 2 here-string KQL call sites (`Get-AzureLocalFleetHealthFailures`, `Reset-AzureLocalSideloadedTag`) all now go through this helper, eliminating 12 copies of nearly-identical interpolation logic.
+
+- **Pester regression coverage** for every v0.7.66 feature: a new `Describe 'v0.7.66 UpdateRing ValidatePattern accepts list & wildcard forms'` that reflects on every cmdlet's `ValidatePatternAttribute` and asserts both the acceptance set (`Wave1`, `Prod;Ring2`, `***`, ...) **and the rejection set including the easy-to-mistype `*` / `**` / `****` / `*Wave1` variants**, plus the existing hostile inputs (`Foo bar`, `abc'def`, `<script>`, empty, leading/trailing `;`); a `Describe 'v0.7.66 ConvertTo-AzLocalUpdateRingKqlFilter helper'` exercising every branch including the new `***` -> `isnotempty(...)` path (both default `tags['UpdateRing']` and `tostring(tags['UpdateRing'])` accessors); a `Describe 'v0.7.66 Artifact download names carry a UTC timestamp suffix'` that scans every `Automation-Pipeline-Examples/**/*.yml` and fails if any upload step is missing the `azlocal-` prefix or the `<timestamp>` token (plus four guards against the legacy non-stamped names regressing); a `Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups failures first'` that asserts the U+2705 and U+274C glyphs are present and that the legacy `[ok]/[fail]` markers are gone, that the `_(generated $generatedUtc)_` heading is present, and that the `$failedClusters` / `$passedClusters` / `$orderedClusters` bucketing tokens all appear; and a `Describe 'v0.7.66 Pipeline update_ring inputs document multi-value and wildcard support'` that asserts every input description mentions both `Prod;Ring2` and `'***'`.
+
+### Pipeline migration
+
+If you have copied any of the bundled workflows into your repo, refresh them via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+```
+
 ## [0.7.65] - 2026-05-17
 
 ### Added

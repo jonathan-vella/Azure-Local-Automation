@@ -41,7 +41,8 @@ parameters:
       - 'by-update-ring'
   
   - name: updateRing
-    displayName: 'UpdateRing tag value (only used when scope=by-update-ring)'
+    # v0.7.66: accepts single ring, 'Prod;Ring2' list, or '***' wildcard (three stars - deliberate).
+    displayName: "UpdateRing tag value (only used when scope=by-update-ring). Single, 'Prod;Ring2', or '***'."
     type: string
     default: ''
   
@@ -65,7 +66,7 @@ variables:
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.65'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.66'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -263,8 +264,22 @@ stages:
                 <property name="primaryNeedsInvestigation" value="$stOther"/>
               </properties>
           "@
-          
+
+          # v0.7.66: bucket clusters into 'failed' vs 'passed' BEFORE emission so the Azure DevOps
+          # Tests tab renders all failed clusters first (in the run summary, in source order).
+          # Within each bucket clusters are sorted by ClusterName for stable, scannable output.
+          $failedClusters = @()
+          $passedClusters = @()
           foreach ($cluster in $readiness) {
+              if ($cluster.HealthState -eq "Failure" -or $cluster.UpdateState -eq "Failed" -or ($cluster.HasPrerequisiteUpdates -ne "")) {
+                  $failedClusters += $cluster
+              } else {
+                  $passedClusters += $cluster
+              }
+          }
+          $orderedClusters = @($failedClusters | Sort-Object ClusterName) + @($passedClusters | Sort-Object ClusterName)
+
+          foreach ($cluster in $orderedClusters) {
               $clusterName = $cluster.ClusterName -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;'
               $testName = "UpdateStatus-$clusterName"
               $className = "AzureLocalFleetUpdateStatus.$($cluster.ResourceGroup)"
@@ -418,7 +433,16 @@ stages:
               Write-Warning " $failures cluster(s) have update failures or health issues!"
           }
       name: collect
-    
+
+    # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+    - pwsh: |
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
+        Write-Host "Artifact timestamp: $stamp"
+      displayName: 'Compute Artifact Timestamp'
+      condition: always()
+      name: stamp
+
     # Publish all reports as artifacts FIRST (lightweight) so the summary
     # task below runs before the JUnit Publish Test Results task, ensuring
     # the markdown summary uploaded via ##vso[task.uploadsummary] appears
@@ -428,7 +452,7 @@ stages:
       condition: always()
       inputs:
         PathtoPublish: '$(reportsPath)'
-        ArtifactName: 'FleetStatusReports'
+        ArtifactName: 'azlocal-fleet-update-status-report_$(stamp.artifactStamp)'
         publishLocation: 'Container'
     
     # Create summary in pipeline
@@ -445,31 +469,32 @@ stages:
         $needsInvestigation = "$(collect.needsInvestigation)"
         $failures = "$(collect.failures)"
         $hasPrerequisite = "$(collect.hasPrerequisite)"
+        $generatedUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC')
 
         Write-Host "##vso[task.uploadsummary]Fleet Status: $total clusters, $chPassed healthy / $chFailed failed (CriticalHealthStatus)"
 
         $summary = @"
-        ## Fleet Update Status Summary
+        ## Fleet Update Status Summary  _(generated $generatedUtc)_
 
         ### Critical Health Status (matches JUnit XML pass/fail)
 
-        | Metric | Count |
-        |--------|-------|
-        | **Passed** (healthy, no failures, not SBE-blocked) | $chPassed |
-        | **Failed** (HealthState=Failure OR UpdateState=Failed OR SBE prerequisite blocked) | $chFailed |
+        | Metric | Count | Status |
+        |--------|-------|--------|
+        | **Passed** (healthy, no failures, not SBE-blocked) | $chPassed | ✅ |
+        | **Failed** (HealthState=Failure OR UpdateState=Failed OR SBE prerequisite blocked) | $chFailed | $(if ([int]$chFailed -gt 0) { '❌' } else { '✅' }) |
 
         ### Primary Status (each cluster counted once; rows sum to Total Clusters)
 
-        | Metric | Count |
-        |--------|-------|
-        | **Total Clusters** | $total |
-        | **Up to Date** | $upToDate |
-        | **Ready for Update** | $ready |
-        | **Update In Progress** | $inProgress |
-        | **SBE Prerequisite Blocked** | $sbeBlocked |
-        | **Health Failure** (HealthState=Failure) | $healthFailure |
-        | **Update Failed** (UpdateState=Failed) | $updateFailed |
-        | **Needs Investigation** | $needsInvestigation |
+        | Metric | Count | Status |
+        |--------|-------|--------|
+        | **Total Clusters** | $total | ℹ️ |
+        | **Up to Date** | $upToDate | ✅ |
+        | **Ready for Update** | $ready | 🟢 |
+        | **Update In Progress** | $inProgress | 🔄 |
+        | **SBE Prerequisite Blocked** | $sbeBlocked | $(if ([int]$sbeBlocked -gt 0) { '🟡' } else { '✅' }) |
+        | **Health Failure** (HealthState=Failure) | $healthFailure | $(if ([int]$healthFailure -gt 0) { '❌' } else { '✅' }) |
+        | **Update Failed** (UpdateState=Failed) | $updateFailed | $(if ([int]$updateFailed -gt 0) { '❌' } else { '✅' }) |
+        | **Needs Investigation** | $needsInvestigation | $(if ([int]$needsInvestigation -gt 0) { '⚠️' } else { '✅' }) |
 
         Priority cascade used to bucket each cluster exactly once:
         Update Failed > Health Failure > SBE Prerequisite Blocked > Update In Progress > Ready for Update > Up to Date > Needs Investigation.
