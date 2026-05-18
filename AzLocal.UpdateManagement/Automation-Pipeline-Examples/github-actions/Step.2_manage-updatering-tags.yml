@@ -105,7 +105,7 @@ jobs:
             Write-Host "STEP 1 - Generate the cluster inventory (one-off, then on demand)" -ForegroundColor Cyan
             Write-Host "  a. Go to the 'Actions' tab in this repository."
             Write-Host "  b. Open the workflow named 'Inventory Azure Local Clusters'"
-            Write-Host "     (file: .github/workflows/inventory-clusters.yml)."
+            Write-Host "     (file: .github/workflows/Step.1_inventory-clusters.yml)."
             Write-Host "  c. Click 'Run workflow' and wait for the run to finish successfully."
             Write-Host "  d. On the completed run page, scroll to the 'Artifacts' section and"
             Write-Host "     download the artifact named 'cluster-inventory'."

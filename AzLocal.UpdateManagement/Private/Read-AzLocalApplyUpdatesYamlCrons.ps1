@@ -9,8 +9,11 @@ function Read-AzLocalApplyUpdatesYamlCrons {
 
         Discovery rules:
           - If Path is a file, scan that file.
-          - If Path is a directory, recursively find files named 'apply-updates*.yml'
-            or 'apply-updates*.yaml'.
+          - If Path is a directory, recursively find files matching any of
+            'Step.5_apply-updates*.yml', 'Step.5_apply-updates*.yaml',
+            'apply-updates*.yml', or 'apply-updates*.yaml'.
+            (The 'Step.5_' prefix is the v0.7.68+ shipped name; the un-prefixed
+             form is the legacy name still supported for backwards compatibility.)
 
         Platform is inferred from the parent directory name when the YAML is
         under .../github-actions/ or .../azure-devops/. Falls back to the
@@ -54,7 +57,7 @@ function Read-AzLocalApplyUpdatesYamlCrons {
 
     $item = Get-Item -LiteralPath $Path
     $files = if ($item.PSIsContainer) {
-        @(Get-ChildItem -LiteralPath $Path -Recurse -File -Include @('apply-updates*.yml', 'apply-updates*.yaml') -ErrorAction SilentlyContinue)
+        @(Get-ChildItem -LiteralPath $Path -Recurse -File -Include @('Step.5_apply-updates*.yml', 'Step.5_apply-updates*.yaml', 'apply-updates*.yml', 'apply-updates*.yaml') -ErrorAction SilentlyContinue)
     }
     else {
         @($item)

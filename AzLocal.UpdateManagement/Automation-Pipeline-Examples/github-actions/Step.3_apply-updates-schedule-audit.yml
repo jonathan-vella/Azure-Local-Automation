@@ -5,13 +5,13 @@
 #
 # WHY THIS PIPELINE EXISTS
 # ------------------------
-# apply-updates.yml ships with NO default schedule (workflow_dispatch only) on purpose,
+# Step.5_apply-updates.yml ships with NO default schedule (workflow_dispatch only) on purpose,
 # so customers must consciously choose when updates fire. After you have configured
-# UpdateWindow tags on your clusters and added cron entries to apply-updates.yml, this
+# UpdateWindow tags on your clusters and added cron entries to Step.5_apply-updates.yml, this
 # pipeline is the safety net that catches:
-#   - a new ring tagged with UpdateWindow that no cron in apply-updates.yml will reach
+#   - a new ring tagged with UpdateWindow that no cron in Step.5_apply-updates.yml will reach
 #   - an UpdateWindow tag value that fails to parse (typo / wrong syntax)
-#   - apply-updates.yml cron entries that the advisor cannot reason about
+#   - Step.5_apply-updates.yml cron entries that the advisor cannot reason about
 #     (DayOfMonth restrictions, step values) so you can audit them manually
 #
 # REPORTS GENERATED
@@ -39,7 +39,7 @@ on:
   workflow_dispatch:
     inputs:
       pipeline_path:
-        description: 'Path (file or folder) to apply-updates.yml to audit, repo-relative. Default `.github/workflows` matches the standard GitHub Actions consumer layout where you paste the bundled `apply-updates.yml` sample.'
+        description: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Default `.github/workflows` matches the standard GitHub Actions consumer layout where you paste the bundled `Step.5_apply-updates.yml` sample.'
         required: false
         default: '.github/workflows'
       lead_time_minutes:
@@ -147,7 +147,7 @@ jobs:
 
         if (-not (Test-Path -LiteralPath $pipelinePath)) {
             $candidates = @('.github/workflows', '.azure-pipelines', 'pipelines', '.') | Where-Object { Test-Path -LiteralPath $_ }
-            $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-run via 'Run workflow' on the Actions tab and set the 'pipeline_path' input." } else { "No common pipeline folders (.github/workflows, .azure-pipelines, pipelines, repo root) were found in this repo - commit your apply-updates.yml first, or set 'pipeline_path' to wherever you keep it." }
+            $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-run via 'Run workflow' on the Actions tab and set the 'pipeline_path' input." } else { "No common pipeline folders (.github/workflows, .azure-pipelines, pipelines, repo root) were found in this repo - commit your Step.5_apply-updates.yml first, or set 'pipeline_path' to wherever you keep it." }
             throw "PipelineYamlPath '$pipelinePath' does not exist on the runner. $hint"
         }
 
@@ -297,7 +297,7 @@ jobs:
         "@
 
         if ($hasIssues -and $reco) {
-            $md += "`n### Action required - paste these cron entries into apply-updates.yml`n"
+            $md += "`n### Action required - paste these cron entries into Step.5_apply-updates.yml`n"
             $md += "`n``````yaml`n" + $reco + "`n```````n"
         }
 
@@ -320,7 +320,7 @@ jobs:
         # operators who want the canonical cron list as a reference. When there are issues
         # we already printed it at the top so skip the duplicate.
         if (-not $hasIssues) {
-            $md += "`n### Recommended Schedule (copy into apply-updates.yml)`n"
+            $md += "`n### Recommended Schedule (copy into Step.5_apply-updates.yml)`n"
             if ($reco) {
                 $md += "`n``````yaml`n" + $reco + "`n```````n"
             } else {

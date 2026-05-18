@@ -1,7 +1,7 @@
 # Assess Update Readiness (Pre-flight go/no-go gate)
 # --------------------------------------------------
 # Runs Get-AzureLocalClusterUpdateReadiness and Test-AzureLocalClusterHealth -BlockingOnly
-# against a target UpdateRing (or the whole fleet) BEFORE apply-updates.yml runs.
+# against a target UpdateRing (or the whole fleet) BEFORE Step.5_apply-updates.yml runs.
 #
 # Publishes two JUnit XML results to the Azure DevOps Tests tab:
 #   - readiness.xml       (one test per cluster; fails if ReadyForUpdate = $false)
@@ -14,7 +14,7 @@
 # does NOT block downstream runs. In large fleets, day-to-day environmental issues
 # (transient storage noise, a single node out, etc.) routinely affect a small subset of
 # clusters; blocking the entire wave for one unhealthy cluster is rarely the desired
-# behavior. apply-updates.yml is itself per-cluster scoped, so clusters that are not
+# behavior. Step.5_apply-updates.yml is itself per-cluster scoped, so clusters that are not
 # ready will simply no-op there too.
 #
 # If you want a hard pass/fail signal for a chained gate, read the output variables
@@ -214,7 +214,7 @@ stages:
                 $summaryLines.Add("**Scope**: $scopeLabel")
                 $summaryLines.Add('')
                 if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
-                    $summaryLines.Add("**Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. The healthy clusters are safe to proceed - apply-updates.yml is per-cluster scoped.")
+                    $summaryLines.Add("**Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. The healthy clusters are safe to proceed - Step.5_apply-updates.yml is per-cluster scoped.")
                 } else {
                     $summaryLines.Add('**All clear**: every cluster in scope is ready for update. Safe to proceed with apply-updates for this ring.')
                 }

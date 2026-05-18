@@ -12,7 +12,7 @@
 #       3. Azure RBAC on the App Registration's service principal.
 #       4. Resource Graph reachability (proves the SP can actually see clusters).
 #
-#   Unlike the GitHub Actions twin (auth-smoke-test.yml in github-actions/), ADO does
+#   Unlike the GitHub Actions twin (Step.0_authentication-test.yml in github-actions/), ADO does
 #   not expose env-scoped federated credentials at the auth layer - the service
 #   connection IS the federation. So this pipeline only validates one auth path.
 #   Environment approval gates (Pipelines -> Environments) are a separate concern

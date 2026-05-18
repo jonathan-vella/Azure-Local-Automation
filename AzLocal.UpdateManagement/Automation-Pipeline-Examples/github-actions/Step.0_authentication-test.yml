@@ -11,10 +11,10 @@
 #
 # HOW TO TRIGGER (after the file is committed to the default branch):
 #   # Branch-scoped run - exercises the 'GitHubActions-main' federated credential.
-#   gh workflow run auth-smoke-test.yml --repo <owner>/<repo>
+#   gh workflow run Step.0_authentication-test.yml --repo <owner>/<repo>
 #
 #   # Environment-scoped run - exercises the env-scoped federated credentials.
-#   gh workflow run auth-smoke-test.yml --repo <owner>/<repo> -f environment=DevTest
+#   gh workflow run Step.0_authentication-test.yml --repo <owner>/<repo> -f environment=DevTest
 #
 #   # Watch the most recent run live.
 #   gh run watch --repo <owner>/<repo>

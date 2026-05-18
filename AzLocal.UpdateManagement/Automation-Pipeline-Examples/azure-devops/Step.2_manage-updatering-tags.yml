@@ -79,7 +79,7 @@ stages:
                     Write-Host "STEP 1 - Generate the cluster inventory (one-off, then on demand)" -ForegroundColor Cyan
                     Write-Host "  a. Open Azure DevOps Pipelines in this project."
                     Write-Host "  b. Run the pipeline named 'Inventory Azure Local Clusters'"
-                    Write-Host "     (file: azure-pipelines/inventory-clusters.yml or similar)."
+                    Write-Host "     (file: azure-pipelines/Step.1_inventory-clusters.yml or similar)."
                     Write-Host "  c. Wait for the run to finish successfully."
                     Write-Host "  d. On the completed run summary, open the published artifact"
                     Write-Host "     named 'cluster-inventory' and download it."

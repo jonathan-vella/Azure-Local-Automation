@@ -288,23 +288,23 @@ Describe 'Module: AzLocal.UpdateManagement' {
     }
 
     Context 'Schedule-audit pipeline_path default is consumer-friendly (v0.7.66 regression)' {
-        # v0.7.66 regression guard: apply-updates-schedule-audit.yml (GH + ADO)
+        # v0.7.66 regression guard: Step.3_apply-updates-schedule-audit.yml (GH + ADO)
         # shipped with a default pipeline_path of
         # 'AzLocal.UpdateManagement/Automation-Pipeline-Examples' - a path that
         # only exists in this module's source repo. In a consumer repo (where
-        # apply-updates.yml lives under .github/workflows or .azure-pipelines),
+        # Step.5_apply-updates.yml lives under .github/workflows or .azure-pipelines),
         # the default-trigger run failed with
         #   PipelineYamlPath '...' does not exist on the runner
         # before the schedule advisor could emit JUnit XML. The defaults are
         # now '.github/workflows' on GH and '.azure-pipelines' on ADO.
         # This test guards both files from ever regressing to the in-source path.
-        It 'Neither apply-updates-schedule-audit.yml defaults to the in-source examples folder' {
+        It 'Neither Step.3_apply-updates-schedule-audit.yml defaults to the in-source examples folder' {
             $examplesRoot = Join-Path -Path $PSScriptRoot -ChildPath '..\Automation-Pipeline-Examples'
             $examplesRoot = (Resolve-Path -Path $examplesRoot).Path
 
             $auditYamls = @(
-                Join-Path $examplesRoot 'github-actions\apply-updates-schedule-audit.yml'
-                Join-Path $examplesRoot 'azure-devops\apply-updates-schedule-audit.yml'
+                Join-Path $examplesRoot 'github-actions\Step.3_apply-updates-schedule-audit.yml'
+                Join-Path $examplesRoot 'azure-devops\Step.3_apply-updates-schedule-audit.yml'
             )
 
             $offenders = New-Object System.Collections.Generic.List[string]
@@ -4899,7 +4899,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         # YAMLs landed directly in $dest
         $yamls = @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File)
         $yamls.Count | Should -BeGreaterThan 0
-        $yamls.Name | Should -Contain 'auth-smoke-test.yml'
+        $yamls.Name | Should -Contain 'Step.0_authentication-test.yml'
 
         # No platform-named subfolder, no Automation-Pipeline-Examples wrapper
         Test-Path (Join-Path $dest 'github-actions') | Should -BeFalse
@@ -4921,7 +4921,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
 
         $yamls = @(Get-ChildItem -LiteralPath $dest -Filter '*.yml' -File)
         $yamls.Count | Should -BeGreaterThan 0
-        $yamls.Name | Should -Contain 'auth-smoke-test.yml'
+        $yamls.Name | Should -Contain 'Step.0_authentication-test.yml'
 
         Test-Path (Join-Path $dest 'azure-devops')   | Should -BeFalse
         Test-Path (Join-Path $dest 'github-actions') | Should -BeFalse
@@ -4969,7 +4969,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
         Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
 
         # Mutate one destination file so we can prove it gets overwritten
-        $target = Join-Path $dest 'auth-smoke-test.yml'
+        $target = Join-Path $dest 'Step.0_authentication-test.yml'
         $sentinel = '# SENTINEL - if this comment survives, -Update did not overwrite'
         Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
         (Get-Content -LiteralPath $target -Raw) | Should -Match 'SENTINEL'
@@ -5011,7 +5011,7 @@ Describe 'Function: Copy-AzureLocalPipelineExample' {
 
         # Seed and then mutate
         Copy-AzureLocalPipelineExample -Destination $dest -Platform GitHub 6>$null | Out-Null
-        $target = Join-Path $dest 'auth-smoke-test.yml'
+        $target = Join-Path $dest 'Step.0_authentication-test.yml'
         $sentinel = '# WHATIF SENTINEL - -WhatIf must preserve this'
         Set-Content -LiteralPath $target -Value $sentinel -Encoding ASCII
 
@@ -5394,7 +5394,7 @@ on:
   schedule:
     - cron: '55 1 * * 6,0'
     - cron: "0 22 * * 5"
-"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'github-actions\apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
             @"
 trigger: none
 schedules:
@@ -5402,7 +5402,7 @@ schedules:
     displayName: Weekday early-morning
     branches:
       include: [ main ]
-"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'azure-devops\apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'azure-devops\Step.5_apply-updates.yml') -Encoding ASCII
         }
         AfterAll {
             Remove-Item -Path $script:tmpYamlDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -5438,7 +5438,7 @@ schedules:
 on:
   schedule:
     - cron: '50 1 * * 6,0'
-"@ | Set-Content -Path (Join-Path $script:tmpYamlDir2 'github-actions\apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir2 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
         }
         AfterAll {
             Remove-Item -Path $script:tmpYamlDir2 -Recurse -Force -ErrorAction SilentlyContinue
@@ -5705,7 +5705,7 @@ Describe 'v0.7.66 Artifact download names carry a UTC timestamp suffix' {
                 }
                 # Accept either the in-stage step-output form (`$(stamp.artifactStamp)`)
                 # OR a cross-stage variable that ends in `ArtifactStamp)`, which is
-                # how `apply-updates.yml` consumes the CheckReadiness stage's stamp
+                # how `Step.5_apply-updates.yml` consumes the CheckReadiness stage's stamp
                 # via the `readinessArtifactStamp` mapped variable.
                 if ($name -notmatch '\$\(.+?[Aa]rtifactStamp\)') {
                     $offenders.Add("$($yml.Name): ${key} '$name' missing a `$(...artifactStamp) suffix")
@@ -5770,7 +5770,7 @@ Describe 'v0.7.66 Artifact download names carry a UTC timestamp suffix' {
 }
 
 Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups failures first' {
-    # Guards the v0.7.66 UX refresh of fleet-update-status.yml summary blocks
+    # Guards the v0.7.66 UX refresh of Step.6_fleet-update-status.yml summary blocks
     # on both GH and ADO. The summary now uses 'red cross / green tick' emojis
     # instead of '[ok]/[fail]/...' bracket markers, and the per-cluster JUnit
     # block orders failed clusters first.
@@ -5778,12 +5778,12 @@ Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups fail
     BeforeAll {
         $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
         $script:fleetStatusFiles = @(
-            Join-Path $script:examplesRoot 'github-actions\fleet-update-status.yml'
-            Join-Path $script:examplesRoot 'azure-devops\fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'github-actions\Step.6_fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'azure-devops\Step.6_fleet-update-status.yml'
         )
     }
 
-    It "Both fleet-update-status.yml files contain success and failure status emojis" {
+    It "Both Step.6_fleet-update-status.yml files contain success and failure status emojis" {
         foreach ($yml in $script:fleetStatusFiles) {
             # Must read explicitly as UTF-8; the YAML has no BOM, and PS 5.1
             # Get-Content -Raw without -Encoding defaults to Default (cp1252),
@@ -5800,7 +5800,7 @@ Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups fail
         }
     }
 
-    It "Both fleet-update-status.yml files render a UTC timestamp in the summary heading" {
+    It "Both Step.6_fleet-update-status.yml files render a UTC timestamp in the summary heading" {
         foreach ($yml in $script:fleetStatusFiles) {
             $content = Get-Content -LiteralPath $yml -Raw
             ($content -match 'Fleet Update Status Summary\s*_\(generated \$generatedUtc\)_') | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must include the generated UTC timestamp in the H2 heading"
@@ -5808,7 +5808,7 @@ Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups fail
         }
     }
 
-    It "Both fleet-update-status.yml files bucket failed clusters ahead of passed clusters before emitting the JUnit table" {
+    It "Both Step.6_fleet-update-status.yml files bucket failed clusters ahead of passed clusters before emitting the JUnit table" {
         foreach ($yml in $script:fleetStatusFiles) {
             $content = Get-Content -LiteralPath $yml -Raw
             ($content -match '\$failedClusters')    | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must build a `$failedClusters bucket"
@@ -5849,7 +5849,7 @@ Describe 'v0.7.66 Pipeline update_ring inputs document multi-value and wildcard 
 #region v0.7.67 CI/CD parity + doc-drift regression suite
 
 Describe 'v0.7.67 schedule-audit zero-row JUnit parity' {
-    # v0.7.67 regression guard: apply-updates-schedule-audit.yml previously
+    # v0.7.67 regression guard: Step.3_apply-updates-schedule-audit.yml previously
     # behaved differently across CI platforms when the fleet had no tagged
     # clusters. Azure DevOps emitted a passing testcase ("No tagged clusters
     # found - nothing to audit") so the run rendered as passed (1/1) in the
@@ -5863,14 +5863,14 @@ Describe 'v0.7.67 schedule-audit zero-row JUnit parity' {
     }
 
     It 'GitHub Actions schedule-audit YAML emits the zero-row testcase' {
-        $yml = Join-Path $script:examplesRoot 'github-actions\apply-updates-schedule-audit.yml'
+        $yml = Join-Path $script:examplesRoot 'github-actions\Step.3_apply-updates-schedule-audit.yml'
         Test-Path -LiteralPath $yml | Should -BeTrue -Because "the GH schedule-audit YAML should exist at $yml"
         $content = Get-Content -LiteralPath $yml -Raw
         $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'v0.7.67 added the zero-row JUnit testcase to the GH schedule-audit YAML to match ADO parity'
     }
 
     It 'Azure DevOps schedule-audit YAML still emits the zero-row testcase' {
-        $yml = Join-Path $script:examplesRoot 'azure-devops\apply-updates-schedule-audit.yml'
+        $yml = Join-Path $script:examplesRoot 'azure-devops\Step.3_apply-updates-schedule-audit.yml'
         Test-Path -LiteralPath $yml | Should -BeTrue -Because "the ADO schedule-audit YAML should exist at $yml"
         $content = Get-Content -LiteralPath $yml -Raw
         $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'the ADO schedule-audit YAML has emitted the zero-row JUnit testcase since v0.7.0; the v0.7.67 parity work must not regress it'
@@ -5917,11 +5917,11 @@ Describe 'v0.7.67 schedule-audit summary - cron fixes first when issues exist' {
     $yamlCases = @(
         @{
             Platform = 'github-actions'
-            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\github-actions\apply-updates-schedule-audit.yml')
+            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\github-actions\Step.3_apply-updates-schedule-audit.yml')
         }
         @{
             Platform = 'azure-devops'
-            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\azure-devops\apply-updates-schedule-audit.yml')
+            YamlPath = (Join-Path $moduleRoot 'Automation-Pipeline-Examples\azure-devops\Step.3_apply-updates-schedule-audit.yml')
         }
     )
 
