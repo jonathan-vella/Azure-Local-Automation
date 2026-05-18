@@ -367,7 +367,8 @@ function Get-AzureLocalClusterUpdateReadiness {
             $summaryRow = if ($summaryByCluster.ContainsKey($key)) { $summaryByCluster[$key] } else { $null }
             $sumProps = if ($summaryRow) { $summaryRow.properties } else { $null }
 
-            $availableUpdates = if ($updatesByCluster.ContainsKey($key)) { @($updatesByCluster[$key]) } else { @() }
+            $availableUpdates = @()
+            if ($updatesByCluster.ContainsKey($key)) { $availableUpdates = @($updatesByCluster[$key]) }
 
             $updateState = if ($sumProps -and $sumProps.state) { [string]$sumProps.state } else { 'Unknown' }
 

@@ -429,7 +429,13 @@ $updateNameClause
     $perCluster = @{}
     foreach ($cluster in $clustersToProcess) {
         $key = $cluster.ResourceId.ToLower()
-        $clusterRuns = if ($runsByCluster.ContainsKey($key)) { @($runsByCluster[$key]) } else { @() }
+        # NOTE: Do not use `$x = if (...) { @($h[$key]) } else { @() }` here -
+        # the `if` block's pipeline return unwraps single-element Object[] to
+        # the bare element under PowerShell 5.1, and PSCustomObject.Count is
+        # empty (not 1), which would silently mask any cluster having exactly
+        # one update run. Assign default then overwrite to preserve array.
+        $clusterRuns = @()
+        if ($runsByCluster.ContainsKey($key)) { $clusterRuns = @($runsByCluster[$key]) }
 
         if ($clusterRuns.Count -gt 0) {
             # ARG ordering is already StartTime desc but re-sort defensively
