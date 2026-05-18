@@ -10,19 +10,38 @@ function Invoke-AzResourceGraphQuery {
         skip_token field, aggregating .data across pages and returning the
         merged row array.
 
-        Safety cap: MaxPages (default 50 -> 50,000 rows) prevents a bug in the
-        caller's query from producing an infinite pagination loop. A warning
-        is emitted via Write-Warning and the partial result is returned if the
-        cap is hit.
+        Safety cap: MaxPages (default 100 -> 100,000 rows). Prevents a bug in
+        the caller's query from producing an infinite pagination loop. When
+        the cap is hit, a Write-Warning is emitted, the module-scope flag
+        $script:LastResourceGraphQueryTruncated is set to $true, and the
+        partial result is returned. Callers that need to behave differently
+        on truncation can read the flag after the call.
+
+        v0.7.68: the Query string is normalised (CR/LF and runs of whitespace
+        collapsed to single spaces) BEFORE being passed to 'az graph query -q'.
+        On Windows, az is implemented as az.cmd (a batch file), and the CMD
+        argument parser truncates command-line arguments at the first CR/LF -
+        so a multi-line PowerShell here-string KQL would silently be reduced
+        to just its first line on the runner. The pre-v0.7.68 behaviour caused
+        Test-AzureLocalApplyUpdatesScheduleCoverage to silently return all
+        resources (default schema, no UpdateRing/UpdateWindow columns) instead
+        of the projected cluster rows it asked for; the audit then reported
+        zero tagged clusters even when clusters were tagged correctly. The
+        normalisation here protects every caller, current and future. KQL is
+        whitespace-agnostic, so collapsing newlines/tabs is semantically a
+        no-op.
     .PARAMETER Query
-        KQL query string. Passed verbatim to 'az graph query -q'.
+        KQL query string. Normalised to single-line before being passed to
+        'az graph query -q'. See .DESCRIPTION for the Windows az.cmd reason.
     .PARAMETER SubscriptionId
         Optional. If supplied, scopes the query to that subscription via
         --subscriptions. Omit to query across all accessible subscriptions.
     .PARAMETER First
         Page size. Defaults to 1000 (the ARG maximum).
     .PARAMETER MaxPages
-        Safety cap. Defaults to 50.
+        Safety cap. Defaults to 100 (= 100,000 rows). Bumped from 50 in
+        v0.7.68 so that fleets up to ~100K clusters paginate without operator
+        intervention.
     .OUTPUTS
         [object[]] of rows merged across all pages. Empty array if no rows.
         Throws if the CLI returns a non-zero exit code or the response cannot
@@ -44,8 +63,19 @@ function Invoke-AzResourceGraphQuery {
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(1, 500)]
-        [int]$MaxPages = 50
+        [int]$MaxPages = 100
     )
+
+    # v0.7.68: collapse CR/LF and runs of whitespace into single spaces so the
+    # query survives az.cmd's CMD argument parser on Windows. See .DESCRIPTION.
+    # KQL is whitespace-agnostic in its grammar, so this is semantically inert
+    # for every well-formed query. Leading/trailing whitespace is also trimmed
+    # to keep the eventual command-line clean.
+    $Query = ($Query -replace '\s+', ' ').Trim()
+
+    # Reset the truncation flag at the start of every call so a caller checking
+    # $script:LastResourceGraphQueryTruncated sees only THIS call's outcome.
+    $script:LastResourceGraphQueryTruncated = $false
 
     $allRows = [System.Collections.Generic.List[object]]::new()
     $skipToken = $null
@@ -70,7 +100,8 @@ function Invoke-AzResourceGraphQuery {
         while ($true) {
             $pages++
             if ($pages -gt $MaxPages) {
-                Write-Warning "Invoke-AzResourceGraphQuery: reached MaxPages=$MaxPages safety cap; returning partial result ($($allRows.Count) rows). Check the query for unbounded output or raise -MaxPages."
+                $script:LastResourceGraphQueryTruncated = $true
+                Write-Warning "Invoke-AzResourceGraphQuery: reached MaxPages=$MaxPages safety cap; returning partial result ($($allRows.Count) rows). Check the query for unbounded output or raise -MaxPages. Callers can detect this via `$script:LastResourceGraphQueryTruncated."
                 break
             }
 

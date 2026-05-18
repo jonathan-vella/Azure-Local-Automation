@@ -128,6 +128,14 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
     }
 
     # 1. Pull every cluster's UpdateRing + UpdateWindow tags via Resource Graph.
+    # NOTE on multi-line KQL: a here-string with embedded newlines used to be
+    # silently truncated to its first line on Windows because az.cmd's CMD
+    # argument parser stops at the first CR/LF. That caused this audit to
+    # report "No tagged clusters found" even when clusters were tagged
+    # correctly. Fixed in v0.7.68 by normalising the query string inside
+    # Invoke-AzResourceGraphQuery (collapses any whitespace into single spaces
+    # before invoking az). KQL is whitespace-agnostic so the projection,
+    # filtering and ordering semantics are preserved.
     $kql = @"
 resources
 | where type =~ 'microsoft.azurestackhci/clusters'
