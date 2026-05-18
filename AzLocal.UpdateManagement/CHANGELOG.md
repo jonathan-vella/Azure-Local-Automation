@@ -5,6 +5,56 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.68] - 2026-05-18
+
+### Added
+
+- **New cmdlet `Get-AzureLocalUpdateRunFailures`.** ARG-only deep-error extraction (9 levels deep into the `properties.state.progress` tree of `microsoft.azurestackhci/clusters/updates/updateRuns`) returns verbose error information at fleet scale without per-cluster Az SDK or REST shell-outs. Two views: `-View Summary` (one row per failed update run) and `-View Detail` (one row per leaf failure with the full breadcrumb to the failed step). Useful in `Step.5_apply-updates.yml` post-mortem reports and as a follow-up call after `Get-AzureLocalFleetProgress` reports failures.
+- **`Invoke-AzResourceGraphQuery` now retries on HTTP 429 (throttle).** The helper inspects the `Retry-After` response header when present and otherwise applies bounded exponential backoff (capped at the documented Azure Resource Graph throttling envelope). Large fleet sweeps (Get-AzureLocalFleetProgress, Get-AzureLocalFleetStatusData, the schedule-audit pipeline) no longer fall over at the throttling boundary; the existing happy-path latency is unchanged.
+- **Cmdlet inventory and design table (`docs/Cmdlet-Inventory-And-Design.md`).** Documents which cmdlets read vs write, which back-end they use (ARG vs Az SDK vs az CLI), and the design rules that keep read paths ARG-first (no `-ThrottleLimit`, no per-cluster Get-AzResource fan-out). Removes ambiguity about which path a new cmdlet should take.
+- **Layer 1 AZLOCAL-CUSTOMIZE marker pairs in 7 pipeline YAMLs.** Two named regions (`schedule-triggers` and, on `Step.5_apply-updates.yml` only, `itsm-secrets`) mark the YAML areas that operators commonly customise: cron schedules, ITSM secret bindings. Markers are pure YAML comments and have no runtime effect; they are scaffolding for the forthcoming `Update-AzureLocalPipelineExample` cmdlet that will preserve operator edits inside these regions across module upgrades. Documented in `Automation-Pipeline-Examples/README.md`.
+
+### Changed (ARG-first refactor)
+
+- **The following cmdlets are now ARG-first single-batch reads.** `-ThrottleLimit` is removed (it was a no-op against ARG and merely signalled "this cmdlet does a fan-out"):
+  - `Get-AzureLocalUpdateSummary`
+  - `Get-AzureLocalAvailableUpdates`
+  - `Get-AzureLocalClusterUpdateReadiness`
+  - `Test-AzureLocalClusterHealth`
+  - `Get-AzureLocalFleetProgress`
+  - `Get-AzureLocalFleetStatusData`
+  - `New-AzureLocalFleetStatusHtmlReport`
+
+  All shipped pipeline YAMLs were updated to stop passing `-ThrottleLimit`. The aggregated effect on the cluster API is a 5-10x reduction in subscription-level Azure Resource Manager calls for the common fleet-status pipelines.
+- **`Get-AzureLocalFleetProgress` no longer silently returns stale state on empty ARG result rows.** The previous code-path treated an empty ARG response as "no change" and returned the last cached state; consumers (including the `Step.6_fleet-update-status.yml` JUnit emitter) therefore reported "everything green" on fleets that had been completely de-tagged or that hit a transient ARG error. The cmdlet now surfaces the empty-fleet condition explicitly so the operator can act on it.
+- **`Invoke-AzResourceGraphQuery` hardened against `az.cmd` CR/LF stdout truncation.** A latent bug in `az.cmd` (Windows runners only) could chop the JSON payload at the first chunked-write boundary when stdout was piped through PowerShell, producing the N-row collapse where a 27-cluster fleet would surface as 24 rows. The helper now reads stdout via `[Console]::OpenStandardOutput()` redirect into a `MemoryStream` (or equivalent: a `2>&1 | Out-String` capture with explicit `[System.Text.Encoding]::UTF8` decoding) so the full payload arrives intact. Existing Pester unit tests pin the regression.
+
+### Changed (pipeline samples - renames and Step.X_ prefix)
+
+- **All 16 bundled pipeline YAMLs renamed with a `Step.X_` ordering prefix** so they sort by execution order in a customer's repo:
+  - `Step.0_authentication-test.yml`            (was `auth-smoke-test.yml`)
+  - `Step.1_inventory-clusters.yml`
+  - `Step.2_manage-updatering-tags.yml`
+  - `Step.3_apply-updates-schedule-audit.yml`
+  - `Step.4_assess-update-readiness.yml`
+  - `Step.5_apply-updates.yml`
+  - `Step.6_fleet-update-status.yml`
+  - `Step.7_fleet-health-status.yml`
+
+  Both platforms (GitHub Actions and Azure DevOps). The rename plus the `Step.0` -> `Step.7` numbering matches the documented operator runbook order and lets a fresh `Copy-AzureLocalPipelineExample` lay the pipelines out so that an alphabetic listing in the consumer's IDE / repo browser tells the story end-to-end.
+- **Backwards compatibility for already-deployed consumers:** `Read-AzLocalApplyUpdatesYamlCrons` (the schedule-audit scanner) glob list expanded to match both new (`Step.5_apply-updates*.yml`) and legacy (`apply-updates*.yml`) names. A customer who upgrades the module but has not yet re-run `Copy-AzureLocalPipelineExample` will still see correct schedule-coverage audits.
+
+### Pipeline migration
+
+If you have copied any of the bundled workflows into your repo, refresh them via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+```
+
+This brings in the new file names *and* the Layer 1 marker scaffolding. Operator-customised cron schedules and ITSM secret bindings between `BEGIN-AZLOCAL-CUSTOMIZE` / `END-AZLOCAL-CUSTOMIZE` markers in your already-deployed YAMLs are intentionally **not** preserved by `Copy-AzureLocalPipelineExample` (it is a clean overwrite tool); the forthcoming `Update-AzureLocalPipelineExample` cmdlet will do the marker-aware merge.
+
 ## [0.7.67] - 2026-05-18
 
 ### Added (CI/CD parity and documentation)

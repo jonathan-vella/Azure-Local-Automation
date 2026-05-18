@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.67'
+    ModuleVersion = '0.7.68'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -181,6 +181,70 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.68 - ARG-first refactor, pipeline rename to Step.X_ prefix, Layer 1 customisation markers
+
+### Added
+
+- New cmdlet `Get-AzureLocalUpdateRunFailures`: ARG-only deep-error
+  extraction (9 levels deep) for fleet-scale verbose error information
+  from cluster update runs. No per-cluster shell-outs.
+- Throttle/retry handling in `Invoke-AzResourceGraphQuery`: detects
+  HTTP 429 responses, parses `Retry-After`, and applies bounded
+  exponential backoff so large fleet sweeps no longer fail at the
+  ARG throttling boundary.
+- Cmdlet inventory and design table in
+  `docs/Cmdlet-Inventory-And-Design.md`: documents which cmdlets read
+  vs write and which back-end they use (ARG vs Az SDK vs az CLI).
+
+### Changed (ARG-first refactor)
+
+- The following cmdlets are now ARG-first single-batch reads, with
+  `-ThrottleLimit` removed (it was meaningless against ARG):
+  `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`,
+  `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`,
+  `Get-AzureLocalFleetProgress`, `Get-AzureLocalFleetStatusData`,
+  `New-AzureLocalFleetStatusHtmlReport`.
+- All shipped pipeline YAMLs no longer pass `-ThrottleLimit`.
+- `Get-AzureLocalFleetProgress` no longer silently returns stale state
+  when ARG returns zero rows; it now surfaces the empty fleet condition.
+- `Invoke-AzResourceGraphQuery` hardened against `az.cmd` CR/LF
+  stdout truncation that caused the N-row collapse in consumers.
+
+### Changed (pipeline samples)
+
+- All 16 bundled pipeline YAMLs (GitHub Actions + Azure DevOps) renamed
+  with a `Step.X_` ordering prefix so they sort by execution order:
+    Step.0_authentication-test.yml   (was auth-smoke-test.yml)
+    Step.1_inventory-clusters.yml
+    Step.2_manage-updatering-tags.yml
+    Step.3_apply-updates-schedule-audit.yml
+    Step.4_assess-update-readiness.yml
+    Step.5_apply-updates.yml
+    Step.6_fleet-update-status.yml
+    Step.7_fleet-health-status.yml
+- New AZLOCAL-CUSTOMIZE marker pairs (`schedule-triggers` on the 6 main
+  pipelines, `itsm-secrets` on Step.5) mark the YAML regions intended
+  for operator customisation. Markers are pure YAML comments and have
+  no runtime effect; they are scaffolding for a forthcoming
+  `Update-AzureLocalPipelineExample` cmdlet that will preserve operator
+  edits inside these regions across module upgrades.
+- `Read-AzLocalApplyUpdatesYamlCrons` glob expanded to match both
+  `Step.5_apply-updates*.yml` and the legacy `apply-updates*.yml` so a
+  customer's existing schedule-audit pipeline keeps working until they
+  refresh their copies via `Copy-AzureLocalPipelineExample`.
+
+### Migration
+
+If you have copied any of the bundled workflows into your repo, refresh
+them via:
+
+```powershell
+Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+```
+
+The full v0.7.67 release notes are in CHANGELOG.md.
+
 ## Version 0.7.66 - cp1252 stderr leak in fleet health ARG calls + schedule-audit pipeline default path fix
 
 ### Fixed (critical)
