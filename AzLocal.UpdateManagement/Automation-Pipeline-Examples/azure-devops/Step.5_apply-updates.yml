@@ -2,12 +2,44 @@
 # This pipeline applies updates to clusters filtered by UpdateRing tag value
 
 # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
-# Add or modify `schedules:` cron blocks here to drive automated update runs.
-# The cron entries must align with your UpdateWindow tag values - use
-# `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` (or the Step.3
-# schedule-audit pipeline) to generate ready-to-paste cron lines. Content
-# between BEGIN/END markers is preserved by Update-AzureLocalPipelineExample
-# across module upgrades.
+# v0.7.69: PREFERRED PATTERN - drive automated update runs from a ring-aware
+# schedule file (apply-updates-schedule.yml at the repo root by default),
+# not from per-window crons.
+#
+# How it works:
+#   1. The 'Resolve UpdateRing from schedule' task in the CheckReadiness stage
+#      checks $(Build.Reason). If 'Manual' / 'IndividualCI' etc. the operator's
+#      manual `updateRing` parameter is used verbatim (back-compat).
+#   2. If $(Build.Reason) is 'Schedule', the task reads apply-updates-schedule.yml,
+#      computes the current (cycleWeek, dayOfWeek) tuple in UTC, and returns
+#      the eligible UpdateRing tag value(s) for THIS firing.
+#   3. If no schedule row matches today, ReadyCount=0 and the ApplyUpdates
+#      stage is skipped cleanly (exit 0, no errors).
+#   4. If the schedule file is MISSING and $(Build.Reason)='Schedule', the
+#      resolver hard-fails with a remediation pointing at
+#      New-AzLocalApplyUpdatesScheduleConfig.
+#
+# Generate a STRAWMAN schedule file from your fleet via:
+#   New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\apply-updates-schedule.yml
+# Every row is commented out by default - review and uncomment to activate.
+#
+# Concurrency: ADO has no first-class YAML concurrency block; use Pipeline
+# Settings -> Triggers -> 'Limit concurrent runs' (or Environment 'Approvals
+# and checks' -> 'Exclusive lock') to ensure only one apply-updates run is
+# active per environment at a time.
+#
+# Recommended schedule: once per day at a low-traffic time (the resolver is
+# day-grain; firing more often is wasteful but harmless thanks to readiness
+# idempotency). Example - 06:00 UTC every day:
+#   schedules:
+#     - cron: '0 6 * * *'
+#       displayName: 'Daily ring-aware apply-updates'
+#       branches:
+#         include: [main]
+#       always: true
+#
+# Content between BEGIN/END markers is preserved by
+# Update-AzureLocalPipelineExample across module upgrades.
 trigger: none
 # END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
@@ -66,12 +98,18 @@ variables:
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
-    value: '0.7.68'
+    value: '0.7.69'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
   - name: REQUIRED_MODULE_VERSION
     value: '${{ parameters.moduleVersion }}'
+  # v0.7.69: Path to the ring-aware apply-updates-schedule.yml (relative to repo
+  # root). The 'Resolve UpdateRing from schedule' task reads this file when
+  # $(Build.Reason)='Schedule'. Override at queue time if you keep the schedule
+  # outside the repo root.
+  - name: APPLY_UPDATES_SCHEDULE_PATH
+    value: './apply-updates-schedule.yml'
   # ITSM connector (v0.7.4 Phase 1). Uncomment the group reference once you
   # have created a variable group named 'AzureLocal-ITSM-Secrets' containing:
   #   ITSM_SN_INSTANCE_URL, ITSM_SN_CLIENT_ID, ITSM_SN_CLIENT_SECRET
@@ -145,9 +183,64 @@ stages:
                     Write-Host "##vso[task.logissue type=warning]$msg"
                 }
           
+          # v0.7.69: Resolve the UpdateRing for THIS firing.
+          #   - $(Build.Reason) in 'Manual','IndividualCI','BatchedCI','PullRequest','Manual'
+          #       -> use the operator's parameter input verbatim (back-compat).
+          #   - $(Build.Reason) = 'Schedule'
+          #       -> read apply-updates-schedule.yml and run the resolver.
+          # The resolved value is exported as a task output variable
+          # (resolveRing.RESOLVED_UPDATE_RING) for consumption later in this job
+          # and via stageDependencies in the ApplyUpdates stage.
+          - task: PowerShell@2
+            displayName: 'Resolve UpdateRing from schedule'
+            name: resolveRing
+            env:
+              MANUAL_UPDATE_RING: ${{ parameters.updateRing }}
+              APPLY_UPDATES_SCHEDULE_PATH: $(APPLY_UPDATES_SCHEDULE_PATH)
+              BUILD_REASON: $(Build.Reason)
+            inputs:
+              targetType: 'inline'
+              pwsh: true
+              script: |
+                $ErrorActionPreference = 'Stop'
+                Import-Module AzLocal.UpdateManagement -Force
+                $resolved = ''
+                if ($env:BUILD_REASON -ne 'Schedule') {
+                    $resolved = $env:MANUAL_UPDATE_RING
+                    Write-Host "Build.Reason='$($env:BUILD_REASON)' - using manual parameter UpdateRing='$resolved' (schedule file ignored)."
+                }
+                else {
+                    $schedulePath = $env:APPLY_UPDATES_SCHEDULE_PATH
+                    if (-not $schedulePath) { $schedulePath = './apply-updates-schedule.yml' }
+                    Write-Host "Build.Reason='Schedule' - resolving UpdateRing from schedule file '$schedulePath' (UTC now)."
+                    if (-not (Test-Path -LiteralPath $schedulePath)) {
+                        throw "apply-updates-schedule.yml not found at '$schedulePath'. The apply-updates pipeline was triggered by a scheduled run but no schedule file is present. Generate a STRAWMAN from your fleet via: New-AzLocalApplyUpdatesScheduleConfig -OutputPath '$schedulePath' (then review and UNCOMMENT at least one row before re-running). Override APPLY_UPDATES_SCHEDULE_PATH at queue time if you keep the schedule elsewhere."
+                    }
+                    $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $schedulePath
+                    $decision = Resolve-AzLocalCurrentUpdateRing -Schedule $cfg
+                    Write-Host "Resolver decision: $($decision.Reason)"
+                    if ($decision.Rings -and $decision.Rings.Count -gt 0) {
+                        $resolved = $decision.UpdateRingValue
+                        Write-Host "Resolved UpdateRing='$resolved' (cycleWeek=$($decision.CycleWeek), dayOfWeek=$($decision.DayOfWeekName))."
+                    }
+                    else {
+                        Write-Host "##vso[task.logissue type=warning]No UpdateRing scheduled for today: $($decision.Reason)"
+                        Write-Host "Setting resolved UpdateRing to empty - the readiness task will report ReadyCount=0 and the ApplyUpdates stage will be skipped cleanly."
+                        $resolved = ''
+                    }
+                }
+                Write-Host "##vso[task.setvariable variable=RESOLVED_UPDATE_RING;isOutput=true]$resolved"
+          
           - task: AzureCLI@2
             displayName: 'Check Cluster Readiness'
             name: readiness
+            env:
+              # v0.7.69: resolved by the upstream 'Resolve UpdateRing from
+              # schedule' task. For Manual/IndividualCI runs this is the
+              # operator's parameter input verbatim; for Schedule firings it
+              # is the ring(s) the resolver picked from
+              # apply-updates-schedule.yml.
+              RESOLVED_UPDATE_RING: $(resolveRing.RESOLVED_UPDATE_RING)
             inputs:
               azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
               scriptType: 'pscore'
@@ -155,7 +248,19 @@ stages:
               inlineScript: |
                 Import-Module AzLocal.UpdateManagement -Force
                 
-                $updateRing = "${{ parameters.updateRing }}"
+                $updateRing = $env:RESOLVED_UPDATE_RING
+                
+                # v0.7.69: empty UpdateRing means the schedule resolver found
+                # no row matching the current UTC day. Report zero clusters
+                # and exit 0 - the ApplyUpdates stage is gated on ReadyCount>0
+                # and will skip cleanly.
+                if ([string]::IsNullOrWhiteSpace($updateRing)) {
+                    Write-Host "No UpdateRing scheduled for this firing - skipping readiness check."
+                    Write-Host "##vso[task.setvariable variable=TotalCount;isOutput=true]0"
+                    Write-Host "##vso[task.setvariable variable=ReadyCount;isOutput=true]0"
+                    Write-Host "##vso[task.setvariable variable=NotReadyCount;isOutput=true]0"
+                    exit 0
+                }
                 
                 Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing'"
                 
@@ -245,6 +350,11 @@ stages:
           # v0.7.66: pull the upstream artifact-stamp through so the download step
           # can reconstruct the timestamped artifact name produced by CheckReadiness.
           readinessArtifactStamp: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['stamp.artifactStamp'] ]
+          # v0.7.69: ring(s) resolved by the upstream 'Resolve UpdateRing from
+          # schedule' task. For Manual/IndividualCI etc. this is the operator's
+          # parameter input verbatim; for Schedule firings this is the ring(s)
+          # the resolver picked from apply-updates-schedule.yml.
+          resolvedUpdateRing: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['resolveRing.RESOLVED_UPDATE_RING'] ]
         
         steps:
           - checkout: self
@@ -317,6 +427,11 @@ stages:
           - task: AzureCLI@2
             displayName: 'Apply Updates'
             name: applyUpdates
+            env:
+              # v0.7.69: resolved by the CheckReadiness stage's resolveRing
+              # task (manual parameter for Manual/IndividualCI runs, schedule-
+              # resolved ring for Schedule firings).
+              RESOLVED_UPDATE_RING: $(resolvedUpdateRing)
             inputs:
               azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
               scriptType: 'pscore'
@@ -324,7 +439,7 @@ stages:
               inlineScript: |
                 Import-Module AzLocal.UpdateManagement -Force
                 
-                $updateRing = "${{ parameters.updateRing }}"
+                $updateRing = $env:RESOLVED_UPDATE_RING
                 $updateName = "${{ parameters.updateName }}"
                 $dryRun = [System.Convert]::ToBoolean("${{ parameters.dryRun }}")
                 
@@ -549,10 +664,12 @@ stages:
 
           - task: PowerShell@2
             displayName: 'Generate Summary'
+            env:
+              RESOLVED_UPDATE_RING: $(resolvedUpdateRing)
             inputs:
               targetType: 'inline'
               script: |
-                $updateRing = "${{ parameters.updateRing }}"
+                $updateRing = $env:RESOLVED_UPDATE_RING
                 $dryRun = [System.Convert]::ToBoolean("${{ parameters.dryRun }}")
                 $readyCount = "$(readyCount)"
                 $totalCount = "$(totalCount)"
@@ -608,14 +725,19 @@ stages:
         
         variables:
           totalCount: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['readiness.TotalCount'] ]
+          # v0.7.69: report the resolved ring (not the raw parameter input) so
+          # scheduled runs surface the actual ring the resolver picked.
+          resolvedUpdateRing: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['resolveRing.RESOLVED_UPDATE_RING'] ]
         
         steps:
           - task: PowerShell@2
             displayName: 'Generate Report'
+            env:
+              RESOLVED_UPDATE_RING: $(resolvedUpdateRing)
             inputs:
               targetType: 'inline'
               script: |
-                $updateRing = "${{ parameters.updateRing }}"
+                $updateRing = $env:RESOLVED_UPDATE_RING
                 $totalCount = "$(totalCount)"
                 
                 Write-Host "##vso[task.logissue type=warning]No clusters are ready for updates in ring '$updateRing'"

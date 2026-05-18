@@ -15,13 +15,35 @@ name: Step.5 - Apply Updates
 
 on:
   # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
-  # Add `schedule:` cron blocks here to drive automated update runs. The cron
-  # entries must align with your UpdateWindow tag values - use
-  # `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` (or the
-  # Step.3 schedule-audit pipeline) to generate ready-to-paste cron lines.
-  # Example:
+  # v0.7.69: PREFERRED PATTERN - drive automated update runs from a ring-aware
+  # schedule file (apply-updates-schedule.yml at the repo root by default),
+  # not from per-window crons.
+  #
+  # How it works:
+  #   1. The resolver step in check-readiness reads apply-updates-schedule.yml,
+  #      computes the current (cycleWeek, dayOfWeek) tuple in UTC, and returns
+  #      the eligible UpdateRing tag value(s) for THIS firing.
+  #   2. If no schedule row matches today, the resolver logs the reason and
+  #      check-readiness sets ready_count=0 - apply-updates is skipped cleanly
+  #      (exit 0, no errors).
+  #   3. If the schedule file is MISSING and the trigger is `schedule:` (not
+  #      workflow_dispatch), the resolver hard-fails with a remediation pointing
+  #      at New-AzLocalApplyUpdatesScheduleConfig.
+  #
+  # Generate a STRAWMAN schedule file from your fleet via:
+  #   New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
+  # Every row is commented out by default - review and uncomment to activate.
+  #
+  # Recommended cron: once per day at a low-traffic time (the resolver is
+  # day-grain; firing more often is wasteful but harmless thanks to readiness
+  # idempotency). Example - 06:00 UTC every day:
   #   schedule:
-  #     - cron: '0 22 * * 6'  # Saturday-night UpdateWindow=SatNight22UTC
+  #     - cron: '0 6 * * *'
+  #
+  # The legacy per-UpdateWindow cron pattern still works (one cron per window),
+  # but ring resolution then defaults to the workflow_dispatch input default,
+  # which is rarely what schedule-triggered runs actually want.
+  #
   # Content between BEGIN/END markers is preserved by
   # Update-AzureLocalPipelineExample across module upgrades.
   # END-AZLOCAL-CUSTOMIZE:schedule-triggers
@@ -90,11 +112,24 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.68'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.69'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
+  # v0.7.69: Path to the ring-aware apply-updates-schedule.yml (relative to repo
+  # root). The resolver step in check-readiness reads this file when the trigger
+  # is `schedule:`. Override via repository variable APPLY_UPDATES_SCHEDULE_PATH
+  # if you keep the schedule outside `.github/`.
+  APPLY_UPDATES_SCHEDULE_PATH: ${{ vars.APPLY_UPDATES_SCHEDULE_PATH || './.github/apply-updates-schedule.yml' }}
+
+# v0.7.69: prevent overlapping apply-updates runs from racing on the same
+# fleet. cancel-in-progress=false means a newly-triggered run queues behind an
+# in-flight one instead of cancelling it (cancellation mid-apply could leave
+# a cluster in a half-updated state).
+concurrency:
+  group: apply-updates-${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   # Optional: Add a readiness check job first
@@ -113,6 +148,11 @@ jobs:
       # apply-updates job can download it (cross-job step outputs are not visible -
       # everything passed to the next job has to go through the job 'outputs' map).
       readiness_artifact: azlocal-apply-updates-readiness-report_${{ steps.artifact-stamp.outputs.timestamp }}
+      # v0.7.69: the ring(s) the schedule resolver picked for this firing.
+      # Empty when the trigger was workflow_dispatch (downstream falls back to
+      # the manual `update_ring` input). When the trigger was `schedule:`, this
+      # is a ';'-joined UpdateRing value ready for -UpdateRingValue.
+      resolved_update_ring: ${{ steps.resolve-ring.outputs.RESOLVED_UPDATE_RING }}
     
     steps:
     - name: Checkout repository
@@ -178,15 +218,69 @@ jobs:
             Write-Host "::notice title=Newer AzLocal.UpdateManagement version available on PSGallery::$msg"
         }
     
+    # v0.7.69: Resolve the UpdateRing for THIS firing.
+    #   - workflow_dispatch  -> use the operator's manual input verbatim (back-compat).
+    #   - schedule (cron)    -> read apply-updates-schedule.yml and run the resolver.
+    # The resolved value is exported as both an env var (for later steps in this
+    # job) and a step output (for cross-job consumption by apply-updates).
+    - name: Resolve UpdateRing from schedule
+      id: resolve-ring
+      shell: pwsh
+      env:
+        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        TRIGGER_EVENT: ${{ github.event_name }}
+      run: |
+        Import-Module AzLocal.UpdateManagement -Force
+        $resolved = ''
+        if ($env:TRIGGER_EVENT -eq 'workflow_dispatch') {
+            $resolved = $env:INPUT_UPDATE_RING
+            Write-Host "Trigger='workflow_dispatch' - using manual input UpdateRing='$resolved' (schedule file ignored)."
+        }
+        else {
+            $schedulePath = $env:APPLY_UPDATES_SCHEDULE_PATH
+            if (-not $schedulePath) { $schedulePath = './.github/apply-updates-schedule.yml' }
+            Write-Host "Trigger='$($env:TRIGGER_EVENT)' - resolving UpdateRing from schedule file '$schedulePath' (UTC now)."
+            if (-not (Test-Path -LiteralPath $schedulePath)) {
+                throw "apply-updates-schedule.yml not found at '$schedulePath'. The apply-updates pipeline was triggered by a schedule event but no schedule file is present. Generate a STRAWMAN from your fleet via: New-AzLocalApplyUpdatesScheduleConfig -OutputPath '$schedulePath' (then review and UNCOMMENT at least one row before re-running). Set repository variable APPLY_UPDATES_SCHEDULE_PATH to point elsewhere if you keep the schedule outside .github/."
+            }
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $schedulePath
+            $decision = Resolve-AzLocalCurrentUpdateRing -Schedule $cfg
+            Write-Host "Resolver decision: $($decision.Reason)"
+            if ($decision.Rings -and $decision.Rings.Count -gt 0) {
+                $resolved = $decision.UpdateRingValue
+                Write-Host "Resolved UpdateRing='$resolved' (cycleWeek=$($decision.CycleWeek), dayOfWeek=$($decision.DayOfWeekName))."
+            }
+            else {
+                Write-Host "::notice title=No UpdateRing scheduled for today::$($decision.Reason)"
+                Write-Host "Setting resolved UpdateRing to empty - check-readiness will report ready_count=0 and apply-updates will be skipped cleanly."
+                $resolved = ''
+            }
+        }
+        # Bridge: env var for later steps in this job + step output for cross-job consumption.
+        "RESOLVED_UPDATE_RING=$resolved" | Out-File -FilePath $env:GITHUB_ENV    -Encoding utf8 -Append
+        "RESOLVED_UPDATE_RING=$resolved" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+    
     - name: Check Cluster Readiness
       shell: pwsh
       id: readiness
       env:
-        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        INPUT_UPDATE_RING: ${{ env.RESOLVED_UPDATE_RING }}
       run: |
         Import-Module AzLocal.UpdateManagement -Force
         
         $updateRing = $env:INPUT_UPDATE_RING
+        
+        # v0.7.69: empty UpdateRing means the schedule resolver found no row
+        # matching the current UTC day. Report zero clusters and exit 0 - the
+        # downstream apply-updates job is gated on ready_count > 0 and will
+        # skip cleanly.
+        if ([string]::IsNullOrWhiteSpace($updateRing)) {
+            Write-Host "No UpdateRing scheduled for this firing - skipping readiness check."
+            New-Item -ItemType Directory -Path "./artifacts" -Force | Out-Null
+            echo "READY_COUNT=0" >> $env:GITHUB_OUTPUT
+            echo "TOTAL_COUNT=0" >> $env:GITHUB_OUTPUT
+            exit 0
+        }
         
         Write-Host "Checking readiness for clusters with UpdateRing = '$updateRing'"
         
@@ -308,7 +402,11 @@ jobs:
       shell: pwsh
       id: apply-updates
       env:
-        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        # v0.7.69: resolved by check-readiness's resolve-ring step. For
+        # workflow_dispatch this passes the operator's manual input through
+        # verbatim; for schedule:cron firings it is the ring(s) the resolver
+        # picked from apply-updates-schedule.yml.
+        INPUT_UPDATE_RING: ${{ needs.check-readiness.outputs.resolved_update_ring }}
         INPUT_UPDATE_NAME: ${{ github.event.inputs.update_name }}
         INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
       run: |
@@ -525,7 +623,7 @@ jobs:
     - name: Summary
       shell: pwsh
       env:
-        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        INPUT_UPDATE_RING: ${{ needs.check-readiness.outputs.resolved_update_ring }}
         INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
       run: |
         $updateRing = $env:INPUT_UPDATE_RING
@@ -595,7 +693,7 @@ jobs:
     - name: Report No Ready Clusters
       shell: pwsh
       env:
-        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        INPUT_UPDATE_RING: ${{ needs.check-readiness.outputs.resolved_update_ring }}
       run: |
         $updateRing = $env:INPUT_UPDATE_RING
         $totalCount = "${{ needs.check-readiness.outputs.total_count }}"
