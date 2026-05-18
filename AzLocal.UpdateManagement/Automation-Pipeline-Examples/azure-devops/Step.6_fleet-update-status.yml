@@ -1,4 +1,4 @@
-# Fleet Update Status Monitoring Pipeline
+# Step.6 - Fleet Update Status Monitoring Pipeline
 # This pipeline monitors update status across all Azure Local clusters and generates reports
 #
 # USE CASES:

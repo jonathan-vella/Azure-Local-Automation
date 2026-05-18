@@ -1,4 +1,4 @@
-# Apply-Updates Schedule Coverage Audit Pipeline
+# Step.3 - Apply-Updates Schedule Coverage Audit Pipeline
 # This pipeline runs the read-only Test-AzureLocalApplyUpdatesScheduleCoverage advisor
 # weekly to detect drift between the cron schedule(s) in your apply-updates pipeline
 # YAML and the UpdateWindow tags that operators have placed on Azure Local clusters.

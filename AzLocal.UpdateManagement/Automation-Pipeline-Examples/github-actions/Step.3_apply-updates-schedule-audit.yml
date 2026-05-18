@@ -27,7 +27,10 @@
 # Uses OpenID Connect (OIDC) - recommended for secretless authentication
 # See: https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect
 
-name: Apply-Updates Schedule Coverage Audit
+# Workflow name carries the same Step.N - prefix as the filename so the GitHub
+# Actions sidebar (which sorts workflows alphabetically by this `name:` field)
+# lists the eight pipelines in execution order.
+name: Step.3 - Apply-Updates Schedule Coverage Audit
 
 on:
   # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers

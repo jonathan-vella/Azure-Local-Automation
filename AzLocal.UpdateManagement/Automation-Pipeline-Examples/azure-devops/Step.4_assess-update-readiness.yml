@@ -1,4 +1,4 @@
-# Assess Update Readiness (Pre-flight go/no-go gate)
+# Step.4 - Assess Update Readiness (Pre-flight go/no-go gate)
 # --------------------------------------------------
 # Runs Get-AzureLocalClusterUpdateReadiness and Test-AzureLocalClusterHealth -BlockingOnly
 # against a target UpdateRing (or the whole fleet) BEFORE Step.5_apply-updates.yml runs.

@@ -1,5 +1,5 @@
-# Auth Smoke Test - one-shot Workload-Identity-Federation + RBAC validation for the
-# AzLocal.UpdateManagement pipelines.
+# Step.0 - Auth Smoke Test - one-shot Workload-Identity-Federation + RBAC validation
+# for the AzLocal.UpdateManagement pipelines.
 #
 # PURPOSE:
 #   Run this BEFORE importing the five real pipelines (inventory, tags, readiness,

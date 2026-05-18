@@ -11,6 +11,7 @@ It is written in the same step-by-step style as [`ITSM/README.md`](../ITSM/READM
 ## Table of contents
 
 1. [What you'll have when you're done](#1-what-youll-have-when-youre-done)
+   - [1.1 Why the pipelines are named `Step.N - <description>`](#11-why-the-pipelines-are-named-stepn---description)
 2. [Prerequisites](#2-prerequisites)
 3. [Choose your CI/CD platform and authentication](#3-choose-your-cicd-platform-and-authentication)
    - [3.1 GitHub Actions with OpenID Connect (recommended)](#31-github-actions-with-openid-connect-recommended)
@@ -67,6 +68,26 @@ By the end of this guide you will have:
 - **Optional**: a ServiceNow integration that opens deduped incidents for clusters whose run status indicates the module's own retries cannot recover (failures, blocking health checks, sideloaded payload missing) - see [section 7](#7-optional-open-itsm-tickets-for-clusters-needing-operator-action).
 
 The pipelines are **fully opt-in additive layers** over the module. The PowerShell functions also work without any pipeline at all - see [section 10](#10-standalone-html-report-no-pipeline) for the ad-hoc / desktop story.
+
+### 1.1 Why the pipelines are named `Step.N - <description>`
+
+The eight YAMLs ship with a `Step.N_` filename prefix **and** a matching `Step.N - <description>` value in each workflow's `name:` field (GitHub Actions) / header title (Azure DevOps):
+
+| Step | File / Workflow name |
+|---:|---|
+| 0 | Step.0 - Auth Smoke Test |
+| 1 | Step.1 - Inventory Azure Local Clusters |
+| 2 | Step.2 - Manage UpdateRing Tags |
+| 3 | Step.3 - Apply-Updates Schedule Coverage Audit |
+| 4 | Step.4 - Assess Update Readiness |
+| 5 | Step.5 - Apply Updates |
+| 6 | Step.6 - Fleet Update Status |
+| 7 | Step.7 - Fleet Health Status |
+
+- **GitHub Actions**: the Actions sidebar sorts workflows alphabetically by the `name:` field inside the YAML. Because every `name:` starts with `Step.N - `, the sidebar lists the eight workflows in execution order (Step.0 first, Step.7 last) instead of the cosmetically confusing alphabetical scatter (`Apply Updates`, `Apply-Updates Schedule Coverage Audit`, `Assess Update Readiness`, ...).
+- **Azure DevOps**: the Pipelines list sorts by the pipeline **definition name** chosen at *import time* (not by the YAML filename and not by any top-level `name:` field - the `name:` field in an ADO YAML controls the per-run *build number*, not the pipeline display name). When you import each YAML, the import wizard prefills the suggested pipeline name from the YAML's leading title comment; the YAMLs in this repo open with `# Step.N - <description>`, so the suggested name is already correct. **Accept the suggested name** (or paste `Step.N - <description>` yourself), and the Pipelines list will sort in execution order. You can rename a pipeline later via *Pipeline -> Edit -> Settings -> Name*.
+
+If you prefer a different naming scheme (e.g. `00 - Auth`, `01 - Inventory`, ...), just change the `name:` field in each GH Actions YAML and / or pick a different prefix at ADO import time. Nothing else in the module depends on these display names.
 
 ---
 

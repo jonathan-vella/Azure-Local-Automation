@@ -26,7 +26,10 @@
 # Remediation of Critical health failures is out of scope for this module - see the module
 # README "Assess Readiness and Health BEFORE Applying Updates" section for pointers.
 
-name: Assess Update Readiness
+# Workflow name carries the same Step.N - prefix as the filename so the GitHub
+# Actions sidebar (which sorts workflows alphabetically by this `name:` field)
+# lists the eight pipelines in execution order.
+name: Step.4 - Assess Update Readiness
 
 on:
   # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
