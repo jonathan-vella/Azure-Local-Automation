@@ -26,10 +26,9 @@
 # A cron firing that lands on a day with NO matching schedule rows is
 # logged and exits 0 - no errors, no failures.
 #
-# v0.7.69: this file is REQUIRED. If Step.5 is triggered by a schedule
-# (not workflow_dispatch) and this file is missing, Step.5 throws with
-# the exact remediation command. Hard break vs. v0.7.68; documented in
-# CHANGELOG.
+# This file is REQUIRED for the "Step.5 Apply Updates" pipeline when
+# triggered by a schedule (not workflow_dispatch). If the file is
+# missing, Step.5 throws with the exact remediation command.
 #
 # Generate a starter file from your current fleet via:
 #   New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
@@ -41,6 +40,15 @@ schemaVersion: 1
 # Every cron firing in UTC is mapped to a (cycleWeek, dayOfWeek) pair
 # relative to this anchor. After `cycleWeeks` weeks the calendar loops
 # back to cycleWeek=1.
+#
+# ISO reference: https://en.wikipedia.org/wiki/ISO_week_date
+#
+# Example anchor: ISO Week 1 of 2026 began on Monday,
+# 29 December 2025 and ended on Sunday, 4 January 2026.
+#
+# Example cycle duration: with cycleWeeks = 8 the schedule repeats
+# every 8 weeks (56 days). Once the cycle completes, the resolver
+# wraps back to cycleWeek = 1.
 #
 # cycleAnchorISOWeek + cycleAnchorYear identify the ISO-8601 week that
 # is "week 1" of the cycle. cycleWeeks tells the resolver when to wrap.
