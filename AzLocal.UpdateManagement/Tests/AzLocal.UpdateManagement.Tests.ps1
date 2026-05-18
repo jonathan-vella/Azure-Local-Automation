@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.68' {
-            $script:ModuleInfo.Version | Should -Be '0.7.68'
+        It 'Should have version 0.7.69' {
+            $script:ModuleInfo.Version | Should -Be '0.7.69'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -110,8 +110,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $h2Matches[0] | Should -Be "## What's New in v$manifestVersion" -Because 'the sole main-body What''s New section must match the current manifest ModuleVersion'
         }
 
-        It 'Should export exactly 29 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 29
+        It 'Should export exactly 34 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 34
         }
 
         It 'Should export the expected functions' {
@@ -155,7 +155,13 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 # ITSM Sample Convenience (v0.7.50)
                 'Copy-AzureLocalItsmSample',
                 # Update Run Failures Deep-Error Extraction (v0.7.68)
-                'Get-AzureLocalUpdateRunFailures'
+                'Get-AzureLocalUpdateRunFailures',
+                # Ring-Aware Apply-Updates Schedule (v0.7.69)
+                'Get-AzLocalApplyUpdatesScheduleConfig',
+                'New-AzLocalApplyUpdatesScheduleConfig',
+                'Update-AzLocalApplyUpdatesScheduleConfig',
+                'Resolve-AzLocalCurrentUpdateRing',
+                'Get-AzLocalApplyUpdatesScheduleNextFirings'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -653,6 +659,34 @@ Describe 'Function: Set-AzureLocalClusterUpdateRingTag' {
         It 'Should have OutputType of PSObject[]' {
             $outputTypes = (Get-Command Set-AzureLocalClusterUpdateRingTag).OutputType
             $outputTypes.Type.FullName | Should -Contain 'System.Management.Automation.PSObject[]'
+        }
+    }
+
+    Context 'v0.7.69 logging contract' {
+        # Source-level checks - the function performs Azure CLI calls so deep
+        # behavioral mocking is fragile. These pin the new logging surface that
+        # operators see in the Step.2 pipeline output.
+        BeforeAll {
+            $script:setRingSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\Public\Set-AzureLocalClusterUpdateRingTag.ps1')
+        }
+
+        It 'Emits a friendly "Processing: <clusterName>" header derived from the resource ID' {
+            $script:setRingSource | Should -Match 'Processing:\s*\$headerClusterName'
+            $script:setRingSource | Should -Match '\$headerClusterName\s*=\s*\(\$resourceId\s*-split\s*''/''\)\[-1\]'
+        }
+
+        It 'Emits the full ARM Resource ID on a dedicated line for traceability' {
+            $script:setRingSource | Should -Match 'ARM Resource ID:\s*\$resourceId'
+        }
+
+        It 'Logs Info (not Warning) when the existing UpdateRing tag matches the target' {
+            # The flip is gated on `if ($previousTagValue -eq $currentUpdateRingValue) { ... Level Info }`
+            $script:setRingSource | Should -Match '\$previousTagValue\s*-eq\s*\$currentUpdateRingValue'
+            $script:setRingSource | Should -Match "matches target.*-Level\s+Info"
+        }
+
+        It 'Still emits Warning when the existing UpdateRing tag differs from the target' {
+            $script:setRingSource | Should -Match "differs from target.*-Level\s+Warning"
         }
     }
 }
@@ -1282,10 +1316,16 @@ Describe 'Module Best Practices' {
 
         It 'All exported functions should use consistent noun prefix' {
             $exportedFunctions = (Get-Module AzLocal.UpdateManagement).ExportedFunctions.Keys
-            
+            # Two approved noun prefixes (both shipped from this module):
+            #   AzureLocal* - the original fleet/update cmdlets (v0.5.x .. v0.7.68)
+            #   AzLocal*    - the v0.7.69 ring-aware apply-updates-schedule cmdlets
+            #                 (Get/New/Update-AzLocalApplyUpdatesScheduleConfig,
+            #                  Get-AzLocalApplyUpdatesScheduleNextFirings,
+            #                  Resolve-AzLocalCurrentUpdateRing)
             foreach ($func in $exportedFunctions) {
                 $noun = $func.Split('-')[1]
-                $noun | Should -BeLike 'AzureLocal*' -Because "$func should use AzureLocal noun prefix"
+                ($noun -like 'AzureLocal*' -or $noun -like 'AzLocal*') |
+                    Should -BeTrue -Because "$func should use AzureLocal* or AzLocal* noun prefix (got '$noun')"
             }
         }
     }
@@ -5553,11 +5593,11 @@ Describe 'Function: Test-AzureLocalApplyUpdatesScheduleCoverage' {
             $command.OutputType.Type.Name | Should -Contain 'PSObject[]'
         }
 
-        It 'Throws when -View Audit is used without -PipelineYamlPath' {
+        It 'Throws when -View Audit is used without -PipelineYamlPath or -SchedulePath' {
             InModuleScope AzLocal.UpdateManagement {
                 Mock Invoke-AzResourceGraphQuery { @() }
                 { Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit } |
-                    Should -Throw -ExpectedMessage '*PipelineYamlPath is required*'
+                    Should -Throw -ExpectedMessage '*requires at least one of -PipelineYamlPath or -SchedulePath*'
             }
         }
 
@@ -5701,6 +5741,26 @@ Describe 'Function: Test-AzureLocalApplyUpdatesScheduleCoverage' {
                 $p7.FireTimes[0] | Should -Be $p0.FireTimes[0]
             }
         }
+
+        It 'Accepts an empty string and returns IsValid=$false with structured error (v0.7.69)' {
+            # Regression: v0.7.68 declared [Parameter(Mandatory)][string]$Expression,
+            # so the binder rejected '' before the function body could surface the
+            # 'Cron expression is empty.' message. v0.7.69 adds [AllowEmptyString()]
+            # so the IsNullOrWhiteSpace handler actually runs.
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression ''
+                $p.IsValid      | Should -BeFalse
+                $p.ErrorMessage | Should -Be 'Cron expression is empty.'
+            }
+        }
+
+        It 'Accepts a whitespace-only string and returns IsValid=$false with structured error (v0.7.69)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression '   '
+                $p.IsValid      | Should -BeFalse
+                $p.ErrorMessage | Should -Be 'Cron expression is empty.'
+            }
+        }
     }
 
     Context 'Private helper: Read-AzLocalApplyUpdatesYamlCrons' {
@@ -5745,6 +5805,79 @@ schedules:
                 ($r | ForEach-Object CronExpression) | Should -Contain '55 1 * * 6,0'
                 ($r | ForEach-Object CronExpression) | Should -Contain '0 22 * * 5'
                 ($r | ForEach-Object CronExpression) | Should -Contain '30 2 * * 1-5'
+            }
+        }
+
+        It 'Does NOT match sibling Step.N pipelines (v0.7.69 glob regression)' {
+            # v0.7.68 used `Get-ChildItem -LiteralPath -Recurse -Include`, which
+            # silently ignored the -Include filter and returned every recursed
+            # file. As a result the audit picked up Step.1, Step.3, Step.6, and
+            # Step.7 schedule crons as if they were apply-updates crons. The
+            # fix uses per-pattern -Filter calls (which honour -Recurse).
+            $regressionDir = Join-Path $env:TEMP "schedule-cov-glob-$(Get-Random)"
+            New-Item -ItemType Directory -Path (Join-Path $regressionDir 'github-actions') -Force | Out-Null
+            try {
+                # Sibling pipelines that carry their own (legitimate) schedule
+                # crons - audit should ignore all of these.
+                @"
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.1_inventory-clusters.yml') -Encoding ASCII
+                @"
+on:
+  schedule:
+    - cron: '0 5 * * 1'
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.3_apply-updates-schedule-audit.yml') -Encoding ASCII
+                @"
+on:
+  schedule:
+    - cron: '0 7 * * *'
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.7_fleet-health-status.yml') -Encoding ASCII
+                # Apply-updates file: ships with only commented-out cron examples,
+                # so the reader should return ZERO crons for this folder overall.
+                @"
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 22 * * 6'
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+
+                InModuleScope AzLocal.UpdateManagement -Parameters @{ dir = $regressionDir } {
+                    param($dir)
+                    $r = Read-AzLocalApplyUpdatesYamlCrons -Path $dir
+                    @($r).Count | Should -Be 0
+                }
+            }
+            finally {
+                Remove-Item -Path $regressionDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'Skips quoted whitespace-only cron captures (v0.7.69)' {
+            # The regex `[^'"]+` also matches whitespace runs, so a malformed
+            # `cron: '   '` would emit a record with CronExpression='' once
+            # Trim() ran. v0.7.69 drops that record at the reader rather than
+            # letting it crash the downstream parser binder.
+            $emptyDir = Join-Path $env:TEMP "schedule-cov-emptycron-$(Get-Random)"
+            New-Item -ItemType Directory -Path (Join-Path $emptyDir 'github-actions') -Force | Out-Null
+            try {
+                @"
+on:
+  schedule:
+    - cron: '   '
+    - cron: '0 22 * * 6'
+"@ | Set-Content -Path (Join-Path $emptyDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+
+                InModuleScope AzLocal.UpdateManagement -Parameters @{ dir = $emptyDir } {
+                    param($dir)
+                    $r = Read-AzLocalApplyUpdatesYamlCrons -Path $dir
+                    @($r).Count | Should -Be 1
+                    $r[0].CronExpression | Should -Be '0 22 * * 6'
+                }
+            }
+            finally {
+                Remove-Item -Path $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
     }
@@ -5837,6 +5970,40 @@ on:
                 }
                 $result = Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath $tmpYamlDir2 -IncludeUntagged -PassThru 6>$null
                 ($result | Where-Object Status -eq 'NoWindowTag').ClusterCount | Should -Be 1
+            }
+        }
+    }
+
+    Context 'Integration: shipped Automation-Pipeline-Examples bundle (v0.7.69)' {
+        # End-to-end smoke against the actual YAMLs published to PSGallery as
+        # part of the module. This is the gap that let v0.7.68 ship with the
+        # -LiteralPath/-Include glob regression: unit tests only fed the reader
+        # synthetic Step.5_apply-updates.yml files in isolation, never a real
+        # multi-pipeline folder. Running the audit against the bundle now
+        # guarantees that no future change re-introduces a glob that also picks
+        # up sibling Step.N_*.yml schedule triggers.
+        BeforeAll {
+            $script:bundleGhDir = Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples\github-actions'
+        }
+
+        It 'Audit against the shipped GitHub Actions bundle returns rows without throwing' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ bundleGhDir = $script:bundleGhDir } {
+                param($bundleGhDir)
+                Mock Invoke-AzResourceGraphQuery {
+                    @(
+                        [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='Wave1'; UpdateWindow='Sat-Sun_02:00-06:00' }
+                    )
+                }
+                { Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath $bundleGhDir -PassThru 6>$null } |
+                    Should -Not -Throw
+            }
+        }
+
+        It 'Reader finds zero crons in the shipped bundle (no false-positive sibling matches)' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ bundleGhDir = $script:bundleGhDir } {
+                param($bundleGhDir)
+                $r = Read-AzLocalApplyUpdatesYamlCrons -Path $bundleGhDir
+                @($r).Count | Should -Be 0 -Because 'the shipped Step.5_apply-updates.yml ships with only commented cron examples, and the reader must NOT pick up crons from sibling Step.N pipelines'
             }
         }
     }
@@ -6565,3 +6732,268 @@ Describe 'Function: Update-AzureLocalPipelineExample' {
 }
 
 #endregion v0.7.68 Update-AzureLocalPipelineExample + marker parser
+
+#region v0.7.69 Apply-Updates Schedule (ring-aware: reader, resolver, next-firings, generator, update)
+
+Describe 'v0.7.69 Apply-Updates Schedule: Get-AzLocalApplyUpdatesScheduleConfig (reader)' {
+    BeforeAll {
+        $script:sr_tmp = Join-Path $TestDrive 'sched-reader'
+        New-Item -ItemType Directory -Path $script:sr_tmp -Force | Out-Null
+    }
+    It 'Throws with remediation hint when file not found' {
+        { Get-AzLocalApplyUpdatesScheduleConfig -Path (Join-Path $script:sr_tmp 'does-not-exist.yml') } |
+            Should -Throw -ExpectedMessage '*schedule file not found*'
+    }
+    It 'Parses a minimal valid schedule and returns expected fields' {
+        $p = Join-Path $script:sr_tmp 'minimal.yml'
+        $body = @'
+schemaVersion: 1
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+    notes: 'first week monday'
+'@
+        Set-Content -LiteralPath $p -Value $body -Encoding utf8
+        $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+        $cfg.SchemaVersion       | Should -Be 1
+        $cfg.CycleWeeks          | Should -Be 4
+        $cfg.CycleAnchorISOWeek  | Should -Be 1
+        $cfg.CycleAnchorYear     | Should -Be 2026
+        @($cfg.Schedule).Count   | Should -Be 1
+        $cfg.Schedule[0].rings   | Should -Be 'Canary'
+    }
+    It "Throws 'schedule: list is empty' when no active rows (the strawman safety gate)" {
+        $p = Join-Path $script:sr_tmp 'empty.yml'
+        # All rows commented out - mirrors what the strawman generator emits.
+        $body = @'
+schemaVersion: 1
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  # - weeksInCycle: '1'
+  #   daysOfWeek: 'Mon'
+  #   rings: 'Canary'
+'@
+        Set-Content -LiteralPath $p -Value $body -Encoding utf8
+        { Get-AzLocalApplyUpdatesScheduleConfig -Path $p } |
+            Should -Throw -ExpectedMessage "*'schedule:' list is empty*"
+    }
+    It 'Rejects unsupported schemaVersion' {
+        $p = Join-Path $script:sr_tmp 'unsupported.yml'
+        $body = @'
+schemaVersion: 99
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: '*'
+    rings: 'Canary'
+'@
+        Set-Content -LiteralPath $p -Value $body -Encoding utf8
+        { Get-AzLocalApplyUpdatesScheduleConfig -Path $p } |
+            Should -Throw -ExpectedMessage "*schemaVersion '99' is not supported*"
+    }
+    It 'Rejects out-of-range cycleWeeks' {
+        $p = Join-Path $script:sr_tmp 'badcycle.yml'
+        $body = @'
+schemaVersion: 1
+cycleWeeks: 100
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: '*'
+    rings: 'Canary'
+'@
+        Set-Content -LiteralPath $p -Value $body -Encoding utf8
+        { Get-AzLocalApplyUpdatesScheduleConfig -Path $p } |
+            Should -Throw -ExpectedMessage "*'cycleWeeks' must be an integer in 1..52*"
+    }
+}
+
+Describe 'v0.7.69 Apply-Updates Schedule: Resolve-AzLocalCurrentUpdateRing (resolver)' {
+    BeforeAll {
+        $script:sv_tmp = Join-Path $TestDrive 'sched-resolver'
+        New-Item -ItemType Directory -Path $script:sv_tmp -Force | Out-Null
+
+        # 4-week cycle anchored at ISO W1 2026; Mon-only rotation + every-Fri overlap row
+        $p = Join-Path $script:sv_tmp 'cycle.yml'
+        $body = @'
+schemaVersion: 1
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+    notes: 'wk1 mon'
+  - weeksInCycle: '2'
+    daysOfWeek: 'Mon'
+    rings: 'Ring1'
+    notes: 'wk2 mon'
+  - weeksInCycle: '3,4'
+    daysOfWeek: 'Mon'
+    rings: 'Prod'
+    notes: 'wk3-4 mon'
+  - weeksInCycle: '*'
+    daysOfWeek: 'Fri'
+    rings: 'Canary;Ring1'
+    notes: 'every-friday union overlap'
+'@
+        Set-Content -LiteralPath $p -Value $body -Encoding utf8
+        $script:sv_cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+
+        # Compute Monday-of-ISO-W1-2026 once (this is the anchor day in UTC).
+        $jan4 = [datetime]::new(2026, 1, 4, 0, 0, 0, [DateTimeKind]::Utc)
+        $isoOff = ((($jan4.DayOfWeek.value__ + 6) % 7))
+        $script:sv_wk1Mon = $jan4.AddDays(-1 * $isoOff)
+    }
+    It 'Resolves week-1 Monday to Canary' {
+        $r = Resolve-AzLocalCurrentUpdateRing -Schedule $script:sv_cfg -Now $script:sv_wk1Mon.AddHours(12)
+        $r.CycleWeek       | Should -Be 1
+        $r.Rings           | Should -Contain 'Canary'
+        $r.UpdateRingValue | Should -Be 'Canary'
+    }
+    It 'Resolves week-2 Monday to Ring1' {
+        $r = Resolve-AzLocalCurrentUpdateRing -Schedule $script:sv_cfg -Now $script:sv_wk1Mon.AddDays(7).AddHours(12)
+        $r.CycleWeek       | Should -Be 2
+        $r.UpdateRingValue | Should -Be 'Ring1'
+    }
+    It 'Wraps cycle math past anchor: week 5 -> cycleWeek 1' {
+        $r = Resolve-AzLocalCurrentUpdateRing -Schedule $script:sv_cfg -Now $script:sv_wk1Mon.AddDays(28).AddHours(12)
+        $r.CycleWeek | Should -Be 1
+    }
+    It 'Returns empty Rings with explanatory Reason on no match' {
+        # Tuesday is unscheduled in this config.
+        $r = Resolve-AzLocalCurrentUpdateRing -Schedule $script:sv_cfg -Now $script:sv_wk1Mon.AddDays(1).AddHours(12)
+        @($r.Rings).Count   | Should -Be 0
+        $r.UpdateRingValue  | Should -BeNullOrEmpty
+        $r.Reason           | Should -Match 'No schedule row matches'
+    }
+    It 'Unions overlapping rows (Friday) and joins rings with ; separator' {
+        $wk1Fri = $script:sv_wk1Mon.AddDays(4).AddHours(12)
+        $r = Resolve-AzLocalCurrentUpdateRing -Schedule $script:sv_cfg -Now $wk1Fri
+        $r.Rings            | Should -Contain 'Canary'
+        $r.Rings            | Should -Contain 'Ring1'
+        @($r.Rings).Count   | Should -Be 2
+        $r.UpdateRingValue  | Should -Be 'Canary;Ring1'
+    }
+}
+
+Describe 'v0.7.69 Apply-Updates Schedule: Get-AzLocalApplyUpdatesScheduleNextFirings' {
+    BeforeAll {
+        $script:nf_tmp = Join-Path $TestDrive 'sched-firings'
+        New-Item -ItemType Directory -Path $script:nf_tmp -Force | Out-Null
+
+        $p = Join-Path $script:nf_tmp 'preview.yml'
+        $body = @'
+schemaVersion: 1
+cycleWeeks: 2
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  - weeksInCycle: '*'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+    notes: 'every mon'
+'@
+        Set-Content -LiteralPath $p -Value $body -Encoding utf8
+        $script:nf_cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+    }
+    It 'Default Days = cycleWeeks*7 (14 rows for a 2-week cycle)' {
+        $r = Get-AzLocalApplyUpdatesScheduleNextFirings -Schedule $script:nf_cfg
+        @($r).Count | Should -Be 14
+    }
+    It 'Respects explicit -Days' {
+        $r = Get-AzLocalApplyUpdatesScheduleNextFirings -Schedule $script:nf_cfg -Days 7
+        @($r).Count | Should -Be 7
+    }
+    It 'Each row stamps DateUtc, DayOfWeekName, CycleWeek and UpdateRingValue' {
+        # 2026-01-05 is Monday of ISO W2/2026.
+        $start = [datetime]::new(2026, 1, 5, 0, 0, 0, [DateTimeKind]::Utc)
+        $r = Get-AzLocalApplyUpdatesScheduleNextFirings -Schedule $script:nf_cfg -StartDate $start -Days 7
+        $r[0].DateUtc.DayOfWeek | Should -Be ([System.DayOfWeek]::Monday)
+        $r[0].UpdateRingValue   | Should -Be 'Canary'
+        $r[0].Rings             | Should -Contain 'Canary'
+        # Tuesday through Sunday are 'No match' in this config (only Mon matches).
+        $r[1].UpdateRingValue   | Should -BeNullOrEmpty
+        $r[1].Note              | Should -Be 'No match'
+    }
+}
+
+Describe 'v0.7.69 Apply-Updates Schedule: New-AzLocalApplyUpdatesScheduleConfig (offline generator)' {
+    BeforeAll {
+        $script:gen_tmp = Join-Path $TestDrive 'sched-gen'
+        New-Item -ItemType Directory -Path $script:gen_tmp -Force | Out-Null
+    }
+    It 'Emits a strawman with every schedule row commented out (safety gate)' {
+        $out = Join-Path $script:gen_tmp 'apply-updates-schedule.yml'
+        $null = New-AzLocalApplyUpdatesScheduleConfig -OutputPath $out -Rings @('Canary','Ring1','Ring2','Prod') -Force 6>$null
+        Test-Path -LiteralPath $out | Should -Be $true
+        $text = Get-Content -LiteralPath $out -Raw
+        $text | Should -Match 'schemaVersion:\s*1'
+        $text | Should -Match 'cycleWeeks:\s*4'
+        # Active (uncommented) schedule rows must be zero.
+        @($text -split "`n" | Where-Object { $_ -match '^\s*-\s+weeksInCycle:' }).Count | Should -Be 0
+        # Commented strawman rows must cover all rings (one per ring + extras).
+        @($text -split "`n" | Where-Object { $_ -match '^\s*#\s*-\s+weeksInCycle:' }).Count | Should -BeGreaterOrEqual 4
+    }
+    It 'Strawman triggers the reader safety gate (empty active schedule)' {
+        $out = Join-Path $script:gen_tmp 'safety.yml'
+        $null = New-AzLocalApplyUpdatesScheduleConfig -OutputPath $out -Rings @('Canary','Ring1') -Force 6>$null
+        { Get-AzLocalApplyUpdatesScheduleConfig -Path $out } |
+            Should -Throw -ExpectedMessage "*'schedule:' list is empty*"
+    }
+    It 'Refuses to overwrite an existing file without -Force' {
+        $out = Join-Path $script:gen_tmp 'refuse.yml'
+        $null = New-AzLocalApplyUpdatesScheduleConfig -OutputPath $out -Rings @('Canary') -Force 6>$null
+        { New-AzLocalApplyUpdatesScheduleConfig -OutputPath $out -Rings @('Canary') 6>$null } |
+            Should -Throw -ExpectedMessage '*already exists*'
+    }
+}
+
+Describe 'v0.7.69 Apply-Updates Schedule: Update-AzLocalApplyUpdatesScheduleConfig' {
+    BeforeAll {
+        $script:up_tmp = Join-Path $TestDrive 'sched-update'
+        New-Item -ItemType Directory -Path $script:up_tmp -Force | Out-Null
+
+        $script:up_live = Join-Path $script:up_tmp 'live.yml'
+        $body = @'
+schemaVersion: 1
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+        Set-Content -LiteralPath $script:up_live -Value $body -Encoding utf8
+    }
+    It 'Throws when -MergeNewRings is used (reserved for v0.7.70)' {
+        { Update-AzLocalApplyUpdatesScheduleConfig -Path $script:up_live -MergeNewRings -Confirm:$false } |
+            Should -Throw -ExpectedMessage '*reserved for v0.7.70*'
+    }
+    It 'Throws with remediation hint when file does not exist' {
+        $missing = Join-Path $script:up_tmp 'does-not-exist.yml'
+        { Update-AzLocalApplyUpdatesScheduleConfig -Path $missing -Confirm:$false } |
+            Should -Throw -ExpectedMessage '*file not found*'
+    }
+    It 'No-op when file is already on the current schema version (idempotent)' {
+        $before = Get-Item -LiteralPath $script:up_live
+        $r = Update-AzLocalApplyUpdatesScheduleConfig -Path $script:up_live -PassThru -Confirm:$false 6>$null
+        $r.Action               | Should -Be 'Unchanged-SchemaCurrent'
+        $after = Get-Item -LiteralPath $script:up_live
+        $after.Length           | Should -Be $before.Length
+        $after.LastWriteTimeUtc | Should -Be $before.LastWriteTimeUtc
+    }
+}
+
+#endregion v0.7.69 Apply-Updates Schedule (ring-aware)

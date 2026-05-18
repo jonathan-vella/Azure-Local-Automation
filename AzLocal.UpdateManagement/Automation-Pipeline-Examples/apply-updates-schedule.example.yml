@@ -1,0 +1,105 @@
+# =====================================================================
+# AzLocal.UpdateManagement - Apply-Updates ring schedule (schema v1)
+# =====================================================================
+#
+# This is the single source of truth for "which UpdateRing(s) is/are
+# eligible to apply updates on a given UTC date". It is consumed by:
+#
+#   * Step.5_apply-updates.yml    - reads it at every cron firing and
+#                                   resolves the UpdateRingValue to use
+#                                   for that run.
+#   * Step.3_apply-updates-schedule-audit.yml
+#                                 - audits this file against the live
+#                                   fleet (UpdateRing + UpdateWindow
+#                                   tags) and emits a two-way coverage
+#                                   delta.
+#
+# KEY CONCEPT - three independent layers control "what runs when":
+#
+#   1. This file (day-grain): the calendar week / day of week says
+#      WHICH UpdateRing tag values are eligible TODAY in UTC.
+#   2. The Step.5 cron schedule (intra-day-grain): says HOW OFTEN the
+#      apply-updates job wakes up (e.g. hourly).
+#   3. Per-cluster `UpdateWindow` tag (minute-grain): says WHEN, during
+#      an eligible day, the actual update is allowed to start.
+#
+# A cron firing that lands on a day with NO matching schedule rows is
+# logged and exits 0 - no errors, no failures.
+#
+# This file is REQUIRED for the "Step.5 Apply Updates" pipeline when
+# triggered by a schedule (not workflow_dispatch). If the file is
+# missing, Step.5 throws with the exact remediation command.
+#
+# Generate a starter file from your current fleet via:
+#   New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
+# =====================================================================
+
+schemaVersion: 1
+
+# ---- Cycle anchor --------------------------------------------------
+# Every cron firing in UTC is mapped to a (cycleWeek, dayOfWeek) pair
+# relative to this anchor. After `cycleWeeks` weeks the calendar loops
+# back to cycleWeek=1.
+#
+# ISO reference: https://en.wikipedia.org/wiki/ISO_week_date
+#
+# Example anchor: ISO Week 1 of 2026 began on Monday,
+# 29 December 2025 and ended on Sunday, 4 January 2026.
+#
+# Example cycle duration: with cycleWeeks = 8 the schedule repeats
+# every 8 weeks (56 days). Once the cycle completes, the resolver
+# wraps back to cycleWeek = 1.
+#
+# cycleAnchorISOWeek + cycleAnchorYear identify the ISO-8601 week that
+# is "week 1" of the cycle. cycleWeeks tells the resolver when to wrap.
+cycleWeeks:           8
+cycleAnchorISOWeek:   1
+cycleAnchorYear:      2026
+
+# ---- Schedule entries ----------------------------------------------
+# UNION semantics: if multiple rows match the current (cycleWeek, dow)
+# tuple, the resolver concatenates their `rings` columns with ';' and
+# passes the result to -UpdateRingValue. Wildcards: '*' on weeksInCycle
+# or daysOfWeek means "every week" / "every day". Ranges (1-4) and
+# comma lists (1,3,5) are both supported.
+#
+# Fields:
+#   weeksInCycle  '*' | 'N' | 'N-M' | 'N,M,P,...'  (1..cycleWeeks)
+#   daysOfWeek    '*' | 'Mon' | 'Mon-Fri' | 'Tue,Thu' | 0-6 form
+#                 (0=Sun, 1=Mon, ... 6=Sat)
+#   rings         ';'-separated UpdateRing tag values, or '***' for
+#                 every cluster carrying an UpdateRing tag (use with
+#                 care - matches the Set/Start cmdlet semantics).
+#   notes         Free text. Surfaced in audit reports and ITSM
+#                 tickets. Recommended: change-control reference.
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek:   'Mon-Fri'
+    rings:        'Canary'
+    notes:        'Phase 1 - canary ring soaks new build for a week'
+
+  - weeksInCycle: '2'
+    daysOfWeek:   'Mon-Fri'
+    rings:        'Canary;DevTest'
+    notes:        'Phase 2 - DevTest joins canary'
+
+  - weeksInCycle: '3-4'
+    daysOfWeek:   'Mon-Thu'
+    rings:        'Ring1;Ring2'
+    notes:        'Phase 3 - early production rings (excludes Fri so any incident has the weekend to recover)'
+
+  - weeksInCycle: '5-8'
+    daysOfWeek:   'Tue,Wed,Thu'
+    rings:        'Prod'
+    notes:        'Phase 4 - full production - mid-week only'
+
+  # Example: ALWAYS-ON canary that runs every Monday throughout the
+  # whole 8-week cycle in addition to the phase-specific rows above.
+  # Demonstrates UNION semantics: in week 1 Monday, both this row and
+  # the 'Phase 1' row above match, so the resolver returns 'Canary'
+  # (deduplicated). In week 5 Tuesday only 'Phase 4' matches, so it
+  # returns 'Prod'.
+  - weeksInCycle: '*'
+    daysOfWeek:   'Mon'
+    rings:        'Canary'
+    notes:        'Permanent Monday canary sweep across the entire cycle'

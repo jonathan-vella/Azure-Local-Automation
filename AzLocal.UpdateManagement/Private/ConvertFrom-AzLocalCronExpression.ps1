@@ -43,7 +43,13 @@ function ConvertFrom-AzLocalCronExpression {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
     param(
+        # AllowEmptyString lets the IsNullOrWhiteSpace handler below actually run.
+        # Without it, [Parameter(Mandatory)][string] rejects '' at the binder
+        # with 'Cannot bind argument to parameter Expression because it is an
+        # empty string', which crashes any caller piping cron records from a
+        # YAML pre-scan instead of getting a structured invalid result back.
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$Expression
     )
 

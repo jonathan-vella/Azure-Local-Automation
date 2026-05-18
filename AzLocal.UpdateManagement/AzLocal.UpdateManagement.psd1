@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.68'
+    ModuleVersion = '0.7.69'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -32,8 +32,10 @@
         'Private/Convert-AzLocalUpdateWindowToCron.ps1',
         'Private/ConvertFrom-AzLocalCronExpression.ps1',
         'Private/ConvertFrom-AzLocalUpdateExclusion.ps1',
+        'Private/ConvertFrom-AzLocalScheduleYaml.ps1',
         'Private/ConvertFrom-AzLocalUpdateSideloaded.ps1',
         'Private/ConvertFrom-AzLocalUpdateWindow.ps1',
+        'Private/Convert-AzLocalScheduleSchemaVersion.ps1',
         'Private/ConvertTo-AzLocalAdditionalProperties.ps1',
         'Private/ConvertTo-SafeCsvCollection.ps1',
         'Private/ConvertTo-SafeCsvField.ps1',
@@ -88,6 +90,8 @@
         'Public/Copy-AzureLocalItsmSample.ps1',
         'Public/Copy-AzureLocalPipelineExample.ps1',
         'Public/Export-AzureLocalFleetState.ps1',
+        'Public/Get-AzLocalApplyUpdatesScheduleConfig.ps1',
+        'Public/Get-AzLocalApplyUpdatesScheduleNextFirings.ps1',
         'Public/Get-AzureLocalAvailableUpdates.ps1',
         'Public/Get-AzureLocalClusterInfo.ps1',
         'Public/Get-AzureLocalClusterInventory.ps1',
@@ -100,9 +104,11 @@
         'Public/Get-AzureLocalUpdateRuns.ps1',
         'Public/Get-AzureLocalUpdateSummary.ps1',
         'Public/Invoke-AzureLocalFleetOperation.ps1',
+        'Public/New-AzLocalApplyUpdatesScheduleConfig.ps1',
         'Public/New-AzureLocalFleetStatusHtmlReport.ps1',
         'Public/New-AzureLocalIncident.ps1',
         'Public/Reset-AzureLocalSideloadedTag.ps1',
+        'Public/Resolve-AzLocalCurrentUpdateRing.ps1',
         'Public/Resume-AzureLocalFleetUpdate.ps1',
         'Public/Set-AzureLocalClusterUpdateRingTag.ps1',
         'Public/Start-AzureLocalClusterUpdate.ps1',
@@ -112,6 +118,7 @@
         'Public/Test-AzureLocalFleetHealthGate.ps1',
         'Public/Test-AzureLocalItsmConnection.ps1',
         'Public/Test-AzureLocalUpdateScheduleAllowed.ps1',
+        'Public/Update-AzLocalApplyUpdatesScheduleConfig.ps1',
         'Public/Update-AzureLocalPipelineExample.ps1'
     )
 
@@ -155,7 +162,13 @@
         # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
         'Test-AzureLocalApplyUpdatesScheduleCoverage',
         # Update Run Failures (v0.7.68) - ARG-only deep-error extraction (9 levels deep) for fleet-scale verbose error information
-        'Get-AzureLocalUpdateRunFailures'
+        'Get-AzureLocalUpdateRunFailures',
+        # Ring-Aware Apply-Updates Schedule (v0.7.69) - human-readable schedule file + cycle-based resolver
+        'Get-AzLocalApplyUpdatesScheduleConfig',
+        'Resolve-AzLocalCurrentUpdateRing',
+        'Get-AzLocalApplyUpdatesScheduleNextFirings',
+        'New-AzLocalApplyUpdatesScheduleConfig',
+        'Update-AzLocalApplyUpdatesScheduleConfig'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -184,6 +197,98 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.69 - Ring-aware apply-updates schedule (schema v1, hard break vs v0.7.68)
+
+### Added
+
+- New cmdlet `Get-AzLocalApplyUpdatesScheduleConfig`: parses and
+  validates an `apply-updates-schedule.yml` (schema v1). Hard-fails
+  with `'schedule:' list is empty - at least one row is required`
+  when the schedule has no active rows; this is the safety gate the
+  apply-updates pipeline depends on (see `New-...ScheduleConfig`).
+- New cmdlet `Resolve-AzLocalApplyUpdatesScheduleRing`: maps a UTC
+  date to the matching UpdateRing(s) using cycle-week math anchored
+  at `cycleAnchorISOWeek` / `cycleAnchorYear`. Union semantics: when
+  multiple rows match, the resolver concatenates their `rings`
+  columns with `;`.
+- New cmdlet `Get-AzLocalApplyUpdatesScheduleNextFirings`: previews
+  the next N days of resolved firings so operators can sanity-check
+  the rotation before committing.
+- New cmdlet `New-AzLocalApplyUpdatesScheduleConfig`: generates a
+  **STRAWMAN** `apply-updates-schedule.yml` from the live fleet's
+  `UpdateRing` tag values (or `-Rings` for offline use). Every
+  generated schedule row is emitted **commented out** by design, so
+  the apply-updates pipeline hard-stops until the operator reviews
+  and uncomments at least one row. Fold-in of the bundled
+  `apply-updates-schedule.example.yml` instructional comments,
+  including the Wikipedia ISO-week link and the 3-layer key concept.
+- New cmdlet `Update-AzLocalApplyUpdatesScheduleConfig`: idempotent
+  migrator that walks an existing schedule through registered
+  migration recipes. v0.7.69 ships the recipes table empty (no
+  migrations yet); the framework is in place for future schema bumps.
+- `Test-AzureLocalApplyUpdatesScheduleCoverage` gained an optional
+  `-SchedulePath` parameter. When supplied, the audit emits two new
+  status rows: `RingMissingFromSchedule` (fleet ring with no schedule
+  row) and `RingOrphanedInSchedule` (schedule ring no cluster carries).
+
+### Changed (pipeline samples)
+
+- `Step.5_apply-updates.yml` (GH + ADO) now resolves the `UpdateRing`
+  value from `apply-updates-schedule.yml` on every scheduled firing.
+  Manual `workflow_dispatch` / `Build.Reason != Schedule` runs still
+  honour the operator-supplied `-UpdateRingValue` input verbatim, so
+  back-compat for ad-hoc maintenance is preserved. A workflow-level
+  `concurrency:` block (GitHub Actions) prevents overlapping cron
+  firings; the ADO version documents the equivalent
+  Pipeline Settings -> Triggers -> Limit concurrent runs option.
+- `Step.3_apply-updates-schedule-audit.yml` (GH + ADO) gained a
+  `schedule_path` / `schedulePath` input (defaulted to the standard
+  layout), a `debug` toggle for self-service triage, and surfaces the
+  new `RingMissingFromSchedule` / `RingOrphanedInSchedule` counts in
+  the summary table + JUnit failure list.
+- `apply-updates-schedule.example.yml` ships as documentation only;
+  pipeline cmdlets (`Copy/Update-AzureLocalPipelineExample`) do **not**
+  touch it. Run `New-AzLocalApplyUpdatesScheduleConfig` to generate
+  a strawman starting from the live fleet.
+
+### Breaking
+
+- Schema `schemaVersion: 1` is a hard break vs any pre-v0.7.69
+  experimental schedule format. There are no v0 -> v1 migrations
+  shipped (the migration recipes table is intentionally empty); if
+  you were running an experimental schedule from earlier development
+  builds, regenerate via `New-AzLocalApplyUpdatesScheduleConfig`.
+
+### Migration
+
+For a fleet that has already been tagged via
+`Set-AzureLocalClusterUpdateRingTag`:
+
+```powershell
+# 1. Generate a strawman schedule (all rows commented out by design)
+New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
+
+# 2. Open the file, REVIEW each strawman row, then UNCOMMENT the rows
+#    that match your change-control policy.
+
+# 3. Preview the rotation before committing
+Get-AzLocalApplyUpdatesScheduleNextFirings `
+  -Schedule (Get-AzLocalApplyUpdatesScheduleConfig -Path .\.github\apply-updates-schedule.yml)
+
+# 4. Refresh pipeline YAMLs so they pick up the v0.7.69 resolver wiring
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+Without an active (uncommented) row the apply-updates pipeline will
+hard-fail at the reader step with the exact remediation message; this
+is the v0.7.69 safety gate, not a regression.
+
+For full release notes on this and previous versions, see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
+
+---
+
 ## Version 0.7.68 - ARG-first refactor, pipeline rename to Step.X_ prefix, Layer 1 customisation markers
 
 ### Added

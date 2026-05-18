@@ -57,7 +57,26 @@ function Read-AzLocalApplyUpdatesYamlCrons {
 
     $item = Get-Item -LiteralPath $Path
     $files = if ($item.PSIsContainer) {
-        @(Get-ChildItem -LiteralPath $Path -Recurse -File -Include @('Step.5_apply-updates*.yml', 'Step.5_apply-updates*.yaml', 'apply-updates*.yml', 'apply-updates*.yaml') -ErrorAction SilentlyContinue)
+        # NOTE: Get-ChildItem -LiteralPath -Recurse -Include silently ignores the
+        # -Include filter and returns every recursed file (confirmed in PS 5.1).
+        # That caused v0.7.68 to pick up every Step.N_*.yml sibling (Step.1, Step.3,
+        # Step.6, Step.7 all carry their own schedule crons) and treat their crons
+        # as apply-updates crons - garbage in the audit, and on PS 7 the binder
+        # surfaced it as 'Cannot bind argument to parameter Expression because it
+        # is an empty string' once any unparseable capture was reached.
+        # Use -Filter (which is honoured under -Recurse) one pattern at a time,
+        # then dedupe by FullName.
+        $patterns = @(
+            'Step.5_apply-updates*.yml',
+            'Step.5_apply-updates*.yaml',
+            'apply-updates*.yml',
+            'apply-updates*.yaml'
+        )
+        $hits = @()
+        foreach ($pattern in $patterns) {
+            $hits += @(Get-ChildItem -Path $item.FullName -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue)
+        }
+        @($hits | Sort-Object FullName -Unique)
     }
     else {
         @($item)
@@ -81,6 +100,11 @@ function Read-AzLocalApplyUpdatesYamlCrons {
             # list-style entries (- cron: '...') and bare key style (cron: '...').
             if ($line -match "^\s*-?\s*cron\s*:\s*['""]([^'""]+)['""]") {
                 $expr = $matches[1].Trim()
+                # The character class [^'""]+ also matches whitespace runs, so
+                # `cron: '   '` would survive with an empty capture after Trim().
+                # Skip those instead of feeding an empty string to a downstream
+                # [Parameter(Mandatory)][string] binder.
+                if ([string]::IsNullOrWhiteSpace($expr)) { continue }
                 $output.Add([PSCustomObject]@{
                     File           = $f.FullName
                     RelativePath   = $relative

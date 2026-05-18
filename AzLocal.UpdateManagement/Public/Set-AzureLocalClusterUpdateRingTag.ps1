@@ -262,10 +262,18 @@ function Set-AzureLocalClusterUpdateRingTag {
     foreach ($clusterEntry in $clustersToTag) {
         $resourceId = $clusterEntry.ResourceId
         $currentUpdateRingValue = $clusterEntry.UpdateRingValue
-        
+
+        # Derive the cluster short-name from the resource ID for the header line.
+        # The full ARM Resource ID is logged separately so operators see both the
+        # friendly name (matches the cluster in the Azure portal) and the fully
+        # qualified path used for the API call.
+        $headerClusterName = ($resourceId -split '/')[-1]
+        if ([string]::IsNullOrWhiteSpace($headerClusterName)) { $headerClusterName = $resourceId }
+
         Write-Log -Message "" -Level Info
         Write-Log -Message "----------------------------------------" -Level Info
-        Write-Log -Message "Processing: $resourceId" -Level Info
+        Write-Log -Message "Processing: $headerClusterName" -Level Info
+        Write-Log -Message "ARM Resource ID: $resourceId" -Level Info
         Write-Log -Message "Target UpdateRing: $currentUpdateRingValue" -Level Info
         Write-Log -Message "----------------------------------------" -Level Info
 
@@ -410,7 +418,17 @@ function Set-AzureLocalClusterUpdateRingTag {
             # Check if UpdateRing tag already exists
             if ($currentTags.PSObject.Properties.Name -contains "UpdateRing") {
                 $previousTagValue = $currentTags.UpdateRing
-                Write-Log -Message "Existing UpdateRing tag found with value: '$previousTagValue'" -Level Warning
+                # Only escalate to Warning when the existing tag value differs from
+                # the desired value in the CSV. If the tag is already correct,
+                # this is normal steady-state and should not be flagged as a
+                # warning - we still continue so that adjacent schedule tags
+                # (UpdateWindow, UpdateExclusions) can be reconciled.
+                if ($previousTagValue -eq $currentUpdateRingValue) {
+                    Write-Log -Message "Existing UpdateRing tag found with value: '$previousTagValue' (matches target)" -Level Info
+                }
+                else {
+                    Write-Log -Message "Existing UpdateRing tag found with value: '$previousTagValue' (differs from target '$currentUpdateRingValue')" -Level Warning
+                }
 
                 # Determine if we have new schedule tags to set (even if UpdateRing is unchanged)
                 $hasNewScheduleTags = ($clusterEntry.UpdateWindowValue -and (-not $currentTags.PSObject.Properties[$script:UpdateWindowTagName] -or $currentTags.$($script:UpdateWindowTagName) -ne $clusterEntry.UpdateWindowValue)) -or

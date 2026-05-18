@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.68 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.68)
+**Latest Version:** v0.7.69 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.69)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.68](#whats-new-in-v0768)
+- [What's New in v0.7.69](#whats-new-in-v0769)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -153,7 +153,82 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.68
+## What's New in v0.7.69
+
+v0.7.69 introduces the **ring-aware apply-updates schedule** - a single human-readable YAML file (`apply-updates-schedule.yml`, `schemaVersion: 1`) that controls which `UpdateRing` tag value the apply-updates pipeline targets on any given UTC date. The schedule is decoupled from cron entirely: Step.5's cron only controls **how often** the pipeline wakes up, the per-cluster `UpdateWindow` tag controls **when** during an eligible day the update actually runs, and this new file controls **which ring** is eligible TODAY. Five new cmdlets (one generator + one reader + one resolver + one previewer + one migrator) plus a two-way ring diff on `Test-AzureLocalApplyUpdatesScheduleCoverage` round out the feature.
+
+### Strawman workflow (the safety gate is the whole point)
+
+```powershell
+# 1. Generate a STRAWMAN from your live fleet's UpdateRing tag values.
+#    Every schedule row is emitted commented-out by design.
+New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
+
+# 2. Open the file. REVIEW each strawman row, then UNCOMMENT the rows
+#    that match your change-control policy.
+
+# 3. Preview the next ~cycle of firings BEFORE committing.
+Get-AzLocalApplyUpdatesScheduleNextFirings `
+  -Schedule (Get-AzLocalApplyUpdatesScheduleConfig -Path .\.github\apply-updates-schedule.yml)
+
+# 4. Refresh the Step.5 pipeline YAMLs so they pick up the v0.7.69 resolver wiring.
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+
+# 5. Audit the fleet against the schedule (two-way ring diff).
+Test-AzureLocalApplyUpdatesScheduleCoverage `
+  -PipelineYamlPath .\.github\workflows\Step.5_apply-updates.yml `
+  -SchedulePath     .\.github\apply-updates-schedule.yml `
+  -View Audit
+```
+
+> Without an active (uncommented) row, the apply-updates pipeline **hard-fails** at the reader step with `'schedule:' list is empty - at least one row is required`. This is the v0.7.69 safety gate, not a bug. It guarantees that a fresh strawman cannot accidentally start applying updates fleet-wide.
+
+### Three independent layers - one file per layer
+
+| Layer | File / Setting | Grain | Controls |
+|---|---|---|---|
+| 1 | `Step.5_apply-updates.yml` `schedule:` cron | intra-day | **HOW OFTEN** the pipeline wakes up |
+| 2 | `apply-updates-schedule.yml` (NEW in v0.7.69) | day | **WHICH** `UpdateRing` is eligible on a given UTC date |
+| 3 | Per-cluster `UpdateWindow` tag | minute | **WHEN** during an eligible day the update is allowed to start |
+
+The Step.5 cron firing on a non-matching day exits 0 with the explanatory `Reason` and **does not** start an update. The cron firing on a matching day passes the resolved `UpdateRing` value to `Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue <resolved>`.
+
+### Five new cmdlets
+
+| Cmdlet | Role |
+|---|---|
+| `New-AzLocalApplyUpdatesScheduleConfig` | Generates a **strawman** schedule from the live fleet's `UpdateRing` tag values (or from `-Rings` for offline use). Every emitted schedule row is commented out by design. |
+| `Get-AzLocalApplyUpdatesScheduleConfig` | Parses + validates a schedule file. Hard-fails with `'schedule:' list is empty` when no active rows are present (the safety gate). |
+| `Resolve-AzLocalCurrentUpdateRing` | Maps a UTC date to the matching `UpdateRing(s)` using cycle-week math anchored at `cycleAnchorISOWeek` / `cycleAnchorYear`. Union semantics: overlapping rows merge `rings` with `;`. |
+| `Get-AzLocalApplyUpdatesScheduleNextFirings` | Previews the next N days of resolved firings so operators can sanity-check the rotation BEFORE committing. |
+| `Update-AzLocalApplyUpdatesScheduleConfig` | Idempotent schema-version migrator. Renames the original to `<basename>.v<oldVersion>.old.yml` on disk and writes the migrated content to the canonical path. The recipes table is intentionally empty in v0.7.69; the framework is in place for future schema bumps. |
+
+### Two-way ring diff on `Test-AzureLocalApplyUpdatesScheduleCoverage`
+
+The existing schedule-audit cmdlet gained an optional `-SchedulePath` parameter. When supplied, the audit emits two new status rows beyond the existing cron-vs-tags audit:
+
+| Status | Meaning |
+|---|---|
+| `RingMissingFromSchedule` | A fleet ring (live `UpdateRing` tag value on a cluster) has **no** matching row in the schedule file - clusters in that ring will never be updated. |
+| `RingOrphanedInSchedule` | A schedule ring (a `rings:` token in the schedule file) has **no** cluster carrying that tag value - the schedule row will never fire. |
+
+Both rows are surfaced in the Step.3 summary table, the JUnit XML failure list, and the Markdown summary at the top of the Step.3 run page.
+
+### Step.5 / Step.3 pipeline wiring
+
+- **Step.5 (apply-updates)** now resolves the `UpdateRing` from the schedule file on every **scheduled** firing. Manual `workflow_dispatch` (GitHub Actions) / non-`Schedule` `Build.Reason` (Azure DevOps) runs still honour the operator-supplied `-UpdateRingValue` input verbatim. A workflow-level `concurrency:` block (GitHub Actions only - Azure DevOps documents the equivalent **Settings -> Triggers -> Limit concurrent runs** option) prevents overlapping cron firings.
+- **Step.3 (schedule audit)** gained a `schedule_path` / `schedulePath` input (defaulted to the standard layout), a `debug` toggle for self-service triage, and surfaces the new `RingMissingFromSchedule` / `RingOrphanedInSchedule` counts.
+
+### What v0.7.69 does NOT touch
+
+- `apply-updates-schedule.example.yml` ships as **documentation only**. `Copy-AzureLocalPipelineExample` and `Update-AzureLocalPipelineExample` do **not** copy or refresh it. Operators run `New-AzLocalApplyUpdatesScheduleConfig` to generate a strawman starting from their live fleet.
+- The per-cluster `UpdateWindow` tag, the `UpdateSideloaded` workflow, and all existing cron schedules in the bundled pipeline YAMLs are unchanged.
+
+### Breaking
+
+- Schema `schemaVersion: 1` is a hard break vs any pre-v0.7.69 experimental schedule format. There are no v0 -> v1 migration recipes shipped (the recipes table is intentionally empty in `Update-AzLocalApplyUpdatesScheduleConfig`); if you were running an experimental schedule from earlier development builds, regenerate via `New-AzLocalApplyUpdatesScheduleConfig`.
+
+### What's New in v0.7.68
 
 v0.7.68 is the **ARG-first refactor** and **pipeline-rename** release. Seven fleet-scale read cmdlets were collapsed onto a single Azure Resource Graph batch read each (removing the silent `-ThrottleLimit` no-op), all 16 bundled pipeline YAMLs were renamed with a `Step.X_` ordering prefix so an alphabetic listing tells the story end-to-end, and a new `Get-AzureLocalUpdateRunFailures` cmdlet exposes the deep-error breadcrumb path from update-run telemetry without per-cluster shell-outs. **Backwards-compatible** for already-deployed consumers: `Read-AzLocalApplyUpdatesYamlCrons` matches both new (`Step.X_*.yml`) and legacy filenames.
 
