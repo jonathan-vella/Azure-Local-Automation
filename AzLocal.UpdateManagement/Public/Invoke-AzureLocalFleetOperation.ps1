@@ -81,7 +81,7 @@ function Invoke-AzureLocalFleetOperation {
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [switch]$ScopeByUpdateRingTag,
         
-        [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
+        [ValidatePattern('^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$')]
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [string]$UpdateRingValue,
         

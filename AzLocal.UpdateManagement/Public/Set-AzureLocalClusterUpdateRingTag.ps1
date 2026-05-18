@@ -102,7 +102,7 @@ function Set-AzureLocalClusterUpdateRingTag {
         [Parameter(Mandatory = $true, ParameterSetName = 'ByResourceId')]
         [string[]]$ClusterResourceIds,
 
-        [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
+        [ValidatePattern('^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$')]
         [Parameter(Mandatory = $true, ParameterSetName = 'ByResourceId')]
         [string]$UpdateRingValue,
 

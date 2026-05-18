@@ -63,7 +63,7 @@ function Start-AzureLocalClusterUpdate {
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [switch]$ScopeByUpdateRingTag,
 
-        [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
+        [ValidatePattern('^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$')]
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [string]$UpdateRingValue,
 
@@ -193,7 +193,8 @@ function Start-AzureLocalClusterUpdate {
             }
             
             # Build Azure Resource Graph query to find clusters by tag - use single line to avoid escaping issues with az CLI
-            $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id, name, resourceGroup, subscriptionId, tags"
+            $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingValue
+            $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' $ringFilter | project id, name, resourceGroup, subscriptionId, tags"
             
             Write-Verbose "ARG Query: $argQuery"
             

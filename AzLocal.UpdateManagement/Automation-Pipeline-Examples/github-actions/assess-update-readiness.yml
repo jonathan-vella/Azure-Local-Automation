@@ -40,7 +40,9 @@ on:
           - 'by-update-ring'
           - 'all'
       update_ring:
-        description: 'UpdateRing tag value (only used when scope=by-update-ring)'
+        # v0.7.66: accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+        # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
+        description: "UpdateRing tag value (only used when scope=by-update-ring). Single ring, 'Prod;Ring2', or '***'."
         required: false
         default: 'Wave1'
       throttle_limit:
@@ -251,11 +253,22 @@ jobs:
           }
           ($lines -join [Environment]::NewLine) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
+      - name: Compute Artifact Timestamp
+        if: always()
+        id: artifact-stamp
+        shell: pwsh
+        # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+        # the same day produce distinct zip names.
+        run: |
+          $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+          "timestamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Artifact timestamp: $stamp"
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: readiness-assessment
+          name: azlocal-readiness-assessment-report_${{ steps.artifact-stamp.outputs.timestamp }}
           path: ./artifacts/*
           retention-days: 30
 

@@ -47,7 +47,9 @@ on:
           - 'all'              # All clusters across all subscriptions
           - 'by-update-ring'   # Filter by UpdateRing tag
       update_ring:
-        description: 'UpdateRing tag value (only used when scope=by-update-ring)'
+        # v0.7.66: accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+        # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
+        description: "UpdateRing tag value (only used when scope=by-update-ring). Single ring, 'Prod;Ring2', or '***'."
         required: false
         default: ''
       severity:
@@ -266,10 +268,21 @@ jobs:
         Write-Host "  Total failing checks    : $totalFailures (Critical=$criticalCount, Warning=$warningCount)"
         Write-Host "  Distinct failure reasons: $($summary.Count)"
 
+    - name: Compute Artifact Timestamp
+      if: always()
+      id: artifact-stamp
+      shell: pwsh
+      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # the same day produce distinct zip names.
+      run: |
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        "timestamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        Write-Host "Artifact timestamp: $stamp"
+
     - name: Upload Fleet Health Reports
       uses: actions/upload-artifact@v6
       with:
-        name: fleet-health-reports
+        name: azlocal-fleet-health-status-report_${{ steps.artifact-stamp.outputs.timestamp }}
         path: ./reports/
         retention-days: 90
 

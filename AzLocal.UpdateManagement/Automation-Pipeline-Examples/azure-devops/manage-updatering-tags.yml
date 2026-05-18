@@ -241,11 +241,20 @@ stages:
                 Write-Host ""
                 Write-Host "Tag management complete"
           
+          # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+          - pwsh: |
+              $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+              Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
+              Write-Host "Artifact timestamp: $stamp"
+            displayName: 'Compute Artifact Timestamp'
+            condition: always()
+            name: stamp
+
           - task: PublishBuildArtifacts@1
             displayName: 'Publish Log Artifacts'
             inputs:
               PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-              ArtifactName: 'updatering-tag-logs'
+              ArtifactName: 'azlocal-updatering-tag-logs_$(stamp.artifactStamp)'
               publishLocation: 'Container'
           
           - task: PowerShell@2

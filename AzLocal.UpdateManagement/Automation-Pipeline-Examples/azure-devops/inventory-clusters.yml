@@ -256,11 +256,20 @@ stages:
                 Write-Host "##vso[task.setvariable variable=WithTag]$withTag"
                 Write-Host "##vso[task.setvariable variable=WithoutTag]$withoutTag"
           
+          # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+          - pwsh: |
+              $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+              Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
+              Write-Host "Artifact timestamp: $stamp"
+            displayName: 'Compute Artifact Timestamp'
+            condition: always()
+            name: stamp
+
           - task: PublishBuildArtifacts@1
             displayName: 'Publish Inventory Artifact'
             inputs:
               PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-              ArtifactName: 'cluster-inventory'
+              ArtifactName: 'azlocal-cluster-inventory_$(stamp.artifactStamp)'
               publishLocation: 'Container'
           
           - task: PowerShell@2

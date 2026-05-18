@@ -76,7 +76,7 @@ function Get-AzureLocalClusterUpdateReadiness {
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [switch]$ScopeByUpdateRingTag,
 
-        [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
+        [ValidatePattern('^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$')]
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [string]$UpdateRingValue,
 
@@ -134,7 +134,8 @@ function Get-AzureLocalClusterUpdateReadiness {
         Write-Log -Message "Querying Azure Resource Graph for clusters with tag 'UpdateRing' = '$UpdateRingValue'..." -Level Info
         
         # Build Azure Resource Graph query - use single line to avoid escaping issues with az CLI
-        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' | where tags['UpdateRing'] =~ '$($UpdateRingValue -replace "'", "''")' | project id, name, resourceGroup, subscriptionId, tags"
+        $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingValue
+        $argQuery = "resources | where type =~ 'microsoft.azurestackhci/clusters' $ringFilter | project id, name, resourceGroup, subscriptionId, tags"
         
         try {
             $clusterRows = Invoke-AzResourceGraphQuery -Query $argQuery

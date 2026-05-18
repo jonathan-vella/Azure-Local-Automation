@@ -36,7 +36,8 @@ parameters:
       - 'all'
 
   - name: updateRing
-    displayName: 'UpdateRing tag value (only used when scope=by-update-ring)'
+    # v0.7.66: accepts single ring, 'Prod;Ring2' list, or '***' wildcard (three stars - deliberate).
+    displayName: "UpdateRing tag value (only used when scope=by-update-ring). Single, 'Prod;Ring2', or '***'."
     type: string
     default: 'Wave1'
 
@@ -262,9 +263,18 @@ stages:
               mergeTestResults: false
               failTaskOnFailedTests: false
 
+          # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+          - pwsh: |
+              $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+              Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
+              Write-Host "Artifact timestamp: $stamp"
+            displayName: 'Compute Artifact Timestamp'
+            condition: always()
+            name: stamp
+
           - task: PublishPipelineArtifact@1
             displayName: 'Publish readiness assessment artifacts'
             condition: always()
             inputs:
               targetPath: '$(artifactsPath)'
-              artifact: 'readiness-assessment'
+              artifact: 'azlocal-readiness-assessment-report_$(stamp.artifactStamp)'

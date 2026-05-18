@@ -261,10 +261,20 @@ jobs:
         echo "CLUSTER_COUNT=$($inventory.Count)" >> $env:GITHUB_OUTPUT
       id: inventory
     
+    - name: Compute Artifact Timestamp
+      id: artifact-stamp
+      shell: pwsh
+      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # the same day produce distinct zip names.
+      run: |
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        "timestamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        Write-Host "Artifact timestamp: $stamp"
+
     - name: Upload Inventory Artifact
       uses: actions/upload-artifact@v6
       with:
-        name: cluster-inventory
+        name: azlocal-cluster-inventory_${{ steps.artifact-stamp.outputs.timestamp }}
         path: |
           ./artifacts/*.csv
           ./artifacts/*.json

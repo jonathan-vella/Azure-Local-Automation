@@ -5262,4 +5262,325 @@ on:
 
 #endregion Apply-Updates Schedule Coverage Advisor (v0.7.65)
 
+#region v0.7.66 UX + Multi-Value UpdateRing regression suite
+
+Describe 'v0.7.66 UpdateRing ValidatePattern accepts list & wildcard forms' {
+    # Strategy: directly probe the ValidatePattern attribute on every public
+    # cmdlet that accepts UpdateRingValue / UpdateRingTag. Going through the
+    # actual cmdlet would require Azure mocking just to exercise the validator,
+    # which is fragile. Reflecting on the AttributeMetadata is deterministic.
+
+    # NOTE: these arrays MUST be defined at Discovery time (i.e. outside
+    # BeforeAll / BeforeEach) so the -ForEach blocks below can enumerate
+    # them when Pester builds the test tree. BeforeAll runs during the Run
+    # phase, after discovery - using $script: there yields an empty -ForEach
+    # set and zero generated It blocks.
+    BeforeDiscovery {
+        $script:RingValueCmdlets = @(
+            'Get-AzureLocalAvailableUpdates'
+            'Get-AzureLocalClusterInventory'
+            'Get-AzureLocalClusterUpdateReadiness'
+            'Get-AzureLocalFleetProgress'
+            'Get-AzureLocalFleetStatusData'
+            'Get-AzureLocalUpdateRuns'
+            'Get-AzureLocalUpdateSummary'
+            'Invoke-AzureLocalFleetOperation'
+            'New-AzureLocalFleetStatusHtmlReport'
+            'Reset-AzureLocalSideloadedTag'
+            'Set-AzureLocalClusterUpdateRingTag'
+            'Start-AzureLocalClusterUpdate'
+            'Test-AzureLocalClusterHealth'
+            'Test-AzureLocalFleetHealthGate'
+        )
+        # Get-AzureLocalFleetHealthFailures uses the param name UpdateRingTag.
+        $script:RingTagCmdlets = @(
+            'Get-AzureLocalFleetHealthFailures'
+        )
+    }
+
+    Context 'ValidatePattern attribute' {
+        It "Cmdlet <Cmdlet> -UpdateRingValue accepts 'Wave1', 'Prod;Ring2', and '***'" -ForEach @(
+            $script:RingValueCmdlets | ForEach-Object { @{ Cmdlet = $_; ParamName = 'UpdateRingValue' } }
+        ) {
+            $cmd = Get-Command -Name $Cmdlet -Module AzLocal.UpdateManagement
+            $cmd | Should -Not -BeNullOrEmpty -Because "v0.7.66 cmdlets should be exported"
+            $param = $cmd.Parameters[$ParamName]
+            $param | Should -Not -BeNullOrEmpty -Because "$Cmdlet should expose -$ParamName"
+            $vp = $param.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidatePatternAttribute] }
+            $vp | Should -Not -BeNullOrEmpty -Because "$Cmdlet -$ParamName must carry a ValidatePattern attribute"
+            $rx = $vp.RegexPattern
+            # Acceptance set - all of these must match the relaxed regex.
+            # NOTE: '***' (three stars) is the deliberate wildcard token introduced in v0.7.66.
+            # A bare '*' is REJECTED so a single-character typo cannot accidentally scope a fleet-wide write.
+            foreach ($candidate in @('Wave1', 'Prod', 'Ring2', 'Prod;Ring2', 'A;B;C', '***', 'a_b-c', 'X0', 'p1;p2;p3')) {
+                ([regex]::IsMatch($candidate, $rx)) | Should -BeTrue -Because "'$candidate' should be a valid -$ParamName value for $Cmdlet under v0.7.66"
+            }
+            # Rejection set - must still block obviously hostile/malformed inputs AND the easy-to-mistype '*', '**', '****' variants.
+            foreach ($candidate in @('Foo bar', "abc'def", '<script>', 'a;b;', ';abc', 'abc;', '', '#bad', "a`nb", '*', '**', '****', '*Wave1', 'Wave1*', '***;Wave1')) {
+                ([regex]::IsMatch($candidate, $rx)) | Should -BeFalse -Because "'$candidate' must NOT be accepted by $Cmdlet -$ParamName (v0.7.66 only accepts ring tokens or the exact 3-star '***' wildcard)"
+            }
+        }
+
+        It "Cmdlet <Cmdlet> -<ParamName> accepts 'Wave1', 'Prod;Ring2', and '***'" -ForEach @(
+            $script:RingTagCmdlets | ForEach-Object { @{ Cmdlet = $_; ParamName = 'UpdateRingTag' } }
+        ) {
+            $cmd = Get-Command -Name $Cmdlet -Module AzLocal.UpdateManagement
+            $param = $cmd.Parameters[$ParamName]
+            $param | Should -Not -BeNullOrEmpty
+            $vp = $param.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidatePatternAttribute] }
+            $vp | Should -Not -BeNullOrEmpty
+            $rx = $vp.RegexPattern
+            foreach ($candidate in @('Wave1', 'Prod;Ring2', '***')) {
+                ([regex]::IsMatch($candidate, $rx)) | Should -BeTrue -Because "'$candidate' should be a valid -$ParamName value for $Cmdlet under v0.7.66"
+            }
+            foreach ($candidate in @('Foo bar', "abc'def", 'abc;', '', '*', '**', '****')) {
+                ([regex]::IsMatch($candidate, $rx)) | Should -BeFalse -Because "'$candidate' must NOT be accepted (single/double/quad-star are rejected; only the exact 3-star '***' wildcard passes)"
+            }
+        }
+    }
+}
+
+Describe 'v0.7.66 ConvertTo-AzLocalUpdateRingKqlFilter helper' {
+    # Helper is private to the module; exercise it via InModuleScope.
+
+    It 'Returns isnotempty clause for "***" (wildcard scopes to clusters that HAVE a non-empty UpdateRing tag)' {
+        InModuleScope AzLocal.UpdateManagement {
+            (ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue '***') | Should -Be "| where isnotempty(tags['UpdateRing'])"
+        }
+    }
+
+    It 'Honours -TagAccessor for the "***" wildcard on the fleet-health failures path (tostring)' {
+        InModuleScope AzLocal.UpdateManagement {
+            (ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue '***' -TagAccessor "tostring(tags['UpdateRing'])") | Should -Be "| where isnotempty(tostring(tags['UpdateRing']))"
+        }
+    }
+
+    It 'Returns =~ clause for a single ring' {
+        InModuleScope AzLocal.UpdateManagement {
+            (ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue 'Wave1') | Should -Be "| where tags['UpdateRing'] =~ 'Wave1'"
+        }
+    }
+
+    It 'Returns in~ clause for a semicolon-delimited list' {
+        InModuleScope AzLocal.UpdateManagement {
+            (ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue 'Prod;Ring2') | Should -Be "| where tags['UpdateRing'] in~ ('Prod','Ring2')"
+        }
+    }
+
+    It "Escapes embedded single quotes by doubling them (KQL safe)" {
+        InModuleScope AzLocal.UpdateManagement {
+            $out = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue "ab'cd"
+            $out | Should -Be "| where tags['UpdateRing'] =~ 'ab''cd'"
+        }
+    }
+
+    It 'Honours -TagAccessor for the fleet-health failures path (tostring)' {
+        InModuleScope AzLocal.UpdateManagement {
+            (ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue 'Wave1' -TagAccessor "tostring(tags['UpdateRing'])") | Should -Be "| where tostring(tags['UpdateRing']) =~ 'Wave1'"
+        }
+    }
+
+    It 'Trims whitespace and drops empty segments' {
+        InModuleScope AzLocal.UpdateManagement {
+            $out = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue ' Wave1 ; Wave2 '
+            $out | Should -Be "| where tags['UpdateRing'] in~ ('Wave1','Wave2')"
+        }
+    }
+
+    It 'Returns empty string for null/empty/whitespace input' {
+        InModuleScope AzLocal.UpdateManagement {
+            (ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue '')   | Should -Be ''
+            (ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue '   ') | Should -Be ''
+        }
+    }
+}
+
+Describe 'v0.7.66 Artifact download names carry a UTC timestamp suffix' {
+    # Every downloadable artifact must include either a GH outputs token
+    # (steps.<id>.outputs.timestamp) or an ADO output variable
+    # ($(<stamp>.artifactStamp)) so that re-running the same pipeline on the
+    # same day produces distinct zip filenames.
+
+    BeforeAll {
+        $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
+    }
+
+    It 'GitHub Actions: every upload-artifact step uses a timestamped name and azlocal- prefix' {
+        $ghDir   = Join-Path $script:examplesRoot 'github-actions'
+        $ghFiles = Get-ChildItem -Path $ghDir -Filter '*.yml' -File
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($yml in $ghFiles) {
+            $content = Get-Content -LiteralPath $yml.FullName -Raw
+            # Find every upload-artifact step's `name:` value in its `with:` block.
+            $rxArtifact = [regex]::new("(?ms)uses:\s*actions/upload-artifact@[^\r\n]+\r?\n\s*with:\s*\r?\n\s*name:\s*([^\r\n]+)")
+            foreach ($m in $rxArtifact.Matches($content)) {
+                $name = $m.Groups[1].Value.Trim().Trim("'""")
+                if ($name -notmatch 'azlocal-') {
+                    $offenders.Add("$($yml.Name): upload-artifact name '$name' missing azlocal- prefix")
+                }
+                if ($name -notmatch '\$\{\{\s*steps\.[^}]+\.outputs\.timestamp\s*\}\}') {
+                    $offenders.Add("$($yml.Name): upload-artifact name '$name' missing steps.<id>.outputs.timestamp suffix")
+                }
+            }
+        }
+        $detail = if ($offenders.Count -gt 0) { $offenders -join [Environment]::NewLine } else { '(no offenders)' }
+        $offenders.Count | Should -Be 0 -Because "every actions/upload-artifact step must carry an azlocal-* name with steps.<id>.outputs.timestamp. Findings:$([Environment]::NewLine)$detail"
+    }
+
+    It 'Azure DevOps: every PublishBuildArtifacts / PublishPipelineArtifact uses a timestamped name and azlocal- prefix' {
+        $adoDir   = Join-Path $script:examplesRoot 'azure-devops'
+        $adoFiles = Get-ChildItem -Path $adoDir -Filter '*.yml' -File
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($yml in $adoFiles) {
+            $content = Get-Content -LiteralPath $yml.FullName -Raw
+            # Match both ArtifactName: '...' and artifact: '...'
+            $rxAdo = [regex]::new("(?im)^\s*(ArtifactName|artifact)\s*:\s*'([^']+)'")
+            foreach ($m in $rxAdo.Matches($content)) {
+                $key  = $m.Groups[1].Value
+                $name = $m.Groups[2].Value
+                if ($name -notmatch '^azlocal-') {
+                    $offenders.Add("$($yml.Name): ${key} '$name' missing azlocal- prefix")
+                }
+                # Accept either the in-stage step-output form (`$(stamp.artifactStamp)`)
+                # OR a cross-stage variable that ends in `ArtifactStamp)`, which is
+                # how `apply-updates.yml` consumes the CheckReadiness stage's stamp
+                # via the `readinessArtifactStamp` mapped variable.
+                if ($name -notmatch '\$\(.+?[Aa]rtifactStamp\)') {
+                    $offenders.Add("$($yml.Name): ${key} '$name' missing a `$(...artifactStamp) suffix")
+                }
+            }
+        }
+        $detail = if ($offenders.Count -gt 0) { $offenders -join [Environment]::NewLine } else { '(no offenders)' }
+        $offenders.Count | Should -Be 0 -Because "every PublishBuildArtifacts/PublishPipelineArtifact ArtifactName must be azlocal-*_`$(stamp.artifactStamp). Findings:$([Environment]::NewLine)$detail"
+    }
+
+    It 'GitHub Actions: legacy non-stamped artifact names are gone' {
+        $ghDir = Join-Path $script:examplesRoot 'github-actions'
+        $legacyTokens = @(
+            'name: fleet-status-reports'
+            'name: fleet-health-reports'
+            'name: cluster-inventory'
+            'name: updatering-tag-logs'
+            'name: schedule-coverage-reports'
+            'name: readiness-report'
+            'name: readiness-assessment'
+            'name: update-logs'
+            'name: itsm-results'
+        )
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($yml in Get-ChildItem -Path $ghDir -Filter '*.yml' -File) {
+            $content = Get-Content -LiteralPath $yml.FullName -Raw
+            foreach ($t in $legacyTokens) {
+                if ($content -match [regex]::Escape($t) + '\s*$' -or $content -match [regex]::Escape($t) + '\r?\n') {
+                    $offenders.Add("$($yml.Name): still contains legacy artifact token '$t'")
+                }
+            }
+        }
+        $detail = if ($offenders.Count -gt 0) { $offenders -join [Environment]::NewLine } else { '(no offenders)' }
+        $offenders.Count | Should -Be 0 -Because "v0.7.66 renamed every GH artifact to azlocal-*_<timestamp>. Findings:$([Environment]::NewLine)$detail"
+    }
+
+    It 'Azure DevOps: legacy non-stamped ArtifactName values are gone' {
+        $adoDir = Join-Path $script:examplesRoot 'azure-devops'
+        $legacyTokens = @(
+            "ArtifactName: 'FleetStatusReports'"
+            "ArtifactName: 'FleetHealthReports'"
+            "ArtifactName: 'cluster-inventory'"
+            "ArtifactName: 'updatering-tag-logs'"
+            "ArtifactName: 'ScheduleCoverageReports'"
+            "ArtifactName: 'readiness-report'"
+            "artifact: 'readiness-assessment'"
+            "ArtifactName: 'update-logs'"
+            "ArtifactName: 'itsm-results'"
+        )
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($yml in Get-ChildItem -Path $adoDir -Filter '*.yml' -File) {
+            $content = Get-Content -LiteralPath $yml.FullName -Raw
+            foreach ($t in $legacyTokens) {
+                if ($content -match [regex]::Escape($t)) {
+                    $offenders.Add("$($yml.Name): still contains legacy artifact token '$t'")
+                }
+            }
+        }
+        $detail = if ($offenders.Count -gt 0) { $offenders -join [Environment]::NewLine } else { '(no offenders)' }
+        $offenders.Count | Should -Be 0 -Because "v0.7.66 renamed every ADO ArtifactName to azlocal-*_`$(stamp.artifactStamp). Findings:$([Environment]::NewLine)$detail"
+    }
+}
+
+Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups failures first' {
+    # Guards the v0.7.66 UX refresh of fleet-update-status.yml summary blocks
+    # on both GH and ADO. The summary now uses 'red cross / green tick' emojis
+    # instead of '[ok]/[fail]/...' bracket markers, and the per-cluster JUnit
+    # block orders failed clusters first.
+
+    BeforeAll {
+        $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
+        $script:fleetStatusFiles = @(
+            Join-Path $script:examplesRoot 'github-actions\fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'azure-devops\fleet-update-status.yml'
+        )
+    }
+
+    It "Both fleet-update-status.yml files contain success and failure status emojis" {
+        foreach ($yml in $script:fleetStatusFiles) {
+            # Must read explicitly as UTF-8; the YAML has no BOM, and PS 5.1
+            # Get-Content -Raw without -Encoding defaults to Default (cp1252),
+            # which mangles multi-byte glyphs like U+2705 into 3 separate chars.
+            $content = [System.IO.File]::ReadAllText($yml, [System.Text.UTF8Encoding]::new($false))
+            # PowerShell here strings to dodge Unicode source-file confusion in this test:
+            $tick  = [string]::new([char[]]@(0x2705))            # white-heavy-check-mark
+            $cross = [string]::new([char[]]@(0x274C))            # cross-mark
+            ($content -match [regex]::Escape($tick))  | Should -BeTrue  -Because "$(Split-Path -Leaf $yml) must use the U+2705 success emoji in its summary"
+            ($content -match [regex]::Escape($cross)) | Should -BeTrue  -Because "$(Split-Path -Leaf $yml) must use the U+274C failure emoji in its summary"
+            # Legacy bracket markers must be gone:
+            ($content -match '\[ok\]')    | Should -BeFalse -Because "$(Split-Path -Leaf $yml) must no longer use the '[ok]' bracket marker"
+            ($content -match '\[fail\]')  | Should -BeFalse -Because "$(Split-Path -Leaf $yml) must no longer use the '[fail]' bracket marker"
+        }
+    }
+
+    It "Both fleet-update-status.yml files render a UTC timestamp in the summary heading" {
+        foreach ($yml in $script:fleetStatusFiles) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            ($content -match 'Fleet Update Status Summary\s*_\(generated \$generatedUtc\)_') | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must include the generated UTC timestamp in the H2 heading"
+            ($content -match 'generatedUtc\s*=\s*\(Get-Date\)\.ToUniversalTime\(\)') | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must compute generatedUtc with ToUniversalTime()"
+        }
+    }
+
+    It "Both fleet-update-status.yml files bucket failed clusters ahead of passed clusters before emitting the JUnit table" {
+        foreach ($yml in $script:fleetStatusFiles) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            ($content -match '\$failedClusters')    | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must build a `$failedClusters bucket"
+            ($content -match '\$passedClusters')    | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must build a `$passedClusters bucket"
+            ($content -match '\$orderedClusters\s*=\s*@\(\$failedClusters') | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must concatenate failed-first, then passed, into `$orderedClusters"
+        }
+    }
+}
+
+Describe 'v0.7.66 Pipeline update_ring inputs document multi-value and wildcard support' {
+    BeforeAll {
+        $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
+    }
+
+    It "Every pipeline file that surfaces an update_ring/updateRing input mentions ';' and '***'" {
+        $files = Get-ChildItem -Path $script:examplesRoot -Recurse -Filter '*.yml' -File
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($yml in $files) {
+            $content = Get-Content -LiteralPath $yml.FullName -Raw
+            # Only check files that EXPOSE the input (not files that merely read it via INPUT_UPDATE_RING).
+            $exposesInput = $content -match '(?m)^\s+update_ring:\s*$' -or $content -match '(?m)^\s+-\s+name:\s+updateRing\s*$'
+            if (-not $exposesInput) { continue }
+            # Search for description: 'X' or displayName: 'X' lines following the input declaration.
+            # v0.7.66 deliberately uses '***' (three stars) - a bare '*' is REJECTED by the cmdlet's ValidatePattern.
+            $hasMultiHint = $content -match "Prod;Ring2" -and $content -match "'\*\*\*'"
+            if (-not $hasMultiHint) {
+                $offenders.Add("$($yml.FullName.Substring($script:examplesRoot.Length).TrimStart('\','/')): update_ring/updateRing input does not mention 'Prod;Ring2' AND '***' in its description/displayName")
+            }
+        }
+        $detail = if ($offenders.Count -gt 0) { $offenders -join [Environment]::NewLine } else { '(no offenders)' }
+        $offenders.Count | Should -Be 0 -Because "v0.7.66 documents multi-value + wildcard UpdateRing support on every exposed input. Findings:$([Environment]::NewLine)$detail"
+    }
+}
+
+#endregion v0.7.66 UX + Multi-Value UpdateRing regression suite
+
 

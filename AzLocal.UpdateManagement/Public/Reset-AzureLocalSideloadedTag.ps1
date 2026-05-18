@@ -70,7 +70,7 @@ function Reset-AzureLocalSideloadedTag {
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [switch]$ScopeByUpdateRingTag,
 
-        [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')]
+        [ValidatePattern('^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$')]
         [Parameter(Mandatory = $true, ParameterSetName = 'ByTag')]
         [string]$UpdateRingValue,
 
@@ -118,10 +118,12 @@ function Reset-AzureLocalSideloadedTag {
             }
         }
         'ByTag' {
+            # v0.7.66: support semicolon-delimited rings and '*' (match all).
+            $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingValue
             $kqlQuery = @"
 resources
 | where type =~ 'microsoft.azurestackhci/clusters'
-| where tags['UpdateRing'] =~ '$UpdateRingValue'
+$ringFilter
 | project name, id
 "@
             $rows = Invoke-AzResourceGraphQuery -Query $kqlQuery

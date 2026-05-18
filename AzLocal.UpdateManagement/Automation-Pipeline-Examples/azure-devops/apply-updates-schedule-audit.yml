@@ -211,12 +211,21 @@ stages:
           Write-Host "  MalformedTag      : $($malformed.Count)"
           Write-Host "  UnparseableCron   : $($unparseable.Count)"
 
+    # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+    - pwsh: |
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
+        Write-Host "Artifact timestamp: $stamp"
+      displayName: 'Compute Artifact Timestamp'
+      condition: always()
+      name: stamp
+
     - task: PublishBuildArtifacts@1
       displayName: 'Publish Schedule Coverage Reports'
       condition: always()
       inputs:
         PathtoPublish: '$(reportsPath)'
-        ArtifactName: 'ScheduleCoverageReports'
+        ArtifactName: 'azlocal-apply-updates-schedule-audit-report_$(stamp.artifactStamp)'
         publishLocation: 'Container'
 
     - pwsh: |

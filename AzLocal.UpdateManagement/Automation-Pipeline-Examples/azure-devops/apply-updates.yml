@@ -5,15 +5,13 @@ trigger: none
 
 parameters:
   - name: updateRing
-    displayName: 'UpdateRing tag value to target'
+    # v0.7.66: accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+    # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
+    # The 'values:' enum was removed in v0.7.66 to allow these new forms; type=string
+    # still gives users a free-text editor in the ADO run dialog.
+    displayName: "UpdateRing tag value (single 'Wave1', list 'Prod;Ring2', or '***' for ALL)"
     type: string
     default: 'Wave1'
-    values:
-      - Wave1
-      - Wave2
-      - Wave3
-      - Pilot
-      - Production
   
   - name: updateName
     displayName: 'Specific update version (leave empty for latest ready update)'
@@ -188,11 +186,20 @@ stages:
                     Write-Host "##vso[task.logissue type=warning]No clusters are ready for updates in ring '$updateRing'"
                 }
           
+          # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+          - pwsh: |
+              $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+              Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
+              Write-Host "Artifact timestamp: $stamp"
+            displayName: 'Compute Artifact Timestamp'
+            condition: always()
+            name: stamp
+
           - task: PublishBuildArtifacts@1
             displayName: 'Publish Readiness Report'
             inputs:
               PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-              ArtifactName: 'readiness-report'
+              ArtifactName: 'azlocal-apply-updates-readiness-report_$(stamp.artifactStamp)'
               publishLocation: 'Container'
 
   # Stage 2: Apply Updates (with approval gate for production)
@@ -230,6 +237,9 @@ stages:
         variables:
           readyCount: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['readiness.ReadyCount'] ]
           totalCount: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['readiness.TotalCount'] ]
+          # v0.7.66: pull the upstream artifact-stamp through so the download step
+          # can reconstruct the timestamped artifact name produced by CheckReadiness.
+          readinessArtifactStamp: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['stamp.artifactStamp'] ]
         
         steps:
           - checkout: self
@@ -290,7 +300,9 @@ stages:
             displayName: 'Download Readiness Report'
             inputs:
               source: 'current'
-              artifact: 'readiness-report'
+              # v0.7.66: artifact name now carries a UTC timestamp - rebuild via the
+              # readinessArtifactStamp variable mapped from the CheckReadiness stage.
+              artifact: 'azlocal-apply-updates-readiness-report_$(readinessArtifactStamp)'
               path: '$(Build.ArtifactStagingDirectory)'
           
           - task: AzureCLI@2
@@ -409,11 +421,20 @@ stages:
                     Write-Host "##vso[task.logissue type=warning]$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False - operator must stage the sideloaded payload and flip the tag (or run Reset-AzureLocalSideloadedTag) before updates can proceed"
                 }
           
+          # v0.7.66: compute a UTC timestamp variable so both update-logs and itsm-results share a unique per-run suffix.
+          - pwsh: |
+              $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+              Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
+              Write-Host "Artifact timestamp: $stamp"
+            displayName: 'Compute Artifact Timestamp'
+            condition: always()
+            name: stamp
+
           - task: PublishBuildArtifacts@1
             displayName: 'Publish Update Logs'
             inputs:
               PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-              ArtifactName: 'update-logs'
+              ArtifactName: 'azlocal-apply-updates-logs_$(stamp.artifactStamp)'
               publishLocation: 'Container'
           
           - task: PublishTestResults@2
@@ -501,7 +522,7 @@ stages:
             condition: and(always(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
             inputs:
               PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-              ArtifactName: 'itsm-results'
+              ArtifactName: 'azlocal-apply-updates-itsm-results_$(stamp.artifactStamp)'
               publishLocation: 'Container'
             continueOnError: true
 
