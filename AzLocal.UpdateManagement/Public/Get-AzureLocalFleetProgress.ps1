@@ -25,13 +25,6 @@ function Get-AzureLocalFleetProgress {
     .PARAMETER Detailed
         Include detailed per-cluster status in output.
 
-    .PARAMETER ThrottleLimit
-        Maximum number of parallel background jobs used to query cluster status.
-        Default is 1 (inline, sequential - identical to previous behaviour).
-        Set >1 to fan out per-cluster Get-AzureLocalUpdateSummary calls across
-        background jobs via Invoke-FleetJobsInParallel. Recommended values for
-        large fleets: 4-8.
-
     .EXAMPLE
         Get-AzureLocalFleetProgress -State $fleetState
         Gets progress for clusters in the specified fleet operation.
@@ -41,8 +34,8 @@ function Get-AzureLocalFleetProgress {
         Gets progress for all Production ring clusters.
 
     .EXAMPLE
-        Get-AzureLocalFleetProgress -ScopeByUpdateRingTag -UpdateRingValue "Wave1" -Detailed -ThrottleLimit 8
-        Gets detailed progress using 8 parallel jobs for large fleets.
+        Get-AzureLocalFleetProgress -ScopeByUpdateRingTag -UpdateRingValue "Wave1" -Detailed
+        Gets detailed progress (returns per-cluster status rows on the output object).
     #>
     [CmdletBinding(DefaultParameterSetName = 'ByState')]
     [OutputType([PSCustomObject])]
@@ -58,11 +51,7 @@ function Get-AzureLocalFleetProgress {
         [string]$UpdateRingValue,
 
         [Parameter(Mandatory = $false)]
-        [switch]$Detailed,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateRange(1, 32)]
-        [int]$ThrottleLimit = 1
+        [switch]$Detailed
     )
     
     Write-Log -Message "========================================" -Level Header
@@ -100,10 +89,11 @@ function Get-AzureLocalFleetProgress {
     }
     
     Write-Log -Message "Checking status of $($clustersToCheck.Count) cluster(s)..." -Level Info
-    
-    # Get current status for each cluster.
-    # ThrottleLimit=1 uses the inline fast-path in Invoke-FleetJobsInParallel
-    # (no Start-Job cost) so behaviour is identical to the pre-parallel code.
+
+    # Get current status for each cluster via a single Azure Resource Graph
+    # query against extensibilityresources/microsoft.azurestackhci/clusters/updatesummaries.
+    # This replaces the previous per-cluster Get-AzureLocalUpdateSummary fan-out
+    # and removes the ThrottleLimit parameter.
     $clusterStatuses = @()
     $succeeded = 0
     $inProgress = 0
@@ -111,79 +101,64 @@ function Get-AzureLocalFleetProgress {
     $notStarted = 0
     $upToDate = 0
 
-    # Normalise inputs for the job scriptblock: only the fields it reads.
-    $checkInputs = @($clustersToCheck | ForEach-Object {
-        [PSCustomObject]@{
-            ClusterName   = $_.ClusterName
-            ResourceId    = $_.ResourceId
-            ResourceGroup = $_.ResourceGroup
+    $summaryByCluster = @{}
+    if ($clustersToCheck.Count -gt 0) {
+        Install-AzGraphExtension | Out-Null
+        $idListKql = ($clustersToCheck | ForEach-Object { "'$($_.ResourceId.ToLower())'" }) -join ','
+        $summariesKql = "extensibilityresources | where type =~ 'microsoft.azurestackhci/clusters/updatesummaries' | extend ids = split(id, '/') | extend ClusterResourceId_ = tolower(strcat('/subscriptions/', tostring(ids[2]), '/resourceGroups/', tostring(ids[4]), '/providers/Microsoft.AzureStackHCI/clusters/', tostring(ids[8]))) | where ClusterResourceId_ in~ ($idListKql) | project properties, ClusterResourceId_"
+        $argParams = @{ Query = $summariesKql }
+        # Honour the subscription on each cluster if present (mixed-sub fleets).
+        $subs = @($clustersToCheck | Where-Object { $_.SubscriptionId } | Select-Object -ExpandProperty SubscriptionId -Unique)
+        if ($subs.Count -eq 1) { $argParams['SubscriptionId'] = $subs[0] }
+        try {
+            $summaryRows = Invoke-AzResourceGraphQuery @argParams
         }
-    })
-
-    $progressJob = {
-        param(
-            [object[]]$Shard,
-            [string]$ModulePath
-        )
-        # Only import when not already loaded (see note in perBatchJob above).
-        if (-not (Get-Command -Name Get-AzureLocalUpdateSummary -ErrorAction SilentlyContinue)) {
-            Import-Module $ModulePath -Force -ErrorAction Stop
+        catch {
+            Write-Warning "ARG query for updatesummaries failed: $($_.Exception.Message)"
+            $summaryRows = @()
         }
-        $shardOut = foreach ($c in $Shard) {
-            try {
-                $summary = Get-AzureLocalUpdateSummary -ClusterResourceId $c.ResourceId -ErrorAction SilentlyContinue
-                [PSCustomObject]@{
-                    ClusterName   = $c.ClusterName
-                    ResourceGroup = $c.ResourceGroup
-                    UpdateState   = $summary.State
-                    HealthState   = $summary.HealthState
-                    LastUpdated   = $summary.LastUpdatedTime
-                }
-            }
-            catch {
-                [PSCustomObject]@{
-                    ClusterName   = $c.ClusterName
-                    ResourceGroup = $c.ResourceGroup
-                    UpdateState   = 'Unknown'
-                    HealthState   = 'Unknown'
-                    LastUpdated   = $null
-                }
-            }
+        foreach ($row in @($summaryRows)) {
+            $summaryByCluster[[string]$row.ClusterResourceId_] = $row
         }
-        return , @($shardOut)
     }
 
-    $jobResults = Invoke-FleetJobsInParallel `
-        -InputItems $checkInputs `
-        -ScriptBlock $progressJob `
-        -ThrottleLimit $ThrottleLimit `
-        -ActivityName 'FleetProgress'
-
-    foreach ($jr in $jobResults) {
-        if ($jr.Failed) {
-            # Treat the whole shard as Unknown so counters are still produced.
-            foreach ($item in @($jr.Items)) {
-                $clusterStatuses += [PSCustomObject]@{
-                    ClusterName   = $item.ClusterName
-                    ResourceGroup = $item.ResourceGroup
-                    UpdateState   = 'Unknown'
-                    HealthState   = 'Unknown'
-                    LastUpdated   = $null
-                }
-                $notStarted++
+    foreach ($cluster in $clustersToCheck) {
+        $key = $cluster.ResourceId.ToLower()
+        $row = $summaryByCluster[$key]
+        if ($row) {
+            $props = $row.properties
+            $status = [PSCustomObject]@{
+                ClusterName   = $cluster.ClusterName
+                ResourceGroup = $cluster.ResourceGroup
+                UpdateState   = $props.state
+                HealthState   = $props.healthState
+                LastUpdated   = $props.lastUpdated
             }
-            continue
         }
-        foreach ($status in @($jr.Output)) {
-            if (-not $status) { continue }
-            $clusterStatuses += $status
-            switch ($status.UpdateState) {
-                'Succeeded'         { $succeeded++;  break }
-                'UpdateInProgress'  { $inProgress++; break }
-                'Failed'            { $failed++;     break }
-                'UpToDate'          { $upToDate++;   break }
-                default             { $notStarted++ }
+        else {
+            $status = [PSCustomObject]@{
+                ClusterName   = $cluster.ClusterName
+                ResourceGroup = $cluster.ResourceGroup
+                UpdateState   = 'Unknown'
+                HealthState   = 'Unknown'
+                LastUpdated   = $null
             }
+        }
+        $clusterStatuses += $status
+        switch ($status.UpdateState) {
+            # Real ARM/ARG updateSummaries state values.
+            'AppliedSuccessfully'   { $succeeded++;  break }
+            'UpdateAvailable'       { $notStarted++; break }
+            'UpdateInProgress'      { $inProgress++; break }
+            'PreparationInProgress' { $inProgress++; break }
+            'UpdateFailed'          { $failed++;     break }
+            'PreparationFailed'     { $failed++;     break }
+            'NeedsAttention'        { $failed++;     break }
+            # Legacy / synonym values kept for downstream compatibility.
+            'Succeeded'             { $succeeded++;  break }
+            'Failed'                { $failed++;     break }
+            'UpToDate'              { $upToDate++;   break }
+            default                 { $notStarted++ }
         }
     }
     
