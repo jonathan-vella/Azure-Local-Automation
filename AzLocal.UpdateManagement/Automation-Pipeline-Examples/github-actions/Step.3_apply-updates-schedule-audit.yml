@@ -65,6 +65,14 @@ on:
         description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
         required: false
         default: ''
+      debug:
+        description: 'Enable verbose/debug PowerShell streams for self-service triage. Surfaces $VerbosePreference=Continue, $DebugPreference=Continue, plus a one-shot environment snapshot before the audit runs.'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   # Module version this workflow YAML was generated against. The install step compares
@@ -141,9 +149,27 @@ jobs:
         INPUT_PIPELINE_PATH:     ${{ github.event.inputs.pipeline_path || '.github/workflows' }}
         INPUT_LEAD_TIME_MINUTES: ${{ github.event.inputs.lead_time_minutes || '5' }}
         INPUT_INCLUDE_UNTAGGED:  ${{ github.event.inputs.include_untagged || 'false' }}
+        INPUT_DEBUG:             ${{ github.event.inputs.debug || 'false' }}
       run: |
         $ErrorActionPreference = 'Stop'
         Import-Module AzLocal.UpdateManagement -Force
+
+        # Debug toggle (v0.7.69+): flips Verbose/Debug preferences and emits a
+        # one-shot environment snapshot so operators can self-triage without
+        # needing a code change. Default OFF to keep normal runs concise.
+        if ($env:INPUT_DEBUG -eq 'true') {
+            $VerbosePreference = 'Continue'
+            $DebugPreference   = 'Continue'
+            Write-Host "::group::Debug environment"
+            Write-Host "PSVersion                : $($PSVersionTable.PSVersion)"
+            Write-Host "PSEdition                : $($PSVersionTable.PSEdition)"
+            Write-Host "OS                       : $($PSVersionTable.OS)"
+            $mod = Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1
+            Write-Host "AzLocal.UpdateManagement : v$($mod.Version) (path: $($mod.Path))"
+            Write-Host "VerbosePreference        : $VerbosePreference"
+            Write-Host "DebugPreference          : $DebugPreference"
+            Write-Host "::endgroup::"
+        }
 
         $outputDir = "./reports"
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null

@@ -655,6 +655,34 @@ Describe 'Function: Set-AzureLocalClusterUpdateRingTag' {
             $outputTypes.Type.FullName | Should -Contain 'System.Management.Automation.PSObject[]'
         }
     }
+
+    Context 'v0.7.69 logging contract' {
+        # Source-level checks - the function performs Azure CLI calls so deep
+        # behavioral mocking is fragile. These pin the new logging surface that
+        # operators see in the Step.2 pipeline output.
+        BeforeAll {
+            $script:setRingSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\Public\Set-AzureLocalClusterUpdateRingTag.ps1')
+        }
+
+        It 'Emits a friendly "Processing: <clusterName>" header derived from the resource ID' {
+            $script:setRingSource | Should -Match 'Processing:\s*\$headerClusterName'
+            $script:setRingSource | Should -Match '\$headerClusterName\s*=\s*\(\$resourceId\s*-split\s*''/''\)\[-1\]'
+        }
+
+        It 'Emits the full ARM Resource ID on a dedicated line for traceability' {
+            $script:setRingSource | Should -Match 'ARM Resource ID:\s*\$resourceId'
+        }
+
+        It 'Logs Info (not Warning) when the existing UpdateRing tag matches the target' {
+            # The flip is gated on `if ($previousTagValue -eq $currentUpdateRingValue) { ... Level Info }`
+            $script:setRingSource | Should -Match '\$previousTagValue\s*-eq\s*\$currentUpdateRingValue'
+            $script:setRingSource | Should -Match "matches target.*-Level\s+Info"
+        }
+
+        It 'Still emits Warning when the existing UpdateRing tag differs from the target' {
+            $script:setRingSource | Should -Match "differs from target.*-Level\s+Warning"
+        }
+    }
 }
 
 Describe 'Function: Get-AzureLocalClusterInfo' {
@@ -5701,6 +5729,26 @@ Describe 'Function: Test-AzureLocalApplyUpdatesScheduleCoverage' {
                 $p7.FireTimes[0] | Should -Be $p0.FireTimes[0]
             }
         }
+
+        It 'Accepts an empty string and returns IsValid=$false with structured error (v0.7.69)' {
+            # Regression: v0.7.68 declared [Parameter(Mandatory)][string]$Expression,
+            # so the binder rejected '' before the function body could surface the
+            # 'Cron expression is empty.' message. v0.7.69 adds [AllowEmptyString()]
+            # so the IsNullOrWhiteSpace handler actually runs.
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression ''
+                $p.IsValid      | Should -BeFalse
+                $p.ErrorMessage | Should -Be 'Cron expression is empty.'
+            }
+        }
+
+        It 'Accepts a whitespace-only string and returns IsValid=$false with structured error (v0.7.69)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $p = ConvertFrom-AzLocalCronExpression -Expression '   '
+                $p.IsValid      | Should -BeFalse
+                $p.ErrorMessage | Should -Be 'Cron expression is empty.'
+            }
+        }
     }
 
     Context 'Private helper: Read-AzLocalApplyUpdatesYamlCrons' {
@@ -5745,6 +5793,79 @@ schedules:
                 ($r | ForEach-Object CronExpression) | Should -Contain '55 1 * * 6,0'
                 ($r | ForEach-Object CronExpression) | Should -Contain '0 22 * * 5'
                 ($r | ForEach-Object CronExpression) | Should -Contain '30 2 * * 1-5'
+            }
+        }
+
+        It 'Does NOT match sibling Step.N pipelines (v0.7.69 glob regression)' {
+            # v0.7.68 used `Get-ChildItem -LiteralPath -Recurse -Include`, which
+            # silently ignored the -Include filter and returned every recursed
+            # file. As a result the audit picked up Step.1, Step.3, Step.6, and
+            # Step.7 schedule crons as if they were apply-updates crons. The
+            # fix uses per-pattern -Filter calls (which honour -Recurse).
+            $regressionDir = Join-Path $env:TEMP "schedule-cov-glob-$(Get-Random)"
+            New-Item -ItemType Directory -Path (Join-Path $regressionDir 'github-actions') -Force | Out-Null
+            try {
+                # Sibling pipelines that carry their own (legitimate) schedule
+                # crons - audit should ignore all of these.
+                @"
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.1_inventory-clusters.yml') -Encoding ASCII
+                @"
+on:
+  schedule:
+    - cron: '0 5 * * 1'
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.3_apply-updates-schedule-audit.yml') -Encoding ASCII
+                @"
+on:
+  schedule:
+    - cron: '0 7 * * *'
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.7_fleet-health-status.yml') -Encoding ASCII
+                # Apply-updates file: ships with only commented-out cron examples,
+                # so the reader should return ZERO crons for this folder overall.
+                @"
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 22 * * 6'
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+
+                InModuleScope AzLocal.UpdateManagement -Parameters @{ dir = $regressionDir } {
+                    param($dir)
+                    $r = Read-AzLocalApplyUpdatesYamlCrons -Path $dir
+                    @($r).Count | Should -Be 0
+                }
+            }
+            finally {
+                Remove-Item -Path $regressionDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'Skips quoted whitespace-only cron captures (v0.7.69)' {
+            # The regex `[^'"]+` also matches whitespace runs, so a malformed
+            # `cron: '   '` would emit a record with CronExpression='' once
+            # Trim() ran. v0.7.69 drops that record at the reader rather than
+            # letting it crash the downstream parser binder.
+            $emptyDir = Join-Path $env:TEMP "schedule-cov-emptycron-$(Get-Random)"
+            New-Item -ItemType Directory -Path (Join-Path $emptyDir 'github-actions') -Force | Out-Null
+            try {
+                @"
+on:
+  schedule:
+    - cron: '   '
+    - cron: '0 22 * * 6'
+"@ | Set-Content -Path (Join-Path $emptyDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+
+                InModuleScope AzLocal.UpdateManagement -Parameters @{ dir = $emptyDir } {
+                    param($dir)
+                    $r = Read-AzLocalApplyUpdatesYamlCrons -Path $dir
+                    @($r).Count | Should -Be 1
+                    $r[0].CronExpression | Should -Be '0 22 * * 6'
+                }
+            }
+            finally {
+                Remove-Item -Path $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
     }
@@ -5837,6 +5958,40 @@ on:
                 }
                 $result = Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath $tmpYamlDir2 -IncludeUntagged -PassThru 6>$null
                 ($result | Where-Object Status -eq 'NoWindowTag').ClusterCount | Should -Be 1
+            }
+        }
+    }
+
+    Context 'Integration: shipped Automation-Pipeline-Examples bundle (v0.7.69)' {
+        # End-to-end smoke against the actual YAMLs published to PSGallery as
+        # part of the module. This is the gap that let v0.7.68 ship with the
+        # -LiteralPath/-Include glob regression: unit tests only fed the reader
+        # synthetic Step.5_apply-updates.yml files in isolation, never a real
+        # multi-pipeline folder. Running the audit against the bundle now
+        # guarantees that no future change re-introduces a glob that also picks
+        # up sibling Step.N_*.yml schedule triggers.
+        BeforeAll {
+            $script:bundleGhDir = Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples\github-actions'
+        }
+
+        It 'Audit against the shipped GitHub Actions bundle returns rows without throwing' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ bundleGhDir = $script:bundleGhDir } {
+                param($bundleGhDir)
+                Mock Invoke-AzResourceGraphQuery {
+                    @(
+                        [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='Wave1'; UpdateWindow='Sat-Sun_02:00-06:00' }
+                    )
+                }
+                { Test-AzureLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath $bundleGhDir -PassThru 6>$null } |
+                    Should -Not -Throw
+            }
+        }
+
+        It 'Reader finds zero crons in the shipped bundle (no false-positive sibling matches)' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ bundleGhDir = $script:bundleGhDir } {
+                param($bundleGhDir)
+                $r = Read-AzLocalApplyUpdatesYamlCrons -Path $bundleGhDir
+                @($r).Count | Should -Be 0 -Because 'the shipped Step.5_apply-updates.yml ships with only commented cron examples, and the reader must NOT pick up crons from sibling Step.N pipelines'
             }
         }
     }

@@ -209,7 +209,24 @@ resources
         $yamlCrons = @(Read-AzLocalApplyUpdatesYamlCrons -Path $PipelineYamlPath)
         Write-Log -Message "Discovered $($yamlCrons.Count) cron entry(ies) across apply-updates YAML file(s)." -Level Info
         $parsedYamlCrons = @($yamlCrons | ForEach-Object {
-            $parsed = ConvertFrom-AzLocalCronExpression -Expression $_.CronExpression
+            # Defense-in-depth: the reader strips whitespace-only captures and
+            # ConvertFrom-AzLocalCronExpression now accepts [AllowEmptyString()],
+            # but explicitly handling empty/null here keeps the audit alive even
+            # if a future reader regression leaks one through. Surfaces as an
+            # invalid row rather than throwing 'Cannot bind argument to parameter
+            # Expression because it is an empty string' at the binder.
+            if ([string]::IsNullOrWhiteSpace($_.CronExpression)) {
+                $parsed = [PSCustomObject]@{
+                    Raw          = $_.CronExpression
+                    IsValid      = $false
+                    IsComplex    = $false
+                    ErrorMessage = 'Cron expression is empty or whitespace.'
+                    FireTimes    = @()
+                }
+            }
+            else {
+                $parsed = ConvertFrom-AzLocalCronExpression -Expression $_.CronExpression
+            }
             [PSCustomObject]@{
                 Source     = $_
                 Parsed     = $parsed
