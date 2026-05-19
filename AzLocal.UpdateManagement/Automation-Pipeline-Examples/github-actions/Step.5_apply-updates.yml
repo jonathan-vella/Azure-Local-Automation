@@ -15,7 +15,7 @@ name: Step.5 - Apply Updates
 
 on:
   # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
-  # v0.7.69: PREFERRED PATTERN - drive automated update runs from a ring-aware
+  # PREFERRED PATTERN - drive automated update runs from a ring-aware
   # schedule file (apply-updates-schedule.yml at the repo root by default),
   # not from per-window crons.
   #
@@ -51,7 +51,7 @@ on:
   workflow_dispatch:
     inputs:
       update_ring:
-        # v0.7.66: accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+        # accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
         # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
         description: "UpdateRing tag value (e.g. 'Wave1', 'Prod;Ring2', or '***' for ALL clusters)."
         required: true
@@ -68,7 +68,7 @@ on:
         options:
           - 'false'
           - 'true'
-      # --- ITSM Connector (v0.7.4 Phase 1: ServiceNow) ---
+      # --- ITSM Connector (ServiceNow) ---
       # Set raise_itsm_ticket=true to open ServiceNow incidents for clusters whose
       # Status matches an entry in the trigger matrix (default config:
       # ./.itsm/azurelocal-itsm.yml). Requires the secrets listed in the env: block
@@ -117,13 +117,13 @@ env:
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
-  # v0.7.69: Path to the ring-aware apply-updates-schedule.yml (relative to repo
+  # Path to the ring-aware apply-updates-schedule.yml (relative to repo
   # root). The resolver step in check-readiness reads this file when the trigger
   # is `schedule:`. Override via repository variable APPLY_UPDATES_SCHEDULE_PATH
   # if you keep the schedule outside `.github/`.
   APPLY_UPDATES_SCHEDULE_PATH: ${{ vars.APPLY_UPDATES_SCHEDULE_PATH || './.github/apply-updates-schedule.yml' }}
 
-# v0.7.69: prevent overlapping apply-updates runs from racing on the same
+# prevent overlapping apply-updates runs from racing on the same
 # fleet. cancel-in-progress=false means a newly-triggered run queues behind an
 # in-flight one instead of cancelling it (cancellation mid-apply could leave
 # a cluster in a half-updated state).
@@ -144,11 +144,11 @@ jobs:
     outputs:
       ready_count: ${{ steps.readiness.outputs.READY_COUNT }}
       total_count: ${{ steps.readiness.outputs.TOTAL_COUNT }}
-      # v0.7.66: surface the timestamped readiness-artifact name so the downstream
+      # surface the timestamped readiness-artifact name so the downstream
       # apply-updates job can download it (cross-job step outputs are not visible -
       # everything passed to the next job has to go through the job 'outputs' map).
       readiness_artifact: azlocal-apply-updates-readiness-report_${{ steps.artifact-stamp.outputs.timestamp }}
-      # v0.7.69: the ring(s) the schedule resolver picked for this firing.
+      # the ring(s) the schedule resolver picked for this firing.
       # Empty when the trigger was workflow_dispatch (downstream falls back to
       # the manual `update_ring` input). When the trigger was `schedule:`, this
       # is a ';'-joined UpdateRing value ready for -UpdateRingValue.
@@ -210,7 +210,7 @@ jobs:
         Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
         Write-Host ""
         Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
-        # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+        # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
         if ($installed -lt $generated) {
             $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
@@ -226,7 +226,7 @@ jobs:
             Write-Host "::notice title=Newer AzLocal.UpdateManagement version available on PSGallery::$msg"
         }
     
-    # v0.7.69: Resolve the UpdateRing for THIS firing.
+    # Resolve the UpdateRing for THIS firing.
     #   - workflow_dispatch  -> use the operator's manual input verbatim (back-compat).
     #   - schedule (cron)    -> read apply-updates-schedule.yml and run the resolver.
     # The resolved value is exported as both an env var (for later steps in this
@@ -278,7 +278,7 @@ jobs:
         
         $updateRing = $env:INPUT_UPDATE_RING
         
-        # v0.7.69: empty UpdateRing means the schedule resolver found no row
+        # empty UpdateRing means the schedule resolver found no row
         # matching the current UTC day. Report zero clusters and exit 0 - the
         # downstream apply-updates job is gated on ready_count > 0 and will
         # skip cleanly.
@@ -323,7 +323,7 @@ jobs:
       if: always()
       id: artifact-stamp
       shell: pwsh
-      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # every downloadable artifact gets a UTC timestamp suffix so multiple runs on
       # the same day produce distinct zip names.
       run: |
         $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
@@ -398,7 +398,7 @@ jobs:
         Write-Host "Installed AzLocal.UpdateManagement v$installed on apply-updates job runner."
         Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
     
-    # v0.7.62: Consume the readiness CSV produced by check-readiness instead of
+    # Consume the readiness CSV produced by check-readiness instead of
     # re-discovering clusters by tag. Apply Updates now operates ONLY on the
     # clusters that the readiness gate marked ReadyForUpdate=True (gated by
     # ClusterState=ConnectedRecently, no [Critical] health failures, etc.).
@@ -408,7 +408,7 @@ jobs:
     - name: Download Readiness Report
       uses: actions/download-artifact@v6
       with:
-        # v0.7.66: artifact name now carries a UTC timestamp - resolve via the
+        # artifact name now carries a UTC timestamp - resolve via the
         # upstream job's outputs.readiness_artifact so re-runs on the same day
         # don't collide.
         name: ${{ needs.check-readiness.outputs.readiness_artifact }}
@@ -418,7 +418,7 @@ jobs:
       shell: pwsh
       id: apply-updates
       env:
-        # v0.7.69: resolved by check-readiness's resolve-ring step. For
+        # resolved by check-readiness's resolve-ring step. For
         # workflow_dispatch this passes the operator's manual input through
         # verbatim; for schedule:cron firings it is the ring(s) the resolver
         # picked from apply-updates-schedule.yml.
@@ -439,10 +439,10 @@ jobs:
         $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
         $junitPath = Join-Path $outputDir "update-results.xml"
         
-        # v0.7.62: Read the readiness CSV from the check-readiness job and extract
+        # Read the readiness CSV from the check-readiness job and extract
         # the ARM resource IDs of clusters marked ReadyForUpdate=True. The
         # ClusterResourceId column was added to Get-AzureLocalClusterUpdateReadiness
-        # output in v0.7.62 specifically to make this hand-off explicit and
+        # output in specifically to make this hand-off explicit and
         # exact (no second tag query, no drift between the two jobs' scopes).
         $readinessCsv = Join-Path $outputDir 'readiness-report.csv'
         if (-not (Test-Path $readinessCsv)) {
@@ -519,7 +519,7 @@ jobs:
       if: always()
       id: artifact-stamp
       shell: pwsh
-      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # every downloadable artifact gets a UTC timestamp suffix so multiple runs on
       # the same day produce distinct zip names. Both update-logs and itsm-results use this stamp.
       run: |
         $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
@@ -543,7 +543,7 @@ jobs:
       continue-on-error: true
     
     # ----------------------------------------------------------------------
-    # ITSM Connector (v0.7.4 Phase 1 - ServiceNow)
+    # ITSM Connector (ServiceNow)
     #
     # This block is fully opt-in (gated on inputs.raise_itsm_ticket == 'true').
     # It runs AFTER the update results are published so a) failing clusters are

@@ -1,6 +1,6 @@
 # Step.0 - Authentication Validation and Subscription Scope Report
 #
-# PURPOSE (v0.7.70):
+# PURPOSE:
 #   Validates that the service connection (Workload Identity Federation), App Registration,
 #   and RBAC role assignments all line up, AND produces a Subscription Scope report that
 #   lists every subscription the pipeline identity can see. Run this:
@@ -19,7 +19,7 @@
 #       2. Service-connection -> App Registration -> subscription wiring.
 #       3. Azure RBAC on the App Registration's service principal.
 #       4. Resource Graph reachability (proves the SP can actually see clusters).
-#       5. Subscription scope (v0.7.70): total count and full Subscription ID / Name table
+#       5. Subscription scope: total count and full Subscription ID / Name table
 #          visible to the pipeline identity.
 #
 #   Unlike the GitHub Actions twin (Step.0_authentication-test.yml in github-actions/), ADO
@@ -28,7 +28,7 @@
 #   approval gates (Pipelines -> Environments) are a separate concern and are not exercised
 #   here.
 #
-# REPORTS GENERATED (v0.7.70):
+# REPORTS GENERATED:
 #   - JUnit XML published via PublishTestResults@2 (renders in the ADO Tests tab).
 #   - Markdown summary uploaded via ##vso[task.uploadsummary] (renders in the run Summary tab).
 #   - Pipeline artifact (auth-report) containing JUnit XML + subscriptions.json + .csv.
@@ -200,7 +200,7 @@ stages:
               failTaskOnFailedTests: false
               mergeTestResults: false
 
-          # v0.7.66 artifact convention: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+          # artifact convention: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
           - pwsh: |
               $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
               Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"

@@ -51,7 +51,7 @@ parameters:
       - 'by-update-ring'
 
   - name: updateRing
-    # v0.7.66: accepts single ring, 'Prod;Ring2' list, or '***' wildcard (three stars - deliberate).
+    # accepts single ring, 'Prod;Ring2' list, or '***' wildcard (three stars - deliberate).
     displayName: "UpdateRing tag value (only used when scope=by-update-ring). Single, 'Prod;Ring2', or '***'."
     type: string
     default: ''
@@ -70,7 +70,7 @@ parameters:
     type: string
     default: ''
 
-  # --- ITSM Connector (v0.7.70 Phase D: ServiceNow auto-raise on fleet-health failures) ---
+  # --- ITSM Connector (ServiceNow auto-raise on fleet-health failures) ---
   # Set raiseItsmTicket=true to open ServiceNow incidents from each Critical /
   # Warning health-check failure published by this pipeline. Default is false
   # so existing schedules stay byte-identical until you opt in. The connector
@@ -109,7 +109,7 @@ variables:
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
   REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
   reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
-  # ITSM connector (v0.7.70 Phase D). When raiseItsmTicket=true the Raise ITSM
+  # ITSM connector. When raiseItsmTicket=true the Raise ITSM
   # task below references $(ITSM_SN_INSTANCE_URL), $(ITSM_SN_CLIENT_ID),
   # $(ITSM_SN_CLIENT_SECRET). The simplest binding is an ADO variable group
   # named 'AzureLocal-ITSM-Secrets'. ADO does not allow mixing mapping-form
@@ -167,7 +167,7 @@ stages:
           Write-Host "  YAML generated against    : $generated"
           Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
           Write-Host ""
-          # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+          # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
           if ($installed -lt $generated) {
               Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
           }
@@ -217,7 +217,7 @@ stages:
           $detail | ConvertTo-Json -Depth 6 | Out-File -FilePath $detailJson -Encoding utf8
 
           # SUMMARY view (grouped by FailureReason, Severity) - aggregated in-process.
-          # v0.7.70: AffectedClusters uses '; ' separator (matches cmdlet); adds positionally-paired
+          # AffectedClusters uses '; ' separator (matches cmdlet); adds positionally-paired
           # AffectedClusterPortalUrls so the markdown task below can zip them into hyperlinks.
           # Severity sorts FIRST (Critical before Warning) regardless of cluster count.
           $summary = @()
@@ -283,7 +283,7 @@ stages:
                   [void]$sb.AppendFormat('    <testcase classname="{0}" name="{1}">' + "`n",
                       (Convert-XmlEscape $r.ClusterName),
                       (Convert-XmlEscape $caseName))
-                  # v0.7.70: per-testcase <properties> for the ITSM connector.
+                  # per-testcase <properties> for the ITSM connector.
                   # The dedupe key is SHA256(ClusterResourceId | UpdateName | Category).
                   # Step.7 is not about updates - so we stuff FailureReason into the
                   # UpdateName slot. That gives one ticket per (cluster, failing health
@@ -304,7 +304,7 @@ stages:
                   [void]$sb.AppendFormat('        <property name="TargetResourceType" value="{0}"/>' + "`n", (Convert-XmlEscape $targetResType))
                   [void]$sb.AppendLine('      </properties>')
                   $msg  = "{0}: {1} (last occurred {2:yyyy-MM-ddTHH:mm:ssZ})" -f $r.Severity, $r.FailureReason, $r.LastOccurrence
-                  # v0.7.70: failure body adds TargetResourceName, TargetResourceType, and ClusterPortalUrl
+                  # failure body adds TargetResourceName, TargetResourceType, and ClusterPortalUrl
                   # so reviewers reading the JUnit XML can click straight to the cluster blade in the
                   # Azure portal and see which specific resource failed.
                   $bodyLines = @(
@@ -340,7 +340,7 @@ stages:
           $sb.ToString() | Out-File -FilePath $xmlPath -Encoding utf8
 
           # ------------------------------------------------------------------
-          # v0.7.70: Fleet Health Overview (one row per cluster, ARG-first projection
+          # Fleet Health Overview (one row per cluster, ARG-first projection
           # of cluster + updateSummaries for fleet-scale performance). Separate cmdlet from
           # the failures view above so a fleet with zero failing checks still gets
           # an overview-level rollup (last-checked age, current version, SBE
@@ -362,7 +362,7 @@ stages:
           "##vso[task.setvariable variable=distinctReasons;isOutput=true]$($summary.Count)" | Write-Host
           "##vso[task.setvariable variable=overviewRows;isOutput=true]$($overview.Count)"   | Write-Host
 
-          # v0.7.71: surface fleet-wide totals so the summary table can report
+          # surface fleet-wide totals so the summary table can report
           # Total / Healthy / Unhealthy (rather than only the affected/unhealthy
           # subset). 'Affected' in the failures view = clusters with at least one
           # failing health check = unhealthy. Force [int] so .Count is reliable
@@ -382,7 +382,7 @@ stages:
           Write-Host "  Overview rows           : $($overview.Count)"
       name: collect
 
-    # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+    # compute a UTC timestamp variable so every downloadable artifact name is unique per run.
     - pwsh: |
         $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
         Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
@@ -411,7 +411,7 @@ stages:
         $warn     = "$(collect.warningCount)"
         $reasons  = "$(collect.distinctReasons)"
         $ovRows   = "$(collect.overviewRows)"
-        # v0.7.71: fleet-wide totals from Get-AzLocalFleetHealthOverview.
+        # fleet-wide totals from Get-AzLocalFleetHealthOverview.
         $healthy    = "$(collect.healthyClusters)"
         $totalInSub = "$(collect.totalInSub)"
 
@@ -449,10 +449,10 @@ stages:
             $md += "|----------|----------------|---------------|---------------|--------------------|--------|`n"
             foreach ($r in ($summaryRows | Select-Object -First 25)) {
                 $sevTag = if ($r.Severity -eq 'Critical') { '[Critical]' } else { '[Warning]' }
-                # v0.7.70: zip AffectedClusters with AffectedClusterPortalUrls to render markdown
+                # zip AffectedClusters with AffectedClusterPortalUrls to render markdown
                 # hyperlinks. Cap at first 10 names then '... (+N more)' so widespread failures stay
                 # readable; full list is in the CSV artifact.
-                # v0.7.71: keep @() OUTSIDE the 'if' so single-element arrays do not unwrap to a
+                # keep @() OUTSIDE the 'if' so single-element arrays do not unwrap to a
                 # String (PowerShell scalar-unwrap bug). Without this, a row with one cluster
                 # rendered as the first character of the cluster name only.
                 $names = @(if ($r.AffectedClusters) { $r.AffectedClusters -split '; ' } else { @() })
@@ -479,7 +479,7 @@ stages:
         if ($detailRows.Count -eq 0) {
             $md += "`n*No detail rows.*`n"
         } else {
-            # v0.7.70: cluster name linkifies to ClusterPortalUrl; +3 columns (Failure Remediation,
+            # cluster name linkifies to ClusterPortalUrl; +3 columns (Failure Remediation,
             # Target Resource Name, Target Resource Type). Remediation auto-linkifies when value
             # starts 'https://' so docs links are one click away.
             $md += "`n| Cluster | Severity | Failure Reason | Failure Remediation | Target Resource Name | Target Resource Type | Last Occurrence | Resource Group |`n"
@@ -502,7 +502,7 @@ stages:
             }
         }
 
-        # v0.7.70: NEW section - Fleet Health Overview (fleet rollup, one row per cluster).
+        # NEW section - Fleet Health Overview (fleet rollup, one row per cluster).
         # Sourced from Get-AzLocalFleetHealthOverview. HealthResultsAgeDays surfaces clusters whose
         # 24-hour health check has not run in a while (negative = no LastChecked at all).
         $md += "`n### Fleet Health Overview (fleet rollup)`n"
@@ -517,7 +517,7 @@ stages:
                 } else {
                     $o.ClusterName
                 }
-                # v0.7.71: replace bracketed labels with emoji icons (icon + text) so the
+                # replace bracketed labels with emoji icons (icon + text) so the
                 # at-a-glance Health column is visually scannable. Label is retained for
                 # greppability. Uses literal Unicode glyphs so GH + ADO render identically.
                 $healthTag = switch ($o.HealthStatus) {
@@ -562,7 +562,7 @@ stages:
         failTaskOnFailedTests: false  # Don't fail pipeline on health failures
 
     # ----------------------------------------------------------------------
-    # ITSM Connector (v0.7.70 Phase D - ServiceNow auto-raise on fleet-health failures)
+    # ITSM Connector (ServiceNow auto-raise on fleet-health failures)
     #
     # Fully opt-in (gated on parameters.raiseItsmTicket == true). Runs AFTER
     # PublishTestResults so the fleet-health-status surfaces its own results

@@ -227,7 +227,7 @@ jobs:
         Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
         Write-Host ""
         Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
-        # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+        # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
         if ($installed -lt $generated) {
             $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
@@ -289,7 +289,7 @@ jobs:
     - name: Compute Artifact Timestamp
       id: artifact-stamp
       shell: pwsh
-      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # every downloadable artifact gets a UTC timestamp suffix so multiple runs on
       # the same day produce distinct zip names.
       run: |
         $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')

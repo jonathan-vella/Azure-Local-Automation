@@ -54,7 +54,7 @@ on:
           - 'all'              # All clusters across all subscriptions
           - 'by-update-ring'   # Filter by UpdateRing tag
       update_ring:
-        # v0.7.66: accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+        # accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
         # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
         description: "UpdateRing tag value (only used when scope=by-update-ring). Single ring, 'Prod;Ring2', or '***'."
         required: false
@@ -72,7 +72,7 @@ on:
         description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
         required: false
         default: ''
-      # --- ITSM Connector (v0.7.70 Phase D: ServiceNow auto-raise on fleet-health failures) ---
+      # --- ITSM Connector (ServiceNow auto-raise on fleet-health failures) ---
       # Set raise_itsm_ticket=true to open ServiceNow incidents from each Critical /
       # Warning health-check failure published by this pipeline. Default is false
       # so existing schedules stay byte-identical until you opt in. The connector reads
@@ -176,7 +176,7 @@ jobs:
         Write-Host "  YAML generated against    : $generated"
         Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
         Write-Host ""
-        # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+        # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
         if ($installed -lt $generated) {
             $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
@@ -232,12 +232,12 @@ jobs:
         $detail | ConvertTo-Json -Depth 6 | Out-File -FilePath $detailJson -Encoding utf8
 
         # SUMMARY view (grouped by FailureReason, Severity). Re-aggregates the
-        # detail rows in PowerShell to avoid a second ARG query. v0.7.70:
+        # detail rows in PowerShell to avoid a second ARG query.
         # AffectedClusters uses '; ' separator (matches cmdlet output), and
         # AffectedClusterPortalUrls is the positionally-paired list of portal
         # links so the markdown renderer can zip them into hyperlinks.
         # Severity sorts FIRST (Critical before Warning) regardless of cluster
-        # count - matches the v0.7.70 cmdlet ordering.
+        # count - matches the cmdlet ordering.
         $summary = @()
         if ($detail.Count -gt 0) {
             $summary = @(
@@ -303,7 +303,7 @@ jobs:
                 [void]$sb.AppendFormat('    <testcase classname="{0}" name="{1}">' + "`n",
                     (Convert-XmlEscape $r.ClusterName),
                     (Convert-XmlEscape $caseName))
-                # v0.7.70: per-testcase <properties> for the ITSM connector.
+                # per-testcase <properties> for the ITSM connector.
                 # The dedupe key is SHA256(ClusterResourceId | UpdateName | Category).
                 # Step.7 is not about updates - so we stuff FailureReason into the
                 # UpdateName slot. That gives one ticket per (cluster, failing health
@@ -324,7 +324,7 @@ jobs:
                 [void]$sb.AppendFormat('        <property name="TargetResourceType" value="{0}"/>' + "`n", (Convert-XmlEscape $targetResType))
                 [void]$sb.AppendLine('      </properties>')
                 $msg = "{0}: {1} (last occurred {2:yyyy-MM-ddTHH:mm:ssZ})" -f $r.Severity, $r.FailureReason, $r.LastOccurrence
-                # v0.7.70: failure body adds TargetResourceName, TargetResourceType, and ClusterPortalUrl
+                # failure body adds TargetResourceName, TargetResourceType, and ClusterPortalUrl
                 # so reviewers reading the JUnit XML (or dorny's expansion) can click straight to the
                 # cluster blade in the Azure portal and see which specific resource failed.
                 $bodyLines = @(
@@ -369,7 +369,7 @@ jobs:
         "DISTINCT_REASONS=$($summary.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
         # ------------------------------------------------------------------
-        # v0.7.70: Fleet Health Overview (one row per cluster, ARG-first projection
+        # Fleet Health Overview (one row per cluster, ARG-first projection
         # of cluster + updateSummaries for fleet-scale performance). Separate cmdlet from
         # the failures view above so a fleet with zero failing checks still
         # gets an overview-level rollup (last-checked age, current version,
@@ -384,7 +384,7 @@ jobs:
         $overview | ConvertTo-Json -Depth 6 | Out-File -FilePath $overviewJson -Encoding utf8
         "OVERVIEW_ROWS=$($overview.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-        # v0.7.71: surface fleet-wide totals so the summary table can report
+        # surface fleet-wide totals so the summary table can report
         # Total / Healthy / Unhealthy (rather than only the affected/unhealthy
         # subset). 'Affected' in the failures view = clusters with at least one
         # failing health check = unhealthy. Force [int] so .Count is reliable
@@ -407,7 +407,7 @@ jobs:
       if: always()
       id: artifact-stamp
       shell: pwsh
-      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # every downloadable artifact gets a UTC timestamp suffix so multiple runs on
       # the same day produce distinct zip names.
       run: |
         $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
@@ -434,7 +434,7 @@ jobs:
         $crit           = "${{ steps.fleet-health.outputs.CRITICAL_COUNT }}"
         $warn           = "${{ steps.fleet-health.outputs.WARNING_COUNT }}"
         $reasons        = "${{ steps.fleet-health.outputs.DISTINCT_REASONS }}"
-        # v0.7.71: fleet-wide healthy/total counts (Get-AzLocalFleetHealthOverview).
+        # fleet-wide healthy/total counts (Get-AzLocalFleetHealthOverview).
         $healthy        = "${{ steps.fleet-health.outputs.HEALTHY_CLUSTERS }}"
         $totalInSub     = "${{ steps.fleet-health.outputs.TOTAL_IN_SUB }}"
 
@@ -476,10 +476,10 @@ jobs:
             $md += "|----------|----------------|---------------|---------------|--------------------|--------|`n"
             foreach ($r in ($summaryRows | Select-Object -First 25)) {
                 $sevTag = if ($r.Severity -eq 'Critical') { '[Critical]' } else { '[Warning]' }
-                # v0.7.70: zip AffectedClusters (names) with AffectedClusterPortalUrls (positional)
+                # zip AffectedClusters (names) with AffectedClusterPortalUrls (positional)
                 # to render markdown hyperlinks. Cap at the first 10 names then '... (+N more)' so
                 # widespread failures stay readable; full list is in the CSV artifact.
-                # v0.7.71: keep @() OUTSIDE the 'if' so single-element arrays do not unwrap to a
+                # keep @() OUTSIDE the 'if' so single-element arrays do not unwrap to a
                 # String (PowerShell scalar-unwrap bug). Without this, a row with one cluster
                 # rendered as the first character of the cluster name only.
                 $names = @(if ($r.AffectedClusters) { $r.AffectedClusters -split '; ' } else { @() })
@@ -506,7 +506,7 @@ jobs:
         if ($detailRows.Count -eq 0) {
             $md += "`n*No detail rows.*`n"
         } else {
-            # v0.7.70: cluster name linkifies to ClusterPortalUrl; +3 columns (Failure Remediation,
+            # cluster name linkifies to ClusterPortalUrl; +3 columns (Failure Remediation,
             # Target Resource Name, Target Resource Type). Remediation auto-linkifies when it looks
             # like a URL ('https://') so docs links are one click away.
             $md += "`n| Cluster | Severity | Failure Reason | Failure Remediation | Target Resource Name | Target Resource Type | Last Occurrence | Resource Group |`n"
@@ -529,7 +529,7 @@ jobs:
             }
         }
 
-        # v0.7.70: NEW section - Fleet Health Overview (fleet rollup, one row per cluster).
+        # NEW section - Fleet Health Overview (fleet rollup, one row per cluster).
         # Sourced from Get-AzLocalFleetHealthOverview. HealthResultsAgeDays surfaces clusters whose
         # 24-hour health check has not run in a while (negative = no LastChecked at all).
         $md += "`n### Fleet Health Overview (fleet rollup)`n"
@@ -544,7 +544,7 @@ jobs:
                 } else {
                     $o.ClusterName
                 }
-                # v0.7.71: replace bracketed labels with emoji icons (icon + text) so the
+                # replace bracketed labels with emoji icons (icon + text) so the
                 # at-a-glance Health column is visually scannable. Label is retained for
                 # greppability (CI log searches by 'Healthy' / 'Critical' / etc.). Uses
                 # literal Unicode (not GH ':name:' shortcodes) so the Azure DevOps twin
@@ -595,7 +595,7 @@ jobs:
         list-tests: failed     # within failed suites, only render failed tests
 
     # ----------------------------------------------------------------------
-    # ITSM Connector (v0.7.70 Phase D - ServiceNow auto-raise on fleet-health failures)
+    # ITSM Connector (ServiceNow auto-raise on fleet-health failures)
     #
     # Fully opt-in (gated on inputs.raise_itsm_ticket == 'true'). Runs AFTER
     # the JUnit file is uploaded + test results published, so a) failing

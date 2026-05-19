@@ -1,6 +1,6 @@
 # Step.0 - Authentication Validation and Subscription Scope Report
 #
-# PURPOSE (v0.7.70):
+# PURPOSE:
 #   Validates that the App Registration / federated credentials / GitHub secrets / RBAC
 #   role assignments all line up, AND produces a Subscription Scope report that lists every
 #   subscription the pipeline identity can see. Run this:
@@ -18,10 +18,10 @@
 #       2. Repository / environment secrets (AZURE_CLIENT_ID, _TENANT_ID, _SUBSCRIPTION_ID).
 #       3. Azure RBAC on the App Registration's service principal.
 #       4. Resource Graph reachability (proves the SP can actually see clusters).
-#       5. Subscription scope (v0.7.70): total count and full Subscription ID / Name table
+#       5. Subscription scope: total count and full Subscription ID / Name table
 #          visible to the pipeline identity.
 #
-# REPORTS GENERATED (v0.7.70):
+# REPORTS GENERATED:
 #   - JUnit XML: One test suite for Authentication, one for Subscription Scope (one testcase
 #     per subscription), one for Resource Graph reachability. Renders in the GitHub Checks
 #     UI via dorny/test-reporter.
@@ -244,7 +244,7 @@ jobs:
       - name: Compute Artifact Timestamp
         id: artifact-stamp
         shell: pwsh
-        # v0.7.66 artifact convention: every downloadable artifact gets a UTC timestamp suffix so
+        # artifact convention: every downloadable artifact gets a UTC timestamp suffix so
         # multiple runs on the same day produce distinct zip names.
         run: |
           $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')

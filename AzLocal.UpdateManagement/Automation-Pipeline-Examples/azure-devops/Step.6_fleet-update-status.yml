@@ -9,11 +9,11 @@
 #
 # REPORTS GENERATED:
 # - JUnit XML: Shows each cluster as a test case (passed/failed/skipped) in Test tab
-#   (v0.7.1: testcase bodies now include `Start Time:` and `End Time:` lines per cluster).
-# - CSV: Detailed export for spreadsheet analysis (v0.7.1: includes `EndTime` column sourced
+#   (testcase bodies now include `Start Time:` and `End Time:` lines per cluster).
+# - CSV: Detailed export for spreadsheet analysis (includes `EndTime` column sourced
 #   from properties.progress.endTimeUtc, with fallback to properties.lastUpdatedTime - blank for InProgress runs).
 # - HTML report (Recent Update Run History section): includes `End Time` column for the
-#   aggregated multi-attempt row (v0.7.1).
+#   aggregated multi-attempt row.
 # - JSON: Machine-readable format for custom integrations
 #
 # AUTHENTICATION:
@@ -45,7 +45,7 @@ parameters:
       - 'by-update-ring'
   
   - name: updateRing
-    # v0.7.66: accepts single ring, 'Prod;Ring2' list, or '***' wildcard (three stars - deliberate).
+    # accepts single ring, 'Prod;Ring2' list, or '***' wildcard (three stars - deliberate).
     displayName: "UpdateRing tag value (only used when scope=by-update-ring). Single, 'Prod;Ring2', or '***'."
     type: string
     default: ''
@@ -60,7 +60,7 @@ parameters:
     type: string
     default: ''
 
-  # --- ITSM Connector (v0.7.70 Phase D: ServiceNow auto-raise on fleet-update-status) ---
+  # --- ITSM Connector (ServiceNow auto-raise on fleet-update-status) ---
   # Set raiseItsmTicket=true to open ServiceNow incidents from each unresolved
   # Failed update run reported by the 'Update Run History and Error Details'
   # testsuite (and any failed AzureLocalFleetUpdateStatus row). Default is false
@@ -98,7 +98,7 @@ variables:
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
   REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
   reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
-  # ITSM connector (v0.7.70 Phase D). When raiseItsmTicket=true the Raise ITSM
+  # ITSM connector. When raiseItsmTicket=true the Raise ITSM
   # task below references $(ITSM_SN_INSTANCE_URL), $(ITSM_SN_CLIENT_ID),
   # $(ITSM_SN_CLIENT_SECRET). The simplest binding is an ADO variable group
   # named 'AzureLocal-ITSM-Secrets'. ADO does not allow mixing mapping-form
@@ -157,7 +157,7 @@ stages:
           Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
           Write-Host ""
           Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
-          # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+          # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
           if ($installed -lt $generated) {
               Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
           }
@@ -290,7 +290,7 @@ stages:
           $ready = $stReadyForUpdate
           $upToDate = $stUpToDate
 
-          # v0.7.70: Fleet Version Distribution - pivot clusters by CurrentVersion
+          # Fleet Version Distribution - pivot clusters by CurrentVersion
           # so the JUnit XML (and the markdown summary) lead with "what versions
           # are presently installed across the fleet, and what % of clusters
           # are on each one". One row per distinct CurrentVersion, sorted by
@@ -316,7 +316,7 @@ stages:
           $mostCommonVersion = if ($distinctVersions -gt 0) { $versionDistribution[0].Version } else { '(none)' }
           $mostCommonVersionPct = if ($distinctVersions -gt 0) { $versionDistribution[0].Percentage } else { 0 }
 
-          # v0.7.70: Compute the rolling 6-month YYMM support window used by SupportStatus.
+          # Compute the rolling 6-month YYMM support window used by SupportStatus.
           # Preferred anchor: the latest released Azure Local solution version from the
           # Microsoft public catalog (https://aka.ms/AzureEdgeUpdates), via the
           # Get-AzureLocalLatestSolutionVersion cmdlet. Fallback: top-6 distinct YYMM
@@ -437,7 +437,7 @@ stages:
               </properties>
           "@
 
-          # v0.7.66: bucket clusters into 'failed' vs 'passed' BEFORE emission so the Azure DevOps
+          # bucket clusters into 'failed' vs 'passed' BEFORE emission so the Azure DevOps
           # Tests tab renders all failed clusters first (in the run summary, in source order).
           # Within each bucket clusters are sorted by ClusterName for stable, scannable output.
           $failedClusters = @()
@@ -490,7 +490,7 @@ stages:
           "@
               $systemOut = $systemOut -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;'
               
-              # v0.7.70: per-testcase <properties> for the ITSM connector. The dedupe
+              # per-testcase <properties> for the ITSM connector. The dedupe
               # key in New-AzureLocalIncident is SHA256(ClusterResourceId|UpdateName|Category);
               # without these properties the connector reports Action='Skipped'
               # with "Row missing ClusterResourceId or UpdateName". Status is
@@ -533,7 +533,7 @@ stages:
           "@
 
           # ---------------------------------------------------------------
-          # v0.7.70: '📜 Update Run History and Error Details' testsuite.
+          # '📜 Update Run History and Error Details' testsuite.
           # ARG-first Update Run History projection (fleet-scale)
           # table. Each Failed/unresolved update run becomes a testcase with
           # the verbose error details (DeepestErrMsg) as the failure body
@@ -596,8 +596,8 @@ stages:
               $tcSysOut = $tcSysOut -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
 
               $xmlContent += "`n    <testcase name=`"$tcName`" classname=`"$tcClass`" time=`"0`">`n"
-              # v0.7.70: properties for the ITSM connector dedupe key + v0.7.70
-              # extended context (UpdateRunPortalUrl, ClusterPortalUrl, CurrentStep,
+              # properties for the ITSM connector dedupe key plus extended context
+              # (UpdateRunPortalUrl, ClusterPortalUrl, CurrentStep,
               # Duration, ErrorCategory) so the optional incident-body template
               # rendered by New-AzureLocalIncident can deep-link straight into
               # the SingleInstanceHistoryDetails ReactView for this failed run.
@@ -633,7 +633,7 @@ stages:
           $xmlContent | Out-File $readinessXml -Encoding UTF8
           Write-Host "JUnit XML saved to: $readinessXml" -ForegroundColor Green
           
-          # Step 4: Collect additional fleet data using v0.5.6 fleet-wide capabilities
+          # Step 4: Collect additional fleet data using fleet-wide capabilities
           # NOTE: Readiness (Step 2) already fetches summaries and available updates internally.
           # Steps 4a/4b re-export this data in dedicated CSV files for analysis.
           # Use ClusterResourceIds (not ClusterNames) to avoid redundant name-to-ID resolution.
@@ -717,7 +717,7 @@ stages:
           Write-Host "##vso[task.setvariable variable=hasPrerequisite;isOutput=true]$hasPrerequisite"
           Write-Host "##vso[task.setvariable variable=runHistoryCount;isOutput=true]$runHistoryCount"
 
-          # v0.7.70: persist version-distribution rows as a base64 JSON blob so
+          # persist version-distribution rows as a base64 JSON blob so
           # the 'Display Status Summary' step can render the markdown table
           # (with SupportStatus) without re-reading the CSV.
           if ($distinctVersions -gt 0) {
@@ -745,10 +745,10 @@ stages:
               Write-Host "##vso[task.setvariable variable=latestReleasedVersion;isOutput=true]$latestReleasedVersion"
           }
 
-          # v0.7.70: persist update-run-history rows as a base64 JSON blob so the
+          # persist update-run-history rows as a base64 JSON blob so the
           # 'Display Status Summary' step can render the markdown table without
           # re-querying ARG. Truncated to top 25 failures to keep the variable size sane.
-          # v0.7.71: include ClusterPortalUrl so the markdown table can render
+          # include ClusterPortalUrl so the markdown table can render
           # Cluster Name as a deep link into the Azure portal cluster blade.
           if ($runHistoryCount -gt 0) {
               $top = $runFailures | Select-Object -First 25 ClusterName, ClusterPortalUrl, UpdateName, State, Status, CurrentStep, Duration, StartTime, LastUpdated, DeepestErrMsg, UpdateRunPortalUrl
@@ -764,7 +764,7 @@ stages:
           }
       name: collect
 
-    # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+    # compute a UTC timestamp variable so every downloadable artifact name is unique per run.
     - pwsh: |
         $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
         Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
@@ -812,7 +812,7 @@ stages:
 
         Write-Host "##vso[task.uploadsummary]Fleet Status: $total clusters, $chPassed healthy / $chFailed failed (CriticalHealthStatus)"
 
-        # v0.7.70: Render the Overall Fleet Update Status (Version Distribution)
+        # Render the Overall Fleet Update Status (Version Distribution)
         # table FIRST so it leads the summary, matching the position of the
         # 'Fleet Version Distribution' testsuite at the top of the JUnit XML.
         $versionSection = ''
@@ -886,11 +886,11 @@ stages:
             $summary += ($actionsRequired -join "`n")
         }
 
-        # v0.7.70: '📜 Update Run History and Error Details' markdown table
+        # '📜 Update Run History and Error Details' markdown table
         # provides an ARG-first fleet-scale view of recent unresolved failures. Rendered only when there
         # are unresolved failed runs. Reads the base64 JSON blob set by the
         # collect step so we don't re-query ARG.
-        # v0.7.71: Cluster Name renders as a portal hyperlink (per-row
+        # Cluster Name renders as a portal hyperlink (per-row
         # ClusterPortalUrl from ARG) so the operator can jump straight to the
         # cluster blade. Verbose Error Details renders inside an inline
         # <details><summary>...</summary>...</details> block so the full
@@ -932,12 +932,12 @@ stages:
         ### Reports Available in Artifacts
         - ``readiness-status.csv`` - Detailed cluster status
         - ``readiness-status.json`` - Machine-readable format
-        - ``readiness-status.xml`` - JUnit XML (see Tests tab; now includes the '📜 Update Run History and Error Details' suite, v0.7.70)
+        - ``readiness-status.xml`` - JUnit XML (see Tests tab; now includes the '📜 Update Run History and Error Details' suite)
         - ``cluster-inventory.csv`` - Full cluster inventory
         - ``update-summaries.csv`` - Fleet-wide update state summaries
         - ``available-updates.csv`` - All available updates across fleet
         - ``update-runs.csv`` - Recent update run history
-        - ``update-run-history.csv`` - Verbose error details for unresolved Failed update runs (ARG-first, fleet-scale, v0.7.70)
+        - ``update-run-history.csv`` - Verbose error details for unresolved Failed update runs (ARG-first, fleet-scale)
         - ``update-run-history.json`` - Same as above in JSON form for integrations
         "@
 
@@ -961,7 +961,7 @@ stages:
         failTaskOnFailedTests: false  # Don't fail pipeline on test failures
 
     # ----------------------------------------------------------------------
-    # ITSM Connector (v0.7.70 Phase D - ServiceNow auto-raise on fleet failures)
+    # ITSM Connector (ServiceNow auto-raise on fleet failures)
     #
     # Fully opt-in (gated on parameters.raiseItsmTicket == true). Runs AFTER
     # PublishTestResults so the fleet-update-status surfaces its own results

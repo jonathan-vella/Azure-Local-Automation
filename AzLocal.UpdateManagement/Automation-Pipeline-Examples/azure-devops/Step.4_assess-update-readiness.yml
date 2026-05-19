@@ -41,7 +41,7 @@ parameters:
       - 'all'
 
   - name: updateRing
-    # v0.7.66: accepts single ring, 'Prod;Ring2' list, or '***' wildcard (three stars - deliberate).
+    # accepts single ring, 'Prod;Ring2' list, or '***' wildcard (three stars - deliberate).
     displayName: "UpdateRing tag value (only used when scope=by-update-ring). Single, 'Prod;Ring2', or '***'."
     type: string
     default: 'Wave1'
@@ -105,7 +105,7 @@ stages:
                 Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
                 Write-Host ""
                 Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
-                # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+                # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
                 if ($installed -lt $generated) {
                     Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
                 }
@@ -191,7 +191,7 @@ stages:
                     -BlockingOnly `
                     -ExportPath $healthXml
 
-                # v0.7.71: Test-AzureLocalClusterHealth -PassThru returns one row per cluster
+                # Test-AzureLocalClusterHealth -PassThru returns one row per cluster
                 # (shape: ClusterName, HealthState, Passed, CriticalCount, WarningCount, Failures)
                 # NOT a flat list of finding rows. Aggregate from CriticalCount / Failures rather
                 # than filtering on a non-existent Severity property (which silently returned 0).
@@ -267,7 +267,7 @@ stages:
               mergeTestResults: false
               failTaskOnFailedTests: false
 
-          # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+          # compute a UTC timestamp variable so every downloadable artifact name is unique per run.
           - pwsh: |
               $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
               Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"

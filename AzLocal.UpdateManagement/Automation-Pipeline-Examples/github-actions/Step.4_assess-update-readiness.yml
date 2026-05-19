@@ -51,7 +51,7 @@ on:
           - 'by-update-ring'
           - 'all'
       update_ring:
-        # v0.7.66: accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+        # accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
         # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
         description: "UpdateRing tag value (only used when scope=by-update-ring). Single ring, 'Prod;Ring2', or '***'."
         required: false
@@ -130,7 +130,7 @@ jobs:
           Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
           Write-Host ""
           Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
-          # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+          # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
           if ($installed -lt $generated) {
               $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
               Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
@@ -219,7 +219,7 @@ jobs:
               -BlockingOnly `
               -ExportPath $healthXml
 
-          # v0.7.71: Test-AzureLocalClusterHealth -PassThru returns one row per cluster
+          # Test-AzureLocalClusterHealth -PassThru returns one row per cluster
           # (shape: ClusterName, HealthState, Passed, CriticalCount, WarningCount, Failures)
           # NOT a flat list of finding rows. Aggregate from CriticalCount / Failures rather
           # than filtering on a non-existent Severity property (which silently returned 0).
@@ -276,7 +276,7 @@ jobs:
         if: always()
         id: artifact-stamp
         shell: pwsh
-        # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+        # every downloadable artifact gets a UTC timestamp suffix so multiple runs on
         # the same day produce distinct zip names.
         run: |
           $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
