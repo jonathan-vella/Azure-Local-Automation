@@ -162,7 +162,7 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 'Update-AzLocalApplyUpdatesScheduleConfig',
                 'Resolve-AzLocalCurrentUpdateRing',
                 'Get-AzLocalApplyUpdatesScheduleNextFirings',
-                # Fleet Health Overview (v0.7.70) - LENS workbook 'System Health Checks Overview' parity
+                # Fleet Health Overview (v0.7.70) - ARG-first projection of cluster + updateSummaries
                 'Get-AzLocalFleetHealthOverview'
             )
             
@@ -7373,7 +7373,7 @@ Describe 'Function: Get-AzureLocalFleetHealthFailures - v0.7.70 schema + orderin
 # v0.7.70 - Workstream B: Get-AzLocalFleetHealthOverview (BS6, BS7, BS8)
 # -----------------------------------------------------------------------------
 
-Describe 'Function: Get-AzLocalFleetHealthOverview - v0.7.70 (LENS workbook parity)' {
+Describe 'Function: Get-AzLocalFleetHealthOverview - v0.7.70 (ARG-first fleet health summary)' {
 
     Context 'BS6 / BS7 - Cmdlet is exported and module function count is 35' {
 
@@ -7427,6 +7427,171 @@ Describe 'Function: Get-AzLocalFleetHealthOverview - v0.7.70 (LENS workbook pari
                 $rows[0].ClusterPortalUrl | Should -Match '^https://portal\.azure\.com/#@/resource/subscriptions/'
                 Assert-MockCalled Invoke-AzResourceGraphQuery -Times 1 -Exactly
             }
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# v0.7.70 - Workstream C: Get-AzureLocalUpdateRunFailures fleet-scale failure-detail columns
+# + Step.6 "📜 Update Run History and Error Details" JUnit wiring
+# -----------------------------------------------------------------------------
+
+Describe 'Function: Get-AzureLocalUpdateRunFailures - v0.7.70 fleet-scale failure-detail columns (BS9 - BS12)' {
+
+    Context 'BS9 - Detail view exposes the new Status / CurrentStep / Duration / LastUpdated / UpdateRunPortalUrl columns' {
+
+        It 'BS9: Output row exposes all new columns' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName          = 'Arizona'
+                            ResourceGroup        = 'arizona'
+                            SubscriptionId       = 'fbaf508b-cb61-4383-9cda-a42bfa0c7bc9'
+                            ClusterResourceId    = '/subscriptions/fbaf508b-cb61-4383-9cda-a42bfa0c7bc9/resourceGroups/arizona/providers/Microsoft.AzureStackHCI/clusters/Arizona'
+                            UpdateName           = 'Solution12.2604.1003.1005'
+                            RunId                = 'add1f87d-4174-4997-ae39-d9d41088be27'
+                            State                = 'Failed'
+                            StartTime            = '2026-05-15T20:28:25.3093764Z'
+                            EndTime              = '2026-05-15T21:11:15.2041076Z'
+                            DurationMinutes      = 42.83
+                            DeepestStepDepth     = 1
+                            DeepestStepName      = 'Update is blocked due to health check failure'
+                            DeepestErrMsg        = 'Action plan Check Update readiness ID 1084e062-5d0b-48c0-b4d6-c1693b575bc1 failed with state: Failed'
+                            StackTracePreview    = ''
+                            ErrorCategory        = 'HealthCheck'
+                            Status               = 'Extracted'
+                            ProgressDescription  = 'Step 1 of 17 in update'
+                            ProgressJsonBytes    = 1234
+                            ProgressJson         = ''
+                        }
+                    )
+                }
+
+                $rows = Get-AzureLocalUpdateRunFailures -State Failed 6>$null
+                $rows | Should -HaveCount 1
+                $names = $rows[0].PSObject.Properties.Name
+                foreach ($prop in @('Status','CurrentStep','Duration','LastUpdated','UpdateRunPortalUrl')) {
+                    $names | Should -Contain $prop
+                }
+            }
+        }
+
+        It 'BS10: UpdateRunPortalUrl matches the SingleInstanceHistoryDetails portal deep-link pattern (URL-encoded cluster resource id)' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName=''; ResourceGroup=''; SubscriptionId='sub-1111'
+                            ClusterResourceId='/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            UpdateName='Sol.1'; RunId='r1'; State='Failed'
+                            StartTime='2026-05-15T20:28:25Z'; EndTime='2026-05-15T21:11:15Z'
+                            DurationMinutes=42; DeepestStepDepth=1; DeepestStepName='x'
+                            DeepestErrMsg='e'; StackTracePreview=''; ErrorCategory='HealthCheck'
+                            Status='Extracted'; ProgressDescription=''
+                            ProgressJsonBytes=10; ProgressJson=''
+                        }
+                    )
+                }
+                $rows = Get-AzureLocalUpdateRunFailures -State Failed 6>$null
+                $url = $rows[0].UpdateRunPortalUrl
+                $url | Should -Match '^https://portal\.azure\.com/#view/Microsoft_AzureStackHCI_PortalExtension/SingleInstanceHistoryDetails\.ReactView/resourceId/.+/updateName~/null/updateRunName~/null/refresh~/false$'
+                # Must be URL-encoded (every '/' in the resource id becomes %2F).
+                $url | Should -Match '%2Fsubscriptions%2Fsub-1111%2FresourceGroups%2FRG1%2Fproviders%2FMicrosoft\.AzureStackHCI%2Fclusters%2FCluster01'
+            }
+        }
+
+        It 'BS11: Duration is formatted as a human-readable string built from EndTime - StartTime (e.g. "42m 50s")' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName='C'; ResourceGroup='R'; SubscriptionId='s'
+                            ClusterResourceId='/x/c'; UpdateName='u'; RunId='r'; State='Failed'
+                            StartTime='2026-05-15T20:00:00Z'; EndTime='2026-05-15T20:42:50Z'
+                            DurationMinutes=42.83; DeepestStepDepth=1; DeepestStepName='x'
+                            DeepestErrMsg='e'; StackTracePreview=''; ErrorCategory='Other'
+                            Status='Error'; ProgressDescription=''
+                            ProgressJsonBytes=10; ProgressJson=''
+                        }
+                    )
+                }
+                $rows = Get-AzureLocalUpdateRunFailures -State Failed 6>$null
+                # Either "42m 50s" or (allowing for sub-second precision rounding) starts with "42m "
+                $rows[0].Duration | Should -Match '^42m '
+            }
+        }
+
+        It 'BS12: CurrentStep falls back to DeepestStepName for Failed runs' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName='C'; ResourceGroup='R'; SubscriptionId='s'
+                            ClusterResourceId='/x/c'; UpdateName='u'; RunId='r'; State='Failed'
+                            StartTime='2026-05-15T20:00:00Z'; EndTime='2026-05-15T20:42:50Z'
+                            DurationMinutes=42.83; DeepestStepDepth=1
+                            DeepestStepName='VerifyNCResources'
+                            DeepestErrMsg='e'; StackTracePreview=''; ErrorCategory='Other'
+                            Status='Error'; ProgressDescription='Step 9 of 17'
+                            ProgressJsonBytes=10; ProgressJson=''
+                        }
+                    )
+                }
+                $rows = Get-AzureLocalUpdateRunFailures -State Failed 6>$null
+                $rows[0].CurrentStep | Should -Be 'VerifyNCResources'
+            }
+        }
+    }
+}
+
+Describe 'v0.7.70 Step.6 "📜 Update Run History and Error Details" JUnit + markdown wiring' {
+
+    BeforeAll {
+        $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
+        $script:step6Files = @(
+            Join-Path $script:examplesRoot 'github-actions\Step.6_fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'azure-devops\Step.6_fleet-update-status.yml'
+        )
+    }
+
+    It 'BS13: Both Step.6 YAML files emit the new "📜 Update Run History and Error Details" testsuite name' {
+        foreach ($yml in $script:step6Files) {
+            $content = [System.IO.File]::ReadAllText($yml, [System.Text.UTF8Encoding]::new($false))
+            # U+1F4DC SCROLL emoji
+            $scroll = [string]::new([System.Text.Encoding]::UTF32.GetChars([System.BitConverter]::GetBytes(0x1F4DC)))
+            ($content.Contains($scroll + ' Update Run History and Error Details')) | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must declare the new testsuite name with the scroll emoji"
+        }
+    }
+
+    It 'BS14: Both Step.6 YAML files call Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            ($content -match 'Get-AzureLocalUpdateRunFailures\s+-State\s+Failed\s+-OnlyUnresolved') | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must drive the new section from the cmdlet with -State Failed -OnlyUnresolved"
+        }
+    }
+
+    It 'BS15: Both Step.6 YAML files export update-run-history.csv and update-run-history.json' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            $content | Should -Match 'update-run-history\.csv'
+            $content | Should -Match 'update-run-history\.json'
+        }
+    }
+
+    It 'BS16: Both Step.6 YAML files render the markdown table heading and use the 9-column failure-detail layout' {
+        foreach ($yml in $script:step6Files) {
+            $content = [System.IO.File]::ReadAllText($yml, [System.Text.UTF8Encoding]::new($false))
+            $content | Should -Match 'Cluster Name \| Update Name \| Update State \| Status \| Current Step \| Verbose Error Details \| Duration \| Time Started \| Last Updated'
+        }
+    }
+
+    It 'BS17: Both Step.6 YAML files surface a runHistoryCount output for downstream gating' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            # GH-actions uses RUN_HISTORY_COUNT; ADO uses runHistoryCount.
+            $hasOutput = ($content -match 'RUN_HISTORY_COUNT=') -or ($content -match 'variable=runHistoryCount;')
+            $hasOutput | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must export runHistoryCount so downstream steps can render the markdown table"
         }
     }
 }
