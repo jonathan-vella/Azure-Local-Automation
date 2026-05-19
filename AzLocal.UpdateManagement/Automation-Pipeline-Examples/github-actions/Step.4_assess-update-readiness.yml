@@ -51,7 +51,7 @@ on:
           - 'by-update-ring'
           - 'all'
       update_ring:
-        # v0.7.66: accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+        # accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
         # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
         description: "UpdateRing tag value (only used when scope=by-update-ring). Single ring, 'Prod;Ring2', or '***'."
         required: false
@@ -66,7 +66,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.70'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -93,7 +93,15 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
+          # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
+          # <id>` after the OIDC token exchange so the runner has a default
+          # `az account` context. It is NOT used to scope Azure Resource Graph queries
+          # (those run fleet-wide across every subscription the federated identity can
+          # read) and is NOT interpolated into Azure portal deep-link URLs (those use
+          # the per-row `subscriptionId` returned by ARG).
+          # Set it via: gh variable set AZURE_SUBSCRIPTION_ID --body <subId>
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Install Azure CLI Resource Graph Extension
         shell: pwsh
@@ -122,7 +130,7 @@ jobs:
           Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
           Write-Host ""
           Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
-          # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+          # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
           if ($installed -lt $generated) {
               $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
               Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
@@ -211,9 +219,13 @@ jobs:
               -BlockingOnly `
               -ExportPath $healthXml
 
-          $critical = @($health | Where-Object { $_.Severity -eq 'Critical' }).Count
-          $clustersWithCritical = @($health | Where-Object { $_.Severity -eq 'Critical' } |
-              Select-Object -ExpandProperty ClusterName -Unique).Count
+          # Test-AzureLocalClusterHealth -PassThru returns one row per cluster
+          # (shape: ClusterName, HealthState, Passed, CriticalCount, WarningCount, Failures)
+          # NOT a flat list of finding rows. Aggregate from CriticalCount / Failures rather
+          # than filtering on a non-existent Severity property (which silently returned 0).
+          $criticalSum = ($health | Measure-Object -Property CriticalCount -Sum).Sum
+          $critical = if ($criticalSum) { [int]$criticalSum } else { 0 }
+          $clustersWithCritical = @($health | Where-Object { [int]$_.CriticalCount -gt 0 }).Count
 
           Write-Host ''
           Write-Host "Critical findings      : $critical"
@@ -264,7 +276,7 @@ jobs:
         if: always()
         id: artifact-stamp
         shell: pwsh
-        # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+        # every downloadable artifact gets a UTC timestamp suffix so multiple runs on
         # the same day produce distinct zip names.
         run: |
           $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')

@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.70' {
-            $script:ModuleInfo.Version | Should -Be '0.7.70'
+        It 'Should have version 0.7.71' {
+            $script:ModuleInfo.Version | Should -Be '0.7.71'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -108,6 +108,76 @@ Describe 'Module: AzLocal.UpdateManagement' {
                            ForEach-Object { $_.Line })
             $h2Matches.Count | Should -Be 1 -Because "exactly one '## What's New' section must exist in the README main body (found: $($h2Matches -join '; '))"
             $h2Matches[0] | Should -Be "## What's New in v$manifestVersion" -Because 'the sole main-body What''s New section must match the current manifest ModuleVersion'
+        }
+
+        It 'CHANGELOG.md first "## [X.Y.Z]" heading matches manifest ModuleVersion' {
+            # v0.7.71 polish: regression guard for the drift bug pattern where
+            # a release ships to PSGallery but CHANGELOG.md still has the
+            # PRIOR version as its first entry (because someone forgot to
+            # prepend the new section). The most-recent CHANGELOG.md "##
+            # [X.Y.Z] - YYYY-MM-DD" entry MUST match the manifest ModuleVersion.
+            $manifestPath  = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.UpdateManagement.psd1'
+            $changelogPath = Join-Path -Path $PSScriptRoot -ChildPath '..\CHANGELOG.md'
+            $manifestVersion = (Import-PowerShellDataFile -Path $manifestPath).ModuleVersion
+            $changelogContent = Get-Content -Path $changelogPath -Raw
+            $match = [regex]::Match($changelogContent, '(?m)^## \[(?<v>\d+\.\d+\.\d+)\]')
+            $match.Success | Should -BeTrue -Because 'CHANGELOG.md must contain at least one "## [X.Y.Z] - YYYY-MM-DD" entry'
+            $match.Groups['v'].Value | Should -Be $manifestVersion -Because 'the first (most-recent) CHANGELOG.md "## [X.Y.Z]" heading must match the manifest ModuleVersion - did you forget to prepend the new release section?'
+        }
+
+        It 'psd1 ReleaseNotes first "## Version X.Y.Z" heading matches manifest ModuleVersion' {
+            # v0.7.71 polish: regression guard for the drift bug pattern where
+            # the manifest ModuleVersion is bumped but the PSData.ReleaseNotes
+            # here-string still leads with the PRIOR version's heading. The
+            # ReleaseNotes block is what PSGallery renders on the module page,
+            # so drift here means the gallery advertises stale notes for the
+            # new release. The first "## Version X.Y.Z" heading MUST match
+            # the manifest ModuleVersion.
+            $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.UpdateManagement.psd1'
+            $manifestData = Import-PowerShellDataFile -Path $manifestPath
+            $manifestVersion = $manifestData.ModuleVersion
+            $releaseNotes    = $manifestData.PrivateData.PSData.ReleaseNotes
+            $releaseNotes | Should -Not -BeNullOrEmpty -Because 'psd1 PrivateData.PSData.ReleaseNotes must be populated'
+            $match = [regex]::Match($releaseNotes, '(?m)^## Version (?<v>\d+\.\d+\.\d+)\b')
+            $match.Success | Should -BeTrue -Because 'psd1 ReleaseNotes must contain at least one "## Version X.Y.Z" heading'
+            $match.Groups['v'].Value | Should -Be $manifestVersion -Because 'the first "## Version X.Y.Z" heading in psd1 ReleaseNotes must match the manifest ModuleVersion - did you forget to prepend the new release section?'
+        }
+
+        It 'All bundled <Platform> Step.[1-7]_*.yml pipeline samples pin GENERATED_AGAINST_MODULE_VERSION to manifest ModuleVersion' -ForEach @(
+            @{ Platform = 'github-actions' }
+            @{ Platform = 'azure-devops' }
+        ) {
+            # v0.7.71 polish: regression guard for the drift bug pattern that
+            # caught v0.7.70 - the manifest ships at version X.Y.Z+1 but the
+            # bundled pipeline samples are still pinned to X.Y.Z in their
+            # GENERATED_AGAINST_MODULE_VERSION constant. Operators who run
+            # Update-AzureLocalPipelineExample after the upgrade get YAMLs
+            # that disagree with the module they just installed. Every
+            # Step.[1-7]_*.yml sample (both platforms) must pin to the
+            # current manifest ModuleVersion. Step.0_authentication-test.yml
+            # is exempt - it does not consume the module so the pin is
+            # intentionally absent.
+            $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.UpdateManagement.psd1'
+            $manifestVersion = (Import-PowerShellDataFile -Path $manifestPath).ModuleVersion
+            $samplesDir = Join-Path -Path $PSScriptRoot -ChildPath "..\Automation-Pipeline-Examples\$Platform"
+            Test-Path $samplesDir | Should -BeTrue -Because "the $Platform sample folder must exist at $samplesDir"
+            $yamls = @(Get-ChildItem -Path $samplesDir -Filter 'Step.*.yml' -File |
+                       Where-Object { $_.Name -notlike 'Step.0_*' })
+            $yamls.Count | Should -BeGreaterThan 0 -Because "$samplesDir must ship at least one Step.[1-7]_*.yml sample"
+            # GitHub Actions form (single line):
+            #   GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
+            # Azure DevOps form (two lines under a `variables:` list entry):
+            #   - name: GENERATED_AGAINST_MODULE_VERSION
+            #     value: '0.7.71'
+            # The regex matches either shape and captures the pinned version.
+            $pattern = "(?m)(?:^\s*GENERATED_AGAINST_MODULE_VERSION:\s*'(?<gh>\d+\.\d+\.\d+)'|^\s*-?\s*name:\s*GENERATED_AGAINST_MODULE_VERSION\s*\r?\n\s*value:\s*'(?<ado>\d+\.\d+\.\d+)')"
+            foreach ($yaml in $yamls) {
+                $content = Get-Content -Path $yaml.FullName -Raw
+                $match = [regex]::Match($content, $pattern)
+                $match.Success | Should -BeTrue -Because "$($yaml.Name) must declare GENERATED_AGAINST_MODULE_VERSION (single-line GH form or two-line ADO form)"
+                $pinned = if ($match.Groups['gh'].Success) { $match.Groups['gh'].Value } else { $match.Groups['ado'].Value }
+                $pinned | Should -Be $manifestVersion -Because "$($yaml.Name) pins GENERATED_AGAINST_MODULE_VERSION='$pinned' but manifest ModuleVersion='$manifestVersion' - did you forget to bump the pipeline sample?"
+            }
         }
 
         It 'Should export exactly 36 functions' {
@@ -2576,7 +2646,12 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
                 function az {
                     $script:ThrottleCalls++
                     if ($script:ThrottleCalls -le 2) {
-                        Write-Error 'ERROR: RateLimitingException (429): Too many requests. Please retry after some time.'
+                        # -ErrorAction Continue bypasses Pester v5's $ErrorActionPreference='Stop'
+                        # It-block default, which would otherwise turn this Write-Error into a
+                        # terminating exception and abort before $LASTEXITCODE is set. The real
+                        # az.exe writes throttle messages to stderr without raising a PowerShell
+                        # error; this mock simulates that non-terminating behaviour.
+                        Write-Error -ErrorAction Continue 'ERROR: RateLimitingException (429): Too many requests. Please retry after some time.'
                         $global:LASTEXITCODE = 1
                         return
                     }
@@ -2596,7 +2671,9 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
         It 'Should give up and throw once -MaxRetries is exhausted on persistent throttling' {
             InModuleScope AzLocal.UpdateManagement {
                 function az {
-                    Write-Error 'ERROR: 429 TooManyRequests - rate limit exceeded'
+                    # -ErrorAction Continue bypasses Pester v5 It-block 'Stop' default; see
+                    # comment in the preceding test for the full rationale.
+                    Write-Error -ErrorAction Continue 'ERROR: 429 TooManyRequests - rate limit exceeded'
                     $global:LASTEXITCODE = 1
                     return
                 }
@@ -2614,7 +2691,9 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
                 $script:NonThrottleCalls = 0
                 function az {
                     $script:NonThrottleCalls++
-                    Write-Error 'ERROR: AuthenticationFailed - the access token is invalid'
+                    # -ErrorAction Continue bypasses Pester v5 It-block 'Stop' default; see
+                    # comment in the 'Should retry on 429' test for the full rationale.
+                    Write-Error -ErrorAction Continue 'ERROR: AuthenticationFailed - the access token is invalid'
                     $global:LASTEXITCODE = 1
                     return
                 }
@@ -2635,7 +2714,9 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
                 function az {
                     $script:Phase1Calls++
                     if ($script:Phase1Calls -eq 1) {
-                        Write-Error 'ERROR: 429 throttled'
+                        # -ErrorAction Continue bypasses Pester v5 It-block 'Stop' default; see
+                        # comment in the 'Should retry on 429' test for the full rationale.
+                        Write-Error -ErrorAction Continue 'ERROR: 429 throttled'
                         $global:LASTEXITCODE = 1
                         return
                     }

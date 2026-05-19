@@ -43,12 +43,12 @@ schedules:
 
 parameters:
   - name: pipelinePath
-    displayName: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Leave empty to audit ONLY the schedulePath (v0.7.69 schedule file). Default `.azure-pipelines` matches the standard Azure DevOps consumer layout; for repos that keep Step.5_apply-updates.yml at the repo root pass `.`'
+    displayName: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Leave empty to audit ONLY the schedulePath (schedule file). Default `.azure-pipelines` matches the standard Azure DevOps consumer layout; for repos that keep Step.5_apply-updates.yml at the repo root pass `.`'
     type: string
     default: '.azure-pipelines'
 
   - name: schedulePath
-    displayName: 'v0.7.69: Path to apply-updates-schedule.yml. When set, the audit also reports RingMissingFromSchedule (fleet ring with no schedule row) and RingOrphanedInSchedule (schedule ring no cluster carries). Leave empty to skip the schedule-file two-way diff.'
+    displayName: 'Path to apply-updates-schedule.yml. When set, the audit also reports RingMissingFromSchedule (fleet ring with no schedule row) and RingOrphanedInSchedule (schedule ring no cluster carries). Leave empty to skip the schedule-file two-way diff.'
     type: string
     default: './apply-updates-schedule.yml'
 
@@ -73,7 +73,7 @@ parameters:
     default: false
 
 variables:
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.70'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
   REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
   reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
 
@@ -117,7 +117,7 @@ stages:
           Write-Host "  Installed on agent        : $installed"
           Write-Host "  YAML generated against    : $generated"
           Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
-          # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+          # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
           if ($installed -lt $generated) {
               Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
           }
@@ -150,7 +150,7 @@ stages:
           $includeUnt   = ${{ lower(parameters.includeUntagged) }}
           $debug        = ('${{ parameters.debug }}' -ieq 'true')
 
-          # Debug toggle (v0.7.69+): flips Verbose/Debug preferences and emits a
+          # Debug toggle: flips Verbose/Debug preferences and emits a
           # one-shot environment snapshot so operators can self-triage without
           # needing a code change. Default OFF to keep normal runs concise. Note:
           # Azure DevOps also honours queue-time variable system.debug=true as a
@@ -169,7 +169,7 @@ stages:
               Write-Host "##[endgroup]"
           }
 
-          # v0.7.69: pipelinePath is OPTIONAL when schedulePath is set. The audit
+          # pipelinePath is OPTIONAL when schedulePath is set. The audit
           # cmdlet requires at least one of -PipelineYamlPath / -SchedulePath; if
           # both are blank, fall through to the original pipeline-yaml-only check
           # to keep the original error message.
@@ -219,7 +219,7 @@ stages:
           $partial     = @($auditResult | Where-Object Status -eq 'PartiallyCovered')
           $malformed   = @($auditResult | Where-Object Status -eq 'MalformedTag')
           $unparseable = @($auditResult | Where-Object Status -eq 'UnparseableCron')
-          # v0.7.69: schedule-file two-way diff buckets.
+          # schedule-file two-way diff buckets.
           $ringMissing = @($auditResult | Where-Object Status -eq 'RingMissingFromSchedule')
           $ringOrphan  = @($auditResult | Where-Object Status -eq 'RingOrphanedInSchedule')
 
@@ -252,7 +252,7 @@ stages:
               [void]$Sb.AppendLine('  </testsuite>')
           }
 
-          # v0.7.70: two <testsuite> elements. Schedule (ring-file gap) FIRST -
+          # two <testsuite> elements. Schedule (ring-file gap) FIRST -
           # higher blast radius; Cron coverage SECOND.
           $scheduleRows = @($auditResult | Where-Object { $_.Section -eq 'Schedule' })
           $cronRows     = @($auditResult | Where-Object { $_.Section -ne 'Schedule' })
@@ -296,7 +296,7 @@ stages:
           Write-Host "  RingMissingFromSchedule  : $($ringMissing.Count)"
           Write-Host "  RingOrphanedInSchedule   : $($ringOrphan.Count)"
 
-    # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+    # compute a UTC timestamp variable so every downloadable artifact name is unique per run.
     - pwsh: |
         $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
         Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
@@ -331,7 +331,7 @@ stages:
         $rows = if (Test-Path $rowsPath) { @(Import-Csv -Path $rowsPath) } else { @() }
         $reco = if (Test-Path $recoPath) { Get-Content -Path $recoPath -Raw } else { '' }
 
-        # v0.7.70: when there is at least one issue row, surface the action-required
+        # when there is at least one issue row, surface the action-required
         # markdown at the TOP of the summary so operators can act without scrolling past
         # the detail table. The Recommend output now ships its own '## Action required - ...'
         # headings (one per kind of fix), numbered '(1 of N)' when more than one applies,
@@ -349,8 +349,8 @@ stages:
         | **PartiallyCovered** | $partial |
         | **MalformedTag** | $malformed |
         | **UnparseableCron** | $unparseable |
-        | **RingMissingFromSchedule (v0.7.69)** | $ringMissing |
-        | **RingOrphanedInSchedule (v0.7.69)** | $ringOrphan |
+        | **RingMissingFromSchedule** | $ringMissing |
+        | **RingOrphanedInSchedule** | $ringOrphan |
 
         "@
 
@@ -358,7 +358,7 @@ stages:
             $md += "`n" + $reco + "`n"
         }
 
-        # v0.7.70: split Audit Detail into two sub-tables. Schedule rows
+        # split Audit Detail into two sub-tables. Schedule rows
         # (RingMissingFromSchedule / RingOrphanedInSchedule) come FIRST -
         # higher blast radius because a missing-from-schedule ring means
         # apply-updates NEVER fires for those clusters. The Schedule

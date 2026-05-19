@@ -46,11 +46,11 @@ on:
   workflow_dispatch:
     inputs:
       pipeline_path:
-        description: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Leave empty to audit ONLY the schedule_path (v0.7.69 schedule file). Default `.github/workflows` matches the standard GitHub Actions consumer layout where you paste the bundled `Step.5_apply-updates.yml` sample.'
+        description: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Leave empty to audit ONLY the schedule_path (schedule file). Default `.github/workflows` matches the standard GitHub Actions consumer layout where you paste the bundled `Step.5_apply-updates.yml` sample.'
         required: false
         default: '.github/workflows'
       schedule_path:
-        description: 'v0.7.69: Path to apply-updates-schedule.yml. When set, the audit also reports RingMissingFromSchedule (fleet ring with no schedule row) and RingOrphanedInSchedule (schedule ring no cluster carries). Leave empty to skip the schedule-file two-way diff.'
+        description: 'Path to apply-updates-schedule.yml. When set, the audit also reports RingMissingFromSchedule (fleet ring with no schedule row) and RingOrphanedInSchedule (schedule ring no cluster carries). Leave empty to skip the schedule-file two-way diff.'
         required: false
         default: '.github/apply-updates-schedule.yml'
       lead_time_minutes:
@@ -83,7 +83,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.70'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
@@ -104,7 +104,15 @@ jobs:
       with:
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
+        # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
+        # <id>` after the OIDC token exchange so the runner has a default
+        # `az account` context. It is NOT used to scope Azure Resource Graph queries
+        # (those run fleet-wide across every subscription the federated identity can
+        # read) and is NOT interpolated into Azure portal deep-link URLs (those use
+        # the per-row `subscriptionId` returned by ARG).
+        # Set it via: gh variable set AZURE_SUBSCRIPTION_ID --body <subId>
+        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
     - name: Install Azure CLI Resource Graph Extension
       shell: pwsh
@@ -132,7 +140,7 @@ jobs:
         Write-Host "  Installed on runner       : $installed"
         Write-Host "  YAML generated against    : $generated"
         Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
-        # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+        # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
         if ($installed -lt $generated) {
             $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
@@ -159,7 +167,7 @@ jobs:
         $ErrorActionPreference = 'Stop'
         Import-Module AzLocal.UpdateManagement -Force
 
-        # Debug toggle (v0.7.69+): flips Verbose/Debug preferences and emits a
+        # Debug toggle: flips Verbose/Debug preferences and emits a
         # one-shot environment snapshot so operators can self-triage without
         # needing a code change. Default OFF to keep normal runs concise.
         if ($env:INPUT_DEBUG -eq 'true') {
@@ -184,7 +192,7 @@ jobs:
         $leadTime     = [int]$env:INPUT_LEAD_TIME_MINUTES
         $includeUnt   = ($env:INPUT_INCLUDE_UNTAGGED -eq 'true')
 
-        # v0.7.69: pipeline_path is OPTIONAL when schedule_path is set. The audit
+        # pipeline_path is OPTIONAL when schedule_path is set. The audit
         # cmdlet requires at least one of -PipelineYamlPath / -SchedulePath; if
         # both are blank, fall through to the original pipeline-yaml-only check
         # to keep the original error message.
@@ -237,12 +245,12 @@ jobs:
         $partial     = @($audit | Where-Object Status -eq 'PartiallyCovered')
         $malformed   = @($audit | Where-Object Status -eq 'MalformedTag')
         $unparseable = @($audit | Where-Object Status -eq 'UnparseableCron')
-        # v0.7.69: schedule-file two-way diff buckets.
+        # schedule-file two-way diff buckets.
         $ringMissing = @($audit | Where-Object Status -eq 'RingMissingFromSchedule')
         $ringOrphan  = @($audit | Where-Object Status -eq 'RingOrphanedInSchedule')
 
         # ------------------------------------------------------------------
-        # JUnit XML: two <testsuite> elements (v0.7.70) so the test reporter
+        # JUnit XML: two <testsuite> elements so the test reporter
         # tree separates schedule-file gap rows (Schedule section) from cron
         # coverage rows (Cron section). Schedule gaps have higher blast
         # radius (apply-updates NEVER fires for those rings), so the suite
@@ -286,7 +294,7 @@ jobs:
         $sb = New-Object System.Text.StringBuilder
         [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
         [void]$sb.AppendLine('<testsuites>')
-        # v0.7.70: only emit the Schedule suite when -SchedulePath was actually
+        # only emit the Schedule suite when -SchedulePath was actually
         # supplied (i.e. there is at least one Schedule row OR the operator
         # provided a schedule file). Otherwise the suite would render as
         # "no tests found" with no actionable signal.
@@ -329,7 +337,7 @@ jobs:
       if: always()
       id: artifact-stamp
       shell: pwsh
-      # v0.7.66: every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # every downloadable artifact gets a UTC timestamp suffix so multiple runs on
       # the same day produce distinct zip names. UTC keeps Azure DevOps + GitHub Actions in sync.
       run: |
         $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
@@ -366,7 +374,7 @@ jobs:
             $reco = Get-Content -Path './reports/schedule-coverage-recommend.md' -Raw
         }
 
-        # v0.7.70: when there is at least one issue row, surface the action-required
+        # when there is at least one issue row, surface the action-required
         # markdown at the TOP of the summary so operators can act without scrolling past the
         # detail table. The Recommend output now ships its own '## Action required - ...'
         # headings (one per kind of fix), numbered '(1 of N)' when more than one applies,
@@ -384,8 +392,8 @@ jobs:
         | **PartiallyCovered** | $partial |
         | **MalformedTag** | $malformed |
         | **UnparseableCron** | $unparseable |
-        | **RingMissingFromSchedule (v0.7.69)** | $ringMissing |
-        | **RingOrphanedInSchedule (v0.7.69)** | $ringOrphan |
+        | **RingMissingFromSchedule** | $ringMissing |
+        | **RingOrphanedInSchedule** | $ringOrphan |
 
         "@
 
@@ -393,7 +401,7 @@ jobs:
             $md += "`n" + $reco + "`n"
         }
 
-        # v0.7.70: split Audit Detail into two sub-tables. Schedule rows
+        # split Audit Detail into two sub-tables. Schedule rows
         # (RingMissingFromSchedule / RingOrphanedInSchedule) come FIRST -
         # higher blast radius because a missing-from-schedule ring means
         # apply-updates NEVER fires for those clusters. The Schedule

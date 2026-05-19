@@ -2,7 +2,7 @@
 # This pipeline applies updates to clusters filtered by UpdateRing tag value
 
 # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
-# v0.7.69: PREFERRED PATTERN - drive automated update runs from a ring-aware
+# PREFERRED PATTERN - drive automated update runs from a ring-aware
 # schedule file (apply-updates-schedule.yml at the repo root by default),
 # not from per-window crons.
 #
@@ -45,9 +45,9 @@ trigger: none
 
 parameters:
   - name: updateRing
-    # v0.7.66: accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+    # accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
     # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
-    # The 'values:' enum was removed in v0.7.66 to allow these new forms; type=string
+    # The 'values:' enum was removed in to allow these new forms; type=string
     # still gives users a free-text editor in the ADO run dialog.
     displayName: "UpdateRing tag value (single 'Wave1', list 'Prod;Ring2', or '***' for ALL)"
     type: string
@@ -63,7 +63,7 @@ parameters:
     type: boolean
     default: true
 
-  # --- ITSM Connector (v0.7.4 Phase 1: ServiceNow) ---
+  # --- ITSM Connector (ServiceNow) ---
   # Opt-in ticket creation. Defaults preserve the previous pipeline behaviour
   # (no ITSM calls). Secrets are wired via the variable group referenced below
   # in the Raise ITSM tickets step (`env:`), never on the PowerShell command line.
@@ -98,19 +98,19 @@ variables:
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
-    value: '0.7.70'
+    value: '0.7.71'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
   - name: REQUIRED_MODULE_VERSION
     value: '${{ parameters.moduleVersion }}'
-  # v0.7.69: Path to the ring-aware apply-updates-schedule.yml (relative to repo
+  # Path to the ring-aware apply-updates-schedule.yml (relative to repo
   # root). The 'Resolve UpdateRing from schedule' task reads this file when
   # $(Build.Reason)='Schedule'. Override at queue time if you keep the schedule
   # outside the repo root.
   - name: APPLY_UPDATES_SCHEDULE_PATH
     value: './apply-updates-schedule.yml'
-  # ITSM connector (v0.7.4 Phase 1). Uncomment the group reference once you
+  # ITSM connector. Uncomment the group reference once you
   # have created a variable group named 'AzureLocal-ITSM-Secrets' containing:
   #   ITSM_SN_INSTANCE_URL, ITSM_SN_CLIENT_ID, ITSM_SN_CLIENT_SECRET
   # When raiseItsmTicket=false the Raise ITSM step is skipped and these
@@ -170,7 +170,7 @@ stages:
                 Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
                 Write-Host ""
                 Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
-                # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+                # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
                 if ($installed -lt $generated) {
                     Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
                 }
@@ -183,7 +183,7 @@ stages:
                     Write-Host "##vso[task.logissue type=warning]$msg"
                 }
           
-          # v0.7.69: Resolve the UpdateRing for THIS firing.
+          # Resolve the UpdateRing for THIS firing.
           #   - $(Build.Reason) in 'Manual','IndividualCI','BatchedCI','PullRequest','Manual'
           #       -> use the operator's parameter input verbatim (back-compat).
           #   - $(Build.Reason) = 'Schedule'
@@ -235,7 +235,7 @@ stages:
             displayName: 'Check Cluster Readiness'
             name: readiness
             env:
-              # v0.7.69: resolved by the upstream 'Resolve UpdateRing from
+              # resolved by the upstream 'Resolve UpdateRing from
               # schedule' task. For Manual/IndividualCI runs this is the
               # operator's parameter input verbatim; for Schedule firings it
               # is the ring(s) the resolver picked from
@@ -250,7 +250,7 @@ stages:
                 
                 $updateRing = $env:RESOLVED_UPDATE_RING
                 
-                # v0.7.69: empty UpdateRing means the schedule resolver found
+                # empty UpdateRing means the schedule resolver found
                 # no row matching the current UTC day. Report zero clusters
                 # and exit 0 - the ApplyUpdates stage is gated on ReadyCount>0
                 # and will skip cleanly.
@@ -296,7 +296,7 @@ stages:
                     Write-Host "##vso[task.logissue type=warning]No clusters are ready for updates in ring '$updateRing'"
                 }
           
-          # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
+          # compute a UTC timestamp variable so every downloadable artifact name is unique per run.
           - pwsh: |
               $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
               Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
@@ -347,10 +347,10 @@ stages:
         variables:
           readyCount: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['readiness.ReadyCount'] ]
           totalCount: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['readiness.TotalCount'] ]
-          # v0.7.66: pull the upstream artifact-stamp through so the download step
+          # pull the upstream artifact-stamp through so the download step
           # can reconstruct the timestamped artifact name produced by CheckReadiness.
           readinessArtifactStamp: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['stamp.artifactStamp'] ]
-          # v0.7.69: ring(s) resolved by the upstream 'Resolve UpdateRing from
+          # ring(s) resolved by the upstream 'Resolve UpdateRing from
           # schedule' task. For Manual/IndividualCI etc. this is the operator's
           # parameter input verbatim; for Schedule firings this is the ring(s)
           # the resolver picked from apply-updates-schedule.yml.
@@ -398,7 +398,7 @@ stages:
                 Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
                 Write-Host ""
                 Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
-                # Drift signal 0 (v0.7.66): the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+                # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
                 if ($installed -lt $generated) {
                     Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
                 }
@@ -411,7 +411,7 @@ stages:
                     Write-Host "##vso[task.logissue type=warning]$msg"
                 }
           
-          # v0.7.62: Download the readiness CSV produced by the CheckReadiness stage
+          # Download the readiness CSV produced by the CheckReadiness stage
           # so the apply step operates on the readiness gate's decision rather than
           # re-discovering clusters by tag. Apply still re-validates each cluster
           # (defence in depth) - this just enforces the upstream gate exactly.
@@ -419,7 +419,7 @@ stages:
             displayName: 'Download Readiness Report'
             inputs:
               source: 'current'
-              # v0.7.66: artifact name now carries a UTC timestamp - rebuild via the
+              # artifact name now carries a UTC timestamp - rebuild via the
               # readinessArtifactStamp variable mapped from the CheckReadiness stage.
               artifact: 'azlocal-apply-updates-readiness-report_$(readinessArtifactStamp)'
               path: '$(Build.ArtifactStagingDirectory)'
@@ -428,7 +428,7 @@ stages:
             displayName: 'Apply Updates'
             name: applyUpdates
             env:
-              # v0.7.69: resolved by the CheckReadiness stage's resolveRing
+              # resolved by the CheckReadiness stage's resolveRing
               # task (manual parameter for Manual/IndividualCI runs, schedule-
               # resolved ring for Schedule firings).
               RESOLVED_UPDATE_RING: $(resolvedUpdateRing)
@@ -447,10 +447,10 @@ stages:
                 $outputDir = "$(Build.ArtifactStagingDirectory)"
                 $junitPath = Join-Path $outputDir "update-results.xml"
                 
-                # v0.7.62: Read the readiness CSV from the CheckReadiness stage and
+                # Read the readiness CSV from the CheckReadiness stage and
                 # extract the ARM resource IDs of clusters marked ReadyForUpdate=True.
                 # The ClusterResourceId column was added to
-                # Get-AzureLocalClusterUpdateReadiness output in v0.7.62 specifically
+                # Get-AzureLocalClusterUpdateReadiness output in specifically
                 # to make this hand-off explicit and exact (no second tag query,
                 # no drift between the two stages' scopes).
                 $readinessCsv = Join-Path $outputDir 'readiness-report.csv'
@@ -545,7 +545,7 @@ stages:
                     Write-Host "##vso[task.logissue type=warning]$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False - operator must stage the sideloaded payload and flip the tag (or run Reset-AzureLocalSideloadedTag) before updates can proceed"
                 }
           
-          # v0.7.66: compute a UTC timestamp variable so both update-logs and itsm-results share a unique per-run suffix.
+          # compute a UTC timestamp variable so both update-logs and itsm-results share a unique per-run suffix.
           - pwsh: |
               $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
               Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
@@ -570,7 +570,7 @@ stages:
               testRunTitle: 'Azure Local Cluster Updates - ${{ parameters.updateRing }}'
           
           # --------------------------------------------------------------
-          # ITSM Connector (v0.7.4 Phase 1 - ServiceNow)
+          # ITSM Connector (ServiceNow)
           # Fully opt-in. Runs AFTER PublishTestResults so the apply stage
           # surfaces its own results first; ITSM is strictly additive.
           # Secrets must be wired via the 'AzureLocal-ITSM-Secrets' variable
@@ -725,7 +725,7 @@ stages:
         
         variables:
           totalCount: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['readiness.TotalCount'] ]
-          # v0.7.69: report the resolved ring (not the raw parameter input) so
+          # report the resolved ring (not the raw parameter input) so
           # scheduled runs surface the actual ring the resolver picked.
           resolvedUpdateRing: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['resolveRing.RESOLVED_UPDATE_RING'] ]
         

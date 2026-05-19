@@ -1,6 +1,6 @@
 # Step.0 - Authentication Validation and Subscription Scope Report
 #
-# PURPOSE (v0.7.70):
+# PURPOSE:
 #   Validates that the App Registration / federated credentials / GitHub secrets / RBAC
 #   role assignments all line up, AND produces a Subscription Scope report that lists every
 #   subscription the pipeline identity can see. Run this:
@@ -18,10 +18,10 @@
 #       2. Repository / environment secrets (AZURE_CLIENT_ID, _TENANT_ID, _SUBSCRIPTION_ID).
 #       3. Azure RBAC on the App Registration's service principal.
 #       4. Resource Graph reachability (proves the SP can actually see clusters).
-#       5. Subscription scope (v0.7.70): total count and full Subscription ID / Name table
+#       5. Subscription scope: total count and full Subscription ID / Name table
 #          visible to the pipeline identity.
 #
-# REPORTS GENERATED (v0.7.70):
+# REPORTS GENERATED:
 #   - JUnit XML: One test suite for Authentication, one for Subscription Scope (one testcase
 #     per subscription), one for Resource Graph reachability. Renders in the GitHub Checks
 #     UI via dorny/test-reporter.
@@ -79,12 +79,29 @@ jobs:
     environment: ${{ inputs.environment }}
 
     steps:
+      # dorny/test-reporter@v3 (used at the end of this job) shells out to
+      # `git ls-files` to resolve the JUnit XML path against the repo's
+      # tracked files. Without a checkout, it fails with exit 128:
+      #   fatal: not a git repository (or any of the parent directories): .git
+      # The checkout itself is otherwise unnecessary for Step.0 (the auth probe
+      # does not consume any repo content) but is required for the report step.
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
           client-id:       ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
+          # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
+          # <id>` after the OIDC token exchange so the runner has a default
+          # `az account` context. It is NOT used to scope Azure Resource Graph queries
+          # (those run fleet-wide across every subscription the federated identity can
+          # read) and is NOT interpolated into Azure portal deep-link URLs (those use
+          # the per-row `subscriptionId` returned by ARG).
+          # Set it via: gh variable set AZURE_SUBSCRIPTION_ID --body <subId>
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Collect Authentication and Subscription Scope Report
         id: report
@@ -227,7 +244,7 @@ jobs:
       - name: Compute Artifact Timestamp
         id: artifact-stamp
         shell: pwsh
-        # v0.7.66 artifact convention: every downloadable artifact gets a UTC timestamp suffix so
+        # artifact convention: every downloadable artifact gets a UTC timestamp suffix so
         # multiple runs on the same day produce distinct zip names.
         run: |
           $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')

@@ -140,7 +140,7 @@ Set-StrictMode -Version 1.0
 # bumps to one but not the other are caught before release. Two consumers:
 #   - Start-AzureLocalClusterUpdate emits this in the run log header.
 #   - Get-AzureLocalFleetStatusData stamps it into exported fleet-state JSON.
-$script:ModuleVersion = '0.7.70'
+$script:ModuleVersion = '0.7.71'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.UpdateManagement'
 

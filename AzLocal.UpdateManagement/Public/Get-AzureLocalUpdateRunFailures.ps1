@@ -480,6 +480,7 @@ extensibilityresources
                 ResourceGroup      = $r.ResourceGroup
                 SubscriptionId     = $r.SubscriptionId
                 ClusterResourceId  = $r.ClusterResourceId
+                ClusterPortalUrl   = if ($r.ClusterResourceId) { "https://portal.azure.com/#@/resource$($r.ClusterResourceId)" } else { '' }
                 UpdateName         = $r.UpdateName
                 RunId              = $r.RunId
                 State              = $r.State
