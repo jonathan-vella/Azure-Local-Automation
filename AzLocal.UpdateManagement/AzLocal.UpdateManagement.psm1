@@ -282,5 +282,7 @@ Export-ModuleMember -Function @(
     'Resolve-AzLocalCurrentUpdateRing',
     'Get-AzLocalApplyUpdatesScheduleNextFirings',
     'New-AzLocalApplyUpdatesScheduleConfig',
-    'Update-AzLocalApplyUpdatesScheduleConfig'
+    'Update-AzLocalApplyUpdatesScheduleConfig',
+    # Fleet Health Overview (v0.7.70) - one row per cluster, LENS workbook parity
+    'Get-AzLocalFleetHealthOverview'
 )
