@@ -242,37 +242,66 @@ jobs:
         $ringOrphan  = @($audit | Where-Object Status -eq 'RingOrphanedInSchedule')
 
         # ------------------------------------------------------------------
-        # JUnit XML: one testcase per (UpdateRing, UpdateWindow) row.
-        # Uncovered, PartiallyCovered, MalformedTag, UnparseableCron => failure.
-        # Covered => pass.
+        # JUnit XML: two <testsuite> elements (v0.7.70) so the test reporter
+        # tree separates schedule-file gap rows (Schedule section) from cron
+        # coverage rows (Cron section). Schedule gaps have higher blast
+        # radius (apply-updates NEVER fires for those rings), so the suite
+        # comes FIRST. Uncovered, PartiallyCovered, MalformedTag,
+        # UnparseableCron, RingMissingFromSchedule, RingOrphanedInSchedule
+        # all become <failure>; Covered passes.
         # ------------------------------------------------------------------
         function Convert-XmlEscape([string]$s) {
             if ($null -eq $s) { return '' }
             ($s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;').Replace("'",'&apos;'))
         }
-        $failureCount = $uncovered.Count + $partial.Count + $malformed.Count + $unparseable.Count + $ringMissing.Count + $ringOrphan.Count
+        function Write-Suite {
+            param(
+                [System.Text.StringBuilder]$Sb,
+                [string]$SuiteName,
+                [object[]]$Rows,
+                [string]$EmptyPlaceholderName
+            )
+            $failures = @($Rows | Where-Object { $_.Status -ne 'Covered' }).Count
+            [void]$Sb.AppendLine(("  <testsuite name=`"{0}`" tests=`"{1}`" failures=`"{2}`">" -f (Convert-XmlEscape $SuiteName), $Rows.Count, $failures))
+            foreach ($row in $Rows) {
+                $tcName = ("{0} / {1}" -f $row.UpdateRing, ($(if ($row.UpdateWindow) { $row.UpdateWindow } else { '(no window)' })))
+                [void]$Sb.AppendLine(("    <testcase classname=`"ScheduleCoverage`" name=`"{0}`">" -f (Convert-XmlEscape $tcName)))
+                if ($row.Status -ne 'Covered') {
+                    $issue = Convert-XmlEscape $row.Issue
+                    $reco  = Convert-XmlEscape $row.Recommendation
+                    [void]$Sb.AppendLine(("      <failure type=`"{0}`" message=`"{1}`">Recommendation: {2}{3}Cluster count: {4}</failure>" -f $row.Status, $issue, $reco, [Environment]::NewLine, $row.ClusterCount))
+                }
+                [void]$Sb.AppendLine('    </testcase>')
+            }
+            if ($Rows.Count -eq 0 -and $EmptyPlaceholderName) {
+                [void]$Sb.AppendLine(("    <testcase classname=`"ScheduleCoverage`" name=`"{0}`" />" -f (Convert-XmlEscape $EmptyPlaceholderName)))
+            }
+            [void]$Sb.AppendLine('  </testsuite>')
+        }
+
+        $scheduleRows = @($audit | Where-Object { $_.Section -eq 'Schedule' })
+        $cronRows     = @($audit | Where-Object { $_.Section -ne 'Schedule' })
+
         $xmlPath = Join-Path $outputDir 'schedule-coverage-audit.xml'
         $sb = New-Object System.Text.StringBuilder
         [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
         [void]$sb.AppendLine('<testsuites>')
-        [void]$sb.AppendLine(("  <testsuite name=`"Apply-Updates Schedule Coverage`" tests=`"{0}`" failures=`"{1}`">" -f $audit.Count, $failureCount))
-        foreach ($row in $audit) {
-            $tcName = ("{0} / {1}" -f $row.UpdateRing, ($(if ($row.UpdateWindow) { $row.UpdateWindow } else { '(no window)' })))
-            [void]$sb.AppendLine(("    <testcase classname=`"ScheduleCoverage`" name=`"{0}`">" -f (Convert-XmlEscape $tcName)))
-            if ($row.Status -ne 'Covered') {
-                $issue = Convert-XmlEscape $row.Issue
-                $reco  = Convert-XmlEscape $row.Recommendation
-                [void]$sb.AppendLine(("      <failure type=`"{0}`" message=`"{1}`">Recommendation: {2}{3}Cluster count: {4}</failure>" -f $row.Status, $issue, $reco, [Environment]::NewLine, $row.ClusterCount))
-            }
-            [void]$sb.AppendLine('    </testcase>')
+        # v0.7.70: only emit the Schedule suite when -SchedulePath was actually
+        # supplied (i.e. there is at least one Schedule row OR the operator
+        # provided a schedule file). Otherwise the suite would render as
+        # "no tests found" with no actionable signal.
+        if ($haveSchedule -or $scheduleRows.Count -gt 0) {
+            Write-Suite -Sb $sb `
+                -SuiteName 'Apply-Updates Schedule Coverage - Schedule (ring diff)' `
+                -Rows $scheduleRows `
+                -EmptyPlaceholderName 'Schedule and fleet ring sets match - no gaps.'
         }
-        # v0.7.67: emit a single passing testcase when the fleet has no tagged
-        # clusters so the GitHub Actions test reporter shows the audit as
-        # "passed (1/1)" instead of "no tests found". Matches the ADO behaviour.
-        if ($audit.Count -eq 0) {
-            [void]$sb.AppendLine('    <testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />')
+        if ($cronRows.Count -gt 0 -or -not $haveSchedule) {
+            Write-Suite -Sb $sb `
+                -SuiteName 'Apply-Updates Schedule Coverage - Cron coverage' `
+                -Rows $cronRows `
+                -EmptyPlaceholderName 'No tagged clusters found - nothing to audit.'
         }
-        [void]$sb.AppendLine('  </testsuite>')
         [void]$sb.AppendLine('</testsuites>')
         [System.IO.File]::WriteAllText($xmlPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
 
@@ -337,10 +366,11 @@ jobs:
             $reco = Get-Content -Path './reports/schedule-coverage-recommend.md' -Raw
         }
 
-        # v0.7.67/v0.7.69: when there is at least one issue row, surface the ready-to-paste
-        # cron block at the TOP of the summary so operators can act without scrolling past the
-        # detail table first. Counts table remains the very first thing so the run status is
-        # still readable at a glance.
+        # v0.7.70: when there is at least one issue row, surface the action-required
+        # markdown at the TOP of the summary so operators can act without scrolling past the
+        # detail table. The Recommend output now ships its own '## Action required - ...'
+        # headings (one per kind of fix), numbered '(1 of N)' when more than one applies,
+        # so we inline it as-is rather than wrapping it in our own code fence.
         $hasIssues = (([int]$uncovered) + ([int]$partial) + ([int]$malformed) + ([int]$unparseable) + ([int]$ringMissing) + ([int]$ringOrphan)) -gt 0
 
         $md = @"
@@ -360,35 +390,49 @@ jobs:
         "@
 
         if ($hasIssues -and $reco) {
-            $md += "`n### Action required - paste these cron entries into Step.5_apply-updates.yml`n"
-            $md += "`n``````yaml`n" + $reco + "`n```````n"
+            $md += "`n" + $reco + "`n"
         }
 
-        $md += "`n### Audit Detail (Uncovered / Partial / Malformed first)`n"
+        # v0.7.70: split Audit Detail into two sub-tables. Schedule rows
+        # (RingMissingFromSchedule / RingOrphanedInSchedule) come FIRST -
+        # higher blast radius because a missing-from-schedule ring means
+        # apply-updates NEVER fires for those clusters. The Schedule
+        # sub-table is suppressed when -SchedulePath was not supplied.
+        $scheduleRowsMd = @($rows | Where-Object { $_.Section -eq 'Schedule' })
+        $cronRowsMd     = @($rows | Where-Object { $_.Section -ne 'Schedule' })
 
-        if ($rows.Count -eq 0) {
-            $md += "`n*No tagged clusters found - nothing to audit.*`n"
-        } else {
-            $md += "`n| Status | UpdateRing | UpdateWindow | Clusters | Required Cron (UTC) | Recommendation |`n"
-            $md += "|--------|------------|--------------|---------:|----------------------|----------------|`n"
-            foreach ($r in ($rows | Select-Object -First 100)) {
-                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $r.Status, $r.UpdateRing, $r.UpdateWindow, $r.ClusterCount, $r.RequiredCronUTC, $r.Recommendation) + "`n"
+        function Add-DetailTable {
+            param([string]$Heading, [object[]]$DetailRows, [string]$EmptyText)
+            $body = "`n$Heading`n"
+            if ($DetailRows.Count -eq 0) {
+                $body += "`n*$EmptyText*`n"
+                return $body
             }
-            if ($rows.Count -gt 100) {
-                $md += "`n*Showing first 100 of $($rows.Count); see ``schedule-coverage-audit.csv`` artifact for the full list.*`n"
+            $body += "`n| Status | UpdateRing | UpdateWindow | Clusters | Required Cron (UTC) | Recommendation |`n"
+            $body += "|--------|------------|--------------|---------:|----------------------|----------------|`n"
+            foreach ($r in ($DetailRows | Select-Object -First 100)) {
+                $body += ('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $r.Status, $r.UpdateRing, $r.UpdateWindow, $r.ClusterCount, $r.RequiredCronUTC, $r.Recommendation) + "`n"
             }
+            if ($DetailRows.Count -gt 100) {
+                $body += "`n*Showing first 100 of $($DetailRows.Count); see ``schedule-coverage-audit.csv`` artifact for the full list.*`n"
+            }
+            return $body
         }
+
+        if ($haveSchedule) {
+            $md += "`n### Audit Detail - Schedule (ring-file gap)`n"
+            $md += "`n> **Higher blast radius.** A ``RingMissingFromSchedule`` row means apply-updates will NEVER fire on those clusters until you either add the ring to ``apply-updates-schedule.yml`` or retag them onto an existing scheduled ring.`n"
+            $md += (Add-DetailTable -Heading '' -DetailRows $scheduleRowsMd -EmptyText 'Schedule and fleet ring sets match - no gaps.')
+        }
+
+        $md += (Add-DetailTable -Heading '### Audit Detail - Cron coverage (Uncovered / Partial / Malformed first)' -DetailRows $cronRowsMd -EmptyText 'No tagged clusters found - nothing to audit.')
 
         # When there are no issues, still print the recommendation block at the bottom for
         # operators who want the canonical cron list as a reference. When there are issues
         # we already printed it at the top so skip the duplicate.
-        if (-not $hasIssues) {
-            $md += "`n### Recommended Schedule (copy into Step.5_apply-updates.yml)`n"
-            if ($reco) {
-                $md += "`n``````yaml`n" + $reco + "`n```````n"
-            } else {
-                $md += "`n*Recommendation output unavailable.*`n"
-            }
+        if (-not $hasIssues -and $reco) {
+            $md += "`n### Reference - Recommended schedule (copy into Step.5_apply-updates.yml)`n"
+            $md += "`n" + $reco + "`n"
         }
 
         $md += @"
