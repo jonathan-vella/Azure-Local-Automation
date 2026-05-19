@@ -73,7 +73,7 @@ parameters:
     default: false
 
 variables:
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.73'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.74'
   REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
   reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
 
@@ -199,10 +199,16 @@ stages:
           $recoMd    = Join-Path $outputDir 'schedule-coverage-recommend.md'
           $matrixCsv = Join-Path $outputDir 'schedule-coverage-matrix.csv'
 
+          # v0.7.74: pin -Platform AzureDevOps so the Recommend snippet ONLY
+          # emits the ADO `schedules:` block (not the GitHub Actions `schedule:`
+          # block, which would be irrelevant noise in an ADO pipeline summary).
+          # The cmdlet's default is 'Both' (intentional for ad-hoc operator use),
+          # so the pipeline yml has to specify which platform it's running on.
           $auditArgs = @{
               View             = 'Audit'
               LeadTimeMinutes  = $leadTime
               ExportPath       = $auditCsv
+              Platform         = 'AzureDevOps'
               PassThru         = $true
           }
           if ($havePipeline) { $auditArgs.PipelineYamlPath = $pipelinePath }
@@ -212,7 +218,7 @@ stages:
           if (-not $auditResult) { $auditResult = @() }
 
           Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
-          Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -ExportPath $recoMd | Out-Null
+          Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -Platform AzureDevOps -ExportPath $recoMd | Out-Null
 
           $covered     = @($auditResult | Where-Object Status -eq 'Covered')
           $uncovered   = @($auditResult | Where-Object Status -eq 'Uncovered')
