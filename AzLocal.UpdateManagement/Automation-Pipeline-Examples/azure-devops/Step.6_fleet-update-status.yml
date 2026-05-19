@@ -342,6 +342,79 @@ stages:
           $xmlContent += @"
           
             </testsuite>
+          "@
+
+          # ---------------------------------------------------------------
+          # v0.7.70: '📜 Update Run History and Error Details' testsuite.
+          # ARG-first Update Run History projection (fleet-scale)
+          # table. Each Failed/unresolved update run becomes a testcase with
+          # the verbose error details (DeepestErrMsg) as the failure body
+          # and Status / CurrentStep / Duration / PortalLink in system-out.
+          # The cmdlet's -OnlyUnresolved filter dedupes against any later
+          # Succeeded run on the same (cluster, update) pair (dedup aligned with
+          # default UX.
+          # ---------------------------------------------------------------
+          Write-Host ""
+          Write-Host "Step 3b: Collecting Update Run History + Verbose Error Details (ARG-first, fleet-scale)..." -ForegroundColor Yellow
+          $runFailures = @()
+          try {
+              $runFailures = @(Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-30))
+          }
+          catch {
+              Write-Warning "Get-AzureLocalUpdateRunFailures threw: $($_.Exception.Message). Continuing with empty run-history section."
+              $runFailures = @()
+          }
+          $runFailures = @($runFailures | Sort-Object StartTime -Descending)
+          $runHistoryCount = $runFailures.Count
+          Write-Host "Found $runHistoryCount unresolved Failed update run(s)." -ForegroundColor $(if ($runHistoryCount -gt 0) { 'Yellow' } else { 'Green' })
+
+          # Export run-history rows as CSV + JSON for the artifact bundle.
+          $runHistoryCsv  = Join-Path $outputDir "update-run-history.csv"
+          $runHistoryJson = Join-Path $outputDir "update-run-history.json"
+          if ($runHistoryCount -gt 0) {
+              $runFailures |
+                  Select-Object ClusterName, UpdateName, State, Status, CurrentStep, Duration, StartTime, LastUpdated, DeepestStepName, ErrorCategory, DeepestErrMsg, UpdateRunPortalUrl, ClusterResourceId, RunId |
+                  Export-Csv -Path $runHistoryCsv -NoTypeInformation -Force
+              $runFailures | ConvertTo-Json -Depth 4 | Out-File $runHistoryJson -Encoding UTF8
+          }
+
+          # Build the run-history testsuite using string concat (avoids YAML/here-string nesting issues).
+          $xmlContent += "`n  <testsuite name=`"📜 Update Run History and Error Details`" tests=`"$runHistoryCount`" failures=`"$runHistoryCount`" errors=`"0`" skipped=`"0`" time=`"0`" timestamp=`"$timestamp`">`n"
+          $xmlContent += "    <properties>`n"
+          $xmlContent += "      <property name=`"description`" value=`"Verbose error details for each unresolved Failed update run (ARG-first, fleet-scale).`"/>`n"
+          $xmlContent += "      <property name=`"sourceCmdlet`" value=`"Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-30)`"/>`n"
+          $xmlContent += "      <property name=`"failedRunCount`" value=`"$runHistoryCount`"/>`n"
+          $xmlContent += "    </properties>`n"
+
+          foreach ($f in $runFailures) {
+              $fcName    = ([string]$f.ClusterName) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+              $fuName    = ([string]$f.UpdateName)  -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+              $fStatus   = ([string]$f.Status)      -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+              $fCurStep  = ([string]$f.CurrentStep) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+              $fDuration = [string]$f.Duration
+              $fStart    = [string]$f.StartTime
+              $fLast     = [string]$f.LastUpdated
+              $fCategory = [string]$f.ErrorCategory
+              $fPortal   = [string]$f.UpdateRunPortalUrl
+              $fErr = if ($f.DeepestErrMsg) {
+                  if ($f.DeepestErrMsg.Length -gt 4000) { $f.DeepestErrMsg.Substring(0,4000) + ' ... (truncated)' } else { $f.DeepestErrMsg }
+              } else { '(no error message captured)' }
+              $fStackEsc = ([string]$f.StackTracePreview) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+
+              $tcName  = "$fcName - $fuName"
+              $tcClass = "UpdateRunHistory"
+              $tcSysOut = "Cluster: $fcName`nUpdate: $fuName`nUpdate State: Failed`nStatus: $fStatus`nCurrent Step: $fCurStep`nDuration: $fDuration`nTime Started: $fStart`nLast Updated: $fLast`nError Category: $fCategory`nPortal Link: $fPortal"
+              if ($f.StackTracePreview) { $tcSysOut += "`nStack Trace Preview: $fStackEsc" }
+              $tcSysOut = $tcSysOut -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+
+              $xmlContent += "`n    <testcase name=`"$tcName`" classname=`"$tcClass`" time=`"0`">`n"
+              $xmlContent += "      <system-out><![CDATA[$tcSysOut]]></system-out>`n"
+              $xmlContent += "      <failure message=`"$fcName / $fuName failed at: $fCurStep`" type=`"$fCategory`"><![CDATA[$fErr]]></failure>`n"
+              $xmlContent += "    </testcase>`n"
+          }
+          $xmlContent += "  </testsuite>`n"
+
+          $xmlContent += @"
           </testsuites>
           "@
           
@@ -430,6 +503,19 @@ stages:
           Write-Host "##vso[task.setvariable variable=needsInvestigation;isOutput=true]$stOther"
           Write-Host "##vso[task.setvariable variable=failures;isOutput=true]$failures"
           Write-Host "##vso[task.setvariable variable=hasPrerequisite;isOutput=true]$hasPrerequisite"
+          Write-Host "##vso[task.setvariable variable=runHistoryCount;isOutput=true]$runHistoryCount"
+
+          # v0.7.70: persist update-run-history rows as a base64 JSON blob so the
+          # 'Display Status Summary' step can render the markdown table without
+          # re-querying ARG. Truncated to top 25 failures to keep the variable size sane.
+          if ($runHistoryCount -gt 0) {
+              $top = $runFailures | Select-Object -First 25 ClusterName, UpdateName, State, Status, CurrentStep, Duration, StartTime, LastUpdated, DeepestErrMsg, UpdateRunPortalUrl
+              $json = $top | ConvertTo-Json -Depth 4 -Compress
+              $b64  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+              Write-Host "##vso[task.setvariable variable=runHistoryB64;isOutput=true]$b64"
+          } else {
+              Write-Host "##vso[task.setvariable variable=runHistoryB64;isOutput=true]"
+          }
           
           if ($failures -gt 0) {
               Write-Warning " $failures cluster(s) have update failures or health issues!"
@@ -513,16 +599,46 @@ stages:
             $summary += ($actionsRequired -join "`n")
         }
 
+        # v0.7.70: '📜 Update Run History and Error Details' markdown table
+        # provides an ARG-first fleet-scale view of recent unresolved failures. Rendered only when there
+        # are unresolved failed runs. Reads the base64 JSON blob set by the
+        # collect step so we don't re-query ARG.
+        $runHistoryCount = "$(collect.runHistoryCount)"
+        $runHistoryB64   = "$(collect.runHistoryB64)"
+        if ($runHistoryCount -and ([int]$runHistoryCount) -gt 0 -and $runHistoryB64) {
+            try {
+                $rows = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($runHistoryB64)) | ConvertFrom-Json
+                $summary += "`n`n### 📜 Update Run History and Error Details`n`n"
+                $summary += "_ARG-first, fleet-scale failure-detail view. Shows up to 25 most recent unresolved Failed update runs (last 30 days). Source cmdlet: ``Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved``._`n`n"
+                $summary += "| Cluster Name | Update Name | Update State | Status | Current Step | Verbose Error Details | Duration | Time Started | Last Updated |`n"
+                $summary += "|---|---|---|---|---|---|---|---|---|`n"
+                foreach ($r in @($rows)) {
+                    $errCell = if ($r.DeepestErrMsg) {
+                        $e = [string]$r.DeepestErrMsg
+                        if ($e.Length -gt 250) { $e = $e.Substring(0,250) + '...' }
+                        $e = $e -replace "`r`n",' ' -replace "`n",' ' -replace '\|','\|'
+                        '`' + $e + '`'
+                    } else { '_(none)_' }
+                    $updCell = if ($r.UpdateRunPortalUrl) { "[$($r.UpdateName)]($($r.UpdateRunPortalUrl))" } else { $r.UpdateName }
+                    $summary += "| $($r.ClusterName) | $updCell | $($r.State) | $($r.Status) | $($r.CurrentStep) | $errCell | $($r.Duration) | $($r.StartTime) | $($r.LastUpdated) |`n"
+                }
+            } catch {
+                Write-Warning "Failed to render Update Run History markdown table: $($_.Exception.Message)"
+            }
+        }
+
         $summary += @"
 
         ### Reports Available in Artifacts
         - ``readiness-status.csv`` - Detailed cluster status
         - ``readiness-status.json`` - Machine-readable format
-        - ``readiness-status.xml`` - JUnit XML (see Tests tab)
+        - ``readiness-status.xml`` - JUnit XML (see Tests tab; now includes the '📜 Update Run History and Error Details' suite, v0.7.70)
         - ``cluster-inventory.csv`` - Full cluster inventory
         - ``update-summaries.csv`` - Fleet-wide update state summaries
         - ``available-updates.csv`` - All available updates across fleet
         - ``update-runs.csv`` - Recent update run history
+        - ``update-run-history.csv`` - Verbose error details for unresolved Failed update runs (ARG-first, fleet-scale, v0.7.70)
+        - ``update-run-history.json`` - Same as above in JSON form for integrations
         "@
 
         Write-Host $summary
