@@ -63,6 +63,41 @@ on:
         description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
         required: false
         default: ''
+      # --- ITSM Connector (v0.7.70 Phase D: ServiceNow auto-raise on fleet-update-status) ---
+      # Set raise_itsm_ticket=true to open ServiceNow incidents from each unresolved
+      # Failed update run reported by the '📜 Update Run History and Error Details'
+      # testsuite (and any failed AzureLocalFleetUpdateStatus row). Default is false
+      # so existing schedules stay byte-identical until you opt in. The connector reads
+      # the JUnit file Step.6 already produces (./reports/readiness-status.xml) and
+      # the trigger matrix in ./.itsm/azurelocal-itsm.yml.
+      raise_itsm_ticket:
+        description: 'Open ITSM tickets (ServiceNow) for fleet-update-status failures'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_config_path:
+        description: 'Path to ITSM matrix config (YAML or JSON)'
+        required: false
+        default: './.itsm/azurelocal-itsm.yml'
+      itsm_dry_run:
+        description: 'ITSM: build payloads + run read-only dedupe but do NOT create tickets'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_force_create:
+        description: 'ITSM: bypass dedupe and always create new tickets (use with caution)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   # Module version this workflow YAML was generated against. The install step compares
@@ -332,6 +367,22 @@ jobs:
             $systemOut = $systemOut -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;'
             
             $xmlContent += "`n    <testcase name=`"$testName`" classname=`"$className`" time=`"0`">`n"
+            # v0.7.70: per-testcase <properties> for the ITSM connector. The
+            # dedupe key in New-AzureLocalIncident is SHA256(ClusterResourceId|UpdateName|Category);
+            # without these three properties on every testcase the connector
+            # reports Action='Skipped' with "Row missing ClusterResourceId or UpdateName".
+            # Status is mirrored so the trigger-matrix evaluator can pick the
+            # right severity/category for fleet-update-status rows.
+            $clusterResIdEsc = ([string]$cluster.ResourceId) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $recoUpdEsc      = ([string]$cluster.RecommendedUpdate) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $clusterPortalEsc = if ($cluster.ResourceId) { "https://portal.azure.com/#@/resource$($cluster.ResourceId)" -replace '&','&amp;' -replace '"','&quot;' } else { '' }
+            $xmlContent += "      <properties>`n"
+            $xmlContent += "        <property name=`"ClusterName`" value=`"$clusterName`"/>`n"
+            $xmlContent += "        <property name=`"ClusterResourceId`" value=`"$clusterResIdEsc`"/>`n"
+            $xmlContent += "        <property name=`"UpdateName`" value=`"$recoUpdEsc`"/>`n"
+            $xmlContent += "        <property name=`"Status`" value=`"$(if ($status -eq 'failed') { $failureType } else { 'Success' })`"/>`n"
+            $xmlContent += "        <property name=`"ClusterPortalUrl`" value=`"$clusterPortalEsc`"/>`n"
+            $xmlContent += "      </properties>`n"
             $xmlContent += "      <system-out><![CDATA[$systemOut]]></system-out>`n"
             
             if ($status -eq "failed") {
@@ -406,6 +457,30 @@ jobs:
             $tcSysOut   = $tcSysOut -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
 
             $xmlContent += "`n    <testcase name=`"$tcName`" classname=`"$tcClass`" time=`"0`">`n"
+            # v0.7.70: properties for the ITSM connector dedupe key + v0.7.70
+            # extended context (UpdateRunPortalUrl, ClusterPortalUrl, CurrentStep,
+            # Duration, ErrorCategory) so the optional incident-body template
+            # rendered by New-AzureLocalIncident can deep-link straight into
+            # the SingleInstanceHistoryDetails ReactView for this failed run.
+            $fClusterResIdEsc = ([string]$f.ClusterResourceId) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $fClusterPortalEsc = if ($f.ClusterResourceId) { "https://portal.azure.com/#@/resource$($f.ClusterResourceId)" -replace '&','&amp;' -replace '"','&quot;' } else { '' }
+            $fPortalEsc       = $fPortal -replace '&','&amp;' -replace '"','&quot;'
+            $fStatusEsc       = ([string]$f.Status) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $fCurStepAttr     = $fCurStep -replace '"','&quot;'
+            $fDurationAttr    = $fDuration -replace '"','&quot;'
+            $fCategoryAttr    = $fCategory -replace '"','&quot;'
+            $xmlContent += "      <properties>`n"
+            $xmlContent += "        <property name=`"ClusterName`" value=`"$fcName`"/>`n"
+            $xmlContent += "        <property name=`"ClusterResourceId`" value=`"$fClusterResIdEsc`"/>`n"
+            $xmlContent += "        <property name=`"UpdateName`" value=`"$fuName`"/>`n"
+            $xmlContent += "        <property name=`"Status`" value=`"Failed`"/>`n"
+            $xmlContent += "        <property name=`"UpdateState`" value=`"$fStatusEsc`"/>`n"
+            $xmlContent += "        <property name=`"CurrentStep`" value=`"$fCurStepAttr`"/>`n"
+            $xmlContent += "        <property name=`"Duration`" value=`"$fDurationAttr`"/>`n"
+            $xmlContent += "        <property name=`"ErrorCategory`" value=`"$fCategoryAttr`"/>`n"
+            $xmlContent += "        <property name=`"UpdateRunPortalUrl`" value=`"$fPortalEsc`"/>`n"
+            $xmlContent += "        <property name=`"ClusterPortalUrl`" value=`"$fClusterPortalEsc`"/>`n"
+            $xmlContent += "      </properties>`n"
             $xmlContent += "      <system-out><![CDATA[$tcSysOut]]></system-out>`n"
             $xmlContent += "      <failure message=`"$fcName / $fuName failed at: $fCurStep`" type=`"$fCategory`"><![CDATA[$fErr]]></failure>`n"
             $xmlContent += "    </testcase>`n"
@@ -662,3 +737,100 @@ jobs:
         fail-on-error: false  # Don't fail the action on test failures
         list-suites: failed    # collapse passing suites (compact view for large fleets)
         list-tests: failed     # within failed suites, only render failed tests
+
+    # ----------------------------------------------------------------------
+    # ITSM Connector (v0.7.70 Phase D - ServiceNow auto-raise on fleet failures)
+    #
+    # Fully opt-in (gated on inputs.raise_itsm_ticket == 'true'). Runs AFTER
+    # the JUnit file is uploaded + test results published, so a) failing
+    # clusters are already surfaced via dorny/test-reporter and the run
+    # summary, and b) the ITSM action is strictly additive - failures here
+    # never affect the fleet-update-status exit code.
+    #
+    # Reads the same readiness-status.xml that powers the run summary. The
+    # JUnit emitter writes per-testcase <properties> (ClusterName /
+    # ClusterResourceId / UpdateName / Status / ErrorCategory /
+    # CurrentStep / Duration / UpdateRunPortalUrl / ClusterPortalUrl) so
+    # New-AzureLocalIncident can compute the SHA256 dedupe key and the
+    # Mustache body template can deep-link straight into the Azure portal
+    # SingleInstanceHistoryDetails ReactView for the failed update run.
+    # ----------------------------------------------------------------------
+    - name: Install powershell-yaml (ITSM config parser)
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      run: |
+        if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
+            Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+        }
+
+    - name: Raise ITSM tickets
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      id: itsm
+      env:
+        # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+        # Bind your ITSM connector secrets here. Defaults match the
+        # ServiceNow OAuth client_credentials naming used by azurelocal-itsm.yml.
+        # Preserved by Update-AzureLocalPipelineExample across module upgrades.
+        ITSM_SN_INSTANCE_URL: ${{ secrets.ITSM_SN_INSTANCE_URL }}
+        ITSM_SN_CLIENT_ID:    ${{ secrets.ITSM_SN_CLIENT_ID }}
+        ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
+        # END-AZLOCAL-CUSTOMIZE:itsm-secrets
+        INPUT_ITSM_CONFIG_PATH:  ${{ github.event.inputs.itsm_config_path }}
+        INPUT_ITSM_DRY_RUN:      ${{ github.event.inputs.itsm_dry_run }}
+        INPUT_ITSM_FORCE_CREATE: ${{ github.event.inputs.itsm_force_create }}
+      run: |
+        Import-Module AzLocal.UpdateManagement -Force
+
+        $configPath = $env:INPUT_ITSM_CONFIG_PATH
+        $dryRun     = $env:INPUT_ITSM_DRY_RUN -eq 'true'
+        $force      = $env:INPUT_ITSM_FORCE_CREATE -eq 'true'
+
+        if (-not (Test-Path $configPath)) {
+            Write-Host "::warning::ITSM config not found at '$configPath' - skipping ticket creation."
+            exit 0
+        }
+
+        $cfg = Get-AzureLocalItsmConfig -Path $configPath
+
+        $junitInput = './reports/readiness-status.xml'
+        if (-not (Test-Path $junitInput)) {
+            Write-Host "::warning::No readiness-status.xml found at '$junitInput' - skipping ticket creation."
+            exit 0
+        }
+
+        $params = @{
+            InputArtifactPath = $junitInput
+            Config            = $cfg
+            RunMetadata       = @{
+                Platform = 'github'
+                RunId    = $env:GITHUB_RUN_ID
+                RunUrl   = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+                Branch   = $env:GITHUB_REF
+            }
+            DryRun            = $dryRun
+            ForceCreate       = $force
+            ExportPath        = './reports/itsm-results.csv'
+            ExportJUnitPath   = './reports/itsm-results.xml'
+        }
+
+        $results = New-AzureLocalIncident @params
+        $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
+
+    - name: Upload ITSM Artefacts
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: actions/upload-artifact@v6
+      with:
+        name: azlocal-fleet-update-status-itsm-results_${{ steps.artifact-stamp.outputs.timestamp }}
+        path: ./reports/itsm-*.*
+        retention-days: 30
+      continue-on-error: true
+
+    - name: Publish ITSM Test Results
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: dorny/test-reporter@v3
+      with:
+        name: ITSM Tickets (Step.6)
+        path: ./reports/itsm-results.xml
+        reporter: java-junit
+      continue-on-error: true

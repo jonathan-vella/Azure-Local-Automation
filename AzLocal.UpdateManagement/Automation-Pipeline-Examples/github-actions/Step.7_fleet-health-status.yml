@@ -72,6 +72,42 @@ on:
         description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
         required: false
         default: ''
+      # --- ITSM Connector (v0.7.70 Phase D: ServiceNow auto-raise on fleet-health failures) ---
+      # Set raise_itsm_ticket=true to open ServiceNow incidents from each Critical /
+      # Warning health-check failure published by this pipeline. Default is false
+      # so existing schedules stay byte-identical until you opt in. The connector reads
+      # the JUnit file Step.7 already produces (./reports/fleet-health-status.xml) and
+      # the trigger matrix in ./.itsm/azurelocal-itsm.yml. Dedupe granularity is one
+      # ticket per (cluster, failing health check) pair - FailureReason is fed into
+      # the UpdateName slot of the SHA256 dedupe key.
+      raise_itsm_ticket:
+        description: 'Open ITSM tickets (ServiceNow) for fleet-health failures'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_config_path:
+        description: 'Path to ITSM matrix config (YAML or JSON)'
+        required: false
+        default: './.itsm/azurelocal-itsm.yml'
+      itsm_dry_run:
+        description: 'ITSM: build payloads + run read-only dedupe but do NOT create tickets'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_force_create:
+        description: 'ITSM: bypass dedupe and always create new tickets (use with caution)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   # Module version this workflow YAML was generated against. The install step compares
@@ -259,6 +295,26 @@ jobs:
                 [void]$sb.AppendFormat('    <testcase classname="{0}" name="{1}">' + "`n",
                     (Convert-XmlEscape $r.ClusterName),
                     (Convert-XmlEscape $caseName))
+                # v0.7.70: per-testcase <properties> for the ITSM connector.
+                # The dedupe key is SHA256(ClusterResourceId | UpdateName | Category).
+                # Step.7 is not about updates - so we stuff FailureReason into the
+                # UpdateName slot. That gives one ticket per (cluster, failing health
+                # check) pair, which is the intended granularity for fleet-health.
+                $clusterResId = if ($r.PSObject.Properties.Match('ClusterResourceId').Count -gt 0) { [string]$r.ClusterResourceId } else { '' }
+                $clusterPortalUrl = if ($r.PSObject.Properties.Match('ClusterPortalUrl').Count -gt 0) { [string]$r.ClusterPortalUrl } else { '' }
+                $targetResName    = if ($r.PSObject.Properties.Match('TargetResourceName').Count -gt 0) { [string]$r.TargetResourceName } else { '' }
+                $targetResType    = if ($r.PSObject.Properties.Match('TargetResourceType').Count -gt 0) { [string]$r.TargetResourceType } else { '' }
+                [void]$sb.AppendLine('      <properties>')
+                [void]$sb.AppendFormat('        <property name="ClusterName" value="{0}"/>' + "`n",      (Convert-XmlEscape $r.ClusterName))
+                [void]$sb.AppendFormat('        <property name="ClusterResourceId" value="{0}"/>' + "`n", (Convert-XmlEscape $clusterResId))
+                [void]$sb.AppendFormat('        <property name="UpdateName" value="{0}"/>' + "`n",        (Convert-XmlEscape $r.FailureReason))
+                [void]$sb.AppendFormat('        <property name="Status" value="{0}"/>' + "`n",            (Convert-XmlEscape $r.Severity))
+                [void]$sb.AppendFormat('        <property name="FailureReason" value="{0}"/>' + "`n",     (Convert-XmlEscape $r.FailureReason))
+                [void]$sb.AppendFormat('        <property name="Severity" value="{0}"/>' + "`n",          (Convert-XmlEscape $r.Severity))
+                [void]$sb.AppendFormat('        <property name="ClusterPortalUrl" value="{0}"/>' + "`n",  (Convert-XmlEscape $clusterPortalUrl))
+                [void]$sb.AppendFormat('        <property name="TargetResourceName" value="{0}"/>' + "`n", (Convert-XmlEscape $targetResName))
+                [void]$sb.AppendFormat('        <property name="TargetResourceType" value="{0}"/>' + "`n", (Convert-XmlEscape $targetResType))
+                [void]$sb.AppendLine('      </properties>')
                 $msg = "{0}: {1} (last occurred {2:yyyy-MM-ddTHH:mm:ssZ})" -f $r.Severity, $r.FailureReason, $r.LastOccurrence
                 # v0.7.70: failure body adds TargetResourceName, TargetResourceType, and ClusterPortalUrl
                 # so reviewers reading the JUnit XML (or dorny's expansion) can click straight to the
@@ -502,3 +558,100 @@ jobs:
         fail-on-error: false   # Don't fail the action on health failures
         list-suites: failed    # collapse passing suites (compact view for large fleets)
         list-tests: failed     # within failed suites, only render failed tests
+
+    # ----------------------------------------------------------------------
+    # ITSM Connector (v0.7.70 Phase D - ServiceNow auto-raise on fleet-health failures)
+    #
+    # Fully opt-in (gated on inputs.raise_itsm_ticket == 'true'). Runs AFTER
+    # the JUnit file is uploaded + test results published, so a) failing
+    # checks are already surfaced via dorny/test-reporter and the run
+    # summary, and b) the ITSM action is strictly additive - failures here
+    # never affect the fleet-health-status exit code.
+    #
+    # Reads the same fleet-health-status.xml that powers the run summary.
+    # The JUnit emitter writes per-testcase <properties> (ClusterName /
+    # ClusterResourceId / UpdateName=FailureReason / Status=Severity /
+    # FailureReason / Severity / ClusterPortalUrl / TargetResourceName /
+    # TargetResourceType) so New-AzureLocalIncident can compute the SHA256
+    # dedupe key (one ticket per cluster + failing check) and the Mustache
+    # body template can deep-link straight into the cluster blade.
+    # ----------------------------------------------------------------------
+    - name: Install powershell-yaml (ITSM config parser)
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      run: |
+        if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
+            Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+        }
+
+    - name: Raise ITSM tickets
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      id: itsm
+      env:
+        # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+        # Bind your ITSM connector secrets here. Defaults match the
+        # ServiceNow OAuth client_credentials naming used by azurelocal-itsm.yml.
+        # Preserved by Update-AzureLocalPipelineExample across module upgrades.
+        ITSM_SN_INSTANCE_URL: ${{ secrets.ITSM_SN_INSTANCE_URL }}
+        ITSM_SN_CLIENT_ID:    ${{ secrets.ITSM_SN_CLIENT_ID }}
+        ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
+        # END-AZLOCAL-CUSTOMIZE:itsm-secrets
+        INPUT_ITSM_CONFIG_PATH:  ${{ github.event.inputs.itsm_config_path }}
+        INPUT_ITSM_DRY_RUN:      ${{ github.event.inputs.itsm_dry_run }}
+        INPUT_ITSM_FORCE_CREATE: ${{ github.event.inputs.itsm_force_create }}
+      run: |
+        Import-Module AzLocal.UpdateManagement -Force
+
+        $configPath = $env:INPUT_ITSM_CONFIG_PATH
+        $dryRun     = $env:INPUT_ITSM_DRY_RUN -eq 'true'
+        $force      = $env:INPUT_ITSM_FORCE_CREATE -eq 'true'
+
+        if (-not (Test-Path $configPath)) {
+            Write-Host "::warning::ITSM config not found at '$configPath' - skipping ticket creation."
+            exit 0
+        }
+
+        $cfg = Get-AzureLocalItsmConfig -Path $configPath
+
+        $junitInput = './reports/fleet-health-status.xml'
+        if (-not (Test-Path $junitInput)) {
+            Write-Host "::warning::No fleet-health-status.xml found at '$junitInput' - skipping ticket creation."
+            exit 0
+        }
+
+        $params = @{
+            InputArtifactPath = $junitInput
+            Config            = $cfg
+            RunMetadata       = @{
+                Platform = 'github'
+                RunId    = $env:GITHUB_RUN_ID
+                RunUrl   = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+                Branch   = $env:GITHUB_REF
+            }
+            DryRun            = $dryRun
+            ForceCreate       = $force
+            ExportPath        = './reports/itsm-results.csv'
+            ExportJUnitPath   = './reports/itsm-results.xml'
+        }
+
+        $results = New-AzureLocalIncident @params
+        $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
+
+    - name: Upload ITSM Artefacts
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: actions/upload-artifact@v6
+      with:
+        name: azlocal-fleet-health-status-itsm-results_${{ steps.artifact-stamp.outputs.timestamp }}
+        path: ./reports/itsm-*.*
+        retention-days: 30
+      continue-on-error: true
+
+    - name: Publish ITSM Test Results
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: dorny/test-reporter@v3
+      with:
+        name: ITSM Tickets (Step.7)
+        path: ./reports/itsm-results.xml
+        reporter: java-junit
+      continue-on-error: true
