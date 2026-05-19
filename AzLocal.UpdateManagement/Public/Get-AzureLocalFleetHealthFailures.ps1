@@ -24,13 +24,21 @@ function Get-AzureLocalFleetHealthFailures {
           - 'Detail'  (default): one row per (cluster, failing health check).
                        Useful for the per-cluster drill-down view and for
                        JUnit XML emission so failures are visible per node
-                       on the pipeline run.
+                       on the pipeline run. v0.7.70 added TargetResourceName,
+                       TargetResourceType, and ClusterPortalUrl columns so
+                       renderers can hyperlink the cluster name and surface
+                       the specific node / drive / NIC the check failed
+                       against without re-querying ARG.
           - 'Summary'         : grouped by FailureReason and Severity. Rows
-                                are ordered by ClusterCount desc (most
-                                widespread issue first) so administrators can
-                                target the highest-impact fixes first. The
-                                AffectedClusters column lists every cluster
-                                hit by that failure reason.
+                                are ordered v0.7.70 with Severity FIRST
+                                (Critical before Warning) so the
+                                highest-blast-radius reason is at the top of
+                                the report regardless of fleet size, then
+                                ClusterCount desc, then FailureCount desc.
+                                The AffectedClusters column lists every
+                                cluster hit by that failure reason (joined
+                                by '; '); AffectedClusterPortalUrls is the
+                                positionally-paired list of portal links.
 
         Critical-severity entries are emitted before Warning. Informational
         entries are excluded.
@@ -147,6 +155,7 @@ extensibilityresources
     ResourceGroup     = tostring(segments[4]),
     ClusterName       = tostring(segments[8])
 | extend ClusterResourceId = strcat('/subscriptions/', SubscriptionId, '/resourceGroups/', ResourceGroup, '/providers/Microsoft.AzureStackHCI/clusters/', ClusterName)
+| extend ClusterPortalUrl  = strcat('https://portal.azure.com/#@/resource', ClusterResourceId)
 | extend checks = properties.healthCheckResult
 | mv-expand hc = checks
 | where tostring(hc.status) =~ 'Failed'
@@ -156,12 +165,15 @@ $severityClause
     ResourceGroup,
     SubscriptionId,
     ClusterResourceId,
-    Severity         = tostring(hc.severity),
-    FailureName      = tostring(hc.name),
-    FailureReason    = tostring(hc.displayName),
-    Description      = tostring(hc.description),
-    Remediation      = tostring(hc.remediation),
-    LastOccurrence   = todatetime(hc.timestamp)
+    ClusterPortalUrl,
+    Severity            = tostring(hc.severity),
+    FailureName         = tostring(hc.name),
+    FailureReason       = tostring(hc.displayName),
+    Description         = tostring(hc.description),
+    Remediation         = tostring(hc.remediation),
+    TargetResourceName  = tostring(hc.targetResourceName),
+    TargetResourceType  = tostring(hc.targetResourceType),
+    LastOccurrence      = todatetime(hc.timestamp)
 | extend SeverityOrder = case(Severity =~ 'Critical', 1, Severity =~ 'Warning', 2, 3)
 | order by SeverityOrder asc, ClusterName asc, FailureReason asc
 | project-away SeverityOrder
@@ -220,34 +232,48 @@ $ringFilter
 
     # Build the output the caller asked for.
     if ($View -eq 'Summary') {
-        # Aggregate: one row per (FailureReason, Severity). Most widespread
-        # issue first (ClusterCount desc), then Critical before Warning, then
-        # most-frequent first within a tie.
+        # Aggregate: one row per (FailureReason, Severity). v0.7.70 sort
+        # precedence: Severity FIRST (Critical before Warning) so reviewers
+        # see the highest-blast-radius row at the top regardless of cluster
+        # count, then ClusterCount desc (widespread before isolated), then
+        # FailureCount desc as a tie-breaker.
         $output = @($rows |
             Group-Object -Property FailureReason, Severity |
             ForEach-Object {
                 $first       = $_.Group | Select-Object -First 1
                 $clusterList = @($_.Group | Select-Object -ExpandProperty ClusterName -Unique | Sort-Object)
+                # Pair each affected cluster with its portal URL, preserving
+                # alphabetical order so the two list columns line up index
+                # for index when a downstream renderer zips them into a
+                # single hyperlink list.
+                $clusterPortalUrls = @(
+                    foreach ($cn in $clusterList) {
+                        $portalRow = $_.Group | Where-Object { $_.ClusterName -eq $cn } | Select-Object -First 1
+                        if ($portalRow -and $portalRow.ClusterPortalUrl) { $portalRow.ClusterPortalUrl } else { '' }
+                    }
+                )
                 $latest      = ($_.Group | Measure-Object -Property LastOccurrence -Maximum).Maximum
                 [PSCustomObject]@{
-                    FailureReason    = $first.FailureReason
-                    Severity         = $first.Severity
-                    ClusterCount     = $clusterList.Count
-                    FailureCount     = $_.Group.Count
-                    AffectedClusters = ($clusterList -join ';')
-                    LatestOccurrence = $latest
-                    Description      = $first.Description
-                    Remediation      = $first.Remediation
+                    FailureReason            = $first.FailureReason
+                    Severity                 = $first.Severity
+                    ClusterCount             = $clusterList.Count
+                    FailureCount             = $_.Group.Count
+                    AffectedClusters         = ($clusterList -join '; ')
+                    AffectedClusterPortalUrls = ($clusterPortalUrls -join '; ')
+                    LatestOccurrence         = $latest
+                    Description              = $first.Description
+                    Remediation              = $first.Remediation
                 }
             } |
-            Sort-Object @{Expression={$_.ClusterCount};Descending=$true},
-                       @{Expression={ if($_.Severity -eq 'Critical'){1}elseif($_.Severity -eq 'Warning'){2}else{3} };Descending=$false},
+            Sort-Object @{Expression={ if($_.Severity -eq 'Critical'){1}elseif($_.Severity -eq 'Warning'){2}else{3} };Descending=$false},
+                       @{Expression={$_.ClusterCount};Descending=$true},
                        @{Expression={$_.FailureCount};Descending=$true}
         )
     } else {
         # Detail view: pass-through after surfacing severity ordering so that
         # JUnit and CSV consumers see Critical rows before Warning rows.
-        $output = @($rows | Select-Object ClusterName, ResourceGroup, SubscriptionId, Severity, FailureReason, FailureName, Description, Remediation, LastOccurrence, ClusterResourceId)
+        # v0.7.70 added TargetResourceName, TargetResourceType, ClusterPortalUrl.
+        $output = @($rows | Select-Object ClusterName, ResourceGroup, SubscriptionId, Severity, FailureReason, FailureName, Description, Remediation, TargetResourceName, TargetResourceType, LastOccurrence, ClusterResourceId, ClusterPortalUrl)
     }
 
     # Export if requested.
