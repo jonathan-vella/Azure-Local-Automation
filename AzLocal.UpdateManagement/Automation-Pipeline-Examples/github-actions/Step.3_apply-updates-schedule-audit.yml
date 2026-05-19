@@ -83,7 +83,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.73'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.74'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
@@ -222,10 +222,16 @@ jobs:
         $recoMd    = Join-Path $outputDir 'schedule-coverage-recommend.md'
         $matrixCsv = Join-Path $outputDir 'schedule-coverage-matrix.csv'
 
+        # v0.7.74: pin -Platform GitHubActions so the Recommend snippet ONLY
+        # emits the GitHub Actions cron block (not the ADO `schedules:` block,
+        # which would be irrelevant noise in a GitHub Actions Step Summary).
+        # The cmdlet's default is 'Both' (intentional for ad-hoc operator use),
+        # so the pipeline yml has to specify which platform it's running on.
         $auditArgs = @{
             View             = 'Audit'
             LeadTimeMinutes  = $leadTime
             ExportPath       = $auditCsv
+            Platform         = 'GitHubActions'
             PassThru         = $true
         }
         if ($havePipeline) { $auditArgs.PipelineYamlPath = $pipelinePath }
@@ -237,8 +243,8 @@ jobs:
         # Matrix view (CSV only).
         Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
 
-        # Recommend view (markdown snippet).
-        Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -ExportPath $recoMd | Out-Null
+        # Recommend view (markdown snippet) - GitHub Actions only.
+        Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -Platform GitHubActions -ExportPath $recoMd | Out-Null
 
         $covered     = @($audit | Where-Object Status -eq 'Covered')
         $uncovered   = @($audit | Where-Object Status -eq 'Uncovered')

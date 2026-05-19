@@ -5,6 +5,40 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.74] - 2026-05-19
+
+> **Backward compatible.** Hot-fix on top of v0.7.73 that **(a)** fixes a regression in `Get-AzLocalFleetHealthOverview` where the v0.7.73 KQL grew past the `az graph query -q` argument-truncation threshold (~2.8 KB wire-side) and surfaced as `ParserFailure: token=<EOF>` at character 2757 on the wire, and **(b)** substantially improves the Step.3 - Apply-Updates Schedule Coverage Audit operator output so the recommendation block is a true step-by-step remediation guide rather than a sparse advisory.
+
+### Fixed
+
+- **`Get-AzLocalFleetHealthOverview` no longer fails with `ParserFailure: token=<EOF>`.** The v0.7.73 change introduced a `case()` mapping plus a six-line KQL `//` comment block which together pushed the wire query from `~2400` chars (v0.7.72 baseline) to `3115` chars. The Azure CLI's `az graph query -q <query>` argument layer truncates very long single-arg payloads on Windows around 2.8 KB; the truncated query lands mid-projection so the ARG parser sees an unterminated statement and returns `BadRequest / InvalidQuery / ParserFailure` with `characterPositionInLine=2757, token=<EOF>`. Symptom: `Step.7 - Fleet Health Status` failed with exit code 1 the moment the cmdlet was invoked, even though Step.7's separate "Detail" ARG query (shorter) succeeded. Verified end-to-end against the same live 20-cluster fleet: after the v0.7.74 fix the wire query is back to `2396` chars (matches the v0.7.72 baseline length), the cmdlet returns 20 cluster rows, and the normalised `HealthStatus` distribution from v0.7.73 (`10 Healthy / 7 Critical / 2 Warning / 1 In progress`) is preserved.
+- **Fix:** (1) The six-line `//` KQL comment block is dropped from the here-string and re-expressed as PowerShell `#` comments above the assignment - documentation for the source reader, no wire-side bytes. (2) The `case()` projection is compacted to a single line (semantically identical). A new inline `IMPORTANT` PowerShell comment above the `$kql` here-string flags the constraint so future contributors do not re-introduce it.
+- **`Test-AzureLocalApplyUpdatesScheduleCoverage` Step.3 pipeline scripts no longer emit cross-platform noise.** The cmdlet's `-Platform` parameter defaults to `'Both'`, which surfaced both the GitHub Actions `schedule:` block AND the Azure DevOps `schedules:` block in every Step.3 run regardless of which CI platform was running it. Both Step.3 yml files now pin `-Platform GitHubActions` (GH) / `-Platform AzureDevOps` (ADO) on both the `Audit` and `Recommend` view calls so the Step Summary contains exactly one platform-appropriate snippet.
+
+### Changed
+
+- **Step.3 Apply-Updates Schedule Coverage Audit recommendation block is now a proper step-by-step remediation guide.** Previously the output was a sparse 4-section advisory with one paragraph per finding; operators reported it was "very hard to follow and understand what to do". The v0.7.74 output adds:
+  - **Top-of-block "Fix-in-this-order checklist"** when 2+ action sections are emitted, with N+1 ordered bullets that name the file to edit and the consequence of skipping the step. Surfaces the order the advisor uses internally (ring diff → orphans → unparseable crons → cron coverage → re-run) so the operator does not have to derive it from the section headings.
+  - **`**Why this matters.**` paragraph in every section** that names the specific runtime cmdlet that depends on the configuration being fixed (`Resolve-AzLocalCurrentUpdateRing`, `Test-AzureLocalUpdateScheduleAllowed`) and the silent-skip failure mode the operator avoids by following the fix.
+  - **"How to fix" subsection in the missing-rings section** with a full `apply-updates-schedule.yml` skeleton snippet showing the existing `schedule:` block AND a placeholder row PER missing ring (`TODO:` markers on `weeksInCycle`, `daysOfWeek`, `notes`). The snippet is annotated with the cluster count for each missing ring and an `AzLocal.UpdateManagement v<version> advisor: add row(s) like these <<<` header so it is unambiguous where the operator-edited content begins.
+  - **Ready-to-paste (uncommented) cron block in the cron-coverage section.** Replaces the prior `# commented` form (which operators were copy-pasting verbatim including the `# ` prefixes). The snippet is now a real `on:` (GitHub Actions) or `schedules:` (Azure DevOps) block, with one cron line per UpdateWindow plus a trailing yaml `#` annotation showing the rings and cluster count served by that cron. The block honors `-Platform` so single-platform callers see exactly one snippet.
+  - **Action wording is platform-aware** - the recommendation text names the exact pipeline file (`.github/workflows/Step.5_apply-updates.yml` vs `.azuredevops/Step.5_apply-updates.yml`) and the exact schedule file (`.github/apply-updates-schedule.yml` vs `.azuredevops/apply-updates-schedule.yml`) when `-Platform` is pinned to a single platform.
+  - **Two-choice fix tables for orphaned rings** spell out both options - retag a cluster onto the ring (via `Set-AzureLocalClusterUpdateRingTag`) OR remove the ring from the schedule file - so operators do not default to deletion when they actually wanted to bring a cluster onto the ring.
+
+### Pipeline pin bumps
+
+All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.73'` to `'0.7.74'`. Refresh existing copies with:
+
+```powershell
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+### Migration notes
+
+- **No cmdlet signature change.** `Get-AzLocalFleetHealthOverview` returns the same shape and the same normalised `HealthStatus` vocabulary it returned in v0.7.73 - only the underlying wire query is shorter so it no longer trips the truncation.
+- **No mandatory yml change** beyond the version pin bump. The v0.7.74 Step.3 yml changes (adding `-Platform GitHubActions` / `-Platform AzureDevOps`) are recommended-but-not-required - the cmdlet still works against the v0.7.73 yml; you just continue to see the cross-platform noise until the yml is refreshed.
+
 ## [0.7.73] - 2026-05-19
 
 > **Backward compatible.** Bug-fix release on top of v0.7.72. The `Get-AzLocalFleetHealthOverview` cmdlet's `HealthStatus` column was passing the raw Azure Resource Graph `properties.healthState` values (`Success` / `Failure` / `Warning` / `InProgress` / `NotKnown`) through unchanged, even though the cmdlet's own doc comment, the downstream Step.7 pipeline filter, and the Step.7 Fleet Health Overview rendering switch all expected the operator-friendly vocabulary `Healthy` / `Critical` / `Warning` / `In progress` / `Unknown`. Symptom: `Step.7 - Fleet Health Status` reported `Healthy Clusters = 0` against any fleet (verified against a live 20-cluster fleet: 10 Success / 8 Failure / 2 Warning); the Fleet Health Overview markdown table rendered the `[Success]` / `[Failure]` default-bracket fallback instead of the intended icon labels. The KQL projection now normalises in `case()`: `Success -> Healthy`, `Failure -> Critical`, `InProgress -> In progress`, `NotKnown -> Unknown`, empty -> Unknown; `Warning` is passed through unchanged; any future raw value also passes through so it stays visible (rather than being silently bucketed as `Unknown`). After the fix, Step.7 reports `Healthy Clusters = 10` for the same live fleet and the overview table renders the intended icons. **No filter or switch changes required in the pipeline samples** - the v0.7.72 pin already used the correct vocabulary; the v0.7.73 module simply emits values that match. Pipeline pin bumps to `'0.7.73'`; refresh existing copies with `Update-AzureLocalPipelineExample`.

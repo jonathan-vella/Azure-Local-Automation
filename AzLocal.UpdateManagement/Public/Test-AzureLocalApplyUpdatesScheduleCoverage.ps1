@@ -406,28 +406,53 @@ resources
                 }
             }
 
-            # Build the cron-coverage YAML snippet (existing behaviour).
+            # Build the cron-coverage YAML snippet.
+            # v0.7.74: emit a READY-TO-PASTE uncommented form for the
+            # selected platform (the prior `# commented` form was confusing
+            # operators - they were copying it verbatim including the `# `
+            # prefixes). When -Platform is 'Both' (interactive default) we
+            # emit both forms each inside their own clearly-labelled YAML
+            # block. Pipeline yml ALWAYS pins -Platform to its own host so
+            # operators see exactly one block.
             $cronSb = New-Object System.Text.StringBuilder
-            if ($Platform -in @('GitHubActions','Both')) {
-                [void]$cronSb.AppendLine('# --- GitHub Actions: paste under Step.5_apply-updates.yml `on:` ---')
-                [void]$cronSb.AppendLine('# schedule:')
-                foreach ($k in ($byCron.Keys | Sort-Object)) {
-                    $entry = $byCron[$k]
-                    [void]$cronSb.AppendLine(("#   - cron: '{0}'   # {1} (rings: {2}, {3} cluster(s))" -f $k, $entry.Segment, (($entry.Rings | Sort-Object -Unique) -join ','), $entry.Clusters))
+            $sortedCronKeys = @($byCron.Keys | Sort-Object)
+            $emitGh = $Platform -in @('GitHubActions','Both')
+            $emitAdo = $Platform -in @('AzureDevOps','Both')
+
+            if ($emitGh) {
+                if ($emitAdo) {
+                    [void]$cronSb.AppendLine('### GitHub Actions - paste under the `on:` key in Step.5_apply-updates.yml')
+                    [void]$cronSb.AppendLine()
                 }
-                [void]$cronSb.AppendLine()
+                [void]$cronSb.AppendLine('```yaml')
+                [void]$cronSb.AppendLine('on:')
+                [void]$cronSb.AppendLine('  workflow_dispatch:')
+                [void]$cronSb.AppendLine('  schedule:')
+                foreach ($k in $sortedCronKeys) {
+                    $entry = $byCron[$k]
+                    [void]$cronSb.AppendLine(("    - cron: '{0}'   # {1} (rings: {2}, {3} cluster(s))" -f $k, $entry.Segment, (($entry.Rings | Sort-Object -Unique) -join ','), $entry.Clusters))
+                }
+                [void]$cronSb.AppendLine('```')
+                if ($emitAdo) {
+                    [void]$cronSb.AppendLine()
+                }
             }
-            if ($Platform -in @('AzureDevOps','Both')) {
-                [void]$cronSb.AppendLine('# --- Azure DevOps: paste at the top level of Step.5_apply-updates.yml ---')
-                [void]$cronSb.AppendLine('# schedules:')
-                foreach ($k in ($byCron.Keys | Sort-Object)) {
-                    $entry = $byCron[$k]
-                    [void]$cronSb.AppendLine(("#   - cron: '{0}'   # {1} (rings: {2}, {3} cluster(s))" -f $k, $entry.Segment, (($entry.Rings | Sort-Object -Unique) -join ','), $entry.Clusters))
-                    [void]$cronSb.AppendLine('#     displayName: "Apply Updates - covers above window"')
-                    [void]$cronSb.AppendLine('#     branches:')
-                    [void]$cronSb.AppendLine('#       include: [ main ]')
-                    [void]$cronSb.AppendLine('#     always: true')
+            if ($emitAdo) {
+                if ($emitGh) {
+                    [void]$cronSb.AppendLine('### Azure DevOps - paste at the top level of Step.5_apply-updates.yml')
+                    [void]$cronSb.AppendLine()
                 }
+                [void]$cronSb.AppendLine('```yaml')
+                [void]$cronSb.AppendLine('schedules:')
+                foreach ($k in $sortedCronKeys) {
+                    $entry = $byCron[$k]
+                    [void]$cronSb.AppendLine(("  - cron: '{0}'   # {1} (rings: {2}, {3} cluster(s))" -f $k, $entry.Segment, (($entry.Rings | Sort-Object -Unique) -join ','), $entry.Clusters))
+                    [void]$cronSb.AppendLine('    displayName: "Apply Updates - covers above window"')
+                    [void]$cronSb.AppendLine('    branches:')
+                    [void]$cronSb.AppendLine('      include: [ main ]')
+                    [void]$cronSb.AppendLine('    always: true')
+                }
+                [void]$cronSb.AppendLine('```')
             }
             $cronSnippetBody = $cronSb.ToString()
 
@@ -452,21 +477,92 @@ resources
             $actionCount      = @($hasMissing, $hasOrphaned, $hasUnparseable, ($byCron.Count -gt 0)) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
             $actionIdx        = 0
 
+            # v0.7.74: human-friendly platform/file labels used by the
+            # remediation guidance below. When -Platform is 'Both' we
+            # generalise to "your Step.5 apply-updates pipeline yml".
+            $scheduleFileLabel = if ($SchedulePath) { $SchedulePath } else {
+                switch ($Platform) {
+                    'GitHubActions' { '.github/apply-updates-schedule.yml' }
+                    'AzureDevOps'   { '.azuredevops/apply-updates-schedule.yml' }
+                    default         { 'apply-updates-schedule.yml' }
+                }
+            }
+            $step5FileLabel = switch ($Platform) {
+                'GitHubActions' { '.github/workflows/Step.5_apply-updates.yml' }
+                'AzureDevOps'   { '.azuredevops/Step.5_apply-updates.yml' }
+                default         { 'Step.5_apply-updates.yml' }
+            }
+
             $fullSb = New-Object System.Text.StringBuilder
+
+            # v0.7.74: top-of-section "Fix-in-this-order" checklist. Only
+            # surfaced when there are 2+ action sections, otherwise the
+            # single-section body is its own checklist.
+            if ($actionCount -ge 2) {
+                [void]$fullSb.AppendLine('## Fix-in-this-order checklist')
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine("Resolve the $actionCount finding(s) below in this exact order. Fixing them out of order can produce a `"looks fixed but does not fire`" outcome:")
+                [void]$fullSb.AppendLine()
+                $checkIdx = 0
+                if ($hasMissing) {
+                    $checkIdx++
+                    [void]$fullSb.AppendLine("$checkIdx. **Add missing rings** to ``$scheduleFileLabel`` (Step $checkIdx below). Until each ring tagged on the fleet appears in at least one schedule row, ``Resolve-AzLocalCurrentUpdateRing`` returns nothing for those clusters and Step.5 silently skips them.")
+                }
+                if ($hasOrphaned) {
+                    $checkIdx++
+                    [void]$fullSb.AppendLine("$checkIdx. **Prune orphaned rings** from ``$scheduleFileLabel`` (Step $checkIdx below). Low blast radius - dead-code cleanup so the schedule file reflects only rings that exist on the fleet.")
+                }
+                if ($hasUnparseable) {
+                    $checkIdx++
+                    [void]$fullSb.AppendLine("$checkIdx. **Simplify unparseable cron line(s)** in ``$step5FileLabel`` (Step $checkIdx below). The advisor cannot reason about these, so the cron-coverage recommendation in the next step may over-suggest entries that duplicate what an already-correct-but-unparseable line is doing.")
+                }
+                if ($byCron.Count -gt 0) {
+                    $checkIdx++
+                    [void]$fullSb.AppendLine("$checkIdx. **Add missing cron entries** to ``$step5FileLabel`` (Step $checkIdx below). Until each UpdateWindow has at least one cron firing inside its lead-time envelope, Step.5 never wakes up for those clusters even when their ring is eligible today.")
+                }
+                $checkIdx++
+                [void]$fullSb.AppendLine("$checkIdx. **Commit the edits and re-run this Step.3 pipeline** to confirm all (Ring, Window) pairs are green.")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine('---')
+                [void]$fullSb.AppendLine()
+            }
 
             if ($hasMissing) {
                 $actionIdx++
                 $prefix = if ($actionCount -gt 1) { " ($actionIdx of $actionCount)" } else { '' }
                 [void]$fullSb.AppendLine("## Action required$prefix - add these rings to your apply-updates-schedule.yml")
                 [void]$fullSb.AppendLine()
-                [void]$fullSb.AppendLine("These ring(s) are tagged on at least one cluster but do not appear in any row of ``$SchedulePath``. Resolve-AzLocalCurrentUpdateRing will never return them, so Step.5 apply-updates will NEVER fire on those clusters until you either add the ring to the schedule or retag those clusters onto an existing scheduled ring.")
+                [void]$fullSb.AppendLine("**Why this matters.** ``Resolve-AzLocalCurrentUpdateRing`` builds its eligible-rings set ONLY from rows in ``$scheduleFileLabel``. When a cluster is tagged with an ``UpdateRing`` value that no row references, the resolver returns ``\$null`` for that cluster, ``Start-AzLocalApplyUpdate`` is never called, and the cluster silently falls off the apply-updates train. There is no error - the only visible signal is this advisor.")
                 [void]$fullSb.AppendLine()
-                [void]$fullSb.AppendLine('| UpdateRing | Clusters | Fix |')
+                [void]$fullSb.AppendLine('### Missing rings detected')
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine('| UpdateRing | Cluster count | Resolution choices |')
                 [void]$fullSb.AppendLine('|---|---|---|')
                 foreach ($ring in ($missingFromSchedule | Sort-Object)) {
                     $clusterCount = @($clusters | Where-Object { $_.UpdateRing -and ($_.UpdateRing.Trim() -ieq $ring) }).Count
-                    [void]$fullSb.AppendLine("| $ring | $clusterCount | Add ``$ring`` to an existing schedule row's ``rings`` column (semicolon-separated), or retag the cluster(s) onto an existing scheduled ring. The advisor does NOT auto-suggest a row (weeksInCycle / daysOfWeek / startTime are deliberate ring-cadence decisions for the operator). |")
+                    [void]$fullSb.AppendLine("| ``$ring`` | $clusterCount | (a) **Add a row** for ``$ring`` to ``$scheduleFileLabel`` (skeleton below), OR (b) **retag** the $clusterCount cluster(s) onto an existing scheduled ring via ``Set-AzureLocalClusterUpdateRingTag``. |")
                 }
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine("### How to fix - edit ``$scheduleFileLabel``")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine("Append the following row(s) under the existing ``schedule:`` block. The advisor does NOT pick ``weeksInCycle`` / ``daysOfWeek`` for you - those are deliberate ring-cadence decisions for the operator. The ``TODO:`` markers below highlight every value you must set before committing.")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine('```yaml')
+                [void]$fullSb.AppendLine('schedule:')
+                [void]$fullSb.AppendLine('  # ... existing rows ...')
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine("  # >>> AzLocal.UpdateManagement v$($script:ModuleVersion) advisor: add row(s) like these for missing rings <<<")
+                foreach ($ring in ($missingFromSchedule | Sort-Object)) {
+                    $clusterCount = @($clusters | Where-Object { $_.UpdateRing -and ($_.UpdateRing.Trim() -ieq $ring) }).Count
+                    [void]$fullSb.AppendLine("  - weeksInCycle: '*'           # TODO: pick a cycleWeek subset (e.g. '5-8' for late phase)")
+                    [void]$fullSb.AppendLine("    daysOfWeek:   'Tue,Wed,Thu' # TODO: pick maintenance days (avoid Fri for prod-grade rings)")
+                    [void]$fullSb.AppendLine(("    rings:        '{0}'        # missing ring - {1} cluster(s) currently tagged UpdateRing={0}" -f $ring, $clusterCount))
+                    [void]$fullSb.AppendLine("    notes:        'TODO: change-control reference'")
+                    [void]$fullSb.AppendLine()
+                }
+                [void]$fullSb.AppendLine('```')
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine("After editing, commit ``$scheduleFileLabel`` to your default branch and re-run Step.3 to confirm the rings are now resolved.")
                 [void]$fullSb.AppendLine()
             }
 
@@ -475,12 +571,12 @@ resources
                 $prefix = if ($actionCount -gt 1) { " ($actionIdx of $actionCount)" } else { '' }
                 [void]$fullSb.AppendLine("## Action required$prefix - prune orphaned rings from your apply-updates-schedule.yml")
                 [void]$fullSb.AppendLine()
-                [void]$fullSb.AppendLine("These ring(s) are listed in ``$SchedulePath`` but no cluster in the fleet carries an UpdateRing tag matching them. The schedule row(s) that reference them will resolve to a ring that matches nothing, so the schedule entry is dead weight.")
+                [void]$fullSb.AppendLine("**Why this matters.** These ring values appear in the ``rings:`` column of at least one row in ``$scheduleFileLabel`` but no cluster in the fleet carries an ``UpdateRing`` tag matching them. The schedule entry is dead weight - ``Resolve-AzLocalCurrentUpdateRing`` will resolve to a ring value that matches no cluster, so the row contributes nothing on its eligible days. Pruning keeps the schedule file an accurate inventory.")
                 [void]$fullSb.AppendLine()
-                [void]$fullSb.AppendLine('| UpdateRing | Fix |')
+                [void]$fullSb.AppendLine('| UpdateRing | Resolution choices |')
                 [void]$fullSb.AppendLine('|---|---|')
                 foreach ($ring in ($orphanedInSchedule | Sort-Object)) {
-                    [void]$fullSb.AppendLine("| $ring | Either tag at least one cluster with ``UpdateRing=$ring`` (e.g. Set-AzureLocalClusterUpdateRingTag), or remove ``$ring`` from the schedule file's ``rings`` column(s). |")
+                    [void]$fullSb.AppendLine("| ``$ring`` | (a) **Tag** at least one cluster with ``UpdateRing=$ring`` via ``Set-AzureLocalClusterUpdateRingTag -UpdateRing $ring -ClusterName <name>``, OR (b) **Remove** ``$ring`` from the schedule file's ``rings:`` column(s) (if the row only references this ring, delete the whole row). |")
                 }
                 [void]$fullSb.AppendLine()
             }
@@ -490,9 +586,9 @@ resources
                 $prefix = if ($actionCount -gt 1) { " ($actionIdx of $actionCount)" } else { '' }
                 [void]$fullSb.AppendLine("## Action required$prefix - simplify unparseable cron expression(s)")
                 [void]$fullSb.AppendLine()
-                [void]$fullSb.AppendLine("The advisor could not reason about the following cron line(s). UpdateWindow coverage for these crons was NOT evaluated, so the cron-coverage recommendation below may over-suggest entries that duplicate what an already-correct-but-unparseable line is doing. Resolve these first.")
+                [void]$fullSb.AppendLine("**Why this matters.** The advisor could not statically reason about the following cron line(s) in ``$step5FileLabel``. UpdateWindow coverage for these crons was NOT evaluated, so the cron-coverage recommendation below may over-suggest entries that duplicate what an already-correct-but-unparseable line is doing. Resolve these first.")
                 [void]$fullSb.AppendLine()
-                [void]$fullSb.AppendLine('Supported syntax: ``minute`` and ``hour`` may be a literal value, a comma-list, or a range (``a-b``); ``day-of-month`` and ``month`` must be ``*``; ``day-of-week`` may be ``*``, a literal value, a comma-list, or a range. Step values (``*/n``), lists/ranges in ``day-of-month`` or ``month``, and names (``MON``, ``JAN``) are not yet supported.')
+                [void]$fullSb.AppendLine('**Supported syntax:** ``minute`` and ``hour`` may be a literal value, a comma-list, or a range (``a-b``); ``day-of-month`` and ``month`` must be ``*``; ``day-of-week`` may be ``*``, a literal value, a comma-list, or a range. Step values (``*/n``), lists/ranges in ``day-of-month`` or ``month``, and names (``MON``, ``JAN``) are not yet supported - split a complex cron into multiple simpler crons if needed.')
                 [void]$fullSb.AppendLine()
                 [void]$fullSb.AppendLine('| Source (file:line) | Cron | Parser error | Fix |')
                 [void]$fullSb.AppendLine('|---|---|---|---|')
@@ -500,7 +596,7 @@ resources
                     $src  = "$($pc.Source.RelativePath):$($pc.Source.LineNumber)"
                     $cron = ($pc.Source.CronExpression -replace '\|','\|')
                     $err  = (($pc.Parsed.ErrorMessage) -replace '\|','\|')
-                    [void]$fullSb.AppendLine("| ``$src`` | ``$cron`` | $err | Rewrite the expression using only the supported subset above (split a complex cron into multiple simpler crons if needed), or remove the line if the cluster(s) it targets are now covered by another cron. |")
+                    [void]$fullSb.AppendLine("| ``$src`` | ``$cron`` | $err | Rewrite using the supported subset above (split into multiple crons if needed), or remove the line if its cluster(s) are now covered by another cron. |")
                 }
                 [void]$fullSb.AppendLine()
             }
@@ -510,13 +606,23 @@ resources
                 $prefix = if ($actionCount -gt 1) { " ($actionIdx of $actionCount)" } else { '' }
                 [void]$fullSb.AppendLine("## Action required$prefix - cron coverage")
                 [void]$fullSb.AppendLine()
-                [void]$fullSb.AppendLine('Paste the following cron snippet into Step.5_apply-updates.yml so the pipeline fires inside every UpdateWindow currently tagged on the fleet:')
+                [void]$fullSb.AppendLine("**Why this matters.** Step.5 apply-updates is a scheduled pipeline - it only runs when one of its ``cron`` entries fires. ``Test-AzureLocalUpdateScheduleAllowed`` then gates each cluster on its per-cluster ``UpdateWindow`` tag. If NO cron fires inside an UpdateWindow's lead-time envelope, the gate is never even reached and the cluster is silently skipped that day.")
                 [void]$fullSb.AppendLine()
-                [void]$fullSb.AppendLine('```yaml')
+                [void]$fullSb.AppendLine("Each cron below is set to ``LeadTimeMinutes`` minutes BEFORE the start of its UpdateWindow segment so ``Test-AzureLocalUpdateScheduleAllowed`` opens the gate exactly when expected. Adjust the value of ``LeadTimeMinutes`` on Step.3 if your fleet needs a different lead time.")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine("### How to fix - edit ``$step5FileLabel``")
+                [void]$fullSb.AppendLine()
+                if ($emitGh -and -not $emitAdo) {
+                    [void]$fullSb.AppendLine('Replace (or merge with) the existing `on:` block at the top of the workflow:')
+                } elseif ($emitAdo -and -not $emitGh) {
+                    [void]$fullSb.AppendLine('Add (or merge with) a top-level `schedules:` block:')
+                } else {
+                    [void]$fullSb.AppendLine('Choose the snippet matching your CI platform and paste/merge into your Step.5 pipeline file:')
+                }
+                [void]$fullSb.AppendLine()
                 foreach ($line in ($cronSnippetBody -split "`r?`n")) {
                     [void]$fullSb.AppendLine($line)
                 }
-                [void]$fullSb.AppendLine('```')
             }
 
             $snippet = $fullSb.ToString()

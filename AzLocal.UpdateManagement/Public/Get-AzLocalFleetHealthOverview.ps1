@@ -103,12 +103,24 @@ function Get-AzLocalFleetHealthOverview {
     # sides of the join lower-case the resource id so the ARM mixed-case
     # vs the extensibilityresources path (also mixed-case but built from
     # split segments) match deterministically.
+    #
+    # v0.7.74: HealthStatus normalises raw ARG `properties.healthState`
+    # (Success / Failure / InProgress / Warning / NotKnown) to the documented
+    # operator-friendly vocabulary the rest of the module + pipeline samples
+    # consume: Healthy / Critical / Warning / In progress / Unknown. Any
+    # future-added raw state passes through unchanged so it is still visible.
+    #
+    # IMPORTANT: keep this wire query lean. The az CLI argument layer truncates
+    # very long single-arg payloads (observed regression in v0.7.73 at ~3.1KB
+    # producing a KQL ParserFailure with token=<EOF>). Do NOT add `//` KQL
+    # comments inside the here-string - document with PowerShell `#` comments
+    # above the assignment instead.
     $kql = @"
 resources
 | where type =~ 'microsoft.azurestackhci/clusters'
 $ringFilter
 | extend ClusterResourceIdLower = tolower(tostring(id))
-| extend NodeCount       = iif(isnull(properties.reportedProperties.nodes), 0, toint(array_length(properties.reportedProperties.nodes)))
+| extend NodeCount = iif(isnull(properties.reportedProperties.nodes), 0, toint(array_length(properties.reportedProperties.nodes)))
 | extend AzureConnection = tostring(properties.connectivityStatus)
 | project ClusterName=name, ClusterResourceId=tostring(id), ClusterResourceIdLower, ResourceGroup=tostring(resourceGroup), SubscriptionId=tostring(subscriptionId), NodeCount, AzureConnection
 | join kind=leftouter (
@@ -116,48 +128,17 @@ $ringFilter
     | where type =~ 'microsoft.azurestackhci/clusters/updatesummaries'
     | extend segs = split(id, '/')
     | extend ClusterResourceIdLower = tolower(strcat('/subscriptions/', segs[2], '/resourceGroups/', segs[4], '/providers/Microsoft.AzureStackHCI/clusters/', segs[8]))
-    | extend HealthState_    = tostring(properties.healthState)
-    | extend UpdateState_    = tostring(properties.state)
+    | extend HealthState_ = tostring(properties.healthState)
+    | extend UpdateState_ = tostring(properties.state)
     | extend CurrentVersion_ = tostring(properties.currentVersion)
-    | extend LastChecked_    = todatetime(properties.healthCheckDate)
+    | extend LastChecked_ = todatetime(properties.healthCheckDate)
     | mv-expand pkg = properties.packageVersions
-    | summarize
-        HealthState    = any(HealthState_),
-        UpdateState    = any(UpdateState_),
-        CurrentVersion = any(CurrentVersion_),
-        LastChecked    = max(LastChecked_),
-        SbeVersion     = maxif(tostring(pkg.version), tostring(pkg.packageType) =~ 'SBE')
-        by ClusterResourceIdLower
+    | summarize HealthState=any(HealthState_), UpdateState=any(UpdateState_), CurrentVersion=any(CurrentVersion_), LastChecked=max(LastChecked_), SbeVersion=maxif(tostring(pkg.version), tostring(pkg.packageType) =~ 'SBE') by ClusterResourceIdLower
     | project ClusterResourceIdLower, HealthState, UpdateState, CurrentVersion, LastChecked, SbeVersion
 ) on ClusterResourceIdLower
 | extend HealthResultsAgeDays = iif(isnull(LastChecked), -1, datetime_diff('day', now(), LastChecked))
-| extend ClusterPortalUrl     = strcat('https://portal.azure.com/#@/resource', ClusterResourceId)
-| project
-    ClusterName,
-    ClusterPortalUrl,
-    // Normalise raw ARG values from `properties.healthState` (Success / Failure /
-    // InProgress / Warning / NotKnown) to the documented operator-friendly
-    // vocabulary the rest of the module + pipeline samples consume: Healthy,
-    // Critical, Warning, In progress, Unknown. Anything not in the known set
-    // is passed through so a future-added state is still visible (rather than
-    // silently bucketed as 'Unknown').
-    HealthStatus    = case(
-        isempty(HealthState),         'Unknown',
-        HealthState =~ 'Success',     'Healthy',
-        HealthState =~ 'Failure',     'Critical',
-        HealthState =~ 'InProgress',  'In progress',
-        HealthState =~ 'NotKnown',    'Unknown',
-        HealthState
-    ),
-    UpdateStatus    = iif(isempty(UpdateState),     'Unknown',   UpdateState),
-    CurrentVersion  = iif(isempty(CurrentVersion),  '(unknown)', CurrentVersion),
-    SbeVersion      = iif(isempty(SbeVersion),      '(none)',    SbeVersion),
-    AzureConnection = iif(isempty(AzureConnection), 'Unknown',   AzureConnection),
-    LastChecked,
-    HealthResultsAgeDays,
-    ResourceGroup,
-    NodeCount,
-    SubscriptionId
+| extend ClusterPortalUrl = strcat('https://portal.azure.com/#@/resource', ClusterResourceId)
+| project ClusterName, ClusterPortalUrl, HealthStatus = case(isempty(HealthState),'Unknown', HealthState =~ 'Success','Healthy', HealthState =~ 'Failure','Critical', HealthState =~ 'InProgress','In progress', HealthState =~ 'NotKnown','Unknown', HealthState), UpdateStatus = iif(isempty(UpdateState),'Unknown',UpdateState), CurrentVersion = iif(isempty(CurrentVersion),'(unknown)',CurrentVersion), SbeVersion = iif(isempty(SbeVersion),'(none)',SbeVersion), AzureConnection = iif(isempty(AzureConnection),'Unknown',AzureConnection), LastChecked, HealthResultsAgeDays, ResourceGroup, NodeCount, SubscriptionId
 | order by HealthResultsAgeDays desc, ClusterName asc
 "@
 
