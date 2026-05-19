@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.72'
+    ModuleVersion = '0.7.73'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -203,6 +203,47 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.73 - Bug fix: Get-AzLocalFleetHealthOverview normalises ARG HealthState values so Step.7 "Healthy Clusters" count is correct (was 0 against any fleet)
+
+### Fixed
+
+- **`Get-AzLocalFleetHealthOverview` HealthStatus now matches its
+  documented contract.** The cmdlet's doc comment, downstream pipeline
+  filters (`Step.7_fleet-health-status.yml`), and rendering switch
+  expected `Healthy` / `Critical` / `Warning` / `In progress` / `Unknown`,
+  but Azure Resource Graph's `properties.healthState` field on the
+  `microsoft.azurestackhci/clusters/updatesummaries` extensibility
+  resource actually emits the raw ARM values `Success` / `Failure` /
+  `Warning` / `InProgress` / `NotKnown`. The KQL projection passed those
+  through verbatim, so the Step.7 panel reported `Healthy Clusters = 0`
+  against any fleet that contained healthy clusters, and the rendered
+  Fleet Health Overview table fell through to the default-bracket
+  branch (`[Success]` / `[Failure]`) instead of the intended icon labels
+  (`OK Healthy` / `X Critical`). The cmdlet now normalises in KQL via
+  a `case()` projection: `Success -> Healthy`, `Failure -> Critical`,
+  `InProgress -> In progress`, `NotKnown -> Unknown`, empty -> Unknown.
+  `Warning` is passed through unchanged. Any unrecognised future state
+  also passes through so it remains visible. Verified against a live
+  20-cluster fleet (10 Success / 8 Failure / 2 Warning) - Step.7 now
+  reports `Healthy Clusters = 10` and the overview table renders the
+  intended icons. No filter or switch changes are required in the
+  pipeline samples - the v0.7.72 pin already used the correct
+  vocabulary.
+
+### Pipeline pin bumps
+
+- All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps)
+  bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.72'` to `'0.7.73'`.
+  Refresh existing copies via `Update-AzureLocalPipelineExample`.
+
+### Migration
+
+- No cmdlet signature change. The `HealthStatus` column type and column
+  position are unchanged - only the value set narrows to the documented
+  operator-friendly vocabulary. Operators who explicitly filtered for
+  the raw `Success` / `Failure` strings against earlier 0.7.70 - 0.7.72
+  builds should update to `Healthy` / `Critical`.
+
 ## Version 0.7.72 - Pipeline samples hotfix: Step.1/2/5 GitHub Actions Summary panels now render (Write-Host stripped from >> $env:GITHUB_STEP_SUMMARY), AZURE_TENANT_ID secret->variable, pipeline pin bumps to 0.7.72
 
 ### Fixed
@@ -255,78 +296,7 @@
 
 ## Version 0.7.71 - Step.3 markdown render fix + UnparseableCron action-required section, Step.4 critical-count undercount fix, Step.6 cluster portal link + collapsible Verbose Error, AZURE_SUBSCRIPTION_ID secret->variable
 
-### Fixed
-
-- `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -ExportPath *.md`
-  no longer wraps the multi-section snippet inside an outer
-  ```yaml ... ``` fence. The snippet already carries its own inner
-  ```yaml ... ``` around the cron block, so the outer wrap was causing
-  the inner closing ``` to close the outer fence and the outer
-  closing ``` to open a new fence that was never closed. Downstream
-  consumers (Step.3 pipeline Step Summary) saw every markdown element
-  appended after the recommend block (Audit Detail tables, Reports
-  Available list, timestamps) rendered as a single grey monospace
-  block. Snippet is now emitted verbatim.
-- `Step.4_assess-update-readiness.yml` (GH + ADO) Critical health
-  failure count under-reported ("0 Critical findings" while JUnit XML
-  showed 46). `Test-AzureLocalClusterHealth -PassThru` returns
-  per-cluster summary objects with `CriticalCount` / `Failures`, NOT
-  flat finding rows with `Severity`. The pipeline now aggregates via
-  `Measure-Object -Property CriticalCount -Sum`.
-
-### Added
-
-- `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` emits
-  a new `## Action required - simplify unparseable cron expression(s)`
-  section between the schedule-fix sections and the cron-coverage
-  section when one or more YAML cron lines failed to parse. Lists
-  every offending cron with its source file:line and the parser's
-  error message so the operator can rewrite the line directly from
-  the Step Summary. Sequenced before cron coverage so the operator
-  fixes parser-blind crons BEFORE accepting the cron-coverage
-  recommendation (which may over-suggest entries duplicating an
-  already-correct-but-unparseable line).
-- `Get-AzureLocalUpdateRunFailures` projects a new `ClusterPortalUrl`
-  property (`https://portal.azure.com/#@/resource{ClusterResourceId}`)
-  on every output row, alongside the existing `UpdateRunPortalUrl`.
-- `Step.6_fleet-update-status.yml` (GH + ADO) Update Run History
-  markdown table renders Cluster Name as a deep link into the Azure
-  portal cluster blade (per-row `ClusterPortalUrl` projected by
-  `Get-AzureLocalUpdateRunFailures`). Verbose Error Details now
-  renders inside an inline `<details><summary>...</summary>...`
-  block so the full parser/orchestrator stack is preserved (no more
-  250-char truncation) but the table stays scannable - rows expand
-  on click. HTML-special chars in error text are escaped to keep the
-  renderer honest.
-
-### Changed (pipeline samples)
-
-- All 8 GitHub Actions `Step.*.yml` workflows now read the Azure
-  subscription id from `vars.AZURE_SUBSCRIPTION_ID` (Variable) instead
-  of `secrets.AZURE_SUBSCRIPTION_ID` (Secret). The value is consumed
-  ONLY by `azure/login@v3` to set the default `az account` context
-  for cmdlets that REQUIRE a subscription. It is NOT used to scope
-  ARG queries (the helpers omit `--subscriptions` so the query runs
-  fleet-wide against every subscription the caller can read) and is
-  NOT interpolated into portal URLs (each row carries its own
-  ARG-projected `subscriptionId` from which deep-links are built per
-  row). Treating it as a Variable also means the value appears
-  plaintext in workflow logs, which matches its public, non-sensitive
-  nature. Azure DevOps pipelines were already authenticating via a
-  service connection and need no change.
-- `Step.3_apply-updates-schedule-audit.yml` (GH + ADO) drops the
-  `(v0.7.69)` suffix from its summary heading - the version pin is
-  authoritative.
-
-### Notes
-
-- All v0.7.71 changes are backward compatible. New `ClusterPortalUrl`
-  / UnparseableCron section are additive; existing pipeline summaries
-  that read only the v0.7.70 schema keep working.
-- Pipeline samples bump to `GENERATED_AGAINST_MODULE_VERSION: '0.7.71'`.
-  Refresh existing copies with `Update-AzureLocalPipelineExample`.
-
-For full release notes on this and previous versions, see:
+For full v0.7.71 release notes see:
 https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ---
