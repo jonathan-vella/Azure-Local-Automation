@@ -33,9 +33,17 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
           Matrix     - Inventory view: every distinct (UpdateRing, UpdateWindow)
                        pair with cluster count and the cron expression the
                        advisor would generate for it.
-          Recommend  - YAML snippet (one per platform) that covers every
-                       distinct UpdateWindow value found in the fleet, ready
-                       to paste into Step.5_apply-updates.yml.
+          Recommend  - Markdown action-required output for an operator. When
+                       -SchedulePath surfaces missing rings (the v1 schedule
+                       file does not list a ring that is tagged on at least
+                       one cluster) or orphaned rings (the schedule lists a
+                       ring nothing in the fleet carries), the snippet leads
+                       with the schedule fix(es) - blast radius is higher
+                       because apply-updates will never run on the missing
+                       ring(s). The YAML cron snippet (one per platform)
+                       follows in a `## Action required - cron coverage`
+                       section. When only one action applies the numbering
+                       prefix is dropped.
 
         Status values (Audit):
           Covered                  - at least one cron in the YAML fires during the window
@@ -222,6 +230,61 @@ resources
     $taggedClusters   = @($clusters | Where-Object { -not [string]::IsNullOrWhiteSpace($_.UpdateWindow) })
     $untaggedClusters = @($clusters | Where-Object {     [string]::IsNullOrWhiteSpace($_.UpdateWindow) })
 
+    # 2a. Two-way ring diff: schedule.rings vs fleet UpdateRing tags.
+    #     Computed BEFORE the switch ($View) so both -View Audit (row emission)
+    #     and -View Recommend (action-required markdown) can reference the
+    #     results without re-loading the schedule file. Compares $allFleetRings
+    #     (pre-filter snapshot) against the schedule so the diff reflects the
+    #     whole fleet, not just the rings the operator scoped this run to via
+    #     -UpdateRingTag.
+    $scheduleRings        = @()
+    $missingFromSchedule  = @()
+    $orphanedInSchedule   = @()
+    $scheduleDiffComputed = $false
+    if (-not [string]::IsNullOrWhiteSpace($SchedulePath)) {
+        try {
+            $scheduleCfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $SchedulePath
+        }
+        catch {
+            Write-Log -Message "Failed to load schedule from '$SchedulePath': $($_.Exception.Message)" -Level Error
+            throw
+        }
+
+        # Collect distinct rings referenced by the schedule. Each row's
+        # `rings` cell is a ';'-separated string (same convention used
+        # by Resolve-AzLocalCurrentUpdateRing).
+        $scheduleRingSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($srow in @($scheduleCfg.Schedule)) {
+            foreach ($r in ($srow.rings -split ';')) {
+                $tr = $r.Trim()
+                if (-not [string]::IsNullOrWhiteSpace($tr)) { [void]$scheduleRingSet.Add($tr) }
+            }
+        }
+        $scheduleRings = @($scheduleRingSet)
+        Write-Log -Message "Schedule '$SchedulePath' references $($scheduleRings.Count) distinct ring(s): $($scheduleRings -join ', ')." -Level Info
+        Write-Log -Message "Fleet has $($allFleetRings.Count) distinct UpdateRing tag value(s): $($allFleetRings -join ', ')." -Level Info
+
+        # Wildcard handling: the example.yml mentions '***' (every cluster
+        # carrying an UpdateRing tag). The current resolver treats it as a
+        # literal string, so the audit also treats it as a literal - if you
+        # put '***' in your schedule, it shows up as an orphan ring unless
+        # your fleet has a cluster tagged literally '***'. This is
+        # intentional: it keeps the audit and the resolver in sync. When the
+        # resolver gains wildcard support, update this block accordingly.
+        $fleetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($fr in $allFleetRings) { [void]$fleetSet.Add($fr) }
+
+        # Rings on at least one cluster but absent from the schedule.
+        $missingFromSchedule = @($allFleetRings | Where-Object { -not $scheduleRingSet.Contains($_) })
+        # Rings in the schedule file but absent from the fleet.
+        $orphanedInSchedule  = @($scheduleRings  | Where-Object { -not $fleetSet.Contains($_) })
+        $scheduleDiffComputed = $true
+
+        if ($missingFromSchedule.Count -eq 0 -and $orphanedInSchedule.Count -eq 0) {
+            Write-Log -Message "Two-way ring diff: schedule and fleet ring sets match." -Level Success
+        }
+    }
+
     $groups = @($taggedClusters | Group-Object -Property @{Expression={ "$($_.UpdateRing)|$($_.UpdateWindow)" }})
 
     # 3. Resolve each distinct (Ring, Window): parse window, derive required cron.
@@ -337,39 +400,132 @@ resources
                 }
             }
 
-            $sb = New-Object System.Text.StringBuilder
+            # Build the cron-coverage YAML snippet (existing behaviour).
+            $cronSb = New-Object System.Text.StringBuilder
             if ($Platform -in @('GitHubActions','Both')) {
-                [void]$sb.AppendLine('# --- GitHub Actions: paste under Step.5_apply-updates.yml `on:` ---')
-                [void]$sb.AppendLine('# schedule:')
+                [void]$cronSb.AppendLine('# --- GitHub Actions: paste under Step.5_apply-updates.yml `on:` ---')
+                [void]$cronSb.AppendLine('# schedule:')
                 foreach ($k in ($byCron.Keys | Sort-Object)) {
                     $entry = $byCron[$k]
-                    [void]$sb.AppendLine(("#   - cron: '{0}'   # {1} (rings: {2}, {3} cluster(s))" -f $k, $entry.Segment, (($entry.Rings | Sort-Object -Unique) -join ','), $entry.Clusters))
+                    [void]$cronSb.AppendLine(("#   - cron: '{0}'   # {1} (rings: {2}, {3} cluster(s))" -f $k, $entry.Segment, (($entry.Rings | Sort-Object -Unique) -join ','), $entry.Clusters))
                 }
-                [void]$sb.AppendLine()
+                [void]$cronSb.AppendLine()
             }
             if ($Platform -in @('AzureDevOps','Both')) {
-                [void]$sb.AppendLine('# --- Azure DevOps: paste at the top level of Step.5_apply-updates.yml ---')
-                [void]$sb.AppendLine('# schedules:')
+                [void]$cronSb.AppendLine('# --- Azure DevOps: paste at the top level of Step.5_apply-updates.yml ---')
+                [void]$cronSb.AppendLine('# schedules:')
                 foreach ($k in ($byCron.Keys | Sort-Object)) {
                     $entry = $byCron[$k]
-                    [void]$sb.AppendLine(("#   - cron: '{0}'   # {1} (rings: {2}, {3} cluster(s))" -f $k, $entry.Segment, (($entry.Rings | Sort-Object -Unique) -join ','), $entry.Clusters))
-                    [void]$sb.AppendLine('#     displayName: "Apply Updates - covers above window"')
-                    [void]$sb.AppendLine('#     branches:')
-                    [void]$sb.AppendLine('#       include: [ main ]')
-                    [void]$sb.AppendLine('#     always: true')
+                    [void]$cronSb.AppendLine(("#   - cron: '{0}'   # {1} (rings: {2}, {3} cluster(s))" -f $k, $entry.Segment, (($entry.Rings | Sort-Object -Unique) -join ','), $entry.Clusters))
+                    [void]$cronSb.AppendLine('#     displayName: "Apply Updates - covers above window"')
+                    [void]$cronSb.AppendLine('#     branches:')
+                    [void]$cronSb.AppendLine('#       include: [ main ]')
+                    [void]$cronSb.AppendLine('#     always: true')
                 }
             }
+            $cronSnippetBody = $cronSb.ToString()
 
-            $snippet = $sb.ToString()
+            # Build the full multi-section Snippet. When -SchedulePath supplies
+            # schedule-file gaps, prepend a markdown section for each gap kind.
+            # Schedule sections come FIRST (higher blast radius - a missing
+            # ring means apply-updates NEVER fires for those clusters); the
+            # cron coverage section comes second.
+            $hasMissing  = $scheduleDiffComputed -and $missingFromSchedule.Count -gt 0
+            $hasOrphaned = $scheduleDiffComputed -and $orphanedInSchedule.Count  -gt 0
+            $actionCount = @($hasMissing, $hasOrphaned, ($byCron.Count -gt 0)) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
+            $actionIdx   = 0
+
+            $fullSb = New-Object System.Text.StringBuilder
+
+            if ($hasMissing) {
+                $actionIdx++
+                $prefix = if ($actionCount -gt 1) { " ($actionIdx of $actionCount)" } else { '' }
+                [void]$fullSb.AppendLine("## Action required$prefix - add these rings to your apply-updates-schedule.yml")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine("These ring(s) are tagged on at least one cluster but do not appear in any row of ``$SchedulePath``. Resolve-AzLocalCurrentUpdateRing will never return them, so Step.5 apply-updates will NEVER fire on those clusters until you either add the ring to the schedule or retag those clusters onto an existing scheduled ring.")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine('| UpdateRing | Clusters | Fix |')
+                [void]$fullSb.AppendLine('|---|---|---|')
+                foreach ($ring in ($missingFromSchedule | Sort-Object)) {
+                    $clusterCount = @($clusters | Where-Object { $_.UpdateRing -and ($_.UpdateRing.Trim() -ieq $ring) }).Count
+                    [void]$fullSb.AppendLine("| $ring | $clusterCount | Add ``$ring`` to an existing schedule row's ``rings`` column (semicolon-separated), or retag the cluster(s) onto an existing scheduled ring. The advisor does NOT auto-suggest a row (weeksInCycle / daysOfWeek / startTime are deliberate ring-cadence decisions for the operator). |")
+                }
+                [void]$fullSb.AppendLine()
+            }
+
+            if ($hasOrphaned) {
+                $actionIdx++
+                $prefix = if ($actionCount -gt 1) { " ($actionIdx of $actionCount)" } else { '' }
+                [void]$fullSb.AppendLine("## Action required$prefix - prune orphaned rings from your apply-updates-schedule.yml")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine("These ring(s) are listed in ``$SchedulePath`` but no cluster in the fleet carries an UpdateRing tag matching them. The schedule row(s) that reference them will resolve to a ring that matches nothing, so the schedule entry is dead weight.")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine('| UpdateRing | Fix |')
+                [void]$fullSb.AppendLine('|---|---|')
+                foreach ($ring in ($orphanedInSchedule | Sort-Object)) {
+                    [void]$fullSb.AppendLine("| $ring | Either tag at least one cluster with ``UpdateRing=$ring`` (e.g. Set-AzureLocalClusterUpdateRingTag), or remove ``$ring`` from the schedule file's ``rings`` column(s). |")
+                }
+                [void]$fullSb.AppendLine()
+            }
+
+            if ($byCron.Count -gt 0) {
+                $actionIdx++
+                $prefix = if ($actionCount -gt 1) { " ($actionIdx of $actionCount)" } else { '' }
+                [void]$fullSb.AppendLine("## Action required$prefix - cron coverage")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine('Paste the following cron snippet into Step.5_apply-updates.yml so the pipeline fires inside every UpdateWindow currently tagged on the fleet:')
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine('```yaml')
+                foreach ($line in ($cronSnippetBody -split "`r?`n")) {
+                    [void]$fullSb.AppendLine($line)
+                }
+                [void]$fullSb.AppendLine('```')
+            }
+
+            $snippet = $fullSb.ToString()
             Write-Log -Message "Recommended schedule:" -Level Header
             $snippet -split "`r?`n" | ForEach-Object { if ($_) { Write-Log -Message $_ -Level Info } }
 
-            # Emit one PSCustomObject per cron so the pipeline / -PassThru consumer
-            # can also act on the data (the Snippet field carries the human-readable form).
+            # Emit objects so -PassThru consumers can also act on the data.
+            # Schedule-gap rows come first (higher blast radius); cron rows
+            # follow. Every row carries the full Snippet so legacy callers
+            # that read $result[0].Snippet keep working.
             $items = New-Object System.Collections.Generic.List[PSCustomObject]
+            if ($hasMissing) {
+                foreach ($ring in ($missingFromSchedule | Sort-Object)) {
+                    $clusterCount = @($clusters | Where-Object { $_.UpdateRing -and ($_.UpdateRing.Trim() -ieq $ring) }).Count
+                    $items.Add([PSCustomObject]@{
+                        Section        = 'Schedule'
+                        Status         = 'RingMissingFromSchedule'
+                        UpdateRing     = $ring
+                        CronExpression = $null
+                        Segment        = $null
+                        Rings          = @($ring)
+                        ClusterCount   = $clusterCount
+                        Snippet        = $snippet
+                    })
+                }
+            }
+            if ($hasOrphaned) {
+                foreach ($ring in ($orphanedInSchedule | Sort-Object)) {
+                    $items.Add([PSCustomObject]@{
+                        Section        = 'Schedule'
+                        Status         = 'RingOrphanedInSchedule'
+                        UpdateRing     = $ring
+                        CronExpression = $null
+                        Segment        = $null
+                        Rings          = @($ring)
+                        ClusterCount   = 0
+                        Snippet        = $snippet
+                    })
+                }
+            }
             foreach ($k in ($byCron.Keys | Sort-Object)) {
                 $entry = $byCron[$k]
                 $items.Add([PSCustomObject]@{
+                    Section        = 'Cron'
+                    Status         = $null
+                    UpdateRing     = $null
                     CronExpression = $k
                     Segment        = $entry.Segment
                     Rings          = ($entry.Rings | Sort-Object -Unique)
@@ -519,51 +675,10 @@ resources
                 }
             }
 
-            # Two-way ring diff: schedule.rings vs fleet UpdateRing tags.
-            # Only runs when -SchedulePath is supplied. Uses $allFleetRings
-            # (the pre-filter snapshot) so the diff reflects the whole fleet,
-            # not just the rings the operator scoped this run to via
-            # -UpdateRingTag.
-            if (-not [string]::IsNullOrWhiteSpace($SchedulePath)) {
-                try {
-                    $scheduleCfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $SchedulePath
-                }
-                catch {
-                    Write-Log -Message "Failed to load schedule from '$SchedulePath': $($_.Exception.Message)" -Level Error
-                    throw
-                }
-
-                # Collect distinct rings referenced by the schedule. Each row's
-                # `rings` cell is a ';'-separated string (same convention used
-                # by Resolve-AzLocalCurrentUpdateRing).
-                $scheduleRingSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-                foreach ($srow in @($scheduleCfg.Schedule)) {
-                    foreach ($r in ($srow.rings -split ';')) {
-                        $tr = $r.Trim()
-                        if (-not [string]::IsNullOrWhiteSpace($tr)) { [void]$scheduleRingSet.Add($tr) }
-                    }
-                }
-                $scheduleRings = @($scheduleRingSet)
-                Write-Log -Message "Schedule '$SchedulePath' references $($scheduleRings.Count) distinct ring(s): $($scheduleRings -join ', ')." -Level Info
-                Write-Log -Message "Fleet has $($allFleetRings.Count) distinct UpdateRing tag value(s): $($allFleetRings -join ', ')." -Level Info
-
-                # Wildcard handling: the example.yml mentions '***' (every
-                # cluster carrying an UpdateRing tag). The current resolver
-                # treats it as a literal string, so the audit also treats it
-                # as a literal - if you put '***' in your schedule, it shows
-                # up as an orphan ring unless your fleet has a cluster
-                # tagged literally '***'. This is intentional: it keeps the
-                # audit and the resolver in sync. When the resolver gains
-                # wildcard support, update this block accordingly.
-
-                $fleetSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-                foreach ($fr in $allFleetRings) { [void]$fleetSet.Add($fr) }
-
-                # Rings on at least one cluster but absent from the schedule.
-                $missingFromSchedule = @($allFleetRings | Where-Object { -not $scheduleRingSet.Contains($_) })
-                # Rings in the schedule file but absent from the fleet.
-                $orphanedInSchedule  = @($scheduleRings  | Where-Object { -not $fleetSet.Contains($_) })
-
+            # Two-way ring diff rows (results were computed before the
+            # switch ($View) so the Recommend view can reference them too).
+            # Only emitted when -SchedulePath was supplied.
+            if ($scheduleDiffComputed) {
                 foreach ($ring in $missingFromSchedule) {
                     $clusterCount = @($clusters | Where-Object { $_.UpdateRing -and ($_.UpdateRing.Trim() -ieq $ring) }).Count
                     $rows.Add([PSCustomObject]@{
@@ -590,9 +705,6 @@ resources
                         MatchingCrons   = @()
                         RequiredCronUTC = ''
                     })
-                }
-                if ($missingFromSchedule.Count -eq 0 -and $orphanedInSchedule.Count -eq 0) {
-                    Write-Log -Message "Two-way ring diff: schedule and fleet ring sets match." -Level Success
                 }
             }
             # Sort with Section primary (Schedule first, then Cron) so the
