@@ -2646,7 +2646,12 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
                 function az {
                     $script:ThrottleCalls++
                     if ($script:ThrottleCalls -le 2) {
-                        Write-Error 'ERROR: RateLimitingException (429): Too many requests. Please retry after some time.'
+                        # -ErrorAction Continue bypasses Pester v5's $ErrorActionPreference='Stop'
+                        # It-block default, which would otherwise turn this Write-Error into a
+                        # terminating exception and abort before $LASTEXITCODE is set. The real
+                        # az.exe writes throttle messages to stderr without raising a PowerShell
+                        # error; this mock simulates that non-terminating behaviour.
+                        Write-Error -ErrorAction Continue 'ERROR: RateLimitingException (429): Too many requests. Please retry after some time.'
                         $global:LASTEXITCODE = 1
                         return
                     }
@@ -2666,7 +2671,9 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
         It 'Should give up and throw once -MaxRetries is exhausted on persistent throttling' {
             InModuleScope AzLocal.UpdateManagement {
                 function az {
-                    Write-Error 'ERROR: 429 TooManyRequests - rate limit exceeded'
+                    # -ErrorAction Continue bypasses Pester v5 It-block 'Stop' default; see
+                    # comment in the preceding test for the full rationale.
+                    Write-Error -ErrorAction Continue 'ERROR: 429 TooManyRequests - rate limit exceeded'
                     $global:LASTEXITCODE = 1
                     return
                 }
@@ -2684,7 +2691,9 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
                 $script:NonThrottleCalls = 0
                 function az {
                     $script:NonThrottleCalls++
-                    Write-Error 'ERROR: AuthenticationFailed - the access token is invalid'
+                    # -ErrorAction Continue bypasses Pester v5 It-block 'Stop' default; see
+                    # comment in the 'Should retry on 429' test for the full rationale.
+                    Write-Error -ErrorAction Continue 'ERROR: AuthenticationFailed - the access token is invalid'
                     $global:LASTEXITCODE = 1
                     return
                 }
@@ -2705,7 +2714,9 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
                 function az {
                     $script:Phase1Calls++
                     if ($script:Phase1Calls -eq 1) {
-                        Write-Error 'ERROR: 429 throttled'
+                        # -ErrorAction Continue bypasses Pester v5 It-block 'Stop' default; see
+                        # comment in the 'Should retry on 429' test for the full rationale.
+                        Write-Error -ErrorAction Continue 'ERROR: 429 throttled'
                         $global:LASTEXITCODE = 1
                         return
                     }
