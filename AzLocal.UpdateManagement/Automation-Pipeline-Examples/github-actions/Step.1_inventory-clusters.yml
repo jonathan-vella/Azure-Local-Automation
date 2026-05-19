@@ -42,7 +42,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.72'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -67,7 +67,7 @@ jobs:
       uses: azure/login@v3
       with:
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        tenant-id: ${{ vars.AZURE_TENANT_ID }}
         # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
         # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
         # <id>` after the OIDC token exchange so the runner has a default
@@ -82,7 +82,7 @@ jobs:
     # - name: Azure CLI Login (Client Secret)
     #   uses: azure/login@v3
     #   with:
-    #     creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+    #     creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ vars.AZURE_TENANT_ID }}"}'
     
     - name: Install Azure CLI Resource Graph Extension
       shell: pwsh
@@ -303,29 +303,29 @@ jobs:
         if (Test-Path $csvPath) {
             $data = Import-Csv $csvPath
             
-            Write-Host "## Cluster Inventory Summary" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "| Metric | Value |" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "|--------|-------|" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "| Total Clusters | $($data.Count) |" >> $env:GITHUB_STEP_SUMMARY
+            "## Cluster Inventory Summary" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
+            "| Metric | Value |" >> $env:GITHUB_STEP_SUMMARY
+            "|--------|-------|" >> $env:GITHUB_STEP_SUMMARY
+            "| Total Clusters | $($data.Count) |" >> $env:GITHUB_STEP_SUMMARY
             
             $withTag = ($data | Where-Object { $_.HasUpdateRingTag -eq 'Yes' }).Count
             $withoutTag = ($data | Where-Object { $_.HasUpdateRingTag -eq 'No' }).Count
-            Write-Host "| With UpdateRing Tag | $withTag |" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "| Without UpdateRing Tag | $withoutTag |" >> $env:GITHUB_STEP_SUMMARY
+            "| With UpdateRing Tag | $withTag |" >> $env:GITHUB_STEP_SUMMARY
+            "| Without UpdateRing Tag | $withoutTag |" >> $env:GITHUB_STEP_SUMMARY
             
-            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "### UpdateRing Distribution" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
+            "### UpdateRing Distribution" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
             
             $rings = $data | Where-Object { $_.UpdateRing } | Group-Object UpdateRing
             if ($rings) {
-                Write-Host "| UpdateRing | Count |" >> $env:GITHUB_STEP_SUMMARY
-                Write-Host "|------------|-------|" >> $env:GITHUB_STEP_SUMMARY
+                "| UpdateRing | Count |" >> $env:GITHUB_STEP_SUMMARY
+                "|------------|-------|" >> $env:GITHUB_STEP_SUMMARY
                 foreach ($ring in $rings) {
-                    Write-Host "| $($ring.Name) | $($ring.Count) |" >> $env:GITHUB_STEP_SUMMARY
+                    "| $($ring.Name) | $($ring.Count) |" >> $env:GITHUB_STEP_SUMMARY
                 }
             } else {
-                Write-Host "No UpdateRing tags found." >> $env:GITHUB_STEP_SUMMARY
+                "No UpdateRing tags found." >> $env:GITHUB_STEP_SUMMARY
             }
         }

@@ -256,15 +256,15 @@ Subject-claim patterns for other trigger types:
 >
 > The `@` in `"@$paramsFile"` is the **az CLI's** "read from file" prefix (not PowerShell splatting). The surrounding double quotes ensure PowerShell expands `$paramsFile` and passes `az` a single literal string like `@C:\Users\...\Temp\fed-cred.json`. Add or remove names from the `foreach` to match the environments you actually created. Repeat the same build-file-then-pass pattern for any other subject claims you need (`pull_request`, tag, additional branches).
 
-**Step 4 - add the two GitHub Secrets and one GitHub Variable**
+**Step 4 - add the one GitHub Secret and two GitHub Variables**
 
 | Name | Kind | Value |
 |---|---|---|
 | `AZURE_CLIENT_ID` | Secret | The App Registration `appId` from step 1. |
-| `AZURE_TENANT_ID` | Secret | Your Entra ID tenant ID. |
+| `AZURE_TENANT_ID` | **Variable** (not a Secret) | Your Entra ID tenant ID. A tenant id is a public ARM/AAD identifier (it is logged on every `azure/login@v3` run and rendered in workflow telemetry), not a credential. |
 | `AZURE_SUBSCRIPTION_ID` | **Variable** (not a Secret) | Any subscription the federated identity can read - it is used to set the runner's default `az account` context, nothing more. The bundled cmdlets query Azure Resource Graph fleet-wide and never scope to this id. |
 
-> **Why is `AZURE_SUBSCRIPTION_ID` a repository Variable, not a Secret?** The Variable is consumed in exactly one place: the `subscription-id:` input to `azure/login@v3`, which runs `az account set --subscription <id>` after the OIDC token exchange so the runner has a default `az account` context. It is **not** used to scope Azure Resource Graph queries (the bundled cmdlets omit `--subscriptions` and therefore enumerate every cluster the federated identity can read across the tenant) and it is **not** interpolated into portal deep-link URLs (those are built from the per-row `subscriptionId` that ARG returns alongside each cluster). A Variable is preferred over a Secret because (a) a subscription id is a public ARM identifier rather than a credential, and (b) `gh variable list` returns the value, which is useful for setup verification. The OIDC `client-id` + `tenant-id` and (legacy path) `client-secret` remain Secrets.
+> **Why are `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` repository Variables, not Secrets?** Both values are public ARM/AAD identifiers - they appear in workflow logs on every `azure/login@v3` run, in the OIDC token issuer URL, and in portal deep-links built from per-row ARG data - not credentials. They are each consumed in exactly one place: the `tenant-id:` and `subscription-id:` inputs to `azure/login@v3`, which exchanges the OIDC token for an Azure AD token in the tenant and then runs `az account set --subscription <id>` so the runner has a default `az account` context. Neither value is used to scope Azure Resource Graph queries (the bundled cmdlets omit `--subscriptions` and therefore enumerate every cluster the federated identity can read across the tenant) and neither is interpolated into portal deep-link URLs (those are built from the per-row `subscriptionId` that ARG returns alongside each cluster). A Variable is preferred over a Secret because (a) the values are public identifiers rather than credentials, and (b) `gh variable list` returns the value, which is useful for setup verification. The OIDC `client-id` is the only remaining Secret (legacy path: `client-secret` is also a Secret).
 
 No `AZURE_CLIENT_SECRET` is needed.
 
@@ -341,14 +341,15 @@ foreach ($envName in $envs) {
         "/repos/$repo/environments/$envName" | Out-Null
 }
 
-# 2. Repository-level secrets and variable (REQUIRED - visible to every workflow run in the repo).
-#    AZURE_CLIENT_ID + AZURE_TENANT_ID identify the app registration for OIDC, and are Secrets.
-#    AZURE_SUBSCRIPTION_ID is a *Variable* (not a Secret) because it is a public ARM identifier
-#    rather than a credential. It is consumed only by the `azure/login@v3 subscription-id:` input
-#    to set the runner's default `az account` context - the bundled cmdlets run ARG queries
-#    fleet-wide (no --subscriptions scoping) and build portal URLs from per-row ARG data.
+# 2. Repository-level secret and variables (REQUIRED - visible to every workflow run in the repo).
+#    AZURE_CLIENT_ID identifies the app registration for OIDC and is the only Secret.
+#    AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID are *Variables* (not Secrets) because they are
+#    public ARM/AAD identifiers, not credentials. Each is consumed only by the corresponding
+#    `azure/login@v3` input (`tenant-id:` / `subscription-id:`) - the bundled cmdlets run
+#    ARG queries fleet-wide (no --subscriptions scoping) and build portal URLs from per-row
+#    ARG data.
 gh secret   set AZURE_CLIENT_ID       --body $clientId  --repo $repo
-gh secret   set AZURE_TENANT_ID       --body $tenantId  --repo $repo
+gh variable set AZURE_TENANT_ID       --body $tenantId  --repo $repo
 gh variable set AZURE_SUBSCRIPTION_ID --body $subId     --repo $repo
 
 # 3. Optional, additive on top of step 2 (NOT a replacement) - pin AZURE_CLIENT_ID
@@ -374,17 +375,18 @@ gh api "/repos/$repo/environments" --jq '.environments[].name'
 ```text
 # gh secret set AZURE_CLIENT_ID ...
 [OK] Set Actions secret AZURE_CLIENT_ID for <owner>/<repo>
-[OK] Set Actions secret AZURE_TENANT_ID for <owner>/<repo>
+# gh variable set AZURE_TENANT_ID ...
+[OK] Set Actions variable AZURE_TENANT_ID for <owner>/<repo>
 # gh variable set AZURE_SUBSCRIPTION_ID ...
 [OK] Set Actions variable AZURE_SUBSCRIPTION_ID for <owner>/<repo>
 
 # gh secret list --repo $repo
 NAME                   UPDATED
 AZURE_CLIENT_ID        about 1 minute ago
-AZURE_TENANT_ID        about 1 minute ago
 
 # gh variable list --repo $repo
 NAME                   VALUE                                  UPDATED
+AZURE_TENANT_ID        00000000-0000-0000-0000-000000000000   about 1 minute ago
 AZURE_SUBSCRIPTION_ID  00000000-0000-0000-0000-000000000000   about 1 minute ago
 
 # gh secret list --env Production --repo $repo
@@ -396,9 +398,9 @@ PreProduction
 Production
 ```
 
-The key signals are: two repo-level secrets (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`), one repo-level variable (`AZURE_SUBSCRIPTION_ID`) with its value visible, and all three environments listed. The blank env-scoped secret list is **expected** and confirms OIDC is working as designed - see the next note.
+The key signals are: one repo-level secret (`AZURE_CLIENT_ID`), two repo-level variables (`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) with their values visible, and all three environments listed. The blank env-scoped secret list is **expected** and confirms OIDC is working as designed - see the next note.
 
-> **`no secrets found` at env scope is expected with OIDC + federated credentials.** When you authenticate with OIDC, the `azure/login` action does not need a stored client secret; the two repo-level secrets in step 2 carry only public identifiers (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`), the subscription id is a repo-level Variable (consumed only by `azure/login`'s `subscription-id:` input to set the runner's default `az account` context), and the federated-credential `subject` claim (which includes the environment name) is what restricts who can mint a token. Env-scoped secrets in step 3 are only needed if you want to pin a different `AZURE_CLIENT_ID` per environment (e.g. one App Registration per ring). The empty `gh secret list --env Production` output is the correct steady state, not a misconfiguration.
+> **`no secrets found` at env scope is expected with OIDC + federated credentials.** When you authenticate with OIDC, the `azure/login` action does not need a stored client secret; the single repo-level secret in step 2 carries only the OIDC App Registration's public `AZURE_CLIENT_ID`, the tenant id and subscription id are repo-level Variables (consumed only by `azure/login`'s `tenant-id:` and `subscription-id:` inputs), and the federated-credential `subject` claim (which includes the environment name) is what restricts who can mint a token. Env-scoped secrets in step 3 are only needed if you want to pin a different `AZURE_CLIENT_ID` per environment (e.g. one App Registration per ring). The empty `gh secret list --env Production` output is the correct steady state, not a misconfiguration.
 
 > **Note**: `gh secret list` shows only the secret **names** and last-updated timestamps - GitHub never returns the secret values back, even to admins. If you need to confirm what's there, the names + dates are the only signal; to verify a value you must overwrite with the same `gh secret set` command.
 
@@ -558,13 +560,13 @@ az role assignment create `
 #     --scopes "/subscriptions/<your-subscription-id>"
 ```
 
-Save the `appId`, `password`, and `tenant` from the output - they go into three Secrets and one Variable:
+Save the `appId`, `password`, and `tenant` from the output - they go into two Secrets and two Variables:
 
 | Name | Kind | Value |
 |---|---|---|
 | `AZURE_CLIENT_ID` | Secret | `appId` from the command output. |
 | `AZURE_CLIENT_SECRET` | Secret | `password` from the command output. **Expires - rotate every 90 days.** |
-| `AZURE_TENANT_ID` | Secret | `tenant` from the command output. |
+| `AZURE_TENANT_ID` | **Variable** (not a Secret) | `tenant` from the command output. A tenant id is a public ARM/AAD identifier; see the OIDC section above for why this is a Variable, not a Secret. |
 | `AZURE_SUBSCRIPTION_ID` | **Variable** (not a Secret) | Your subscription ID. See the OIDC section above for why this is a Variable, not a Secret. |
 
 In the example GitHub Actions YAMLs, the OIDC step is active by default and the client-secret variant is left commented out. Switch the comments around (and remove the OIDC `permissions:` block) to flip to client-secret auth.
