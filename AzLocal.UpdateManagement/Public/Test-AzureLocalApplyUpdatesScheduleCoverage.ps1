@@ -22,8 +22,14 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
           Audit      - Default. For each distinct (UpdateRing, UpdateWindow) pair
                        in the fleet, report whether the supplied pipeline YAML
                        has at least one cron that would fire during the window.
-                       Output columns: UpdateRing, UpdateWindow, ClusterCount,
-                       Status, Issue, Recommendation, MatchingCrons.
+                       Output columns: Section ('Schedule' for schedule-file gap
+                       rows or 'Cron' for cron-coverage rows), UpdateRing,
+                       UpdateWindow, ClusterCount, Status, Issue, Recommendation,
+                       MatchingCrons, RequiredCronUTC. Rows are pre-sorted with
+                       Section='Schedule' first (higher blast radius - a missing
+                       ring means apply-updates NEVER fires for those clusters),
+                       then Section='Cron'. Within each section, the
+                       most-actionable Status sorts to the top.
           Matrix     - Inventory view: every distinct (UpdateRing, UpdateWindow)
                        pair with cluster count and the cron expression the
                        advisor would generate for it.
@@ -379,6 +385,7 @@ resources
             foreach ($r in $coverageRows) {
                 if ($r.ParseError) {
                     $rows.Add([PSCustomObject]@{
+                        Section         = 'Cron'
                         UpdateRing      = $r.UpdateRing
                         UpdateWindow    = $r.UpdateWindow
                         ClusterCount    = $r.ClusterCount
@@ -470,6 +477,7 @@ resources
                     default            { "Add: $allRequired" }
                 }
                 $rows.Add([PSCustomObject]@{
+                    Section         = 'Cron'
                     UpdateRing      = $r.UpdateRing
                     UpdateWindow    = $r.UpdateWindow
                     ClusterCount    = $r.ClusterCount
@@ -482,6 +490,7 @@ resources
             }
             if ($IncludeUntagged -and $untaggedClusters.Count -gt 0) {
                 $rows.Add([PSCustomObject]@{
+                    Section         = 'Cron'
                     UpdateRing      = '(any)'
                     UpdateWindow    = ''
                     ClusterCount    = $untaggedClusters.Count
@@ -497,6 +506,7 @@ resources
             foreach ($pc in $parsedYamlCrons) {
                 if (-not $pc.Parsed.IsValid -or $pc.Parsed.IsComplex) {
                     $rows.Add([PSCustomObject]@{
+                        Section         = 'Cron'
                         UpdateRing      = '(yaml)'
                         UpdateWindow    = ''
                         ClusterCount    = 0
@@ -557,6 +567,7 @@ resources
                 foreach ($ring in $missingFromSchedule) {
                     $clusterCount = @($clusters | Where-Object { $_.UpdateRing -and ($_.UpdateRing.Trim() -ieq $ring) }).Count
                     $rows.Add([PSCustomObject]@{
+                        Section         = 'Schedule'
                         UpdateRing      = $ring
                         UpdateWindow    = ''
                         ClusterCount    = $clusterCount
@@ -569,6 +580,7 @@ resources
                 }
                 foreach ($ring in $orphanedInSchedule) {
                     $rows.Add([PSCustomObject]@{
+                        Section         = 'Schedule'
                         UpdateRing      = $ring
                         UpdateWindow    = ''
                         ClusterCount    = 0
@@ -583,7 +595,14 @@ resources
                     Write-Log -Message "Two-way ring diff: schedule and fleet ring sets match." -Level Success
                 }
             }
-            , @($rows | Sort-Object @{Expression={ switch ($_.Status) { 'Uncovered' {1} 'PartiallyCovered' {2} 'MalformedTag' {3} 'RingMissingFromSchedule' {4} 'RingOrphanedInSchedule' {5} 'NoWindowTag' {6} 'UnparseableCron' {7} 'Covered' {8} default {9} } }}, UpdateRing, UpdateWindow)
+            # Sort with Section primary (Schedule first, then Cron) so the
+            # two sub-tables come out pre-grouped for renderers that read the
+            # collection top-to-bottom. Within each section, ordering keeps the
+            # existing severity precedence (most-actionable rows first).
+            , @($rows | Sort-Object `
+                @{Expression={ if ($_.Section -eq 'Schedule') {1} else {2} }},
+                @{Expression={ switch ($_.Status) { 'RingMissingFromSchedule' {1} 'RingOrphanedInSchedule' {2} 'Uncovered' {3} 'PartiallyCovered' {4} 'MalformedTag' {5} 'NoWindowTag' {6} 'UnparseableCron' {7} 'Covered' {8} default {9} } }},
+                UpdateRing, UpdateWindow)
         }
     }
 
