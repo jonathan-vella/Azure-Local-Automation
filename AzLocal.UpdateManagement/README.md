@@ -155,7 +155,7 @@ If you are new to this module, work through these in order from a regular PowerS
 
 ## What's New in v0.7.70
 
-v0.7.70 is the **Step.0 recurring authentication audit + Step.6 Update Run History section + Step.3 dual-section UX + Step.7 fleet-health hyperlinks** release, plus a new exported cmdlet (`Get-AzLocalFleetHealthOverview`) that delivers an ARG-first fleet-scale view of cluster health and update status. All changes are additive over v0.7.69; no behaviour change for callers that don't read the new columns.
+v0.7.70 is the **Step.0 recurring authentication audit + Step.6 Update Run History section + Step.6 manifest-anchored rolling support window + Step.3 dual-section UX + Step.7 fleet-health hyperlinks** release, plus two new exported cmdlets - `Get-AzLocalFleetHealthOverview` (ARG-first fleet-scale view of cluster health and update status) and `Get-AzureLocalLatestSolutionVersion` (unauthenticated probe of the Microsoft Azure Local public solution-update catalog at `aka.ms/AzureEdgeUpdates`, used by Step.6 to anchor the SupportStatus column on the upstream release calendar). All changes are additive over v0.7.69; no behaviour change for callers that don't read the new columns.
 
 > Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
@@ -171,6 +171,31 @@ Drift in the subscription scope visible to the pipeline identity is the earliest
 ### Step.6 Fleet Update Status pipeline - new "Update Run History and Error Details" section
 
 A new `<testsuite name="Update Run History and Error Details">` testsuite in the Step.6 JUnit XML and a matching `### Update Run History and Error Details` markdown table in the run summary surface up to 25 of the most recent unresolved Failed update runs across the fleet (last 30 days). Each row links to the Azure portal `SingleInstanceHistoryDetails` deep-link and includes Status / CurrentStep / Duration / LastUpdated / DeepestErrMsg for at-a-glance triage. Sourced from `Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved` (ARG-first, fleet-scale).
+
+### Step.6 Fleet Update Status pipeline - new "Overall Fleet Update Status (Version Distribution)" section with manifest-anchored rolling support window
+
+A new `<testsuite name="Fleet Version Distribution">` testsuite is emitted as the **first** child of `<testsuites>` (before `AzureLocalFleetUpdateStatus`) and a matching `### Overall Fleet Update Status (Version Distribution)` markdown section is prepended to the run summary (above `### Critical Health Status`). One row per distinct `CurrentVersion` reported by `Get-AzureLocalClusterUpdateReadiness`, sorted by cluster count descending, with columns: Version / YYMM / SupportStatus / Cluster Count / Percentage / Clusters.
+
+`SupportStatus` uses a **rolling 6-month YYMM window anchored on the Microsoft public catalog** when reachable. The Step.6 step calls the new `Get-AzureLocalLatestSolutionVersion` cmdlet (see below) to fetch the latest released solution version's YYMM from `https://aka.ms/AzureEdgeUpdates` and seeds a calendar-stepped 6-month window from it (e.g. latest YYMM `2604` -> `2604,2603,2602,2601,2512,2511`). As soon as Microsoft publishes any release with a newer YYMM, the window slides forward and the oldest in-window YYMM falls out automatically - independent of what is installed in the fleet. The JUnit testsuite carries `supportSource` / `latestReleasedYymm` / `latestReleasedVersion` / `manifestUrl` / `manifestFetchedAt` properties; the markdown summary annotates which anchor source was used and (on success) prints the latest released YYMM + version.
+
+When the manifest is unreachable from the runner the pipeline emits a non-fatal warning (`::warning::` on GitHub Actions, `##vso[task.logissue type=warning]` on Azure DevOps) and falls back to a **fleet-observed top-6 YYMM heuristic** so Step.6 still reports (`supportSource='fleet-observed'`). **Supported** = cluster's YYMM is inside the anchor window; **Unsupported** = older parseable YYMM; **Unknown** = empty / malformed `CurrentVersion`. The markdown section includes inline links to the Microsoft Azure Local [lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and [release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) docs as the operator cross-check. No `<failure>` tags - the testsuite is informational and never breaks the build.
+
+### New cmdlet: `Get-AzureLocalLatestSolutionVersion`
+
+Unauthenticated probe of the Microsoft Azure Local public solution-update catalog at `https://aka.ms/AzureEdgeUpdates`. Returns the latest released solution version plus the rolling YYMM support window calendar-stepped from it (year-rollover honoured). Used by Step.6 to anchor the SupportStatus column on the upstream catalog instead of fleet-observed values, so older releases drop out of support automatically as soon as Microsoft publishes a newer YYMM.
+
+Output PSCustomObject: `LatestYYMM`, `LatestVersion`, `SupportedYYMMs[]` (length = `-SupportWindowMonths`, default 6, configurable 1-24), `AllReleases[]`, `ManifestUrl`, `ManifestFetchedAt` (UTC), `SupportWindowMonths`, `Source = 'aka.ms/AzureEdgeUpdates'`. Tolerant of both XML shapes the manifest exposes (`ApplicableUpdate/UpdateInfo` and `PackageMetadata/ServicesUpdates/Update/UpdateInfo`).
+
+```powershell
+# Default - latest released YYMM + 6-month rolling window
+Get-AzureLocalLatestSolutionVersion | Format-List LatestYYMM, LatestVersion, SupportedYYMMs
+
+# 12-month rolling window (e.g. for slower-moving regulated fleets)
+Get-AzureLocalLatestSolutionVersion -SupportWindowMonths 12
+
+# Pin to a private mirror of the manifest (must be http(s))
+Get-AzureLocalLatestSolutionVersion -ManifestUrl 'https://internal.example.com/AzureEdgeUpdates.xml' -TimeoutSeconds 60
+```
 
 ### New cmdlet: `Get-AzLocalFleetHealthOverview`
 
@@ -228,7 +253,7 @@ All v0.7.70 changes are backward compatible. The `Section` column defaults to `C
 
 ### Pester baseline
 
-**565 passed / 0 failed / 0 skipped (unit) + 16 passed / 0 failed / 0 skipped (Live-Integration, opt-in)** - the unit suite stays hermetic and now includes a parallel, tag-gated `Tests/Live-Integration.Tests.ps1` durable suite that asserts the three v0.7.70 ARG-first cmdlets (`Get-AzLocalFleetHealthOverview`, `Get-AzureLocalFleetHealthFailures`, `Get-AzureLocalUpdateRunFailures`) against a real Azure Local fleet. The Live suite is **excluded by default** and safe to leave in the repo: each Describe self-skips when `az` is not installed, not logged in, or pointed at a non-target subscription. Opt in with `.\Tests\Invoke-Tests.ps1 -IncludeLive` or `-LiveOnly`. Validated end-to-end against a 20-cluster fleet (49 unresolved health failures, 9 unresolved Failed update runs) in 1m26s.
+**585 passed / 0 failed / 0 skipped (unit) + 16 passed / 0 failed / 0 skipped (Live-Integration, opt-in)** - the unit suite stays hermetic and now includes a parallel, tag-gated `Tests/Live-Integration.Tests.ps1` durable suite that asserts the three v0.7.70 ARG-first cmdlets (`Get-AzLocalFleetHealthOverview`, `Get-AzureLocalFleetHealthFailures`, `Get-AzureLocalUpdateRunFailures`) against a real Azure Local fleet. The Live suite is **excluded by default** and safe to leave in the repo: each Describe self-skips when `az` is not installed, not logged in, or pointed at a non-target subscription. Opt in with `.\Tests\Invoke-Tests.ps1 -IncludeLive` or `-LiveOnly`. Validated end-to-end against a 20-cluster fleet (49 unresolved health failures, 9 unresolved Failed update runs) in 1m26s.
 
 ### What's New in v0.7.69
 
@@ -972,6 +997,8 @@ This table is the canonical index of every public cmdlet the module ships. It is
 | `Get-AzureLocalUpdateRunFailures` | READ | Azure Resource Graph |
 | [`Get-AzureLocalClusterUpdateReadiness`](#get-azurelocalclusterupdatereadiness) | READ | Azure Resource Graph |
 | [`Get-AzureLocalFleetHealthFailures`](#get-azurelocalfleethealthfailures) | READ | Azure Resource Graph |
+| `Get-AzLocalFleetHealthOverview` | READ | Azure Resource Graph |
+| `Get-AzureLocalLatestSolutionVersion` | READ | Microsoft public catalog (`aka.ms/AzureEdgeUpdates`, unauthenticated) |
 | [`Get-AzureLocalFleetProgress`](#get-azurelocalfleetprogress) | READ | Azure Resource Graph |
 | [`Test-AzureLocalClusterHealth`](#test-azurelocalclusterhealth) | READ | Azure Resource Graph |
 | [`Test-AzureLocalFleetHealthGate`](#test-azurelocalfleethealthgate) | READ (composite) | Azure (via `Test-AzureLocalClusterHealth`) |
