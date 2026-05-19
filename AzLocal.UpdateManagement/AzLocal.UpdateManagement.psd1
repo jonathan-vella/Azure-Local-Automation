@@ -101,6 +101,7 @@
         'Public/Get-AzureLocalFleetHealthFailures.ps1',
         'Public/Get-AzLocalFleetHealthOverview.ps1',
         'Public/Get-AzureLocalItsmConfig.ps1',
+        'Public/Get-AzureLocalLatestSolutionVersion.ps1',
         'Public/Get-AzureLocalUpdateRunFailures.ps1',
         'Public/Get-AzureLocalUpdateRuns.ps1',
         'Public/Get-AzureLocalUpdateSummary.ps1',
@@ -171,7 +172,9 @@
         'New-AzLocalApplyUpdatesScheduleConfig',
         'Update-AzLocalApplyUpdatesScheduleConfig',
         # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries (fleet-scale)
-        'Get-AzLocalFleetHealthOverview'
+        'Get-AzLocalFleetHealthOverview',
+        # Latest Released Solution Version (v0.7.70) - public manifest probe (aka.ms/AzureEdgeUpdates) that anchors the rolling YYMM support window
+        'Get-AzureLocalLatestSolutionVersion'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.

@@ -110,8 +110,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $h2Matches[0] | Should -Be "## What's New in v$manifestVersion" -Because 'the sole main-body What''s New section must match the current manifest ModuleVersion'
         }
 
-        It 'Should export exactly 35 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 35
+        It 'Should export exactly 36 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 36
         }
 
         It 'Should export the expected functions' {
@@ -163,7 +163,9 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 'Resolve-AzLocalCurrentUpdateRing',
                 'Get-AzLocalApplyUpdatesScheduleNextFirings',
                 # Fleet Health Overview (v0.7.70) - ARG-first projection of cluster + updateSummaries
-                'Get-AzLocalFleetHealthOverview'
+                'Get-AzLocalFleetHealthOverview',
+                # Latest Released Solution Version (v0.7.70 Phase E) - public manifest probe (aka.ms/AzureEdgeUpdates) anchoring the rolling YYMM support window in Step.6
+                'Get-AzureLocalLatestSolutionVersion'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -7375,7 +7377,7 @@ Describe 'Function: Get-AzureLocalFleetHealthFailures - v0.7.70 schema + orderin
 
 Describe 'Function: Get-AzLocalFleetHealthOverview - v0.7.70 (ARG-first fleet health summary)' {
 
-    Context 'BS6 / BS7 - Cmdlet is exported and module function count is 35' {
+    Context 'BS6 / BS7 - Cmdlet is exported and module function count is 36' {
 
         It 'BS6: Get-AzLocalFleetHealthOverview is exported by the module' {
             $cmd = Get-Command -Module AzLocal.UpdateManagement -Name Get-AzLocalFleetHealthOverview -ErrorAction SilentlyContinue
@@ -7383,8 +7385,8 @@ Describe 'Function: Get-AzLocalFleetHealthOverview - v0.7.70 (ARG-first fleet he
             $cmd.CommandType | Should -Be 'Function'
         }
 
-        It 'BS7: Module exports exactly 35 functions (was 34 in v0.7.69)' {
-            (Get-Module AzLocal.UpdateManagement).ExportedFunctions.Count | Should -Be 35
+        It 'BS7: Module exports exactly 36 functions (was 34 in v0.7.69, +Get-AzLocalFleetHealthOverview in v0.7.70 BS, +Get-AzureLocalLatestSolutionVersion in v0.7.70 Phase E)' {
+            (Get-Module AzLocal.UpdateManagement).ExportedFunctions.Count | Should -Be 36
         }
     }
 
@@ -7599,3 +7601,252 @@ Describe 'v0.7.70 Step.6 "📜 Update Run History and Error Details" JUnit + mar
 #endregion v0.7.70 (Workstream A: Step.3 Audit UX refresh + Workstream B: Step.7 Fleet Health Overview)
 
 #endregion v0.7.69 Apply-Updates Schedule (ring-aware)
+
+
+
+#region v0.7.70 Phase E: Get-AzureLocalLatestSolutionVersion
+
+Describe 'Function: Get-AzureLocalLatestSolutionVersion (v0.7.70 Phase E)' {
+
+    BeforeAll {
+        # Sample manifest mirroring the real aka.ms/AzureEdgeUpdates payload shape.
+        # 2604 is the highest YYMM (which is what Step.6 SupportStatus will anchor on).
+        # 2510 is older than the 6-month window ending at 2604 (2604,2603,2602,2601,2512,2511)
+        # and so MUST end up Unsupported when the manifest probe succeeds.
+        $script:sampleManifestXml = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<ASZSolutionBundleUpdates>
+  <ManifestInfo Version="1.0" />
+  <ApplicableUpdate>
+    <UpdateInfo UpdateName="StackHCI 2604" Version="Solution12.2604.1003.1005" Type="Solution" PackageSizeInMb="2048" />
+    <UpdateInfo UpdateName="StackHCI 2603" Version="Solution12.2603.1002.1001" Type="Solution" PackageSizeInMb="2048" />
+  </ApplicableUpdate>
+  <PackageMetadata>
+    <ServicesUpdates>
+      <Update>
+        <UpdateInfo UpdateName="HciService 2604" Version="Solution12.2604.1003.1005" Type="Services" />
+      </Update>
+      <Update>
+        <UpdateInfo UpdateName="HciService 2604-hotfix" Version="Solution12.2604.1005.1007" Type="Services" />
+      </Update>
+      <Update>
+        <UpdateInfo UpdateName="HciService 2510" Version="Solution12.2510.5005.7008" Type="Services" />
+      </Update>
+    </ServicesUpdates>
+  </PackageMetadata>
+</ASZSolutionBundleUpdates>
+'@
+    }
+
+    Context 'Happy path (manifest reachable)' {
+
+        It 'Returns LatestYYMM=2604 from the sample manifest' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                $r.LatestYYMM | Should -Be '2604'
+            }
+        }
+
+        It 'Returns the highest Version string at LatestYYMM (hotfix wins)' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                # Both 2604.1003.1005 and 2604.1005.1007 exist - the higher Version wins.
+                $r.LatestVersion | Should -Be 'Solution12.2604.1005.1007'
+            }
+        }
+
+        It 'Builds the 6-month window in calendar order (newest first)' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                $r.SupportedYYMMs       | Should -HaveCount 6
+                $r.SupportedYYMMs[0]    | Should -Be '2604'
+                $r.SupportedYYMMs[1]    | Should -Be '2603'
+                $r.SupportedYYMMs[2]    | Should -Be '2602'
+                $r.SupportedYYMMs[3]    | Should -Be '2601'
+                $r.SupportedYYMMs[4]    | Should -Be '2512'   # year rollover
+                $r.SupportedYYMMs[5]    | Should -Be '2511'
+                # Critical user-stated invariant: 2510 is OUTSIDE the window once 2604 is published
+                $r.SupportedYYMMs       | Should -Not -Contain '2510'
+            }
+        }
+
+        It 'Respects -SupportWindowMonths override' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion -SupportWindowMonths 3
+                $r.SupportedYYMMs       | Should -HaveCount 3
+                $r.SupportedYYMMs       | Should -Be @('2604','2603','2602')
+                $r.SupportWindowMonths  | Should -Be 3
+            }
+        }
+
+        It 'AllReleases contains entries from BOTH XPath sources with correct Source attribution' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                $r.AllReleases.Count                                         | Should -Be 5
+                @($r.AllReleases | Where-Object Source -eq 'ApplicableUpdate.UpdateInfo').Count                | Should -Be 2
+                @($r.AllReleases | Where-Object Source -eq 'PackageMetadata.ServicesUpdates.Update.UpdateInfo').Count | Should -Be 3
+                # Every release should have a non-empty Yymm
+                ($r.AllReleases | Where-Object { -not $_.Yymm }).Count       | Should -Be 0
+            }
+        }
+
+        It 'Sets ManifestUrl, ManifestFetchedAt, and Source on the result' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                $r.ManifestUrl       | Should -Be 'https://aka.ms/AzureEdgeUpdates'
+                $r.ManifestFetchedAt | Should -BeOfType [DateTime]
+                $r.Source            | Should -Be 'aka.ms/AzureEdgeUpdates'
+            }
+        }
+
+        It 'Handles year-rollover when LatestYYMM=2601 (3-month window crosses year boundary)' {
+            $rollOverXml = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<ASZSolutionBundleUpdates>
+  <ApplicableUpdate>
+    <UpdateInfo UpdateName="StackHCI 2601" Version="Solution12.2601.0001.0001" />
+  </ApplicableUpdate>
+</ASZSolutionBundleUpdates>
+'@
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $rollOverXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion -SupportWindowMonths 3
+                $r.SupportedYYMMs | Should -Be @('2601','2512','2511')
+            }
+        }
+    }
+
+    Context 'Error paths (network / parse failures)' {
+
+        It 'Throws when Invoke-WebRequest fails (network unreachable)' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { throw [System.Net.WebException]::new('Name or service not known') }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*Failed to fetch Azure Edge Updates manifest*'
+            }
+        }
+
+        It 'Throws when HTTP returns a non-2xx status code' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 503; Content = '' } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*HTTP 503*'
+            }
+        }
+
+        It 'Throws when manifest body is empty' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = '' } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*empty body*'
+            }
+        }
+
+        It 'Throws when manifest body is not valid XML' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = '<<not xml>>' } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*not valid XML*'
+            }
+        }
+
+        It 'Throws when root element is missing' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = '<?xml version="1.0"?><WrongRoot/>' } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*<ASZSolutionBundleUpdates>*'
+            }
+        }
+
+        It 'Throws when no UpdateInfo entries are present' {
+            $emptyXml = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<ASZSolutionBundleUpdates>
+  <Metadata Schema="1"/>
+</ASZSolutionBundleUpdates>
+'@
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $emptyXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*no parseable UpdateInfo entries*'
+            }
+        }
+
+        It 'Throws when UpdateInfo entries have no YYMM token in their Version' {
+            $badXml = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<ASZSolutionBundleUpdates>
+  <ApplicableUpdate>
+    <UpdateInfo UpdateName="Junk" Version="1.0.0" />
+    <UpdateInfo UpdateName="JunkAlpha" Version="alpha.beta.gamma" />
+  </ApplicableUpdate>
+</ASZSolutionBundleUpdates>
+'@
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $badXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*YYMM token*'
+            }
+        }
+    }
+
+    Context 'Parameter validation' {
+
+        It 'Rejects a non-http(s) ManifestUrl' {
+            { Get-AzureLocalLatestSolutionVersion -ManifestUrl 'file:///c:/temp/m.xml' } |
+                Should -Throw '*does not match*'
+        }
+
+        It 'Rejects -SupportWindowMonths below 1' {
+            { Get-AzureLocalLatestSolutionVersion -SupportWindowMonths 0 } |
+                Should -Throw '*less than the minimum*'
+        }
+
+        It 'Rejects -SupportWindowMonths above 24' {
+            { Get-AzureLocalLatestSolutionVersion -SupportWindowMonths 25 } |
+                Should -Throw '*greater than the maximum*'
+        }
+    }
+}
+
+Describe 'Pipeline contract: Step.6 SupportStatus anchor (v0.7.70 Phase E)' {
+
+    BeforeAll {
+        $script:repoRoot = Split-Path -Path $PSScriptRoot -Parent
+        $script:step6Files = @(
+            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/github-actions/Step.6_fleet-update-status.yml'
+            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/azure-devops/Step.6_fleet-update-status.yml'
+        )
+    }
+
+    It 'Both Step.6 YAML files invoke Get-AzureLocalLatestSolutionVersion' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            $content | Should -Match 'Get-AzureLocalLatestSolutionVersion' -Because "$(Split-Path -Leaf $yml) must call the Microsoft-manifest probe to anchor the SupportStatus window"
+        }
+    }
+
+    It 'Both Step.6 YAML files surface a supportSource property in JUnit' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            $content | Should -Match 'supportSource' -Because "$(Split-Path -Leaf $yml) must emit the SupportSource flag so consumers can tell manifest-anchored from fleet-observed windows apart"
+        }
+    }
+
+    It 'Both Step.6 YAML files wrap the manifest probe in try/catch with a fleet-observed fallback' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            $content | Should -Match 'fleet-observed' -Because "$(Split-Path -Leaf $yml) must fall back to fleet-observed top-6 when the manifest is unreachable"
+        }
+    }
+}
+
+#endregion v0.7.70 Phase E: Get-AzureLocalLatestSolutionVersion

@@ -316,11 +316,37 @@ stages:
           $mostCommonVersion = if ($distinctVersions -gt 0) { $versionDistribution[0].Version } else { '(none)' }
           $mostCommonVersionPct = if ($distinctVersions -gt 0) { $versionDistribution[0].Percentage } else { 0 }
 
-          $observedYymms = @($versionDistribution | ForEach-Object {
-              $parts = ([string]$_.Version) -split '\.'
-              if ($parts.Count -ge 2) { $parts[1] } else { '' }
-          } | Where-Object { $_ -match '^[0-9]{4}$' } | Sort-Object -Unique)
-          $supportedYymms = @($observedYymms | Sort-Object -Descending | Select-Object -First 6)
+          # v0.7.70: Compute the rolling 6-month YYMM support window used by SupportStatus.
+          # Preferred anchor: the latest released Azure Local solution version from the
+          # Microsoft public catalog (https://aka.ms/AzureEdgeUpdates), via the
+          # Get-AzureLocalLatestSolutionVersion cmdlet. Fallback: top-6 distinct YYMM
+          # values observed across the fleet. As soon as Microsoft publishes any release
+          # with a newer YYMM (e.g. 2604), the window slides forward and older YYMM
+          # values (e.g. 2510) fall out, even if no cluster has installed the new release.
+          $supportSource         = 'fleet-observed'
+          $latestReleasedYymm    = ''
+          $latestReleasedVersion = ''
+          $manifestFetchedAt     = ''
+          $manifestUrl           = 'https://aka.ms/AzureEdgeUpdates'
+          $manifestError         = ''
+          try {
+              Write-Host "Querying $manifestUrl for the latest released Azure Local solution version..."
+              $manifestProbe = Get-AzureLocalLatestSolutionVersion -ErrorAction Stop
+              $supportedYymms        = @($manifestProbe.SupportedYYMMs)
+              $supportSource         = 'Microsoft manifest'
+              $latestReleasedYymm    = [string]$manifestProbe.LatestYYMM
+              $latestReleasedVersion = [string]$manifestProbe.LatestVersion
+              $manifestFetchedAt     = $manifestProbe.ManifestFetchedAt.ToString('o')
+              Write-Host ("Latest released solution version: {0} (YYMM={1}); support window anchored on Microsoft manifest." -f $latestReleasedVersion, $latestReleasedYymm)
+          } catch {
+              $manifestError = $_.Exception.Message
+              Write-Host "##vso[task.logissue type=warning]Failed to query $manifestUrl - falling back to fleet-observed top-6 YYMM window. Error: $manifestError"
+              $observedYymms = @($versionDistribution | ForEach-Object {
+                  $parts = ([string]$_.Version) -split '\.'
+                  if ($parts.Count -ge 2) { $parts[1] } else { '' }
+              } | Where-Object { $_ -match '^[0-9]{4}$' } | Sort-Object -Unique)
+              $supportedYymms = @($observedYymms | Sort-Object -Descending | Select-Object -First 6)
+          }
           $supportedCount = 0
           $unsupportedCount = 0
           $unknownVersionCount = 0
@@ -342,6 +368,10 @@ stages:
 
           Write-Host ""
           Write-Host "Fleet Version Distribution ($distinctVersions distinct version(s) across $totalTests cluster(s)):" -ForegroundColor Cyan
+          Write-Host ("Support source: {0}" -f $supportSource)
+          if ($latestReleasedYymm) {
+              Write-Host ("Latest released YYMM (Microsoft manifest): {0} ({1})" -f $latestReleasedYymm, $latestReleasedVersion)
+          }
           Write-Host ("Supported YYMM window (top {0}): {1}" -f $supportedYymms.Count, $supportedYymmWindow)
           foreach ($v in $versionDistribution) {
               Write-Host ("  {0,-30} {1,5} cluster(s)  ({2,5}%)  [{3}]" -f $v.Version, $v.Count, $v.Percentage, $v.SupportStatus)
@@ -353,11 +383,16 @@ stages:
             <testsuite name="Fleet Version Distribution" tests="$distinctVersions" failures="0" errors="0" skipped="0" time="0" timestamp="$timestamp">
               <properties>
                 <property name="testCategory" value="FleetVersionDistribution"/>
-                <property name="description" value="Overall Fleet Update Status - cluster count and percentage per distinct CurrentVersion (StackHCI build presently installed). Source field: Get-AzureLocalClusterUpdateReadiness.CurrentVersion. SupportStatus is a heuristic derived from the fleet's own YYMM window (top 6 most-recent distinct YYMM values); validate against Microsoft Azure Local lifecycle docs before operator action."/>
+                <property name="description" value="Overall Fleet Update Status - cluster count and percentage per distinct CurrentVersion (StackHCI build presently installed). Source field: Get-AzureLocalClusterUpdateReadiness.CurrentVersion. SupportStatus uses the rolling 6-month YYMM window anchored on the latest released Azure Local solution version published at https://aka.ms/AzureEdgeUpdates (supportSource='Microsoft manifest'); when the manifest is unreachable the pipeline falls back to the top-6 distinct YYMM values observed in the fleet (supportSource='fleet-observed'). Cross-check against the Microsoft Azure Local lifecycle docs before operator action."/>
                 <property name="totalClusters" value="$totalTests"/>
                 <property name="distinctVersions" value="$distinctVersions"/>
                 <property name="mostCommonVersion" value="$mostCommonVersion"/>
                 <property name="mostCommonVersionPercentage" value="$mostCommonVersionPct"/>
+                <property name="supportSource" value="$supportSource"/>
+                <property name="latestReleasedYymm" value="$latestReleasedYymm"/>
+                <property name="latestReleasedVersion" value="$latestReleasedVersion"/>
+                <property name="manifestUrl" value="$manifestUrl"/>
+                <property name="manifestFetchedAt" value="$manifestFetchedAt"/>
                 <property name="supportedYymmWindow" value="$supportedYymmWindow"/>
                 <property name="supportedClusters" value="$supportedCount"/>
                 <property name="unsupportedClusters" value="$unsupportedCount"/>
@@ -695,6 +730,9 @@ stages:
               Write-Host "##vso[task.setvariable variable=supportedClusters;isOutput=true]$supportedCount"
               Write-Host "##vso[task.setvariable variable=unsupportedClusters;isOutput=true]$unsupportedCount"
               Write-Host "##vso[task.setvariable variable=unknownVersionClusters;isOutput=true]$unknownVersionCount"
+              Write-Host "##vso[task.setvariable variable=supportSource;isOutput=true]$supportSource"
+              Write-Host "##vso[task.setvariable variable=latestReleasedYymm;isOutput=true]$latestReleasedYymm"
+              Write-Host "##vso[task.setvariable variable=latestReleasedVersion;isOutput=true]$latestReleasedVersion"
           } else {
               Write-Host "##vso[task.setvariable variable=versionDistB64;isOutput=true]"
               Write-Host "##vso[task.setvariable variable=versionDistCount;isOutput=true]0"
@@ -702,6 +740,9 @@ stages:
               Write-Host "##vso[task.setvariable variable=supportedClusters;isOutput=true]0"
               Write-Host "##vso[task.setvariable variable=unsupportedClusters;isOutput=true]0"
               Write-Host "##vso[task.setvariable variable=unknownVersionClusters;isOutput=true]0"
+              Write-Host "##vso[task.setvariable variable=supportSource;isOutput=true]$supportSource"
+              Write-Host "##vso[task.setvariable variable=latestReleasedYymm;isOutput=true]$latestReleasedYymm"
+              Write-Host "##vso[task.setvariable variable=latestReleasedVersion;isOutput=true]$latestReleasedVersion"
           }
 
           # v0.7.70: persist update-run-history rows as a base64 JSON blob so the
@@ -762,6 +803,9 @@ stages:
         $supportedClusters = "$(collect.supportedClusters)"
         $unsupportedClusters = "$(collect.unsupportedClusters)"
         $unknownVersionClusters = "$(collect.unknownVersionClusters)"
+        $supportSource     = "$(collect.supportSource)"
+        $latestReleasedYymm    = "$(collect.latestReleasedYymm)"
+        $latestReleasedVersion = "$(collect.latestReleasedVersion)"
         $generatedUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC')
 
         Write-Host "##vso[task.uploadsummary]Fleet Status: $total clusters, $chPassed healthy / $chFailed failed (CriticalHealthStatus)"
@@ -775,7 +819,12 @@ stages:
                 $vRows = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($versionDistB64)) | ConvertFrom-Json
                 $versionSection += "### Overall Fleet Update Status (Version Distribution)`n`n"
                 $versionSection += "_One row per distinct ``CurrentVersion`` reported by ``Get-AzureLocalClusterUpdateReadiness``. Sorted by cluster count (descending). Percentage is share of the $total cluster(s) in scope._`n`n"
-                $versionSection += "_``SupportStatus`` is a fleet-derived heuristic: **Supported** = YYMM is in the top-6 most-recent distinct YYMM values observed across the fleet ($supportedYymmWin); **Unsupported** = older YYMM; **Unknown** = ``CurrentVersion`` empty or not in ``Solution.YYMM.X.X`` form. Always cross-check against the [Azure Local lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and the [Azure Local release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) before taking action._`n`n"
+                if ($supportSource -eq 'Microsoft manifest' -and $latestReleasedYymm) {
+                    $versionSection += "_``SupportStatus`` uses the **rolling 6-month YYMM window anchored on the Microsoft public catalog** ([aka.ms/AzureEdgeUpdates](https://aka.ms/AzureEdgeUpdates)). Latest released YYMM = **$latestReleasedYymm** (``$latestReleasedVersion``); supported window = ``$supportedYymmWin``. As soon as Microsoft publishes a release with a newer YYMM, the window slides forward and the oldest in-window YYMM falls out._`n`n"
+                    $versionSection += "_**Supported** = cluster's YYMM is inside the manifest-anchored window; **Unsupported** = older YYMM; **Unknown** = ``CurrentVersion`` empty or not in ``<prefix>.YYMM.X.X`` form. Always cross-check against the [Azure Local lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and the [Azure Local release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) before taking action._`n`n"
+                } else {
+                    $versionSection += "_``SupportStatus`` falls back to a **fleet-observed heuristic** (aka.ms/AzureEdgeUpdates was unreachable from the agent). **Supported** = YYMM is in the top-6 most-recent distinct YYMM values observed across the fleet (``$supportedYymmWin``); **Unsupported** = older YYMM; **Unknown** = ``CurrentVersion`` empty or not in ``<prefix>.YYMM.X.X`` form. Always cross-check against the [Azure Local lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and the [Azure Local release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) before taking action._`n`n"
+                }
                 $versionSection += "| Version | YYMM | Support | Cluster Count | Percentage | Clusters |`n"
                 $versionSection += "|---------|------|---------|---------------|------------|----------|`n"
                 foreach ($vr in @($vRows)) {
@@ -789,7 +838,7 @@ stages:
                     $clCell = $clCell -replace '\|','\|'
                     $versionSection += ('| {0} | {1} | {2} | {3} | {4}% | {5} |' -f $vr.Version, $vr.Yymm, $supportEmoji, $vr.Count, $vr.Percentage, $clCell) + "`n"
                 }
-                $versionSection += "`n_Support roll-up: Supported = $supportedClusters cluster(s), Unsupported = $unsupportedClusters, Unknown = $unknownVersionClusters._`n`n"
+                $versionSection += "`n_Support roll-up: Supported = $supportedClusters cluster(s), Unsupported = $unsupportedClusters, Unknown = $unknownVersionClusters. Anchor source: ``$supportSource``._`n`n"
             } catch {
                 Write-Warning "Failed to render Fleet Version Distribution markdown table: $($_.Exception.Message)"
                 $versionSection = ''

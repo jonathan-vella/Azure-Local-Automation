@@ -284,5 +284,7 @@ Export-ModuleMember -Function @(
     'New-AzLocalApplyUpdatesScheduleConfig',
     'Update-AzLocalApplyUpdatesScheduleConfig',
     # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries
-    'Get-AzLocalFleetHealthOverview'
+    'Get-AzLocalFleetHealthOverview',
+    # Latest Released Solution Version (v0.7.70 Phase E) - public manifest probe (aka.ms/AzureEdgeUpdates) that anchors the rolling YYMM support window in Step.6
+    'Get-AzureLocalLatestSolutionVersion'
 )
