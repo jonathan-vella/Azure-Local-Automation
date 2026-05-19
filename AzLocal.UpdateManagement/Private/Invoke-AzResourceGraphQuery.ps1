@@ -100,6 +100,16 @@ function Invoke-AzResourceGraphQuery {
     # KQL is whitespace-agnostic in its grammar, so this is semantically inert
     # for every well-formed query. Leading/trailing whitespace is also trimmed
     # to keep the eventual command-line clean.
+    #
+    # v0.7.70 caller-contract note: callers MUST NOT embed KQL line-comments
+    # (`// ...`) inside the here-string that they pass to this helper. KQL
+    # line-comments terminate at a newline; once this function collapses the
+    # newlines to spaces (above), a `//` runs all the way to end-of-input and
+    # silently eats the rest of the query. The ARG parser then fails with
+    # "expected | got <EOF>" at the truncation point. We deliberately do NOT
+    # strip `//` here because a naive strip would also break URL literals
+    # such as `'https://portal.azure.com/...'`. If you need to annotate your
+    # KQL, do it in PowerShell `#` comments OUTSIDE the here-string.
     $Query = ($Query -replace '\s+', ' ').Trim()
 
     # Reset the truncation flag at the start of every call so a caller checking

@@ -7,13 +7,13 @@ function Get-AzLocalFleetHealthOverview {
         operator can see the whole fleet's readiness at a glance.
 
     .DESCRIPTION
-        Mirrors the LENS workbook "System Health Checks Overview" table:
+        Returns an ARG-first fleet health summary, one row per cluster:
         joins the `microsoft.azurestackhci/clusters` resource (for cluster
         identity, tags, node count, Azure connectivity) with its
         `updateSummaries/default` child (for healthState, update state,
         currentVersion, healthCheckDate, packageVersions[]). Solution
         Builder Extension (SBE) version is rolled up from packageVersions
-        by `mv-apply` + `max(iif packageType =~ 'SBE')` so callers get one
+        by `mv-expand` + `maxif(packageType =~ 'SBE')` so callers get one
         SbeVersion column per cluster regardless of how many package rows
         the cluster reports.
 
@@ -113,14 +113,18 @@ $ringFilter
     | where type =~ 'microsoft.azurestackhci/clusters/updatesummaries'
     | extend segs = split(id, '/')
     | extend ClusterResourceIdLower = tolower(strcat('/subscriptions/', segs[2], '/resourceGroups/', segs[4], '/providers/Microsoft.AzureStackHCI/clusters/', segs[8]))
-    | extend HealthState    = tostring(properties.healthState)
-    | extend UpdateState    = tostring(properties.state)
-    | extend CurrentVersion = tostring(properties.currentVersion)
-    | extend LastChecked    = todatetime(properties.healthCheckDate)
-    | extend pkgs           = properties.packageVersions
-    | mv-apply pkg = pkgs on (
-        summarize SbeVersion = max(iif(tostring(pkg.packageType) =~ 'SBE', tostring(pkg.version), ''))
-      )
+    | extend HealthState_    = tostring(properties.healthState)
+    | extend UpdateState_    = tostring(properties.state)
+    | extend CurrentVersion_ = tostring(properties.currentVersion)
+    | extend LastChecked_    = todatetime(properties.healthCheckDate)
+    | mv-expand pkg = properties.packageVersions
+    | summarize
+        HealthState    = any(HealthState_),
+        UpdateState    = any(UpdateState_),
+        CurrentVersion = any(CurrentVersion_),
+        LastChecked    = max(LastChecked_),
+        SbeVersion     = maxif(tostring(pkg.version), tostring(pkg.packageType) =~ 'SBE')
+        by ClusterResourceIdLower
     | project ClusterResourceIdLower, HealthState, UpdateState, CurrentVersion, LastChecked, SbeVersion
 ) on ClusterResourceIdLower
 | extend HealthResultsAgeDays = iif(isnull(LastChecked), -1, datetime_diff('day', now(), LastChecked))
@@ -128,11 +132,11 @@ $ringFilter
 | project
     ClusterName,
     ClusterPortalUrl,
-    HealthStatus    = coalesce(HealthState, 'Unknown'),
-    UpdateStatus    = coalesce(UpdateState, 'Unknown'),
-    CurrentVersion  = coalesce(CurrentVersion, '(unknown)'),
-    SbeVersion      = iif(isnull(SbeVersion) or SbeVersion == '', '(none)', SbeVersion),
-    AzureConnection = coalesce(AzureConnection, 'Unknown'),
+    HealthStatus    = iif(isempty(HealthState),     'Unknown',   HealthState),
+    UpdateStatus    = iif(isempty(UpdateState),     'Unknown',   UpdateState),
+    CurrentVersion  = iif(isempty(CurrentVersion),  '(unknown)', CurrentVersion),
+    SbeVersion      = iif(isempty(SbeVersion),      '(none)',    SbeVersion),
+    AzureConnection = iif(isempty(AzureConnection), 'Unknown',   AzureConnection),
     LastChecked,
     HealthResultsAgeDays,
     ResourceGroup,

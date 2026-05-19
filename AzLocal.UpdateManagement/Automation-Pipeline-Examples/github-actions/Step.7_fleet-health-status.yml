@@ -305,8 +305,8 @@ jobs:
         "DISTINCT_REASONS=$($summary.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
         # ------------------------------------------------------------------
-        # v0.7.70: Fleet Health Overview (one row per cluster, mirrors the LENS
-        # workbook "System Health Checks Overview" table). Separate cmdlet from
+        # v0.7.70: Fleet Health Overview (one row per cluster, ARG-first projection
+        # of cluster + updateSummaries for fleet-scale performance). Separate cmdlet from
         # the failures view above so a fleet with zero failing checks still
         # gets an overview-level rollup (last-checked age, current version,
         # SBE version, Azure connection, node count).
@@ -443,10 +443,10 @@ jobs:
             }
         }
 
-        # v0.7.70: NEW section - System Health Checks Overview (fleet rollup, one row per cluster).
+        # v0.7.70: NEW section - Fleet Health Overview (fleet rollup, one row per cluster).
         # Sourced from Get-AzLocalFleetHealthOverview. HealthResultsAgeDays surfaces clusters whose
         # 24-hour health check has not run in a while (negative = no LastChecked at all).
-        $md += "`n### System Health Checks Overview (fleet rollup)`n"
+        $md += "`n### Fleet Health Overview (fleet rollup)`n"
         if ($overviewRows.Count -eq 0) {
             $md += "`n*No clusters returned from Get-AzLocalFleetHealthOverview.*`n"
         } else {
@@ -478,7 +478,7 @@ jobs:
         ### Reports Available
         - ``fleet-health-detail.csv`` - one row per (cluster, failing health check)
         - ``fleet-health-summary.csv`` - one row per (FailureReason, Severity); ordered Critical-first, then by ClusterCount desc
-        - ``fleet-health-overview.csv`` - one row per cluster (LENS workbook 'System Health Checks Overview' parity)
+        - ``fleet-health-overview.csv`` - one row per cluster (ARG-first fleet health summary)
         - ``fleet-health-detail.json`` / ``fleet-health-summary.json`` / ``fleet-health-overview.json`` - same data, machine-readable
         - ``fleet-health-status.xml`` - JUnit XML for CI/CD visualisation
 

@@ -162,7 +162,7 @@ if (-not $env:PYTHONIOENCODING) {
     $env:PYTHONIOENCODING = 'utf-8'
 }
 
-# Update state constants aligned with queries in Azure Local LENS workbook
+# Update state constants aligned with Azure Resource Graph queries against the cluster updateSummaries resource
 # States that indicate an update is installable (ready to apply)
 $script:ReadyStates = @('Ready', 'ReadyToInstall')
 # States that indicate an update is blocked by a prerequisite
@@ -283,6 +283,6 @@ Export-ModuleMember -Function @(
     'Get-AzLocalApplyUpdatesScheduleNextFirings',
     'New-AzLocalApplyUpdatesScheduleConfig',
     'Update-AzLocalApplyUpdatesScheduleConfig',
-    # Fleet Health Overview (v0.7.70) - one row per cluster, LENS workbook parity
+    # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries
     'Get-AzLocalFleetHealthOverview'
 )
