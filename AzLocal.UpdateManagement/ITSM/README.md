@@ -19,14 +19,14 @@ A working sample config plus the Mustache ticket-body template live at [`../Auto
 
 ## 1. What this connector does
 
-When the `Step.5_apply-updates` pipeline finishes (the only pipeline wired to `New-AzureLocalIncident` in v0.7.70), the connector reads the JUnit results file the module already emits and, for each cluster row whose `Status` is in your trigger matrix:
+When any of the three "operator-attention" pipelines finishes - **`Step.5_apply-updates`**, **`Step.6_fleet-update-status`** (unresolved Failed update runs), and **`Step.7_fleet-health-status`** (Critical / Warning fleet-health failures) - the connector reads the JUnit results file the module already emits and, for each cluster row whose `Status` is in your trigger matrix:
 
 1. Computes a deterministic dedupe key (SHA256 of `ClusterResourceId | UpdateName | TriggerCategory`).
 2. Asks ServiceNow whether an incident with that key already exists in state New / In Progress / On Hold.
 3. If yes -> returns `Action='DedupedToExisting'` (no new ticket).
 4. If no -> creates a new incident with the trigger's severity, category, and the five `u_azlocal_*` custom fields populated.
 
-> **v0.7.70 status of read-pipeline wiring.** `Step.6_fleet-update-status` and `Step.7_fleet-health-status` emit JUnit reports with the v0.7.70 hyperlinked deep-link columns (`UpdateRunPortalUrl`, `ClusterPortalUrl`, `CurrentStep`, `Duration`, `ErrorCategory`, `HealthResultsAgeDays`), but the in-line raise-ticket step in those YAMLs is gated by a `raise_itsm_ticket` workflow input that defaults to `false`. Set the input to `true` (and provide the same `itsm-secrets` block Step.5 uses) to have either pipeline call `New-AzureLocalIncident -InputArtifactPath <junit-xml> -ConfigPath <itsm.yml>` automatically. You can also call the cmdlet manually against the artifact the pipelines upload.
+> **v0.7.70: Step.6 and Step.7 now raise tickets too (Phase D).** Until v0.7.69 only `Step.5_apply-updates` auto-called `New-AzureLocalIncident`. In v0.7.70 the same opt-in wiring is present in both `Step.6_fleet-update-status` (sources from the `Update Run History and Error Details` testsuite produced by `Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved`) and `Step.7_fleet-health-status` (sources from the `Fleet Health Failures` testsuite produced by `Get-AzureLocalFleetHealthFailures -View Detail`, sorted Critical-first). Both new wirings are **gated** by a `raise_itsm_ticket` workflow input (default `false`) and an `itsm_dry_run` input - so existing runs that do not toggle them on are byte-identical to v0.7.69. The `itsm-secrets` block is wrapped in `BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets` / `END-AZLOCAL-CUSTOMIZE:itsm-secrets` markers so operator-side secret bindings survive a `Update-AzureLocalPipelineExample` upgrade. The JUnit files Step.6/Step.7 emit carry the v0.7.70 hyperlinked deep-link columns (`UpdateRunPortalUrl`, `ClusterPortalUrl`, `CurrentStep`, `Duration`, `DeepestErrMsg`, `Severity`, `TargetResourceName`, `TargetResourceType`, `HealthResultsAgeDays`) so the ticket title + body can deep-link straight into the Azure portal blade for the affected cluster / update run.
 
 What it deliberately does **not** do in Phase 1: open Jira / ADO Work Items, send Teams / Slack notifications, or close tickets on success. See [ITSM-Connector-Plan.md Sections 2 + 9](./ITSM-Connector-Plan.md) for the phased roadmap.
 
@@ -168,6 +168,12 @@ triggers:
   ScheduleBlocked:    { raiseTicket: false }   # self-resolves; opt-in if desired
   Skipped:            { raiseTicket: false }
   NotReady:           { raiseTicket: false }
+  # --- v0.7.70 Phase D: Step.7 fleet-health-failure statuses ---
+  # Get-AzureLocalFleetHealthFailures emits Severity = Critical / Warning / Information.
+  # Critical-first sort means the highest-impact rows are processed first.
+  Critical:           { raiseTicket: true,  severity: 1, category: 'Cluster health: critical failure' }
+  Warning:            { raiseTicket: true,  severity: 3, category: 'Cluster health: warning' }
+  Information:        { raiseTicket: false }
 ```
 
 A ready-to-copy version with comments lives at [`../Automation-Pipeline-Examples/.itsm/azurelocal-itsm.yml`](../Automation-Pipeline-Examples/.itsm/azurelocal-itsm.yml).
@@ -241,7 +247,15 @@ New-AzureLocalIncident `
 
 ## 8. Wire into the pipeline
 
-The example pipelines under [`../Automation-Pipeline-Examples/`](../Automation-Pipeline-Examples/) already include the wired step. It is gated on `raise_itsm_ticket` (a `workflow_dispatch` choice / pipeline parameter) and is fully opt-in - existing runs that do not toggle it on are byte-identical to before.
+The example pipelines under [`../Automation-Pipeline-Examples/`](../Automation-Pipeline-Examples/) ship the wired step in **three** places as of v0.7.70:
+
+| Pipeline | Trigger source | JUnit input | Default behaviour |
+|---|---|---|---|
+| `Step.5_apply-updates` | `Get-AzureLocalUpdateRunFailures` (live, from the run that just executed) | `./reports/update-results.xml` | Wired since v0.7.4 |
+| `Step.6_fleet-update-status` | `Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved` (fleet, last 30 days) | `./reports/fleet-update-status.xml` | **v0.7.70 Phase D**, default OFF |
+| `Step.7_fleet-health-status` | `Get-AzureLocalFleetHealthFailures -View Detail` (Critical-first) | `./reports/fleet-health-status.xml` | **v0.7.70 Phase D**, default OFF |
+
+All three are gated on `raise_itsm_ticket` (a `workflow_dispatch` choice / pipeline parameter, default `false`) and fully opt-in - existing runs that do not toggle it on are byte-identical to before. The Step.6 / Step.7 wirings also expose an `itsm_dry_run` input (and Step.7 an `itsm_force_create`) so operators can preview tickets before flipping the switch.
 
 Key points from the wired step (full YAML in the example files):
 
@@ -250,14 +264,16 @@ Key points from the wired step (full YAML in the example files):
   if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
   shell: pwsh
   env:
+    # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
     ITSM_SN_INSTANCE_URL:  ${{ secrets.ITSM_SN_INSTANCE_URL }}
     ITSM_SN_CLIENT_ID:     ${{ secrets.ITSM_SN_CLIENT_ID }}
     ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
+    # END-AZLOCAL-CUSTOMIZE:itsm-secrets
   run: |
     Import-Module ${{ env.MODULE_PATH }}/AzLocal.UpdateManagement.psd1 -Force
     $cfg = Get-AzureLocalItsmConfig -Path "${{ github.event.inputs.itsm_config_path }}"
     New-AzureLocalIncident `
-        -InputArtifactPath ./artifacts/update-results.xml `
+        -InputArtifactPath ./reports/fleet-health-status.xml `
         -Config $cfg `
         -RunMetadata @{
             Platform = 'github'
@@ -265,12 +281,13 @@ Key points from the wired step (full YAML in the example files):
             RunUrl   = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
         } `
         -DryRun:([bool]::Parse($env:INPUT_ITSM_DRY_RUN)) `
-        -ExportPath      ./artifacts/itsm-results.csv `
-        -ExportJUnitPath ./artifacts/itsm-results.xml
+        -ExportPath      ./reports/itsm-results.csv `
+        -ExportJUnitPath ./reports/itsm-results.xml
 ```
 
 - **Secrets are mapped via `env:`** on the step, not passed on the PowerShell command line. The module picks them up via `env://NAME` references in the config file. This keeps secret values off process listings, off the rendered step inputs, and out of CI logs.
-- The step writes **two** artefacts (`itsm-results.csv` for humans, `itsm-results.xml` for `dorny/test-reporter` / `PublishTestResults@2`). Both upload happens unconditionally if the step ran, including in `-DryRun`, so an audit trail exists either way.
+- **`BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets` / `END-AZLOCAL-CUSTOMIZE:itsm-secrets` markers** wrap the secret bindings. `Update-AzureLocalPipelineExample` preserves everything inside those markers across module upgrades, so operator-side secret remapping survives a `Update-AzureLocalPipelineExample` run.
+- The step writes **two** artefacts (`itsm-results.csv` for humans, `itsm-results.xml` for `dorny/test-reporter` / `PublishTestResults@2`). Both upload happens unconditionally if the step ran, including in `-DryRun`, so an audit trail exists either way. The ADO Publish task uses `azlocal-fleet-*-itsm-results_$(stamp.artifactStamp)` to match the v0.7.66 timestamped-artifact convention.
 - The Azure DevOps mirror is the same shape with `AzureCLI@2` + a `- group: AzureLocal-ITSM-Secrets` variable group (kept commented out by default so the example file loads cleanly for users who have not yet wired the variable group).
 
 The first production run should keep `raise_itsm_ticket=false` (or set `itsm_dry_run=true`) and inspect the CSV / JUnit artefact before flipping the switch.
