@@ -104,7 +104,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.70'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -129,7 +129,15 @@ jobs:
       with:
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
+        # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
+        # <id>` after the OIDC token exchange so the runner has a default
+        # `az account` context. It is NOT used to scope Azure Resource Graph queries
+        # (those run fleet-wide across every subscription the federated identity can
+        # read) and is NOT interpolated into Azure portal deep-link URLs (those use
+        # the per-row `subscriptionId` returned by ARG).
+        # Set it via: gh variable set AZURE_SUBSCRIPTION_ID --body <subId>
+        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
     
     - name: Install Azure CLI Resource Graph Extension
       shell: pwsh
@@ -756,8 +764,10 @@ jobs:
         # 'Create Status Summary' step can render the markdown table without
         # re-querying ARG. Truncated to top 25 failures to keep the workflow
         # output env-var size sane.
+        # v0.7.71: include ClusterPortalUrl so the markdown table can render
+        # Cluster Name as a deep link into the Azure portal cluster blade.
         if ($runHistoryCount -gt 0) {
-            $top = $runFailures | Select-Object -First 25 ClusterName, UpdateName, State, Status, CurrentStep, Duration, StartTime, LastUpdated, DeepestErrMsg, UpdateRunPortalUrl
+            $top = $runFailures | Select-Object -First 25 ClusterName, ClusterPortalUrl, UpdateName, State, Status, CurrentStep, Duration, StartTime, LastUpdated, DeepestErrMsg, UpdateRunPortalUrl
             $json = $top | ConvertTo-Json -Depth 4 -Compress
             $b64  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
             echo "RUN_HISTORY_B64=$b64" >> $env:GITHUB_OUTPUT
@@ -900,6 +910,13 @@ jobs:
         # provides an ARG-first fleet-scale view of recent unresolved failures. Rendered only when
         # there are unresolved failed runs to surface. Uses the base64 JSON
         # passed forward from the fleet-status step output so we don't re-query.
+        # v0.7.71: Cluster Name renders as a portal hyperlink (per-row
+        # ClusterPortalUrl from ARG) so the operator can jump straight to the
+        # cluster blade. Verbose Error Details renders inside an inline
+        # <details><summary>...</summary>...</details> block so the full
+        # parser/orchestrator stack is preserved (no 250-char truncation) but
+        # the table stays scannable - rows expand on click. HTML-special chars
+        # in the error text are escaped to keep the renderer honest.
         $runHistoryCount = "${{ steps.fleet-status.outputs.RUN_HISTORY_COUNT }}"
         $runHistoryB64   = "${{ steps.fleet-status.outputs.RUN_HISTORY_B64 }}"
         if ($runHistoryCount -and ([int]$runHistoryCount) -gt 0 -and $runHistoryB64) {
@@ -912,13 +929,18 @@ jobs:
                 foreach ($r in @($rows)) {
                     $errCell = if ($r.DeepestErrMsg) {
                         $e = [string]$r.DeepestErrMsg
-                        if ($e.Length -gt 250) { $e = $e.Substring(0,250) + '...' }
-                        # Inline-code safe: collapse newlines + escape pipes for table
-                        $e = $e -replace "`r`n",' ' -replace "`n",' ' -replace '\|','\|'
-                        '`' + $e + '`'
+                        # HTML-encode so '<', '>', '&' in stack traces don't get
+                        # parsed as tags by the renderer; escape pipes so the
+                        # table row stays intact; collapse newlines to <br> so
+                        # multi-line stack traces remain readable inside the
+                        # collapsible block.
+                        $e = $e -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+                        $e = $e -replace "`r`n",'<br>' -replace "`n",'<br>' -replace '\|','\|'
+                        '<details><summary>Show error</summary><br><code>' + $e + '</code></details>'
                     } else { '_(none)_' }
+                    $clusterCell = if ($r.ClusterPortalUrl) { "[$($r.ClusterName)]($($r.ClusterPortalUrl))" } else { $r.ClusterName }
                     $updCell = if ($r.UpdateRunPortalUrl) { "[$($r.UpdateName)]($($r.UpdateRunPortalUrl))" } else { $r.UpdateName }
-                    $summary += "| $($r.ClusterName) | $updCell | $($r.State) | $($r.Status) | $($r.CurrentStep) | $errCell | $($r.Duration) | $($r.StartTime) | $($r.LastUpdated) |`n"
+                    $summary += "| $clusterCell | $updCell | $($r.State) | $($r.Status) | $($r.CurrentStep) | $errCell | $($r.Duration) | $($r.StartTime) | $($r.LastUpdated) |`n"
                 }
             } catch {
                 Write-Warning "Failed to render Update Run History markdown table: $($_.Exception.Message)"

@@ -40,10 +40,16 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
                        ring nothing in the fleet carries), the snippet leads
                        with the schedule fix(es) - blast radius is higher
                        because apply-updates will never run on the missing
-                       ring(s). The YAML cron snippet (one per platform)
-                       follows in a `## Action required - cron coverage`
-                       section. When only one action applies the numbering
-                       prefix is dropped.
+                       ring(s). If any YAML cron line uses syntax the advisor
+                       cannot evaluate, a `## Action required - simplify
+                       unparseable cron expression(s)` section follows next so
+                       the operator can rewrite those lines BEFORE accepting
+                       the cron-coverage snippet (which may otherwise
+                       over-suggest entries that duplicate an
+                       already-correct-but-unparseable line). The YAML cron
+                       snippet (one per platform) follows in a `## Action
+                       required - cron coverage` section. When only one
+                       action applies the numbering prefix is dropped.
 
         Status values (Audit):
           Covered                  - at least one cron in the YAML fires during the window
@@ -429,11 +435,22 @@ resources
             # schedule-file gaps, prepend a markdown section for each gap kind.
             # Schedule sections come FIRST (higher blast radius - a missing
             # ring means apply-updates NEVER fires for those clusters); the
-            # cron coverage section comes second.
-            $hasMissing  = $scheduleDiffComputed -and $missingFromSchedule.Count -gt 0
-            $hasOrphaned = $scheduleDiffComputed -and $orphanedInSchedule.Count  -gt 0
-            $actionCount = @($hasMissing, $hasOrphaned, ($byCron.Count -gt 0)) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
-            $actionIdx   = 0
+            # UnparseableCron section comes next so reviewers fix syntax the
+            # advisor cannot reason about BEFORE accepting the cron coverage
+            # recommendation (which may otherwise over-suggest crons that
+            # duplicate an already-correct-but-unparseable line); the cron
+            # coverage section comes last.
+            # v0.7.71: $unparseableCrons surfaces each YAML cron whose syntax
+            # the advisor could not evaluate (DayOfMonth restrictions, step
+            # values, etc), with file:line + the parser's error message, so
+            # the operator can fix the source line directly from the Step
+            # Summary instead of cross-referencing the Audit Detail table.
+            $hasMissing       = $scheduleDiffComputed -and $missingFromSchedule.Count -gt 0
+            $hasOrphaned      = $scheduleDiffComputed -and $orphanedInSchedule.Count  -gt 0
+            $unparseableCrons = @($parsedYamlCrons | Where-Object { -not $_.Parsed.IsValid -or $_.Parsed.IsComplex })
+            $hasUnparseable   = $unparseableCrons.Count -gt 0
+            $actionCount      = @($hasMissing, $hasOrphaned, $hasUnparseable, ($byCron.Count -gt 0)) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
+            $actionIdx        = 0
 
             $fullSb = New-Object System.Text.StringBuilder
 
@@ -464,6 +481,26 @@ resources
                 [void]$fullSb.AppendLine('|---|---|')
                 foreach ($ring in ($orphanedInSchedule | Sort-Object)) {
                     [void]$fullSb.AppendLine("| $ring | Either tag at least one cluster with ``UpdateRing=$ring`` (e.g. Set-AzureLocalClusterUpdateRingTag), or remove ``$ring`` from the schedule file's ``rings`` column(s). |")
+                }
+                [void]$fullSb.AppendLine()
+            }
+
+            if ($hasUnparseable) {
+                $actionIdx++
+                $prefix = if ($actionCount -gt 1) { " ($actionIdx of $actionCount)" } else { '' }
+                [void]$fullSb.AppendLine("## Action required$prefix - simplify unparseable cron expression(s)")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine("The advisor could not reason about the following cron line(s). UpdateWindow coverage for these crons was NOT evaluated, so the cron-coverage recommendation below may over-suggest entries that duplicate what an already-correct-but-unparseable line is doing. Resolve these first.")
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine('Supported syntax: ``minute`` and ``hour`` may be a literal value, a comma-list, or a range (``a-b``); ``day-of-month`` and ``month`` must be ``*``; ``day-of-week`` may be ``*``, a literal value, a comma-list, or a range. Step values (``*/n``), lists/ranges in ``day-of-month`` or ``month``, and names (``MON``, ``JAN``) are not yet supported.')
+                [void]$fullSb.AppendLine()
+                [void]$fullSb.AppendLine('| Source (file:line) | Cron | Parser error | Fix |')
+                [void]$fullSb.AppendLine('|---|---|---|---|')
+                foreach ($pc in ($unparseableCrons | Sort-Object { $_.Source.RelativePath }, { [int]$_.Source.LineNumber })) {
+                    $src  = "$($pc.Source.RelativePath):$($pc.Source.LineNumber)"
+                    $cron = ($pc.Source.CronExpression -replace '\|','\|')
+                    $err  = (($pc.Parsed.ErrorMessage) -replace '\|','\|')
+                    [void]$fullSb.AppendLine("| ``$src`` | ``$cron`` | $err | Rewrite the expression using only the supported subset above (split a complex cron into multiple simpler crons if needed), or remove the line if the cluster(s) it targets are now covered by another cron. |")
                 }
                 [void]$fullSb.AppendLine()
             }
@@ -766,9 +803,18 @@ resources
                     [void]$md.AppendLine("# Apply-Updates Schedule Coverage ($View)")
                     [void]$md.AppendLine("")
                     if ($View -eq 'Recommend') {
-                        [void]$md.AppendLine('```yaml')
+                        # v0.7.71: emit the Snippet verbatim. From v0.7.69 onwards
+                        # the snippet is self-contained markdown - it carries its
+                        # own '## Action required - ...' H2 headings and an INNER
+                        # ```yaml ... ``` fence around just the cron block. The
+                        # previous outer ```yaml ... ``` wrap caused the inner
+                        # closing ``` to close the OUTER fence and the outer
+                        # closing ``` to OPEN a new fence that was never closed,
+                        # which silently swallowed every markdown element a
+                        # downstream consumer appended to the file (Step Summary
+                        # tables, Reports Available list, etc rendered as a
+                        # single grey monospace block in GH Actions / ADO).
                         if ($output.Count -gt 0) { [void]$md.AppendLine($output[0].Snippet) }
-                        [void]$md.AppendLine('```')
                     }
                     else {
                         $cols = $output | Select-Object -First 1 | ForEach-Object { $_.PSObject.Properties.Name }

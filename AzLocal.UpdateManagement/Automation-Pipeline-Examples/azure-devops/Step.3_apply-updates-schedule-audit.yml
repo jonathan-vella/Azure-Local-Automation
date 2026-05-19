@@ -73,7 +73,7 @@ parameters:
     default: false
 
 variables:
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.70'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
   REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
   reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
 
@@ -349,8 +349,8 @@ stages:
         | **PartiallyCovered** | $partial |
         | **MalformedTag** | $malformed |
         | **UnparseableCron** | $unparseable |
-        | **RingMissingFromSchedule (v0.7.69)** | $ringMissing |
-        | **RingOrphanedInSchedule (v0.7.69)** | $ringOrphan |
+        | **RingMissingFromSchedule** | $ringMissing |
+        | **RingOrphanedInSchedule** | $ringOrphan |
 
         "@
 

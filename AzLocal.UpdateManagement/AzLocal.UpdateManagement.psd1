@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.70'
+    ModuleVersion = '0.7.71'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -203,6 +203,84 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.71 - Step.3 markdown render fix + UnparseableCron action-required section, Step.4 critical-count undercount fix, Step.6 cluster portal link + collapsible Verbose Error, AZURE_SUBSCRIPTION_ID secret->variable
+
+### Fixed
+
+- `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -ExportPath *.md`
+  no longer wraps the multi-section snippet inside an outer
+  ```yaml ... ``` fence. The snippet already carries its own inner
+  ```yaml ... ``` around the cron block, so the outer wrap was causing
+  the inner closing ``` to close the outer fence and the outer
+  closing ``` to open a new fence that was never closed. Downstream
+  consumers (Step.3 pipeline Step Summary) saw every markdown element
+  appended after the recommend block (Audit Detail tables, Reports
+  Available list, timestamps) rendered as a single grey monospace
+  block. Snippet is now emitted verbatim.
+- `Step.4_assess-update-readiness.yml` (GH + ADO) Critical health
+  failure count under-reported ("0 Critical findings" while JUnit XML
+  showed 46). `Test-AzureLocalClusterHealth -PassThru` returns
+  per-cluster summary objects with `CriticalCount` / `Failures`, NOT
+  flat finding rows with `Severity`. The pipeline now aggregates via
+  `Measure-Object -Property CriticalCount -Sum`.
+
+### Added
+
+- `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` emits
+  a new `## Action required - simplify unparseable cron expression(s)`
+  section between the schedule-fix sections and the cron-coverage
+  section when one or more YAML cron lines failed to parse. Lists
+  every offending cron with its source file:line and the parser's
+  error message so the operator can rewrite the line directly from
+  the Step Summary. Sequenced before cron coverage so the operator
+  fixes parser-blind crons BEFORE accepting the cron-coverage
+  recommendation (which may over-suggest entries duplicating an
+  already-correct-but-unparseable line).
+- `Get-AzureLocalUpdateRunFailures` projects a new `ClusterPortalUrl`
+  property (`https://portal.azure.com/#@/resource{ClusterResourceId}`)
+  on every output row, alongside the existing `UpdateRunPortalUrl`.
+- `Step.6_fleet-update-status.yml` (GH + ADO) Update Run History
+  markdown table renders Cluster Name as a deep link into the Azure
+  portal cluster blade (per-row `ClusterPortalUrl` projected by
+  `Get-AzureLocalUpdateRunFailures`). Verbose Error Details now
+  renders inside an inline `<details><summary>...</summary>...`
+  block so the full parser/orchestrator stack is preserved (no more
+  250-char truncation) but the table stays scannable - rows expand
+  on click. HTML-special chars in error text are escaped to keep the
+  renderer honest.
+
+### Changed (pipeline samples)
+
+- All 8 GitHub Actions `Step.*.yml` workflows now read the Azure
+  subscription id from `vars.AZURE_SUBSCRIPTION_ID` (Variable) instead
+  of `secrets.AZURE_SUBSCRIPTION_ID` (Secret). The value is consumed
+  ONLY by `azure/login@v3` to set the default `az account` context
+  for cmdlets that REQUIRE a subscription. It is NOT used to scope
+  ARG queries (the helpers omit `--subscriptions` so the query runs
+  fleet-wide against every subscription the caller can read) and is
+  NOT interpolated into portal URLs (each row carries its own
+  ARG-projected `subscriptionId` from which deep-links are built per
+  row). Treating it as a Variable also means the value appears
+  plaintext in workflow logs, which matches its public, non-sensitive
+  nature. Azure DevOps pipelines were already authenticating via a
+  service connection and need no change.
+- `Step.3_apply-updates-schedule-audit.yml` (GH + ADO) drops the
+  `(v0.7.69)` suffix from its summary heading - the version pin is
+  authoritative.
+
+### Notes
+
+- All v0.7.71 changes are backward compatible. New `ClusterPortalUrl`
+  / UnparseableCron section are additive; existing pipeline summaries
+  that read only the v0.7.70 schema keep working.
+- Pipeline samples bump to `GENERATED_AGAINST_MODULE_VERSION: '0.7.71'`.
+  Refresh existing copies with `Update-AzureLocalPipelineExample`.
+
+For full release notes on this and previous versions, see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
+
+---
+
 ## Version 0.7.70 - Step.0 recurring auth audit, Step.6 update run history, Step.3/Step.7 UX + new ARG-first fleet health summary cmdlet
 
 ### Added
@@ -266,146 +344,11 @@ https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANG
 
 ---
 
-## Version 0.7.69 - Ring-aware apply-updates schedule (schema v1, hard break vs v0.7.68)
+## Older releases
 
-### Added
-
-- New cmdlet `Get-AzLocalApplyUpdatesScheduleConfig`: parses and
-  validates an `apply-updates-schedule.yml` (schema v1). Hard-fails
-  when the schedule has no active rows (safety gate the apply-updates
-  pipeline depends on).
-- New cmdlet `Resolve-AzLocalApplyUpdatesScheduleRing`: maps a UTC
-  date to the matching UpdateRing(s) via cycle-week math anchored at
-  `cycleAnchorISOWeek` / `cycleAnchorYear`. Union semantics: when
-  multiple rows match, the resolver concatenates their `rings`
-  columns with `;`.
-- New cmdlet `Get-AzLocalApplyUpdatesScheduleNextFirings`: previews
-  the next N days of resolved firings.
-- New cmdlet `New-AzLocalApplyUpdatesScheduleConfig`: generates a
-  **STRAWMAN** schedule from live fleet `UpdateRing` tags (or
-  `-Rings` for offline use). Every generated row is emitted
-  **commented out** by design - the apply-updates pipeline hard-stops
-  until the operator reviews and uncomments at least one row.
-- New cmdlet `Update-AzLocalApplyUpdatesScheduleConfig`: idempotent
-  migrator framework. v0.7.69 ships the recipes table empty.
-- `Test-AzureLocalApplyUpdatesScheduleCoverage` gained
-  `-SchedulePath`. When supplied, emits two new status rows:
-  `RingMissingFromSchedule` (fleet ring with no schedule row) and
-  `RingOrphanedInSchedule` (schedule ring no cluster carries).
-
-### Changed (pipeline samples)
-
-- `Step.5_apply-updates.yml` (GH + ADO) resolves the `UpdateRing`
-  from `apply-updates-schedule.yml` on every scheduled firing. Manual
-  `workflow_dispatch` / non-Schedule runs still honour the operator's
-  `-UpdateRingValue` input verbatim. GH workflow-level `concurrency:`
-  block prevents overlapping cron firings.
-- `Step.3_apply-updates-schedule-audit.yml` (GH + ADO) gained
-  `schedule_path` / `schedulePath` input, a `debug` toggle, and
-  surfaces the new RingMissing / RingOrphan counts.
-- `apply-updates-schedule.example.yml` ships as documentation only.
-
-### Breaking
-
-- Schema `schemaVersion: 1` is a hard break vs any pre-v0.7.69
-  experimental schedule format. No v0 -> v1 migrations shipped.
-  Regenerate via `New-AzLocalApplyUpdatesScheduleConfig`.
-
-### Migration
-
-Strawman + review + uncomment workflow:
-
-```powershell
-New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
-# Review / uncomment rows that match your change-control policy.
-Get-AzLocalApplyUpdatesScheduleNextFirings `
-  -Schedule (Get-AzLocalApplyUpdatesScheduleConfig -Path .\.github\apply-updates-schedule.yml)
-Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
-```
-
-Without an active (uncommented) row the apply-updates pipeline
-hard-fails at the reader step (this is the v0.7.69 safety gate).
-
-For full release notes on this and previous versions, see:
+For release notes covering v0.7.69 and earlier, see the CHANGELOG:
 https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
----
-
-## Version 0.7.68 - ARG-first refactor, pipeline rename to Step.X_ prefix, Layer 1 customisation markers
-
-### Added
-
-- New cmdlet `Get-AzureLocalUpdateRunFailures`: ARG-only deep-error
-  extraction (9 levels deep) for fleet-scale verbose error information
-  from cluster update runs. No per-cluster shell-outs.
-- New cmdlet `Update-AzureLocalPipelineExample`: marker-aware merge
-  for the bundled pipeline YAMLs. Refreshes the shipped sample set in
-  a customer repo while preserving any content inside
-  `BEGIN-AZLOCAL-CUSTOMIZE:<section>` / `END-AZLOCAL-CUSTOMIZE:<section>`
-  marker pairs (schedule-triggers, itsm-secrets). Companion to
-  `Copy-AzureLocalPipelineExample` (clean overwrite).
-- Throttle/retry handling in `Invoke-AzResourceGraphQuery`: detects
-  HTTP 429 responses, parses `Retry-After`, and applies bounded
-  exponential backoff so large fleet sweeps no longer fail at the
-  ARG throttling boundary. Two new module-scope diagnostic flags
-  reset per call (`$script:LastResourceGraphThrottled`,
-  `$script:LastResourceGraphRetryCount`) make the retry behaviour
-  inspectable from callers and tests.
-
-### Changed (ARG-first refactor)
-
-- The following cmdlets are now ARG-first single-batch reads, with
-  `-ThrottleLimit` removed (it was meaningless against ARG):
-  `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`,
-  `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`,
-  `Get-AzureLocalFleetProgress`, `Get-AzureLocalFleetStatusData`,
-  `New-AzureLocalFleetStatusHtmlReport`.
-- All shipped pipeline YAMLs no longer pass `-ThrottleLimit`.
-- `Get-AzureLocalFleetProgress` no longer silently returns stale state
-  when ARG returns zero rows; it now surfaces the empty fleet condition.
-- `Invoke-AzResourceGraphQuery` hardened against `az.cmd` CR/LF
-  stdout truncation that caused the N-row collapse in consumers.
-
-### Changed (pipeline samples)
-
-- All 16 bundled pipeline YAMLs (GitHub Actions + Azure DevOps) renamed
-  with a `Step.X_` ordering prefix so they sort by execution order:
-    Step.0_authentication-test.yml   (was auth-smoke-test.yml)
-    Step.1_inventory-clusters.yml
-    Step.2_manage-updatering-tags.yml
-    Step.3_apply-updates-schedule-audit.yml
-    Step.4_assess-update-readiness.yml
-    Step.5_apply-updates.yml
-    Step.6_fleet-update-status.yml
-    Step.7_fleet-health-status.yml
-- New AZLOCAL-CUSTOMIZE marker pairs (`schedule-triggers` on the 6 main
-  pipelines, `itsm-secrets` on Step.5) mark the YAML regions intended
-  for operator customisation. Markers are pure YAML comments and have
-  no runtime effect. The new `Update-AzureLocalPipelineExample` cmdlet
-  consumes them to preserve operator edits inside these regions across
-  module upgrades.
-- `Read-AzLocalApplyUpdatesYamlCrons` glob expanded to match both
-  `Step.5_apply-updates*.yml` and the legacy `apply-updates*.yml` so a
-  customer's existing schedule-audit pipeline keeps working until they
-  refresh their copies via `Copy-AzureLocalPipelineExample`.
-
-### Migration
-
-If you have copied any of the bundled workflows into your repo, the
-recommended refresh path is now the marker-aware merge:
-
-```powershell
-Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
-Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
-```
-
-For a first-time migration from a pre-v0.7.68 copy (no markers in the
-destination yet) add `-Force`, then re-apply any operator customisations
-once. The clean-overwrite tool (`Copy-AzureLocalPipelineExample -Update`)
-remains available for forced refreshes.
-
-For full release notes on this and previous versions, see:
-https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 '@
 
             # Prerelease string of this module

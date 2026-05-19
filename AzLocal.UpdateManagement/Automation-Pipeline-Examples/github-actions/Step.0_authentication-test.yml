@@ -93,7 +93,15 @@ jobs:
         with:
           client-id:       ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
+          # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
+          # <id>` after the OIDC token exchange so the runner has a default
+          # `az account` context. It is NOT used to scope Azure Resource Graph queries
+          # (those run fleet-wide across every subscription the federated identity can
+          # read) and is NOT interpolated into Azure portal deep-link URLs (those use
+          # the per-row `subscriptionId` returned by ARG).
+          # Set it via: gh variable set AZURE_SUBSCRIPTION_ID --body <subId>
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Collect Authentication and Subscription Scope Report
         id: report

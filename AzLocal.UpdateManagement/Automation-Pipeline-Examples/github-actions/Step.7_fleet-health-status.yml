@@ -114,7 +114,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.70'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -139,7 +139,15 @@ jobs:
       with:
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
+        # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
+        # <id>` after the OIDC token exchange so the runner has a default
+        # `az account` context. It is NOT used to scope Azure Resource Graph queries
+        # (those run fleet-wide across every subscription the federated identity can
+        # read) and is NOT interpolated into Azure portal deep-link URLs (those use
+        # the per-row `subscriptionId` returned by ARG).
+        # Set it via: gh variable set AZURE_SUBSCRIPTION_ID --body <subId>
+        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
     - name: Install Azure CLI Resource Graph Extension
       shell: pwsh
@@ -376,9 +384,21 @@ jobs:
         $overview | ConvertTo-Json -Depth 6 | Out-File -FilePath $overviewJson -Encoding utf8
         "OVERVIEW_ROWS=$($overview.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+        # v0.7.71: surface fleet-wide totals so the summary table can report
+        # Total / Healthy / Unhealthy (rather than only the affected/unhealthy
+        # subset). 'Affected' in the failures view = clusters with at least one
+        # failing health check = unhealthy. Force [int] so .Count is reliable
+        # whether @() is 0/1/N elements (PowerShell scalar-unwrap guard).
+        $healthyClusters = [int](@($overview | Where-Object { $_.HealthStatus -eq 'Healthy' }).Count)
+        $totalInSub      = [int](@($overview).Count)
+        "HEALTHY_CLUSTERS=$healthyClusters" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "TOTAL_IN_SUB=$totalInSub"          | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
         Write-Host ""
         Write-Host "Fleet Health Collection complete:"
-        Write-Host "  Affected clusters       : $totalClusters"
+        Write-Host "  Total clusters in scope : $totalInSub"
+        Write-Host "  Healthy clusters        : $healthyClusters"
+        Write-Host "  Unhealthy clusters      : $totalClusters"
         Write-Host "  Total failing checks    : $totalFailures (Critical=$criticalCount, Warning=$warningCount)"
         Write-Host "  Distinct failure reasons: $($summary.Count)"
         Write-Host "  Overview rows           : $($overview.Count)"
@@ -414,6 +434,9 @@ jobs:
         $crit           = "${{ steps.fleet-health.outputs.CRITICAL_COUNT }}"
         $warn           = "${{ steps.fleet-health.outputs.WARNING_COUNT }}"
         $reasons        = "${{ steps.fleet-health.outputs.DISTINCT_REASONS }}"
+        # v0.7.71: fleet-wide healthy/total counts (Get-AzLocalFleetHealthOverview).
+        $healthy        = "${{ steps.fleet-health.outputs.HEALTHY_CLUSTERS }}"
+        $totalInSub     = "${{ steps.fleet-health.outputs.TOTAL_IN_SUB }}"
 
         $summaryRows = @()
         if (Test-Path './reports/fleet-health-summary.csv') {
@@ -433,11 +456,15 @@ jobs:
 
         | Metric | Count |
         |--------|-------|
-        | **Affected Clusters** | $total |
+        | **Total Clusters in Subscription** | $totalInSub |
+        | **Healthy Clusters** | $healthy |
+        | **Unhealthy Clusters** | $total |
         | **Total Failing Checks** | $failures |
         | **Critical** | $crit |
         | **Warning** | $warn |
         | **Distinct Failure Reasons** | $reasons |
+
+        > _**Healthy** / **Unhealthy** count clusters via ``Get-AzLocalFleetHealthOverview``; **Unhealthy** = at least one Critical or Warning health-check failure. **Total Failing Checks** counts individual failing checks (one cluster can contribute multiple)._
 
         ### Health Check Failures By Reason (most widespread first)
         "@
@@ -452,8 +479,11 @@ jobs:
                 # v0.7.70: zip AffectedClusters (names) with AffectedClusterPortalUrls (positional)
                 # to render markdown hyperlinks. Cap at the first 10 names then '... (+N more)' so
                 # widespread failures stay readable; full list is in the CSV artifact.
-                $names = if ($r.AffectedClusters) { @($r.AffectedClusters -split '; ') } else { @() }
-                $urls  = if ($r.AffectedClusterPortalUrls) { @($r.AffectedClusterPortalUrls -split '; ') } else { @() }
+                # v0.7.71: keep @() OUTSIDE the 'if' so single-element arrays do not unwrap to a
+                # String (PowerShell scalar-unwrap bug). Without this, a row with one cluster
+                # rendered as the first character of the cluster name only.
+                $names = @(if ($r.AffectedClusters) { $r.AffectedClusters -split '; ' } else { @() })
+                $urls  = @(if ($r.AffectedClusterPortalUrls) { $r.AffectedClusterPortalUrls -split '; ' } else { @() })
                 $linkedParts = for ($i = 0; $i -lt $names.Count; $i++) {
                     $n = $names[$i]
                     $u = if ($i -lt $urls.Count) { $urls[$i] } else { '' }
@@ -514,12 +544,17 @@ jobs:
                 } else {
                     $o.ClusterName
                 }
+                # v0.7.71: replace bracketed labels with emoji icons (icon + text) so the
+                # at-a-glance Health column is visually scannable. Label is retained for
+                # greppability (CI log searches by 'Healthy' / 'Critical' / etc.). Uses
+                # literal Unicode (not GH ':name:' shortcodes) so the Azure DevOps twin
+                # of this pipeline renders identically.
                 $healthTag = switch ($o.HealthStatus) {
-                    'Healthy'              { '[OK]' }
-                    'Critical'             { '[Critical]' }
-                    'Warning'              { '[Warning]' }
-                    'In progress'          { '[In progress]' }
-                    'Health check failed'  { '[Failed]' }
+                    'Healthy'              { "$([char]0x2705) Healthy" }       # white heavy check mark
+                    'Critical'             { "$([char]0x274C) Critical" }      # cross mark
+                    'Warning'              { "$([char]0x26A0)$([char]0xFE0F) Warning" }       # warning sign + VS16
+                    'In progress'          { "$([char]0x23F3) In progress" }   # hourglass with flowing sand
+                    'Health check failed'  { "$([char]0x274C) Failed" }
                     default                { '[' + $o.HealthStatus + ']' }
                 }
                 $md += ('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} |' -f $clusterCell, $healthTag, $o.UpdateStatus, $o.CurrentVersion, $o.SbeVersion, $o.AzureConnection, $o.LastChecked, $o.HealthResultsAgeDays, $o.NodeCount) + "`n"

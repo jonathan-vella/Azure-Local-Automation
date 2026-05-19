@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.70 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.70)
+**Latest Version:** v0.7.71 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.71)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.70](#whats-new-in-v0770)
+- [What's New in v0.7.71](#whats-new-in-v0771)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -153,7 +153,54 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.70
+## What's New in v0.7.71
+
+v0.7.71 is a **bug-fix + UX polish** release on top of v0.7.70. Two render-correctness fixes (Step.3 markdown rendering as a code block, Step.4 critical-count under-reporting as 0), one new action-required section in `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` for unparseable cron expressions, hyperlinked Cluster Name + collapsible Verbose Error in the Step.6 Update Run History table, and the AZURE_SUBSCRIPTION_ID Secret -> Variable migration for GitHub Actions samples. All changes are additive over v0.7.70; no behaviour change for callers that don't read the new columns.
+
+> Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
+
+### Step.3 markdown render fix (was rendering as one grey code block)
+
+`Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -ExportPath *.md` was wrapping the multi-section snippet inside an outer ```yaml ... ``` fence. From v0.7.69 onwards the snippet itself carries markdown headings, action-required tables, AND its own **inner** ```yaml ... ``` fence around just the cron block. CommonMark fence-matching is by triple-backtick count: the outer ```yaml opened fence A; the inner ``` closed fence A; the outer ``` then **opened a new fence that was never closed**. Result: every markdown element the Step.3 pipeline appended after the recommend block (`### Audit Detail - Cron coverage` table, `### Reports Available` list, timestamp) was swallowed into the unclosed fence and rendered as a single grey monospace code block. The cmdlet now emits the snippet verbatim - the inner pair stays balanced, and downstream content renders as proper markdown again.
+
+### Step.4 critical-count under-reporting fix (was 0, should be N)
+
+`Step.4_assess-update-readiness.yml` (GH + ADO) was reporting `Critical health failures: 0` in the markdown summary while the JUnit XML showed 46 critical findings. Root cause: the pipeline was filtering `$health | Where-Object { $_.Severity -eq 'Critical' }`, but `Test-AzureLocalClusterHealth -PassThru` returns **per-cluster summary objects** (`ClusterName`, `HealthState`, `Passed`, `CriticalCount`, `WarningCount`, `Failures` (nested array)), NOT flat finding rows. `Severity` lives on items inside the nested `Failures` array; the outer summary has `CriticalCount` instead. The pipeline now aggregates correctly via `($health | Measure-Object -Property CriticalCount -Sum).Sum` and counts affected clusters via `@($health | Where-Object { [int]$_.CriticalCount -gt 0 }).Count`.
+
+### Step.3 `-View Recommend` - new "Action required - simplify unparseable cron expression(s)" section
+
+When one or more YAML cron lines used syntax the advisor cannot evaluate (DayOfMonth restrictions, step values, named day-of-week tokens), the Audit view surfaced them as `UnparseableCron` rows but the Recommend view ignored them - the operator had to cross-reference the Audit Detail table to find each one. `-View Recommend` now emits a new `## Action required - simplify unparseable cron expression(s)` section between the schedule-fix sections (`add these rings`, `prune orphaned rings`) and the cron-coverage section. The table lists every offending cron with its source `file:line` and the parser's error message so the operator can rewrite the line directly from the Step Summary. Sequenced **before** cron coverage so parser-blind crons are fixed BEFORE the operator accepts the cron-coverage recommendation (which may otherwise over-suggest entries that duplicate what an already-correct-but-unparseable line is doing). When only one action overall applies the `(N of M)` numbering prefix is still dropped.
+
+### Step.6 Update Run History table - Cluster portal link + collapsible Verbose Error
+
+The `### Update Run History and Error Details` markdown table in the Step.6 pipeline summary gains two UX upgrades:
+- **Cluster Name** renders as a `[ClusterName](portalUrl)` markdown link so the operator can jump straight to the Azure portal cluster blade. The per-row `ClusterPortalUrl` is now projected directly by `Get-AzureLocalUpdateRunFailures` (new property in v0.7.71, see below) so the link is fleet-wide accurate (each row carries its own subscriptionId-bearing resource id).
+- **Verbose Error Details** renders inside an inline `<details><summary>Show error</summary><br><code>...</code></details>` block so the full parser/orchestrator stack is preserved (no more 250-char truncation) but the table stays scannable - rows expand on click. HTML-special chars (`<`, `>`, `&`) are escaped to keep the renderer honest; newlines collapse to `<br>` so multi-line stack traces remain readable inside the collapsible block; pipes are escaped so the table row stays intact.
+
+Both changes apply to GH Actions and Azure DevOps twins.
+
+### `Get-AzureLocalUpdateRunFailures` - new `ClusterPortalUrl` property
+
+Every output row now carries a `ClusterPortalUrl` property (`https://portal.azure.com/#@/resource{ClusterResourceId}`) alongside the existing `UpdateRunPortalUrl`. Consumed by Step.6 to render Cluster Name as a deep link, and available to any other consumer that wants a cluster portal link without rebuilding the URL.
+
+### GitHub Actions: AZURE_SUBSCRIPTION_ID is now a Variable, not a Secret
+
+All 8 GitHub Actions `Step.*.yml` workflows now read the Azure subscription id from `vars.AZURE_SUBSCRIPTION_ID` instead of `secrets.AZURE_SUBSCRIPTION_ID`. The value is consumed **ONLY** by `azure/login@v3` to set the default `az account` context for the small subset of cmdlets that REQUIRE a single-subscription default. It is **NOT** used to scope Azure Resource Graph queries (the module's `Invoke-AzResourceGraphQuery` helper omits `--subscriptions` when no `-SubscriptionId` is supplied, so ARG runs fleet-wide against every subscription the federated identity can read) and it is **NOT** interpolated into portal URLs (every cmdlet projects `subscriptionId` per-row from ARG and builds portal deep-links from that, so each link points to the cluster's actual subscription regardless of the workflow's default context). Treating the id as a Variable also means it appears plaintext in workflow logs, matching its public non-sensitive nature, and removes the need for an extra Secret rotation in tenants where the value already lives in a tenant-scope Variable. Azure DevOps pipelines were already authenticating via a service connection and need no change.
+
+### Pipeline pin bumps + migration
+
+All 16 `Step.*.yml` files (8 GitHub Actions + 8 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.70'` to `'0.7.71'`. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
+
+```powershell
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+### Compatibility
+
+All v0.7.71 changes are backward compatible. The new `ClusterPortalUrl` property on `Get-AzureLocalUpdateRunFailures` is additive; the new `## Action required - simplify unparseable cron expression(s)` section in `-View Recommend` only renders when unparseable cron lines exist; the GH Variable switch is a per-tenant setup change (see updated docs in `Automation-Pipeline-Examples/README.md`).
+
+### What's New in v0.7.70
 
 v0.7.70 is the **Step.0 recurring authentication audit + Step.6 Update Run History section + Step.6 manifest-anchored rolling support window + Step.3 dual-section UX + Step.7 fleet-health hyperlinks** release, plus two new exported cmdlets - `Get-AzLocalFleetHealthOverview` (ARG-first fleet-scale view of cluster health and update status) and `Get-AzureLocalLatestSolutionVersion` (unauthenticated probe of the Microsoft Azure Local public solution-update catalog at `aka.ms/AzureEdgeUpdates`, used by Step.6 to anchor the SupportStatus column on the upstream release calendar). All changes are additive over v0.7.69; no behaviour change for callers that don't read the new columns.
 
@@ -613,13 +660,17 @@ Connect-AzureLocalServicePrincipal -UseManagedIdentity -ManagedIdentityClientId 
 
 **OpenID Connect (OIDC) for CI/CD:**
 ```yaml
-# In GitHub Actions - OIDC authentication (no secrets!)
+# In GitHub Actions - OIDC authentication (no client secret).
+# AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*) not a Secret. It is consumed
+# only here, by azure/login@v3, to set the runner's default `az account` context. The
+# bundled cmdlets run Azure Resource Graph queries fleet-wide (no --subscriptions scoping)
+# and build portal deep-link URLs from the per-row `subscriptionId` returned by ARG.
 - name: Azure CLI Login (OIDC)
   uses: azure/login@v2
   with:
     client-id: ${{ secrets.AZURE_CLIENT_ID }}
     tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-    subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 ```
 
 > See [Automation-Pipeline-Examples/README.md](Automation-Pipeline-Examples/README.md) for complete OIDC setup instructions.

@@ -83,7 +83,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.70'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
@@ -104,7 +104,15 @@ jobs:
       with:
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
+        # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
+        # <id>` after the OIDC token exchange so the runner has a default
+        # `az account` context. It is NOT used to scope Azure Resource Graph queries
+        # (those run fleet-wide across every subscription the federated identity can
+        # read) and is NOT interpolated into Azure portal deep-link URLs (those use
+        # the per-row `subscriptionId` returned by ARG).
+        # Set it via: gh variable set AZURE_SUBSCRIPTION_ID --body <subId>
+        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
     - name: Install Azure CLI Resource Graph Extension
       shell: pwsh
@@ -384,8 +392,8 @@ jobs:
         | **PartiallyCovered** | $partial |
         | **MalformedTag** | $malformed |
         | **UnparseableCron** | $unparseable |
-        | **RingMissingFromSchedule (v0.7.69)** | $ringMissing |
-        | **RingOrphanedInSchedule (v0.7.69)** | $ringOrphan |
+        | **RingMissingFromSchedule** | $ringMissing |
+        | **RingOrphanedInSchedule** | $ringOrphan |
 
         "@
 

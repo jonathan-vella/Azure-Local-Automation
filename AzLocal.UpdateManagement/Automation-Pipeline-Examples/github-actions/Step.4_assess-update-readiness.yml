@@ -66,7 +66,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.70'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -93,7 +93,15 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
+          # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
+          # <id>` after the OIDC token exchange so the runner has a default
+          # `az account` context. It is NOT used to scope Azure Resource Graph queries
+          # (those run fleet-wide across every subscription the federated identity can
+          # read) and is NOT interpolated into Azure portal deep-link URLs (those use
+          # the per-row `subscriptionId` returned by ARG).
+          # Set it via: gh variable set AZURE_SUBSCRIPTION_ID --body <subId>
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Install Azure CLI Resource Graph Extension
         shell: pwsh
@@ -211,9 +219,13 @@ jobs:
               -BlockingOnly `
               -ExportPath $healthXml
 
-          $critical = @($health | Where-Object { $_.Severity -eq 'Critical' }).Count
-          $clustersWithCritical = @($health | Where-Object { $_.Severity -eq 'Critical' } |
-              Select-Object -ExpandProperty ClusterName -Unique).Count
+          # v0.7.71: Test-AzureLocalClusterHealth -PassThru returns one row per cluster
+          # (shape: ClusterName, HealthState, Passed, CriticalCount, WarningCount, Failures)
+          # NOT a flat list of finding rows. Aggregate from CriticalCount / Failures rather
+          # than filtering on a non-existent Severity property (which silently returned 0).
+          $criticalSum = ($health | Measure-Object -Property CriticalCount -Sum).Sum
+          $critical = if ($criticalSum) { [int]$criticalSum } else { 0 }
+          $clustersWithCritical = @($health | Where-Object { [int]$_.CriticalCount -gt 0 }).Count
 
           Write-Host ''
           Write-Host "Critical findings      : $critical"
