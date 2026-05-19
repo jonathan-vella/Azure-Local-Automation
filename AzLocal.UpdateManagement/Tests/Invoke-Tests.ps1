@@ -60,7 +60,13 @@ param(
 
     [Parameter(Mandatory = $false)]
     [Alias('Details')]
-    [switch]$Full
+    [switch]$Full,
+
+    [Parameter(Mandatory = $false, HelpMessage = 'Include the -Tag Live durable live-Azure integration suite. Default: excluded. Requires az login + the AdaptiveCloudLab subscription to be active.')]
+    [switch]$IncludeLive,
+
+    [Parameter(Mandatory = $false, HelpMessage = 'Run ONLY the -Tag Live suite. Implies -IncludeLive.')]
+    [switch]$LiveOnly
 )
 
 # Ensure output directory exists
@@ -118,6 +124,20 @@ $config.TestResult.OutputPath = $nunitPath
 $config.TestResult.OutputFormat = 'NUnitXml'
 $config.CodeCoverage.Enabled = $false  # Can enable if needed
 
+# v0.7.70: gate the durable Live-Integration suite (Tag 'Live') behind an
+# opt-in switch so the default 565-test unit suite stays hermetic. The
+# Live suite itself auto-skips when az is not logged in or not pointed at
+# the expected subscription - this is just the run-set filter.
+if ($LiveOnly) {
+    $config.Filter.Tag = @('Live')
+    Write-Host "Live-Only mode: running ONLY tests tagged 'Live' (Live-Integration.Tests.ps1)." -ForegroundColor Yellow
+} elseif (-not $IncludeLive) {
+    $config.Filter.ExcludeTag = @('Live')
+}
+else {
+    Write-Host "IncludeLive mode: running unit suite PLUS Live-Integration tests (auto-skips if az not logged in)." -ForegroundColor Yellow
+}
+
 # Set verbosity - when using log file, use Normal for console and capture detailed output separately
 if ($useLogFile) {
     $config.Output.Verbosity = 'Normal'  # Keep console output minimal
@@ -142,6 +162,14 @@ if ($useLogFile) {
     $logConfig.TestResult.OutputFormat = 'NUnitXml'
     $logConfig.Output.Verbosity = $Verbosity
     $logConfig.CodeCoverage.Enabled = $false
+
+    # Mirror the Live-tag filter on the secondary log config so -Full
+    # honours -IncludeLive / -LiveOnly the same way the primary config does.
+    if ($LiveOnly) {
+        $logConfig.Filter.Tag = @('Live')
+    } elseif (-not $IncludeLive) {
+        $logConfig.Filter.ExcludeTag = @('Live')
+    }
     
     # Run Pester and capture all output to log file
     Write-Host "Capturing detailed output to log file..." -ForegroundColor Gray

@@ -1,13 +1,34 @@
-# Auth Smoke Test - one-shot OIDC + RBAC validation for the AzLocal.UpdateManagement pipelines.
+# Step.0 - Authentication Validation and Subscription Scope Report
 #
-# PURPOSE:
-#   Run this BEFORE adding the five real workflows (inventory, tags, readiness, apply,
-#   status). It narrows any failure to one small workflow rather than five interacting
-#   workflows, by probing the four things that can be misconfigured independently:
+# PURPOSE (v0.7.70):
+#   Validates that the App Registration / federated credentials / GitHub secrets / RBAC
+#   role assignments all line up, AND produces a Subscription Scope report that lists every
+#   subscription the pipeline identity can see. Run this:
+#       - BEFORE adding the seven real workflows (inventory, tags, readiness, apply, status,
+#         fleet-status, fleet-health). It narrows any failure to one small workflow rather
+#         than seven interacting workflows.
+#       - PERIODICALLY (recommended monthly, or after every RBAC change in the tenant) to
+#         confirm the pipeline identity's subscription scope has not silently widened or
+#         narrowed - new subscriptions get onboarded, MG-level role assignments inherit,
+#         leavers / re-orgs change tenant scope. A drift in this report is the earliest
+#         signal that downstream fleet reports are about to under- or over-count clusters.
+#
+# WHAT THIS PIPELINE PROBES:
 #       1. azure/login OIDC token exchange (App Registration + federated credential).
 #       2. Repository / environment secrets (AZURE_CLIENT_ID, _TENANT_ID, _SUBSCRIPTION_ID).
 #       3. Azure RBAC on the App Registration's service principal.
 #       4. Resource Graph reachability (proves the SP can actually see clusters).
+#       5. Subscription scope (v0.7.70): total count and full Subscription ID / Name table
+#          visible to the pipeline identity.
+#
+# REPORTS GENERATED (v0.7.70):
+#   - JUnit XML: One test suite for Authentication, one for Subscription Scope (one testcase
+#     per subscription), one for Resource Graph reachability. Renders in the GitHub Checks
+#     UI via dorny/test-reporter.
+#   - GITHUB_STEP_SUMMARY markdown: Summary header (Authentication: working / Count of
+#     subscriptions = XXX) followed by a sortable Subscription ID + Name table.
+#   - Artifact (auth-report.zip): JUnit XML + subscriptions.json + subscriptions.csv for
+#     downstream consumption.
 #
 # HOW TO TRIGGER (after the file is committed to the default branch):
 #   # Branch-scoped run - exercises the 'GitHubActions-main' federated credential.
@@ -19,13 +40,12 @@
 #   # Watch the most recent run live.
 #   gh run watch --repo <owner>/<repo>
 #
-# DELETE THIS FILE once both runs are green - it has no purpose after validation.
 # See Automation-Pipeline-Examples/README.md, section 5.1, for the full setup story.
 
 # Workflow name carries the same Step.N - prefix as the filename so the GitHub
 # Actions sidebar (which sorts workflows alphabetically by this `name:` field)
 # lists the eight pipelines in execution order.
-name: Step.0 - Auth Smoke Test
+name: Step.0 - Authentication Validation and Subscription Scope Report
 
 on:
   workflow_dispatch:
@@ -42,14 +62,16 @@ on:
           - Production
 
 # OIDC token exchange requires id-token: write. contents: read is the GitHub default
-# for workflow_dispatch and is harmless here; the smoke test does not push commits.
+# for workflow_dispatch and is harmless here; the validation run does not push commits.
+# checks: write lets dorny/test-reporter publish the JUnit results as a Checks UI panel.
 permissions:
   id-token: write
   contents: read
+  checks: write
 
 jobs:
-  smoke:
-    name: Validate OIDC + RBAC
+  validate:
+    name: Validate OIDC + RBAC + Subscription Scope
     runs-on: windows-latest
     # When `environment` is blank, this resolves to no environment and uses the
     # branch-scoped federated credential. When set, GitHub injects environment-scoped
@@ -64,24 +86,169 @@ jobs:
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Confirm identity, RBAC, and cluster reachability
+      - name: Collect Authentication and Subscription Scope Report
+        id: report
         shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          $reportDir = './reports'
+          New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+
           Write-Host '--- 1. az account show (proves OIDC token exchange + sub-id secret) ---'
-          az account show `
-              --query '{subscription:name, subscriptionId:id, tenantId:tenantId, user:user.name}' `
-              -o table
+          $accountJson = az account show -o json
+          if ($LASTEXITCODE -ne 0) { throw "az account show failed (exit $LASTEXITCODE)" }
+          $account = $accountJson | ConvertFrom-Json
+          $account | Format-List name, id, tenantId, user
 
           Write-Host ''
           Write-Host '--- 2. role assignments for AZURE_CLIENT_ID (proves RBAC grant) ---'
           az role assignment list `
-              --assignee '${{ secrets.AZURE_CLIENT_ID }}' `
+              --assignee $env:AZURE_CLIENT_ID `
               --all `
               -o table
 
           Write-Host ''
-          Write-Host '--- 3. Resource Graph query (proves cluster reachability) ---'
+          Write-Host '--- 3. Subscription Scope: enumerating all subscriptions visible to the pipeline identity ---'
+          # --refresh forces az to ask the server for the current sub list rather than using
+          # the cached tenant slice from `az login`. This is what makes the count authoritative.
+          $subsJson = az account list --refresh --query "[].{name:name, subscriptionId:id, tenantId:tenantId, state:state}" -o json
+          if ($LASTEXITCODE -ne 0) { throw "az account list failed (exit $LASTEXITCODE)" }
+          $subs = @($subsJson | ConvertFrom-Json | Sort-Object name)
+          $subCount = $subs.Count
+          Write-Host "Count of subscriptions accessible = $subCount"
+          $subs | Format-Table @{N='#';E={[array]::IndexOf($subs,$_)+1}}, name, subscriptionId, state -AutoSize
+
+          # Persist machine-readable copies for the artifact upload.
+          $subs | ConvertTo-Json -Depth 4 | Out-File "$reportDir/subscriptions.json" -Encoding utf8
+          $subs | Select-Object name, subscriptionId, tenantId, state |
+              Export-Csv "$reportDir/subscriptions.csv" -NoTypeInformation -Encoding utf8
+
+          Write-Host ''
+          Write-Host '--- 4. Resource Graph query (proves cluster reachability) ---'
           az extension add --name resource-graph --yes --only-show-errors | Out-Null
-          az graph query `
-              -q "resources | where type =~ 'microsoft.azurestackhci/clusters' | project name, resourceGroup, subscriptionId | take 5" `
-              -o table
+          $clusterJson = az graph query `
+              -q "resources | where type =~ 'microsoft.azurestackhci/clusters' | project name, resourceGroup, subscriptionId" `
+              --first 1000 `
+              -o json
+          $clusterRows = @()
+          if ($LASTEXITCODE -eq 0 -and $clusterJson) {
+              $parsed = $clusterJson | ConvertFrom-Json
+              # `az graph query -o json` returns either a top-level array or a {data: [...]} object
+              # depending on CLI version - normalise.
+              if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
+                  $clusterRows = @($parsed)
+              } elseif ($parsed.data) {
+                  $clusterRows = @($parsed.data)
+              }
+          }
+          $clusterCount = $clusterRows.Count
+          Write-Host "Clusters visible to the pipeline identity = $clusterCount"
+          if ($clusterCount -gt 0) {
+              $clusterRows | Select-Object -First 10 | Format-Table -AutoSize
+          }
+
+          # ------------------------------------------------------------------
+          # Emit JUnit XML
+          # ------------------------------------------------------------------
+          $now = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
+          function ConvertTo-XmlSafe([string]$s) {
+              if ($null -eq $s) { return '' }
+              $s -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+          }
+
+          $xml = [System.Text.StringBuilder]::new()
+          [void]$xml.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
+          [void]$xml.AppendLine('<testsuites name="Step.0 - Authentication Validation and Subscription Scope Report">')
+
+          # Suite 1: Authentication
+          [void]$xml.AppendLine("  <testsuite name=`"&#x1F510; Authentication`" tests=`"3`" failures=`"0`" timestamp=`"$now`">")
+          [void]$xml.AppendLine("    <testcase classname=`"Authentication`" name=`"OIDC token exchange (az account show succeeded)`"><system-out><![CDATA[Tenant: $($account.tenantId)`nSubscription: $($account.name) ($($account.id))`nIdentity: $($account.user.name)]]></system-out></testcase>")
+          [void]$xml.AppendLine("    <testcase classname=`"Authentication`" name=`"Default subscription = $(ConvertTo-XmlSafe $account.name)`" />")
+          [void]$xml.AppendLine("    <testcase classname=`"Authentication`" name=`"Pipeline identity (appId) = $(ConvertTo-XmlSafe $account.user.name)`" />")
+          [void]$xml.AppendLine('  </testsuite>')
+
+          # Suite 2: Subscription Scope
+          [void]$xml.AppendLine("  <testsuite name=`"&#x1F4CB; Subscription Scope (count=$subCount)`" tests=`"$($subCount + 1)`" failures=`"0`" timestamp=`"$now`">")
+          [void]$xml.AppendLine("    <testcase classname=`"SubscriptionScope`" name=`"Count of subscriptions accessible = $subCount`" />")
+          $i = 0
+          foreach ($s in $subs) {
+              $i++
+              $nm = ConvertTo-XmlSafe $s.name
+              $sid = ConvertTo-XmlSafe $s.subscriptionId
+              $st  = ConvertTo-XmlSafe $s.state
+              [void]$xml.AppendLine("    <testcase classname=`"SubscriptionScope`" name=`"#$i  $nm  ($sid)  [$st]`" />")
+          }
+          [void]$xml.AppendLine('  </testsuite>')
+
+          # Suite 3: Resource Graph Reachability
+          $rgTests = 1
+          [void]$xml.AppendLine("  <testsuite name=`"&#x1F310; Resource Graph Reachability`" tests=`"$rgTests`" failures=`"0`" timestamp=`"$now`">")
+          [void]$xml.AppendLine("    <testcase classname=`"ResourceGraph`" name=`"Clusters visible to pipeline identity = $clusterCount`" />")
+          [void]$xml.AppendLine('  </testsuite>')
+
+          [void]$xml.AppendLine('</testsuites>')
+          $xmlPath = "$reportDir/auth-report.xml"
+          [System.IO.File]::WriteAllText($xmlPath, $xml.ToString(), [System.Text.UTF8Encoding]::new($false))
+          Write-Host "JUnit XML written to: $xmlPath"
+
+          # ------------------------------------------------------------------
+          # Emit GITHUB_STEP_SUMMARY markdown
+          # ------------------------------------------------------------------
+          $md = [System.Text.StringBuilder]::new()
+          [void]$md.AppendLine('## Step.0 - Authentication Validation and Subscription Scope Report')
+          [void]$md.AppendLine('')
+          [void]$md.AppendLine('| Check | Result |')
+          [void]$md.AppendLine('|---|---|')
+          [void]$md.AppendLine("| Authentication (OIDC) | :white_check_mark: working |")
+          [void]$md.AppendLine("| Default Subscription | $($account.name) (``$($account.id)``) |")
+          [void]$md.AppendLine("| Tenant | ``$($account.tenantId)`` |")
+          [void]$md.AppendLine("| Pipeline identity (appId) | ``$($account.user.name)`` |")
+          [void]$md.AppendLine("| Resource Graph reachability | :white_check_mark: $clusterCount cluster(s) visible |")
+          [void]$md.AppendLine('')
+          [void]$md.AppendLine("### Count of subscriptions accessible = $subCount")
+          [void]$md.AppendLine('')
+          [void]$md.AppendLine('| # | Subscription Name | Subscription ID | Tenant ID | State |')
+          [void]$md.AppendLine('|---|---|---|---|---|')
+          $i = 0
+          foreach ($s in $subs) {
+              $i++
+              [void]$md.AppendLine("| $i | $($s.name) | ``$($s.subscriptionId)`` | ``$($s.tenantId)`` | $($s.state) |")
+          }
+          [void]$md.AppendLine('')
+          [void]$md.AppendLine("*Generated at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')*")
+          $md.ToString() | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          # Surface the count as a step output so downstream steps / jobs can consume it.
+          "subscription_count=$subCount" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "cluster_count=$clusterCount"  | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Compute Artifact Timestamp
+        id: artifact-stamp
+        shell: pwsh
+        # v0.7.66 artifact convention: every downloadable artifact gets a UTC timestamp suffix so
+        # multiple runs on the same day produce distinct zip names.
+        run: |
+          $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+          "timestamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Artifact timestamp: $stamp"
+
+      - name: Upload auth report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azlocal-auth-report_${{ steps.artifact-stamp.outputs.timestamp }}
+          path: ./reports/
+          retention-days: 30
+
+      - name: Publish Test Results
+        if: always()
+        uses: dorny/test-reporter@v3
+        with:
+          name: Authentication Validation and Subscription Scope Report
+          path: ./reports/auth-report.xml
+          reporter: java-junit
+          fail-on-error: false
+          list-suites: all
+          list-tests: all

@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.69' {
-            $script:ModuleInfo.Version | Should -Be '0.7.69'
+        It 'Should have version 0.7.70' {
+            $script:ModuleInfo.Version | Should -Be '0.7.70'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -110,8 +110,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $h2Matches[0] | Should -Be "## What's New in v$manifestVersion" -Because 'the sole main-body What''s New section must match the current manifest ModuleVersion'
         }
 
-        It 'Should export exactly 34 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 34
+        It 'Should export exactly 36 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 36
         }
 
         It 'Should export the expected functions' {
@@ -161,7 +161,11 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 'New-AzLocalApplyUpdatesScheduleConfig',
                 'Update-AzLocalApplyUpdatesScheduleConfig',
                 'Resolve-AzLocalCurrentUpdateRing',
-                'Get-AzLocalApplyUpdatesScheduleNextFirings'
+                'Get-AzLocalApplyUpdatesScheduleNextFirings',
+                # Fleet Health Overview (v0.7.70) - ARG-first projection of cluster + updateSummaries
+                'Get-AzLocalFleetHealthOverview',
+                # Latest Released Solution Version (v0.7.70 Phase E) - public manifest probe (aka.ms/AzureEdgeUpdates) anchoring the rolling YYMM support window in Step.6
+                'Get-AzureLocalLatestSolutionVersion'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -6353,14 +6357,21 @@ Describe 'v0.7.67 schedule-audit zero-row JUnit parity' {
         $yml = Join-Path $script:examplesRoot 'github-actions\Step.3_apply-updates-schedule-audit.yml'
         Test-Path -LiteralPath $yml | Should -BeTrue -Because "the GH schedule-audit YAML should exist at $yml"
         $content = Get-Content -LiteralPath $yml -Raw
-        $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'v0.7.67 added the zero-row JUnit testcase to the GH schedule-audit YAML to match ADO parity'
+        # v0.7.70: zero-row JUnit emission was refactored into a Write-Suite helper
+        # with -EmptyPlaceholderName. The semantic guarantee (zero-row testcase is
+        # emitted with this exact name) is preserved; the literal <testcase> string
+        # is now built at runtime from the helper template.
+        $content | Should -Match "-EmptyPlaceholderName 'No tagged clusters found - nothing to audit'" -Because 'v0.7.67/v0.7.70 wire the zero-row JUnit testcase via Write-Suite -EmptyPlaceholderName in the GH schedule-audit YAML'
+        $content | Should -Match 'classname=`"ScheduleCoverage`" name=`"\{0\}`"' -Because 'the Write-Suite helper must build the testcase line with classname="ScheduleCoverage" and a {0} placeholder for the name'
     }
 
     It 'Azure DevOps schedule-audit YAML still emits the zero-row testcase' {
         $yml = Join-Path $script:examplesRoot 'azure-devops\Step.3_apply-updates-schedule-audit.yml'
         Test-Path -LiteralPath $yml | Should -BeTrue -Because "the ADO schedule-audit YAML should exist at $yml"
         $content = Get-Content -LiteralPath $yml -Raw
-        $content | Should -Match 'classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit"' -Because 'the ADO schedule-audit YAML has emitted the zero-row JUnit testcase since v0.7.0; the v0.7.67 parity work must not regress it'
+        # See GH note above - same refactor applies.
+        $content | Should -Match "-EmptyPlaceholderName 'No tagged clusters found - nothing to audit'" -Because 'the ADO schedule-audit YAML must wire the zero-row JUnit testcase via Write-Suite -EmptyPlaceholderName since v0.7.0; v0.7.70 must not regress it'
+        $content | Should -Match 'classname=`"ScheduleCoverage`" name=`"\{0\}`"' -Because 'the Write-Suite helper must build the testcase line with classname="ScheduleCoverage" and a {0} placeholder for the name'
     }
 }
 
@@ -6415,13 +6426,18 @@ Describe 'v0.7.67 schedule-audit summary - cron fixes first when issues exist' {
     It '[<Platform>] schedule-audit YAML emits recommendation before audit detail when issues exist' -ForEach $yamlCases {
         Test-Path $YamlPath | Should -BeTrue -Because "expected schedule-audit YAML at $YamlPath"
         $content = Get-Content -Path $YamlPath -Raw
-        $content | Should -Match '\$hasIssues\s*=\s*\(\(\[int\]\$uncovered\)' -Because 'Phase 4.3 conditional must compute $hasIssues from the four issue counts.'
-        $content | Should -Match 'Action required - paste these cron entries into Step\.5_apply-updates\.yml' -Because 'Phase 4.3 must surface a top-of-summary "Action required" header when issues exist.'
-        $idxActionRequired = $content.IndexOf('Action required - paste these cron entries')
+        $content | Should -Match '\$hasIssues\s*=\s*\(\(\[int\]\$uncovered\)' -Because 'Phase 4.3 / v0.7.70 conditional must compute $hasIssues from the issue counts.'
+        # v0.7.70: the 'Action required - ...' header literals moved into the
+        # -View Recommend cmdlet output ($reco), so the YAML no longer contains
+        # them verbatim. The structural guarantee (recommendation BEFORE detail
+        # when $hasIssues) is preserved by the 'if ($hasIssues -and $reco) { $md = $reco + $md }'
+        # block which prepends $reco to the summary markdown.
+        $content | Should -Match 'if\s*\(\s*\$hasIssues\s+-and\s+\$reco\s*\)' -Because 'v0.7.70 must keep the hasIssues+reco conditional so the Recommend block is prepended above the audit detail table.'
+        $idxRecoBlock      = $content.IndexOf('if ($hasIssues -and $reco)')
         $idxAuditDetail    = $content.IndexOf('### Audit Detail')
-        $idxActionRequired | Should -BeGreaterThan -1
+        $idxRecoBlock      | Should -BeGreaterThan -1
         $idxAuditDetail    | Should -BeGreaterThan -1
-        $idxActionRequired | Should -BeLessThan $idxAuditDetail -Because 'When issues exist, recommendation block must precede the detail table in the summary script.'
+        $idxRecoBlock      | Should -BeLessThan $idxAuditDetail -Because 'When issues exist, the conditional that prepends the Recommend output must appear earlier in the summary script than the detail table emission.'
     }
 }
 
@@ -6997,3 +7013,840 @@ schedule:
 }
 
 #endregion v0.7.69 Apply-Updates Schedule (ring-aware)
+
+#region v0.7.70 (Workstream A: Step.3 Audit UX refresh + Workstream B: Step.7 Fleet Health Overview)
+
+# -----------------------------------------------------------------------------
+# v0.7.70 - Workstream A: Test-AzureLocalApplyUpdatesScheduleCoverage
+# -----------------------------------------------------------------------------
+# v0.7.70 added a 'Section' discriminator ('Schedule' for ring-diff rows,
+# 'Cron' for window-coverage rows) to every Audit row, the cmdlet now emits
+# missing-from-schedule + orphaned-in-schedule rows whenever -SchedulePath
+# is supplied, and -View Recommend renders one multi-section markdown
+# snippet with "## Action required (N of M)" numbering. These tests cover
+# all five of those behaviour changes (AS1..AS6).
+
+Describe 'Function: Test-AzureLocalApplyUpdatesScheduleCoverage - v0.7.70 Section discriminator + multi-section Recommend' {
+
+    BeforeAll {
+        # Reusable ARG payload: two clusters on Wave1 with a Sat-Sun window,
+        # plus one cluster on Production with a Mon-Fri window that the
+        # default empty cron set will NOT cover.
+        $script:v7_70_argRows = @(
+            [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='Wave1';      UpdateWindow='Sat-Sun_02:00-06:00' },
+            [PSCustomObject]@{ ClusterName='c2'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c2'; UpdateRing='Wave1';      UpdateWindow='Sat-Sun_02:00-06:00' },
+            [PSCustomObject]@{ ClusterName='c3'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c3'; UpdateRing='Production'; UpdateWindow='Mon-Fri_22:00-04:00' }
+        )
+
+        # Empty pipeline YAML directory => zero crons => every window Uncovered.
+        $script:v7_70_yamlDir = Join-Path $env:TEMP "v770-coverage-yaml-$(Get-Random)"
+        New-Item -ItemType Directory -Path (Join-Path $script:v7_70_yamlDir 'github-actions') -Force | Out-Null
+        @"
+on:
+  workflow_dispatch:
+"@ | Set-Content -Path (Join-Path $script:v7_70_yamlDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+
+        # Schedule file that knows about Pilot + Wave1 but is MISSING 'Production'
+        # (which is tagged on c3) and ORPHANS 'Pilot' (which no cluster carries).
+        # NOTE: top-level keys must be at column 0; the schedule reader's lexer is
+        # not a general YAML parser. Field names: weeksInCycle, daysOfWeek, rings.
+        $script:v7_70_schedDir = Join-Path $env:TEMP "v770-coverage-sched-$(Get-Random)"
+        New-Item -ItemType Directory -Path $script:v7_70_schedDir -Force | Out-Null
+        $script:v7_70_schedPath = Join-Path $script:v7_70_schedDir 'apply-updates-schedule.yml'
+        @"
+schemaVersion: 1
+cycleWeeks: 2
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek:   'Sat'
+    rings:        'Pilot'
+    notes:        'Pilot only'
+  - weeksInCycle: '2'
+    daysOfWeek:   'Sat'
+    rings:        'Wave1'
+    notes:        'Wave1 only'
+"@ | Set-Content -Path $script:v7_70_schedPath -Encoding ASCII
+    }
+
+    AfterAll {
+        Remove-Item -Path $script:v7_70_yamlDir  -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $script:v7_70_schedDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Context 'AS1 / AS2 - Section discriminator on Audit rows' {
+
+        It 'AS1: Audit rows have Section=Schedule for RingMissing/Orphaned and Section=Cron for ring/window rows' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; schedPath = $script:v7_70_schedPath; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $schedPath, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $result = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Audit -PipelineYamlPath $yamlDir -SchedulePath $schedPath -PassThru 6>$null
+
+                # Schedule rows: Production missing, Pilot orphaned.
+                $missing  = $result | Where-Object Status -eq 'RingMissingFromSchedule'
+                $orphaned = $result | Where-Object Status -eq 'RingOrphanedInSchedule'
+                $missing  | Should -Not -BeNullOrEmpty
+                $orphaned | Should -Not -BeNullOrEmpty
+                $missing.Section  | Should -Be 'Schedule'
+                $orphaned.Section | Should -Be 'Schedule'
+
+                # Cron rows: at least one (Ring, Window) tuple from the ARG data.
+                $cronRows = $result | Where-Object Section -eq 'Cron'
+                $cronRows | Should -Not -BeNullOrEmpty
+                ($cronRows | ForEach-Object Section | Sort-Object -Unique) | Should -Be 'Cron'
+            }
+        }
+
+        It 'AS2: Schedule-section rows have empty UpdateWindow + RequiredCronUTC (the ring is the unit, not a window)' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; schedPath = $script:v7_70_schedPath; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $schedPath, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $result = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Audit -PipelineYamlPath $yamlDir -SchedulePath $schedPath -PassThru 6>$null
+
+                $scheduleRows = $result | Where-Object Section -eq 'Schedule'
+                $scheduleRows | Should -Not -BeNullOrEmpty
+                foreach ($r in $scheduleRows) {
+                    [string]$r.UpdateWindow    | Should -BeNullOrEmpty
+                    [string]$r.RequiredCronUTC | Should -BeNullOrEmpty
+                }
+            }
+        }
+
+        It 'AS5: Schedule-section rows are suppressed when -SchedulePath is omitted' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $result = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Audit -PipelineYamlPath $yamlDir -PassThru 6>$null
+
+                $scheduleRows = $result | Where-Object Section -eq 'Schedule'
+                @($scheduleRows).Count | Should -Be 0
+                ($result | Where-Object Section -eq 'Cron') | Should -Not -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'AS3 / AS4 / AS6 - -View Recommend emits multi-section markdown' {
+
+        It 'AS3: Recommend emits an "Action required - add these rings" section when RingMissingFromSchedule rows are present' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; schedPath = $script:v7_70_schedPath; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $schedPath, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $rec = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Recommend -PipelineYamlPath $yamlDir -SchedulePath $schedPath -PassThru 6>$null
+
+                $snippet = ($rec | Select-Object -First 1).Snippet
+                $snippet | Should -Not -BeNullOrEmpty
+                $snippet | Should -Match '## Action required.*add these rings'
+            }
+        }
+
+        It 'AS4: Recommend emits an "Action required - cron coverage" section when uncovered windows are present' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; schedPath = $script:v7_70_schedPath; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $schedPath, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $rec = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Recommend -PipelineYamlPath $yamlDir -SchedulePath $schedPath -PassThru 6>$null
+
+                $snippet = ($rec | Select-Object -First 1).Snippet
+                $snippet | Should -Not -BeNullOrEmpty
+                $snippet | Should -Match '## Action required.*cron coverage'
+            }
+        }
+
+        It 'AS6: when both schedule and cron sections are emitted, the schedule section appears BEFORE the cron section' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; schedPath = $script:v7_70_schedPath; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $schedPath, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $rec = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Recommend -PipelineYamlPath $yamlDir -SchedulePath $schedPath -PassThru 6>$null
+
+                $snippet  = ($rec | Select-Object -First 1).Snippet
+                $idxSched = $snippet.IndexOf('add these rings')
+                $idxCron  = $snippet.IndexOf('cron coverage')
+                $idxSched | Should -BeGreaterThan -1
+                $idxCron  | Should -BeGreaterThan -1
+                $idxSched | Should -BeLessThan $idxCron -Because 'schedule fixes have higher blast radius and must surface first'
+            }
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# v0.7.70 - Workstream A: Step.3 YAML scaffold check (AS7)
+# -----------------------------------------------------------------------------
+# AS7 verifies that the regenerated Step.3 pipeline templates (both GH and
+# ADO) emit TWO JUnit <testsuite> elements - 'Schedule (ring diff)' first
+# and 'Cron coverage' second - so downstream test panels render the dual
+# section UX the cmdlet now produces.
+
+Describe 'Step.3 pipeline scaffolds - v0.7.70 dual JUnit testsuite emission' {
+
+    Context 'AS7 - YAML scaffolds reference both Schedule and Cron suite names' {
+
+        It 'Step.3 GitHub Actions YAML contains both "Schedule (ring diff)" and "Cron coverage" suite names' {
+            $ghYaml = Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples\github-actions\Step.3_apply-updates-schedule-audit.yml'
+            Test-Path $ghYaml | Should -BeTrue
+            $raw = Get-Content -Raw -LiteralPath $ghYaml
+            $raw | Should -Match 'Schedule \(ring diff\)'
+            $raw | Should -Match 'Cron coverage'
+        }
+
+        It 'Step.3 Azure DevOps YAML contains both "Schedule (ring diff)" and "Cron coverage" suite names' {
+            $adoYaml = Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples\azure-devops\Step.3_apply-updates-schedule-audit.yml'
+            Test-Path $adoYaml | Should -BeTrue
+            $raw = Get-Content -Raw -LiteralPath $adoYaml
+            $raw | Should -Match 'Schedule \(ring diff\)'
+            $raw | Should -Match 'Cron coverage'
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# v0.7.70 - Workstream B: Get-AzureLocalFleetHealthFailures (BS1..BS5)
+# -----------------------------------------------------------------------------
+# v0.7.70 reordered the Summary view to put Critical before Warning
+# regardless of ClusterCount; added AffectedClusterPortalUrls to Summary
+# rows (positionally paired with AffectedClusters via the new '; '
+# separator); and added TargetResourceName, TargetResourceType, and
+# ClusterPortalUrl to Detail rows.
+
+Describe 'Function: Get-AzureLocalFleetHealthFailures - v0.7.70 schema + ordering' {
+
+    Context 'BS1 - Summary view sorts Critical before Warning regardless of ClusterCount' {
+
+        It 'A widespread Warning does NOT outrank a less-widespread Critical' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Time-skew (Warning) hits THREE clusters; Storage pool (Critical) hits ONE.
+                # Old (pre-v0.7.70) sort would put Time skew first (ClusterCount=3 wins).
+                # New v0.7.70 sort puts Critical first regardless of count.
+                $payload = @{
+                    count = 4
+                    data  = @(
+                        @{ ClusterName='C1'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; TargetResourceName='c1'; TargetResourceType='cluster'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
+                        @{ ClusterName='C2'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c2'; TargetResourceName='c2'; TargetResourceType='cluster'; Severity='Warning';  FailureName='ts';  FailureReason='Time skew detected';    Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' },
+                        @{ ClusterName='C3'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c3'; TargetResourceName='c3'; TargetResourceType='cluster'; Severity='Warning';  FailureName='ts';  FailureReason='Time skew detected';    Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' },
+                        @{ ClusterName='C4'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c4'; TargetResourceName='c4'; TargetResourceType='cluster'; Severity='Warning';  FailureName='ts';  FailureReason='Time skew detected';    Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' }
+                    )
+                } | ConvertTo-Json -Depth 6
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $summary = Get-AzureLocalFleetHealthFailures -View Summary
+                $summary | Should -Not -BeNullOrEmpty
+                $summary[0].Severity      | Should -Be 'Critical'
+                $summary[0].FailureReason | Should -Be 'Storage pool degraded'
+                $summary[0].ClusterCount  | Should -Be 1
+                # Warning (with ClusterCount=3) follows the Critical (with ClusterCount=1).
+                $summary[1].Severity      | Should -Be 'Warning'
+                $summary[1].ClusterCount  | Should -Be 3
+            }
+        }
+    }
+
+    Context 'BS2 / BS3 - Detail rows expose target resource and portal URL' {
+
+        It 'BS2: Detail rows contain TargetResourceName, TargetResourceType, and ClusterPortalUrl properties' {
+            InModuleScope AzLocal.UpdateManagement {
+                $payload = @{
+                    count = 1
+                    data  = @(
+                        @{
+                            ClusterName        = 'Cluster01'
+                            ResourceGroup      = 'RG1'
+                            SubscriptionId     = 'sub-1111'
+                            ClusterResourceId  = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            ClusterPortalUrl   = 'https://portal.azure.com/#@/resource/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            TargetResourceName = 'Drive-7'
+                            TargetResourceType = 'PhysicalDisk'
+                            Severity           = 'Critical'
+                            FailureName        = 'storage-pool-health'
+                            FailureReason      = 'Storage pool degraded'
+                            Description        = 'd'
+                            Remediation        = 'r'
+                            LastOccurrence     = '2026-05-16T08:00:00Z'
+                        }
+                    )
+                } | ConvertTo-Json -Depth 6
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $rows = Get-AzureLocalFleetHealthFailures -View Detail
+                $rows | Should -HaveCount 1
+                $rows[0].PSObject.Properties.Name | Should -Contain 'TargetResourceName'
+                $rows[0].PSObject.Properties.Name | Should -Contain 'TargetResourceType'
+                $rows[0].PSObject.Properties.Name | Should -Contain 'ClusterPortalUrl'
+            }
+        }
+
+        It 'BS3: ClusterPortalUrl matches the portal URL shape (https://portal.azure.com/#@/resource/subscriptions/...)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $payload = @{
+                    count = 1
+                    data  = @(
+                        @{
+                            ClusterName        = 'Cluster01'
+                            ResourceGroup      = 'RG1'
+                            SubscriptionId     = 'sub-1111'
+                            ClusterResourceId  = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            ClusterPortalUrl   = 'https://portal.azure.com/#@/resource/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            TargetResourceName = ''
+                            TargetResourceType = ''
+                            Severity           = 'Critical'
+                            FailureName        = 'x'
+                            FailureReason      = 'Storage pool degraded'
+                            Description        = 'd'
+                            Remediation        = 'r'
+                            LastOccurrence     = '2026-05-16T08:00:00Z'
+                        }
+                    )
+                } | ConvertTo-Json -Depth 6
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $rows = Get-AzureLocalFleetHealthFailures -View Detail
+                $rows[0].ClusterPortalUrl | Should -Match '^https://portal\.azure\.com/#@/resource/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.AzureStackHCI/clusters/[^/]+$'
+            }
+        }
+    }
+
+    Context 'BS4 / BS5 - Summary rows expose paired AffectedClusterPortalUrls and use the new "; " separator' {
+
+        It 'BS4: AffectedClusters and AffectedClusterPortalUrls have the same "; "-split count' {
+            InModuleScope AzLocal.UpdateManagement {
+                $payload = @{
+                    count = 2
+                    data  = @(
+                        @{ ClusterName='C1'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; TargetResourceName=''; TargetResourceType=''; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
+                        @{ ClusterName='C2'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c2'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c2'; TargetResourceName=''; TargetResourceType=''; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:10:00Z' }
+                    )
+                } | ConvertTo-Json -Depth 6
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $summary = Get-AzureLocalFleetHealthFailures -View Summary
+                $summary[0].PSObject.Properties.Name | Should -Contain 'AffectedClusterPortalUrls'
+                $names = @($summary[0].AffectedClusters          -split '; ')
+                $urls  = @($summary[0].AffectedClusterPortalUrls -split '; ')
+                $names.Count | Should -Be $urls.Count
+                $names.Count | Should -Be 2
+            }
+        }
+
+        It 'BS5: AffectedClusters uses the new "; " separator (space after the semicolon, never "; A" run together)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $payload = @{
+                    count = 2
+                    data  = @(
+                        @{ ClusterName='C1'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; TargetResourceName=''; TargetResourceType=''; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
+                        @{ ClusterName='C2'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c2'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c2'; TargetResourceName=''; TargetResourceType=''; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:10:00Z' }
+                    )
+                } | ConvertTo-Json -Depth 6
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $summary = Get-AzureLocalFleetHealthFailures -View Summary
+                $value   = [string]$summary[0].AffectedClusters
+                # NEVER a semicolon immediately followed by a non-space character.
+                $value | Should -Not -Match ';[^ ]'
+                # Multi-cluster value must contain at least one "; ".
+                $value | Should -Match '; '
+            }
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# v0.7.70 - Workstream B: Get-AzLocalFleetHealthOverview (BS6, BS7, BS8)
+# -----------------------------------------------------------------------------
+
+Describe 'Function: Get-AzLocalFleetHealthOverview - v0.7.70 (ARG-first fleet health summary)' {
+
+    Context 'BS6 / BS7 - Cmdlet is exported and module function count is 36' {
+
+        It 'BS6: Get-AzLocalFleetHealthOverview is exported by the module' {
+            $cmd = Get-Command -Module AzLocal.UpdateManagement -Name Get-AzLocalFleetHealthOverview -ErrorAction SilentlyContinue
+            $cmd | Should -Not -BeNullOrEmpty
+            $cmd.CommandType | Should -Be 'Function'
+        }
+
+        It 'BS7: Module exports exactly 36 functions (was 34 in v0.7.69, +Get-AzLocalFleetHealthOverview in v0.7.70 BS, +Get-AzureLocalLatestSolutionVersion in v0.7.70 Phase E)' {
+            (Get-Module AzLocal.UpdateManagement).ExportedFunctions.Count | Should -Be 36
+        }
+    }
+
+    Context 'BS8 - Returns expected schema columns when Resource Graph returns rows' {
+
+        It 'BS8: Output rows expose the documented columns (ClusterName, ClusterPortalUrl, HealthStatus, UpdateStatus, CurrentVersion, SbeVersion, AzureConnection, LastChecked, HealthResultsAgeDays, ResourceGroup, NodeCount, SubscriptionId)' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Mock the ARG helper to return one already-projected row in the shape
+                # the cmdlet's KQL `project` clause emits. The cmdlet itself does no
+                # further reshaping, so the test confirms the schema flows through
+                # unchanged.
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName          = 'Cluster01'
+                            ClusterPortalUrl     = 'https://portal.azure.com/#@/resource/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            HealthStatus         = 'Healthy'
+                            UpdateStatus         = 'AppliedSuccessfully'
+                            CurrentVersion       = '12.2503.0'
+                            SbeVersion           = '4.1.2.0'
+                            AzureConnection      = 'Connected'
+                            LastChecked          = '2026-05-16T08:00:00Z'
+                            HealthResultsAgeDays = 0
+                            ResourceGroup        = 'RG1'
+                            NodeCount            = 4
+                            SubscriptionId       = 'sub-1111'
+                        }
+                    )
+                }
+
+                $rows = Get-AzLocalFleetHealthOverview 6>$null
+                $rows | Should -HaveCount 1
+                foreach ($prop in @(
+                    'ClusterName','ClusterPortalUrl','HealthStatus','UpdateStatus',
+                    'CurrentVersion','SbeVersion','AzureConnection','LastChecked',
+                    'HealthResultsAgeDays','ResourceGroup','NodeCount','SubscriptionId'
+                )) {
+                    $rows[0].PSObject.Properties.Name | Should -Contain $prop
+                }
+                $rows[0].ClusterPortalUrl | Should -Match '^https://portal\.azure\.com/#@/resource/subscriptions/'
+                Assert-MockCalled Invoke-AzResourceGraphQuery -Times 1 -Exactly
+            }
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# v0.7.70 - Workstream C: Get-AzureLocalUpdateRunFailures fleet-scale failure-detail columns
+# + Step.6 "📜 Update Run History and Error Details" JUnit wiring
+# -----------------------------------------------------------------------------
+
+Describe 'Function: Get-AzureLocalUpdateRunFailures - v0.7.70 fleet-scale failure-detail columns (BS9 - BS12)' {
+
+    Context 'BS9 - Detail view exposes the new Status / CurrentStep / Duration / LastUpdated / UpdateRunPortalUrl columns' {
+
+        It 'BS9: Output row exposes all new columns' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName          = 'Arizona'
+                            ResourceGroup        = 'arizona'
+                            SubscriptionId       = 'fbaf508b-cb61-4383-9cda-a42bfa0c7bc9'
+                            ClusterResourceId    = '/subscriptions/fbaf508b-cb61-4383-9cda-a42bfa0c7bc9/resourceGroups/arizona/providers/Microsoft.AzureStackHCI/clusters/Arizona'
+                            UpdateName           = 'Solution12.2604.1003.1005'
+                            RunId                = 'add1f87d-4174-4997-ae39-d9d41088be27'
+                            State                = 'Failed'
+                            StartTime            = '2026-05-15T20:28:25.3093764Z'
+                            EndTime              = '2026-05-15T21:11:15.2041076Z'
+                            DurationMinutes      = 42.83
+                            DeepestStepDepth     = 1
+                            DeepestStepName      = 'Update is blocked due to health check failure'
+                            DeepestErrMsg        = 'Action plan Check Update readiness ID 1084e062-5d0b-48c0-b4d6-c1693b575bc1 failed with state: Failed'
+                            StackTracePreview    = ''
+                            ErrorCategory        = 'HealthCheck'
+                            Status               = 'Extracted'
+                            ProgressDescription  = 'Step 1 of 17 in update'
+                            ProgressJsonBytes    = 1234
+                            ProgressJson         = ''
+                        }
+                    )
+                }
+
+                $rows = Get-AzureLocalUpdateRunFailures -State Failed 6>$null
+                $rows | Should -HaveCount 1
+                $names = $rows[0].PSObject.Properties.Name
+                foreach ($prop in @('Status','CurrentStep','Duration','LastUpdated','UpdateRunPortalUrl')) {
+                    $names | Should -Contain $prop
+                }
+            }
+        }
+
+        It 'BS10: UpdateRunPortalUrl matches the SingleInstanceHistoryDetails portal deep-link pattern (URL-encoded cluster resource id)' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName=''; ResourceGroup=''; SubscriptionId='sub-1111'
+                            ClusterResourceId='/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            UpdateName='Sol.1'; RunId='r1'; State='Failed'
+                            StartTime='2026-05-15T20:28:25Z'; EndTime='2026-05-15T21:11:15Z'
+                            DurationMinutes=42; DeepestStepDepth=1; DeepestStepName='x'
+                            DeepestErrMsg='e'; StackTracePreview=''; ErrorCategory='HealthCheck'
+                            Status='Extracted'; ProgressDescription=''
+                            ProgressJsonBytes=10; ProgressJson=''
+                        }
+                    )
+                }
+                $rows = Get-AzureLocalUpdateRunFailures -State Failed 6>$null
+                $url = $rows[0].UpdateRunPortalUrl
+                $url | Should -Match '^https://portal\.azure\.com/#view/Microsoft_AzureStackHCI_PortalExtension/SingleInstanceHistoryDetails\.ReactView/resourceId/.+/updateName~/null/updateRunName~/null/refresh~/false$'
+                # Must be URL-encoded (every '/' in the resource id becomes %2F).
+                $url | Should -Match '%2Fsubscriptions%2Fsub-1111%2FresourceGroups%2FRG1%2Fproviders%2FMicrosoft\.AzureStackHCI%2Fclusters%2FCluster01'
+            }
+        }
+
+        It 'BS11: Duration is formatted as a human-readable string built from EndTime - StartTime (e.g. "42m 50s")' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName='C'; ResourceGroup='R'; SubscriptionId='s'
+                            ClusterResourceId='/x/c'; UpdateName='u'; RunId='r'; State='Failed'
+                            StartTime='2026-05-15T20:00:00Z'; EndTime='2026-05-15T20:42:50Z'
+                            DurationMinutes=42.83; DeepestStepDepth=1; DeepestStepName='x'
+                            DeepestErrMsg='e'; StackTracePreview=''; ErrorCategory='Other'
+                            Status='Error'; ProgressDescription=''
+                            ProgressJsonBytes=10; ProgressJson=''
+                        }
+                    )
+                }
+                $rows = Get-AzureLocalUpdateRunFailures -State Failed 6>$null
+                # Either "42m 50s" or (allowing for sub-second precision rounding) starts with "42m "
+                $rows[0].Duration | Should -Match '^42m '
+            }
+        }
+
+        It 'BS12: CurrentStep falls back to DeepestStepName for Failed runs' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName='C'; ResourceGroup='R'; SubscriptionId='s'
+                            ClusterResourceId='/x/c'; UpdateName='u'; RunId='r'; State='Failed'
+                            StartTime='2026-05-15T20:00:00Z'; EndTime='2026-05-15T20:42:50Z'
+                            DurationMinutes=42.83; DeepestStepDepth=1
+                            DeepestStepName='VerifyNCResources'
+                            DeepestErrMsg='e'; StackTracePreview=''; ErrorCategory='Other'
+                            Status='Error'; ProgressDescription='Step 9 of 17'
+                            ProgressJsonBytes=10; ProgressJson=''
+                        }
+                    )
+                }
+                $rows = Get-AzureLocalUpdateRunFailures -State Failed 6>$null
+                $rows[0].CurrentStep | Should -Be 'VerifyNCResources'
+            }
+        }
+    }
+}
+
+Describe 'v0.7.70 Step.6 "📜 Update Run History and Error Details" JUnit + markdown wiring' {
+
+    BeforeAll {
+        $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
+        $script:step6Files = @(
+            Join-Path $script:examplesRoot 'github-actions\Step.6_fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'azure-devops\Step.6_fleet-update-status.yml'
+        )
+    }
+
+    It 'BS13: Both Step.6 YAML files emit the new "📜 Update Run History and Error Details" testsuite name' {
+        foreach ($yml in $script:step6Files) {
+            $content = [System.IO.File]::ReadAllText($yml, [System.Text.UTF8Encoding]::new($false))
+            # U+1F4DC SCROLL emoji
+            $scroll = [string]::new([System.Text.Encoding]::UTF32.GetChars([System.BitConverter]::GetBytes(0x1F4DC)))
+            ($content.Contains($scroll + ' Update Run History and Error Details')) | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must declare the new testsuite name with the scroll emoji"
+        }
+    }
+
+    It 'BS14: Both Step.6 YAML files call Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            ($content -match 'Get-AzureLocalUpdateRunFailures\s+-State\s+Failed\s+-OnlyUnresolved') | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must drive the new section from the cmdlet with -State Failed -OnlyUnresolved"
+        }
+    }
+
+    It 'BS15: Both Step.6 YAML files export update-run-history.csv and update-run-history.json' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            $content | Should -Match 'update-run-history\.csv'
+            $content | Should -Match 'update-run-history\.json'
+        }
+    }
+
+    It 'BS16: Both Step.6 YAML files render the markdown table heading and use the 9-column failure-detail layout' {
+        foreach ($yml in $script:step6Files) {
+            $content = [System.IO.File]::ReadAllText($yml, [System.Text.UTF8Encoding]::new($false))
+            $content | Should -Match 'Cluster Name \| Update Name \| Update State \| Status \| Current Step \| Verbose Error Details \| Duration \| Time Started \| Last Updated'
+        }
+    }
+
+    It 'BS17: Both Step.6 YAML files surface a runHistoryCount output for downstream gating' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            # GH-actions uses RUN_HISTORY_COUNT; ADO uses runHistoryCount.
+            $hasOutput = ($content -match 'RUN_HISTORY_COUNT=') -or ($content -match 'variable=runHistoryCount;')
+            $hasOutput | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must export runHistoryCount so downstream steps can render the markdown table"
+        }
+    }
+}
+
+#endregion v0.7.70 (Workstream A: Step.3 Audit UX refresh + Workstream B: Step.7 Fleet Health Overview)
+
+#endregion v0.7.69 Apply-Updates Schedule (ring-aware)
+
+
+
+#region v0.7.70 Phase E: Get-AzureLocalLatestSolutionVersion
+
+Describe 'Function: Get-AzureLocalLatestSolutionVersion (v0.7.70 Phase E)' {
+
+    BeforeAll {
+        # Sample manifest mirroring the real aka.ms/AzureEdgeUpdates payload shape.
+        # 2604 is the highest YYMM (which is what Step.6 SupportStatus will anchor on).
+        # 2510 is older than the 6-month window ending at 2604 (2604,2603,2602,2601,2512,2511)
+        # and so MUST end up Unsupported when the manifest probe succeeds.
+        $script:sampleManifestXml = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<ASZSolutionBundleUpdates>
+  <ManifestInfo Version="1.0" />
+  <ApplicableUpdate>
+    <UpdateInfo UpdateName="StackHCI 2604" Version="Solution12.2604.1003.1005" Type="Solution" PackageSizeInMb="2048" />
+    <UpdateInfo UpdateName="StackHCI 2603" Version="Solution12.2603.1002.1001" Type="Solution" PackageSizeInMb="2048" />
+  </ApplicableUpdate>
+  <PackageMetadata>
+    <ServicesUpdates>
+      <Update>
+        <UpdateInfo UpdateName="HciService 2604" Version="Solution12.2604.1003.1005" Type="Services" />
+      </Update>
+      <Update>
+        <UpdateInfo UpdateName="HciService 2604-hotfix" Version="Solution12.2604.1005.1007" Type="Services" />
+      </Update>
+      <Update>
+        <UpdateInfo UpdateName="HciService 2510" Version="Solution12.2510.5005.7008" Type="Services" />
+      </Update>
+    </ServicesUpdates>
+  </PackageMetadata>
+</ASZSolutionBundleUpdates>
+'@
+    }
+
+    Context 'Happy path (manifest reachable)' {
+
+        It 'Returns LatestYYMM=2604 from the sample manifest' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                $r.LatestYYMM | Should -Be '2604'
+            }
+        }
+
+        It 'Returns the highest Version string at LatestYYMM (hotfix wins)' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                # Both 2604.1003.1005 and 2604.1005.1007 exist - the higher Version wins.
+                $r.LatestVersion | Should -Be 'Solution12.2604.1005.1007'
+            }
+        }
+
+        It 'Builds the 6-month window in calendar order (newest first)' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                $r.SupportedYYMMs       | Should -HaveCount 6
+                $r.SupportedYYMMs[0]    | Should -Be '2604'
+                $r.SupportedYYMMs[1]    | Should -Be '2603'
+                $r.SupportedYYMMs[2]    | Should -Be '2602'
+                $r.SupportedYYMMs[3]    | Should -Be '2601'
+                $r.SupportedYYMMs[4]    | Should -Be '2512'   # year rollover
+                $r.SupportedYYMMs[5]    | Should -Be '2511'
+                # Critical user-stated invariant: 2510 is OUTSIDE the window once 2604 is published
+                $r.SupportedYYMMs       | Should -Not -Contain '2510'
+            }
+        }
+
+        It 'Respects -SupportWindowMonths override' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion -SupportWindowMonths 3
+                $r.SupportedYYMMs       | Should -HaveCount 3
+                $r.SupportedYYMMs       | Should -Be @('2604','2603','2602')
+                $r.SupportWindowMonths  | Should -Be 3
+            }
+        }
+
+        It 'AllReleases contains entries from BOTH XPath sources with correct Source attribution' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                $r.AllReleases.Count                                         | Should -Be 5
+                @($r.AllReleases | Where-Object Source -eq 'ApplicableUpdate.UpdateInfo').Count                | Should -Be 2
+                @($r.AllReleases | Where-Object Source -eq 'PackageMetadata.ServicesUpdates.Update.UpdateInfo').Count | Should -Be 3
+                # Every release should have a non-empty Yymm
+                ($r.AllReleases | Where-Object { -not $_.Yymm }).Count       | Should -Be 0
+            }
+        }
+
+        It 'Sets ManifestUrl, ManifestFetchedAt, and Source on the result' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $script:sampleManifestXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion
+                $r.ManifestUrl       | Should -Be 'https://aka.ms/AzureEdgeUpdates'
+                $r.ManifestFetchedAt | Should -BeOfType [DateTime]
+                $r.Source            | Should -Be 'aka.ms/AzureEdgeUpdates'
+            }
+        }
+
+        It 'Handles year-rollover when LatestYYMM=2601 (3-month window crosses year boundary)' {
+            $rollOverXml = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<ASZSolutionBundleUpdates>
+  <ApplicableUpdate>
+    <UpdateInfo UpdateName="StackHCI 2601" Version="Solution12.2601.0001.0001" />
+  </ApplicableUpdate>
+</ASZSolutionBundleUpdates>
+'@
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $rollOverXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                $r = Get-AzureLocalLatestSolutionVersion -SupportWindowMonths 3
+                $r.SupportedYYMMs | Should -Be @('2601','2512','2511')
+            }
+        }
+    }
+
+    Context 'Error paths (network / parse failures)' {
+
+        It 'Throws when Invoke-WebRequest fails (network unreachable)' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { throw [System.Net.WebException]::new('Name or service not known') }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*Failed to fetch Azure Edge Updates manifest*'
+            }
+        }
+
+        It 'Throws when HTTP returns a non-2xx status code' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 503; Content = '' } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*HTTP 503*'
+            }
+        }
+
+        It 'Throws when manifest body is empty' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = '' } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*empty body*'
+            }
+        }
+
+        It 'Throws when manifest body is not valid XML' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = '<<not xml>>' } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*not valid XML*'
+            }
+        }
+
+        It 'Throws when root element is missing' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = '<?xml version="1.0"?><WrongRoot/>' } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*<ASZSolutionBundleUpdates>*'
+            }
+        }
+
+        It 'Throws when no UpdateInfo entries are present' {
+            $emptyXml = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<ASZSolutionBundleUpdates>
+  <Metadata Schema="1"/>
+</ASZSolutionBundleUpdates>
+'@
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $emptyXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*no parseable UpdateInfo entries*'
+            }
+        }
+
+        It 'Throws when UpdateInfo entries have no YYMM token in their Version' {
+            $badXml = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<ASZSolutionBundleUpdates>
+  <ApplicableUpdate>
+    <UpdateInfo UpdateName="Junk" Version="1.0.0" />
+    <UpdateInfo UpdateName="JunkAlpha" Version="alpha.beta.gamma" />
+  </ApplicableUpdate>
+</ASZSolutionBundleUpdates>
+'@
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ Xml = $badXml } {
+                param($Xml)
+                Mock Invoke-WebRequest { return [PSCustomObject]@{ StatusCode = 200; Content = $Xml } }
+                { Get-AzureLocalLatestSolutionVersion } | Should -Throw '*YYMM token*'
+            }
+        }
+    }
+
+    Context 'Parameter validation' {
+
+        It 'Rejects a non-http(s) ManifestUrl' {
+            { Get-AzureLocalLatestSolutionVersion -ManifestUrl 'file:///c:/temp/m.xml' } |
+                Should -Throw '*does not match*'
+        }
+
+        It 'Rejects -SupportWindowMonths below 1' {
+            { Get-AzureLocalLatestSolutionVersion -SupportWindowMonths 0 } |
+                Should -Throw '*less than the minimum*'
+        }
+
+        It 'Rejects -SupportWindowMonths above 24' {
+            { Get-AzureLocalLatestSolutionVersion -SupportWindowMonths 25 } |
+                Should -Throw '*greater than the maximum*'
+        }
+    }
+}
+
+Describe 'Pipeline contract: Step.6 SupportStatus anchor (v0.7.70 Phase E)' {
+
+    BeforeAll {
+        $script:repoRoot = Split-Path -Path $PSScriptRoot -Parent
+        $script:step6Files = @(
+            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/github-actions/Step.6_fleet-update-status.yml'
+            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/azure-devops/Step.6_fleet-update-status.yml'
+        )
+    }
+
+    It 'Both Step.6 YAML files invoke Get-AzureLocalLatestSolutionVersion' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            $content | Should -Match 'Get-AzureLocalLatestSolutionVersion' -Because "$(Split-Path -Leaf $yml) must call the Microsoft-manifest probe to anchor the SupportStatus window"
+        }
+    }
+
+    It 'Both Step.6 YAML files surface a supportSource property in JUnit' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            $content | Should -Match 'supportSource' -Because "$(Split-Path -Leaf $yml) must emit the SupportSource flag so consumers can tell manifest-anchored from fleet-observed windows apart"
+        }
+    }
+
+    It 'Both Step.6 YAML files wrap the manifest probe in try/catch with a fleet-observed fallback' {
+        foreach ($yml in $script:step6Files) {
+            $content = Get-Content -LiteralPath $yml -Raw
+            $content | Should -Match 'fleet-observed' -Because "$(Split-Path -Leaf $yml) must fall back to fleet-observed top-6 when the manifest is unreachable"
+        }
+    }
+}
+
+#endregion v0.7.70 Phase E: Get-AzureLocalLatestSolutionVersion

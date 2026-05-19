@@ -140,7 +140,7 @@ Set-StrictMode -Version 1.0
 # bumps to one but not the other are caught before release. Two consumers:
 #   - Start-AzureLocalClusterUpdate emits this in the run log header.
 #   - Get-AzureLocalFleetStatusData stamps it into exported fleet-state JSON.
-$script:ModuleVersion = '0.7.69'
+$script:ModuleVersion = '0.7.70'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.UpdateManagement'
 
@@ -162,7 +162,7 @@ if (-not $env:PYTHONIOENCODING) {
     $env:PYTHONIOENCODING = 'utf-8'
 }
 
-# Update state constants aligned with queries in Azure Local LENS workbook
+# Update state constants aligned with Azure Resource Graph queries against the cluster updateSummaries resource
 # States that indicate an update is installable (ready to apply)
 $script:ReadyStates = @('Ready', 'ReadyToInstall')
 # States that indicate an update is blocked by a prerequisite
@@ -282,5 +282,9 @@ Export-ModuleMember -Function @(
     'Resolve-AzLocalCurrentUpdateRing',
     'Get-AzLocalApplyUpdatesScheduleNextFirings',
     'New-AzLocalApplyUpdatesScheduleConfig',
-    'Update-AzLocalApplyUpdatesScheduleConfig'
+    'Update-AzLocalApplyUpdatesScheduleConfig',
+    # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries
+    'Get-AzLocalFleetHealthOverview',
+    # Latest Released Solution Version (v0.7.70 Phase E) - public manifest probe (aka.ms/AzureEdgeUpdates) that anchors the rolling YYMM support window in Step.6
+    'Get-AzureLocalLatestSolutionVersion'
 )

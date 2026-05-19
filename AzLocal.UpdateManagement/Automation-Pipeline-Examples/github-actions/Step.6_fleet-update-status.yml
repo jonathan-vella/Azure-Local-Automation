@@ -63,13 +63,48 @@ on:
         description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
         required: false
         default: ''
+      # --- ITSM Connector (v0.7.70 Phase D: ServiceNow auto-raise on fleet-update-status) ---
+      # Set raise_itsm_ticket=true to open ServiceNow incidents from each unresolved
+      # Failed update run reported by the '📜 Update Run History and Error Details'
+      # testsuite (and any failed AzureLocalFleetUpdateStatus row). Default is false
+      # so existing schedules stay byte-identical until you opt in. The connector reads
+      # the JUnit file Step.6 already produces (./reports/readiness-status.xml) and
+      # the trigger matrix in ./.itsm/azurelocal-itsm.yml.
+      raise_itsm_ticket:
+        description: 'Open ITSM tickets (ServiceNow) for fleet-update-status failures'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_config_path:
+        description: 'Path to ITSM matrix config (YAML or JSON)'
+        required: false
+        default: './.itsm/azurelocal-itsm.yml'
+      itsm_dry_run:
+        description: 'ITSM: build payloads + run read-only dedupe but do NOT create tickets'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_force_create:
+        description: 'ITSM: bypass dedupe and always create new tickets (use with caution)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   # Module version this workflow YAML was generated against. The install step compares
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.69'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.70'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -254,10 +289,158 @@ jobs:
         $inProgress = $stInProgress
         $ready = $stReadyForUpdate
         $upToDate = $stUpToDate
-        
+
+        # v0.7.70: Fleet Version Distribution - pivot clusters by CurrentVersion
+        # so the JUnit XML (and the markdown summary) lead with "what versions
+        # are presently installed across the fleet, and what % of clusters
+        # are on each one". One row per distinct CurrentVersion, sorted by
+        # cluster count (descending). Used by both the JUnit emitter below
+        # (first testsuite) and the 'Create Status Summary' markdown step.
+        $versionGroups = @($readiness | Group-Object {
+            if ([string]::IsNullOrWhiteSpace($_.CurrentVersion)) { '(unknown)' } else { [string]$_.CurrentVersion }
+        } | Sort-Object Count -Descending)
+        $versionDistribution = @($versionGroups | ForEach-Object {
+            $clusterNames = @($_.Group | Sort-Object ClusterName | ForEach-Object { [string]$_.ClusterName })
+            [PSCustomObject]@{
+                Version    = $_.Name
+                Count      = $_.Count
+                Percentage = if ($totalTests -gt 0) { [math]::Round(($_.Count / $totalTests) * 100, 1) } else { 0 }
+                Clusters   = ($clusterNames -join ', ')
+            }
+        })
+        $distinctVersions = $versionDistribution.Count
+        $mostCommonVersion = if ($distinctVersions -gt 0) { $versionDistribution[0].Version } else { '(none)' }
+        $mostCommonVersionPct = if ($distinctVersions -gt 0) { $versionDistribution[0].Percentage } else { 0 }
+
+        # v0.7.70: Compute the "supported YYMM window" used by the SupportStatus column.
+        # Azure Local solution-bundle releases use the format <prefix>.YYMM.X.X
+        # (YYMM = YY 20-99, MM 01-12; validated by regex '^[0-9]{4}$'). The rolling
+        # support window is the most-recent N YYMM values inclusive.
+        #
+        # ANCHOR PRIORITY:
+        #   1) Microsoft manifest (preferred):  Get-AzureLocalLatestSolutionVersion
+        #      queries the unauthenticated public catalog at https://aka.ms/AzureEdgeUpdates,
+        #      takes the highest YYMM across ApplicableUpdate.UpdateInfo +
+        #      PackageMetadata.ServicesUpdates.Update.UpdateInfo, and steps back
+        #      6 calendar months (e.g. 2604 -> 2604,2603,2602,2601,2512,2511).
+        #      As soon as Microsoft publishes any 2604 release, 2510 drops out of
+        #      the window even if NO cluster in the fleet has installed 2604 yet.
+        #   2) Fleet-observed fallback (when the manifest is unreachable):
+        #      top-6 distinct YYMM values seen in the fleet's own CurrentVersion
+        #      values. This is the v0.7.70 GA behaviour preserved as a safety net.
+        #
+        # Supported   = YYMM is in the anchor window
+        # Unsupported = YYMM is parseable but older than the anchor window
+        # Unknown     = CurrentVersion is empty / malformed / has no YYMM token
+        #
+        # Cross-check with the Microsoft Azure Local lifecycle docs before any
+        # operator action.
+        $supportSource         = 'fleet-observed'
+        $latestReleasedYymm    = ''
+        $latestReleasedVersion = ''
+        $manifestFetchedAt     = ''
+        $manifestUrl           = 'https://aka.ms/AzureEdgeUpdates'
+        $manifestError         = ''
+        try {
+            Write-Host "Querying $manifestUrl for the latest released Azure Local solution version..."
+            $manifestProbe = Get-AzureLocalLatestSolutionVersion -ErrorAction Stop
+            $supportedYymms        = @($manifestProbe.SupportedYYMMs)
+            $supportSource         = 'Microsoft manifest'
+            $latestReleasedYymm    = [string]$manifestProbe.LatestYYMM
+            $latestReleasedVersion = [string]$manifestProbe.LatestVersion
+            $manifestFetchedAt     = $manifestProbe.ManifestFetchedAt.ToString('o')
+            Write-Host ("Latest released solution version: {0} (YYMM={1}); support window anchored on Microsoft manifest." -f $latestReleasedVersion, $latestReleasedYymm) -ForegroundColor Green
+        } catch {
+            $manifestError = $_.Exception.Message
+            Write-Host "::warning::Failed to query $manifestUrl - falling back to fleet-observed top-6 YYMM window. Error: $manifestError"
+            $observedYymms = @($versionDistribution | ForEach-Object {
+                $parts = ([string]$_.Version) -split '\.'
+                if ($parts.Count -ge 2) { $parts[1] } else { '' }
+            } | Where-Object { $_ -match '^[0-9]{4}$' } | Sort-Object -Unique)
+            $supportedYymms = @($observedYymms | Sort-Object -Descending | Select-Object -First 6)
+        }
+        $supportedCount = 0
+        $unsupportedCount = 0
+        $unknownVersionCount = 0
+        foreach ($v in $versionDistribution) {
+            $parts = ([string]$v.Version) -split '\.'
+            $yymm = if ($parts.Count -ge 2) { $parts[1] } else { '' }
+            $supportStatus = if ($yymm -match '^[0-9]{4}$') {
+                if ($supportedYymms -contains $yymm) { 'Supported' } else { 'Unsupported' }
+            } else { 'Unknown' }
+            $v | Add-Member -MemberType NoteProperty -Name Yymm -Value $yymm -Force
+            $v | Add-Member -MemberType NoteProperty -Name SupportStatus -Value $supportStatus -Force
+            switch ($supportStatus) {
+                'Supported'   { $supportedCount   += [int]$v.Count }
+                'Unsupported' { $unsupportedCount += [int]$v.Count }
+                'Unknown'     { $unknownVersionCount += [int]$v.Count }
+            }
+        }
+        $supportedYymmWindow = if ($supportedYymms.Count -gt 0) { ($supportedYymms -join ',') } else { '(none)' }
+
+        Write-Host ""
+        Write-Host "Fleet Version Distribution ($distinctVersions distinct version(s) across $totalTests cluster(s)):" -ForegroundColor Cyan
+        Write-Host ("Support source: {0}" -f $supportSource)
+        if ($latestReleasedYymm) {
+            Write-Host ("Latest released YYMM (Microsoft manifest): {0} ({1})" -f $latestReleasedYymm, $latestReleasedVersion)
+        }
+        Write-Host ("Supported YYMM window (top {0}): {1}" -f $supportedYymms.Count, $supportedYymmWindow)
+        foreach ($v in $versionDistribution) {
+            Write-Host ("  {0,-30} {1,5} cluster(s)  ({2,5}%)  [{3}]" -f $v.Version, $v.Count, $v.Percentage, $v.SupportStatus)
+        }
+
         # Build XML using string concatenation (avoids YAML parser issues with here-strings)
         $xmlContent = '<?xml version="1.0" encoding="UTF-8"?>' + "`n"
         $xmlContent += '<testsuites>' + "`n"
+
+        # v0.7.70: Emit Fleet Version Distribution as the FIRST testsuite so
+        # JUnit consumers (dorny/test-reporter, Azure DevOps Test tab, etc.)
+        # render the "what versions are installed across the fleet" overview
+        # ahead of the per-cluster Critical Health Status testsuite.
+        # Each testcase = one distinct CurrentVersion (all marked passed).
+        # Per-testcase <properties> carry Count / Percentage / Clusters so
+        # downstream consumers can read them programmatically.
+        $xmlContent += "  <testsuite name=`"Fleet Version Distribution`" tests=`"$distinctVersions`" failures=`"0`" errors=`"0`" skipped=`"0`" time=`"0`" timestamp=`"$timestamp`">" + "`n"
+        $xmlContent += '    <properties>' + "`n"
+        $xmlContent += "      <property name=`"testCategory`" value=`"FleetVersionDistribution`"/>" + "`n"
+        $xmlContent += "      <property name=`"description`" value=`"Overall Fleet Update Status - cluster count and percentage per distinct CurrentVersion (StackHCI build presently installed). Source field: Get-AzureLocalClusterUpdateReadiness.CurrentVersion. SupportStatus uses the rolling 6-month YYMM window anchored on the latest released Azure Local solution version published at https://aka.ms/AzureEdgeUpdates (supportSource='Microsoft manifest'); when the manifest is unreachable the pipeline falls back to the top-6 distinct YYMM values observed in the fleet (supportSource='fleet-observed'). Cross-check against the Microsoft Azure Local lifecycle docs before operator action.`"/>" + "`n"
+        $xmlContent += "      <property name=`"scope`" value=`"$scope`"/>" + "`n"
+        $xmlContent += "      <property name=`"updateRing`" value=`"$updateRing`"/>" + "`n"
+        $xmlContent += "      <property name=`"totalClusters`" value=`"$totalTests`"/>" + "`n"
+        $xmlContent += "      <property name=`"distinctVersions`" value=`"$distinctVersions`"/>" + "`n"
+        $xmlContent += "      <property name=`"mostCommonVersion`" value=`"$([string]$mostCommonVersion -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '`"','&quot;')`"/>" + "`n"
+        $xmlContent += "      <property name=`"mostCommonVersionPercentage`" value=`"$mostCommonVersionPct`"/>" + "`n"
+        $xmlContent += "      <property name=`"supportSource`" value=`"$supportSource`"/>" + "`n"
+        $xmlContent += "      <property name=`"latestReleasedYymm`" value=`"$latestReleasedYymm`"/>" + "`n"
+        $latestReleasedVersionEsc = ([string]$latestReleasedVersion) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+        $xmlContent += "      <property name=`"latestReleasedVersion`" value=`"$latestReleasedVersionEsc`"/>" + "`n"
+        $xmlContent += "      <property name=`"manifestUrl`" value=`"$manifestUrl`"/>" + "`n"
+        $xmlContent += "      <property name=`"manifestFetchedAt`" value=`"$manifestFetchedAt`"/>" + "`n"
+        $xmlContent += "      <property name=`"supportedYymmWindow`" value=`"$supportedYymmWindow`"/>" + "`n"
+        $xmlContent += "      <property name=`"supportedClusters`" value=`"$supportedCount`"/>" + "`n"
+        $xmlContent += "      <property name=`"unsupportedClusters`" value=`"$unsupportedCount`"/>" + "`n"
+        $xmlContent += "      <property name=`"unknownVersionClusters`" value=`"$unknownVersionCount`"/>" + "`n"
+        $xmlContent += '    </properties>' + "`n"
+        foreach ($v in $versionDistribution) {
+            $vNameEsc     = ([string]$v.Version)  -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $vTestName    = "Version-$vNameEsc"
+            $vClustersEsc = ([string]$v.Clusters) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $vSystemOut   = "Version: $($v.Version)`nYYMM: $($v.Yymm)`nSupportStatus: $($v.SupportStatus)`nClusters: $($v.Count)`nPercentage: $($v.Percentage)%`nClusterNames: $($v.Clusters)"
+            $vSystemOut   = $vSystemOut -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+            $xmlContent += "    <testcase name=`"$vTestName`" classname=`"FleetVersionDistribution`" time=`"0`">`n"
+            $xmlContent += "      <properties>`n"
+            $xmlContent += "        <property name=`"Version`" value=`"$vNameEsc`"/>`n"
+            $xmlContent += "        <property name=`"Yymm`" value=`"$($v.Yymm)`"/>`n"
+            $xmlContent += "        <property name=`"SupportStatus`" value=`"$($v.SupportStatus)`"/>`n"
+            $xmlContent += "        <property name=`"ClusterCount`" value=`"$($v.Count)`"/>`n"
+            $xmlContent += "        <property name=`"Percentage`" value=`"$($v.Percentage)`"/>`n"
+            $xmlContent += "        <property name=`"Clusters`" value=`"$vClustersEsc`"/>`n"
+            $xmlContent += "      </properties>`n"
+            $xmlContent += "      <system-out><![CDATA[$vSystemOut]]></system-out>`n"
+            $xmlContent += "    </testcase>`n"
+        }
+        $xmlContent += "  </testsuite>`n"
+
         $xmlContent += "  <testsuite name=`"AzureLocalFleetUpdateStatus`" tests=`"$totalTests`" failures=`"$failures`" errors=`"0`" skipped=`"0`" time=`"0`" timestamp=`"$timestamp`">" + "`n"
         $xmlContent += '    <properties>' + "`n"
         $xmlContent += "      <property name=`"testCategory`" value=`"CriticalHealthStatus`"/>" + "`n"
@@ -332,6 +515,22 @@ jobs:
             $systemOut = $systemOut -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;'
             
             $xmlContent += "`n    <testcase name=`"$testName`" classname=`"$className`" time=`"0`">`n"
+            # v0.7.70: per-testcase <properties> for the ITSM connector. The
+            # dedupe key in New-AzureLocalIncident is SHA256(ClusterResourceId|UpdateName|Category);
+            # without these three properties on every testcase the connector
+            # reports Action='Skipped' with "Row missing ClusterResourceId or UpdateName".
+            # Status is mirrored so the trigger-matrix evaluator can pick the
+            # right severity/category for fleet-update-status rows.
+            $clusterResIdEsc = ([string]$cluster.ResourceId) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $recoUpdEsc      = ([string]$cluster.RecommendedUpdate) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $clusterPortalEsc = if ($cluster.ResourceId) { "https://portal.azure.com/#@/resource$($cluster.ResourceId)" -replace '&','&amp;' -replace '"','&quot;' } else { '' }
+            $xmlContent += "      <properties>`n"
+            $xmlContent += "        <property name=`"ClusterName`" value=`"$clusterName`"/>`n"
+            $xmlContent += "        <property name=`"ClusterResourceId`" value=`"$clusterResIdEsc`"/>`n"
+            $xmlContent += "        <property name=`"UpdateName`" value=`"$recoUpdEsc`"/>`n"
+            $xmlContent += "        <property name=`"Status`" value=`"$(if ($status -eq 'failed') { $failureType } else { 'Success' })`"/>`n"
+            $xmlContent += "        <property name=`"ClusterPortalUrl`" value=`"$clusterPortalEsc`"/>`n"
+            $xmlContent += "      </properties>`n"
             $xmlContent += "      <system-out><![CDATA[$systemOut]]></system-out>`n"
             
             if ($status -eq "failed") {
@@ -341,6 +540,100 @@ jobs:
             $xmlContent += "    </testcase>`n"
         }
         
+        $xmlContent += "  </testsuite>`n"
+
+        # ---------------------------------------------------------------
+        # v0.7.70: '📜 Update Run History and Error Details' testsuite.
+        # ARG-first Update Run History projection (fleet-scale)
+        # table. Each Failed/unresolved update run becomes a testcase with
+        # the verbose error details (DeepestErrMsg) as the failure body and
+        # Status / CurrentStep / Duration / PortalLink in system-out. The
+        # cmdlet's -OnlyUnresolved filter dedupes against any later Succeeded
+        # run on the same (cluster, update) pair (dedup aligned with the Azure portal update-runs view).
+        # ---------------------------------------------------------------
+        Write-Host "" 
+        Write-Host "Step 3b: Collecting Update Run History + Verbose Error Details (ARG-first, fleet-scale)..." -ForegroundColor Yellow
+        $runFailures = @()
+        try {
+            $runFailures = @(Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-30))
+        }
+        catch {
+            Write-Warning "Get-AzureLocalUpdateRunFailures threw: $($_.Exception.Message). Continuing with empty run-history section."
+            $runFailures = @()
+        }
+        $runFailures = @($runFailures | Sort-Object StartTime -Descending)
+        $runHistoryCount = $runFailures.Count
+        Write-Host "Found $runHistoryCount unresolved Failed update run(s)." -ForegroundColor $(if ($runHistoryCount -gt 0) { 'Yellow' } else { 'Green' })
+
+        # Export run-history rows as CSV + JSON for the artifact bundle.
+        $runHistoryCsv  = Join-Path $outputDir "update-run-history.csv"
+        $runHistoryJson = Join-Path $outputDir "update-run-history.json"
+        if ($runHistoryCount -gt 0) {
+            $runFailures |
+                Select-Object ClusterName, UpdateName, State, Status, CurrentStep, Duration, StartTime, LastUpdated, DeepestStepName, ErrorCategory, DeepestErrMsg, UpdateRunPortalUrl, ClusterResourceId, RunId |
+                Export-Csv -Path $runHistoryCsv -NoTypeInformation -Force
+            $runFailures | ConvertTo-Json -Depth 4 | Out-File $runHistoryJson -Encoding UTF8
+        }
+
+        $xmlContent += "  <testsuite name=`"📜 Update Run History and Error Details`" tests=`"$runHistoryCount`" failures=`"$runHistoryCount`" errors=`"0`" skipped=`"0`" time=`"0`" timestamp=`"$timestamp`">`n"
+        $xmlContent += "    <properties>`n"
+        $xmlContent += "      <property name=`"description`" value=`"Verbose error details for each unresolved Failed update run (ARG-first, fleet-scale).`"/>`n"
+        $xmlContent += "      <property name=`"sourceCmdlet`" value=`"Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-30)`"/>`n"
+        $xmlContent += "      <property name=`"failedRunCount`" value=`"$runHistoryCount`"/>`n"
+        $xmlContent += "    </properties>`n"
+
+        foreach ($f in $runFailures) {
+            $fcName     = ([string]$f.ClusterName) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+            $fuName     = ([string]$f.UpdateName)  -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+            $fStatus    = ([string]$f.Status)      -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+            $fCurStep   = ([string]$f.CurrentStep) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+            $fDuration  = [string]$f.Duration
+            $fStart     = [string]$f.StartTime
+            $fLast      = [string]$f.LastUpdated
+            $fCategory  = [string]$f.ErrorCategory
+            $fPortal    = [string]$f.UpdateRunPortalUrl
+            $fErr       = if ($f.DeepestErrMsg) {
+                if ($f.DeepestErrMsg.Length -gt 4000) { $f.DeepestErrMsg.Substring(0,4000) + ' ... (truncated)' } else { $f.DeepestErrMsg }
+            } else { '(no error message captured)' }
+            $fErrEsc    = $fErr -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+            $fStackEsc  = ([string]$f.StackTracePreview) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+
+            $tcName     = "$fcName - $fuName"
+            $tcClass    = "UpdateRunHistory"
+            $tcSysOut   = "Cluster: $fcName`nUpdate: $fuName`nUpdate State: Failed`nStatus: $fStatus`nCurrent Step: $fCurStep`nDuration: $fDuration`nTime Started: $fStart`nLast Updated: $fLast`nError Category: $fCategory`nPortal Link: $fPortal"
+            if ($f.StackTracePreview) { $tcSysOut += "`nStack Trace Preview: $fStackEsc" }
+            $tcSysOut   = $tcSysOut -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+
+            $xmlContent += "`n    <testcase name=`"$tcName`" classname=`"$tcClass`" time=`"0`">`n"
+            # v0.7.70: properties for the ITSM connector dedupe key + v0.7.70
+            # extended context (UpdateRunPortalUrl, ClusterPortalUrl, CurrentStep,
+            # Duration, ErrorCategory) so the optional incident-body template
+            # rendered by New-AzureLocalIncident can deep-link straight into
+            # the SingleInstanceHistoryDetails ReactView for this failed run.
+            $fClusterResIdEsc = ([string]$f.ClusterResourceId) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $fClusterPortalEsc = if ($f.ClusterResourceId) { "https://portal.azure.com/#@/resource$($f.ClusterResourceId)" -replace '&','&amp;' -replace '"','&quot;' } else { '' }
+            $fPortalEsc       = $fPortal -replace '&','&amp;' -replace '"','&quot;'
+            $fStatusEsc       = ([string]$f.Status) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+            $fCurStepAttr     = $fCurStep -replace '"','&quot;'
+            $fDurationAttr    = $fDuration -replace '"','&quot;'
+            $fCategoryAttr    = $fCategory -replace '"','&quot;'
+            $xmlContent += "      <properties>`n"
+            $xmlContent += "        <property name=`"ClusterName`" value=`"$fcName`"/>`n"
+            $xmlContent += "        <property name=`"ClusterResourceId`" value=`"$fClusterResIdEsc`"/>`n"
+            $xmlContent += "        <property name=`"UpdateName`" value=`"$fuName`"/>`n"
+            $xmlContent += "        <property name=`"Status`" value=`"Failed`"/>`n"
+            $xmlContent += "        <property name=`"UpdateState`" value=`"$fStatusEsc`"/>`n"
+            $xmlContent += "        <property name=`"CurrentStep`" value=`"$fCurStepAttr`"/>`n"
+            $xmlContent += "        <property name=`"Duration`" value=`"$fDurationAttr`"/>`n"
+            $xmlContent += "        <property name=`"ErrorCategory`" value=`"$fCategoryAttr`"/>`n"
+            $xmlContent += "        <property name=`"UpdateRunPortalUrl`" value=`"$fPortalEsc`"/>`n"
+            $xmlContent += "        <property name=`"ClusterPortalUrl`" value=`"$fClusterPortalEsc`"/>`n"
+            $xmlContent += "      </properties>`n"
+            $xmlContent += "      <system-out><![CDATA[$tcSysOut]]></system-out>`n"
+            $xmlContent += "      <failure message=`"$fcName / $fuName failed at: $fCurStep`" type=`"$fCategory`"><![CDATA[$fErr]]></failure>`n"
+            $xmlContent += "    </testcase>`n"
+        }
+
         $xmlContent += "  </testsuite>`n"
         $xmlContent += "</testsuites>`n"
         
@@ -429,6 +722,48 @@ jobs:
         echo "NEEDS_INVESTIGATION=$stOther" >> $env:GITHUB_OUTPUT
         echo "FAILURES=$failures" >> $env:GITHUB_OUTPUT
         echo "HAS_PREREQUISITE=$hasPrerequisite" >> $env:GITHUB_OUTPUT
+        echo "RUN_HISTORY_COUNT=$runHistoryCount" >> $env:GITHUB_OUTPUT
+
+        # v0.7.70: persist version-distribution rows as a base64 JSON blob so
+        # the 'Create Status Summary' step can render the markdown table
+        # (with SupportStatus) without re-reading the CSV.
+        if ($distinctVersions -gt 0) {
+            $vTop = $versionDistribution | Select-Object Version, Yymm, SupportStatus, Count, Percentage, Clusters
+            $vJson = $vTop | ConvertTo-Json -Depth 3 -Compress
+            $vB64  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($vJson))
+            echo "VERSION_DIST_B64=$vB64" >> $env:GITHUB_OUTPUT
+            echo "VERSION_DIST_COUNT=$distinctVersions" >> $env:GITHUB_OUTPUT
+            echo "SUPPORTED_YYMM_WINDOW=$supportedYymmWindow" >> $env:GITHUB_OUTPUT
+            echo "SUPPORTED_CLUSTERS=$supportedCount" >> $env:GITHUB_OUTPUT
+            echo "UNSUPPORTED_CLUSTERS=$unsupportedCount" >> $env:GITHUB_OUTPUT
+            echo "UNKNOWN_VERSION_CLUSTERS=$unknownVersionCount" >> $env:GITHUB_OUTPUT
+            echo "SUPPORT_SOURCE=$supportSource" >> $env:GITHUB_OUTPUT
+            echo "LATEST_RELEASED_YYMM=$latestReleasedYymm" >> $env:GITHUB_OUTPUT
+            echo "LATEST_RELEASED_VERSION=$latestReleasedVersion" >> $env:GITHUB_OUTPUT
+        } else {
+            echo "VERSION_DIST_B64=" >> $env:GITHUB_OUTPUT
+            echo "VERSION_DIST_COUNT=0" >> $env:GITHUB_OUTPUT
+            echo "SUPPORTED_YYMM_WINDOW=" >> $env:GITHUB_OUTPUT
+            echo "SUPPORTED_CLUSTERS=0" >> $env:GITHUB_OUTPUT
+            echo "UNSUPPORTED_CLUSTERS=0" >> $env:GITHUB_OUTPUT
+            echo "UNKNOWN_VERSION_CLUSTERS=0" >> $env:GITHUB_OUTPUT
+            echo "SUPPORT_SOURCE=$supportSource" >> $env:GITHUB_OUTPUT
+            echo "LATEST_RELEASED_YYMM=$latestReleasedYymm" >> $env:GITHUB_OUTPUT
+            echo "LATEST_RELEASED_VERSION=$latestReleasedVersion" >> $env:GITHUB_OUTPUT
+        }
+
+        # v0.7.70: persist update-run-history rows as a base64 JSON blob so the
+        # 'Create Status Summary' step can render the markdown table without
+        # re-querying ARG. Truncated to top 25 failures to keep the workflow
+        # output env-var size sane.
+        if ($runHistoryCount -gt 0) {
+            $top = $runFailures | Select-Object -First 25 ClusterName, UpdateName, State, Status, CurrentStep, Duration, StartTime, LastUpdated, DeepestErrMsg, UpdateRunPortalUrl
+            $json = $top | ConvertTo-Json -Depth 4 -Compress
+            $b64  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+            echo "RUN_HISTORY_B64=$b64" >> $env:GITHUB_OUTPUT
+        } else {
+            echo "RUN_HISTORY_B64=" >> $env:GITHUB_OUTPUT
+        }
         
         # Fail the workflow if there are health failures
         if ($failures -gt 0) {
@@ -476,11 +811,56 @@ jobs:
         $updateFailed = "${{ steps.fleet-status.outputs.UPDATE_FAILED }}"
         $needsInvestigation = "${{ steps.fleet-status.outputs.NEEDS_INVESTIGATION }}"
         $hasPrerequisite = "${{ steps.fleet-status.outputs.HAS_PREREQUISITE }}"
+        $versionDistB64    = "${{ steps.fleet-status.outputs.VERSION_DIST_B64 }}"
+        $versionDistCount  = "${{ steps.fleet-status.outputs.VERSION_DIST_COUNT }}"
+        $supportedYymmWin  = "${{ steps.fleet-status.outputs.SUPPORTED_YYMM_WINDOW }}"
+        $supportedClusters = "${{ steps.fleet-status.outputs.SUPPORTED_CLUSTERS }}"
+        $unsupportedClusters = "${{ steps.fleet-status.outputs.UNSUPPORTED_CLUSTERS }}"
+        $unknownVersionClusters = "${{ steps.fleet-status.outputs.UNKNOWN_VERSION_CLUSTERS }}"
+        $supportSource     = "${{ steps.fleet-status.outputs.SUPPORT_SOURCE }}"
+        $latestReleasedYymm    = "${{ steps.fleet-status.outputs.LATEST_RELEASED_YYMM }}"
+        $latestReleasedVersion = "${{ steps.fleet-status.outputs.LATEST_RELEASED_VERSION }}"
         $generatedUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC')
+
+        # v0.7.70: Render the Overall Fleet Update Status (Version Distribution)
+        # table FIRST so it leads the summary, matching the position of the
+        # 'Fleet Version Distribution' testsuite at the top of the JUnit XML.
+        $versionSection = ''
+        if ($versionDistCount -and [int]$versionDistCount -gt 0 -and $versionDistB64) {
+            try {
+                $vRows = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($versionDistB64)) | ConvertFrom-Json
+                $versionSection += "### Overall Fleet Update Status (Version Distribution)`n`n"
+                $versionSection += "_One row per distinct ``CurrentVersion`` reported by ``Get-AzureLocalClusterUpdateReadiness``. Sorted by cluster count (descending). Percentage is share of the $total cluster(s) in scope._`n`n"
+                if ($supportSource -eq 'Microsoft manifest' -and $latestReleasedYymm) {
+                    $versionSection += "_``SupportStatus`` uses the **rolling 6-month YYMM window anchored on the Microsoft public catalog** ([aka.ms/AzureEdgeUpdates](https://aka.ms/AzureEdgeUpdates)). Latest released YYMM = **$latestReleasedYymm** (``$latestReleasedVersion``); supported window = ``$supportedYymmWin``. As soon as Microsoft publishes a release with a newer YYMM, the window slides forward and the oldest in-window YYMM falls out._`n`n"
+                    $versionSection += "_**Supported** = cluster's YYMM is inside the manifest-anchored window; **Unsupported** = older YYMM; **Unknown** = ``CurrentVersion`` empty or not in ``<prefix>.YYMM.X.X`` form. Always cross-check against the [Azure Local lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and the [Azure Local release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) before taking action._`n`n"
+                } else {
+                    $versionSection += "_``SupportStatus`` falls back to a **fleet-observed heuristic** (aka.ms/AzureEdgeUpdates was unreachable from the runner). **Supported** = YYMM is in the top-6 most-recent distinct YYMM values observed across the fleet (``$supportedYymmWin``); **Unsupported** = older YYMM; **Unknown** = ``CurrentVersion`` empty or not in ``<prefix>.YYMM.X.X`` form. Always cross-check against the [Azure Local lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and the [Azure Local release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) before taking action._`n`n"
+                }
+                $versionSection += "| Version | YYMM | Support | Cluster Count | Percentage | Clusters |`n"
+                $versionSection += "|---------|------|---------|---------------|------------|----------|`n"
+                foreach ($vr in @($vRows)) {
+                    $supportEmoji = switch ($vr.SupportStatus) {
+                        'Supported'   { '✅ Supported' }
+                        'Unsupported' { '⚠️ Unsupported' }
+                        default       { '❓ Unknown' }
+                    }
+                    $clCell = [string]$vr.Clusters
+                    if ($clCell.Length -gt 250) { $clCell = $clCell.Substring(0,250) + ' ...' }
+                    $clCell = $clCell -replace '\|','\|'
+                    $versionSection += ('| {0} | {1} | {2} | {3} | {4}% | {5} |' -f $vr.Version, $vr.Yymm, $supportEmoji, $vr.Count, $vr.Percentage, $clCell) + "`n"
+                }
+                $versionSection += "`n_Support roll-up: Supported = $supportedClusters cluster(s), Unsupported = $unsupportedClusters, Unknown = $unknownVersionClusters. Anchor source: ``$supportSource``._`n`n"
+            } catch {
+                Write-Warning "Failed to render Fleet Version Distribution markdown table: $($_.Exception.Message)"
+                $versionSection = ''
+            }
+        }
 
         $summary = @"
         ## Fleet Update Status Summary  _(generated $generatedUtc)_
 
+        $versionSection
         ### Critical Health Status (matches JUnit XML pass/fail)
 
         | Metric | Count | Status |
@@ -516,16 +896,47 @@ jobs:
             $summary += ($actions -join "`n")
         }
 
+        # v0.7.70: '📜 Update Run History and Error Details' markdown table
+        # provides an ARG-first fleet-scale view of recent unresolved failures. Rendered only when
+        # there are unresolved failed runs to surface. Uses the base64 JSON
+        # passed forward from the fleet-status step output so we don't re-query.
+        $runHistoryCount = "${{ steps.fleet-status.outputs.RUN_HISTORY_COUNT }}"
+        $runHistoryB64   = "${{ steps.fleet-status.outputs.RUN_HISTORY_B64 }}"
+        if ($runHistoryCount -and ([int]$runHistoryCount) -gt 0 -and $runHistoryB64) {
+            try {
+                $rows = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($runHistoryB64)) | ConvertFrom-Json
+                $summary += "`n`n### 📜 Update Run History and Error Details`n`n"
+                $summary += "_ARG-first, fleet-scale failure-detail view. Shows up to 25 most recent unresolved Failed update runs (last 30 days). Source cmdlet: ``Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved``._`n`n"
+                $summary += "| Cluster Name | Update Name | Update State | Status | Current Step | Verbose Error Details | Duration | Time Started | Last Updated |`n"
+                $summary += "|---|---|---|---|---|---|---|---|---|`n"
+                foreach ($r in @($rows)) {
+                    $errCell = if ($r.DeepestErrMsg) {
+                        $e = [string]$r.DeepestErrMsg
+                        if ($e.Length -gt 250) { $e = $e.Substring(0,250) + '...' }
+                        # Inline-code safe: collapse newlines + escape pipes for table
+                        $e = $e -replace "`r`n",' ' -replace "`n",' ' -replace '\|','\|'
+                        '`' + $e + '`'
+                    } else { '_(none)_' }
+                    $updCell = if ($r.UpdateRunPortalUrl) { "[$($r.UpdateName)]($($r.UpdateRunPortalUrl))" } else { $r.UpdateName }
+                    $summary += "| $($r.ClusterName) | $updCell | $($r.State) | $($r.Status) | $($r.CurrentStep) | $errCell | $($r.Duration) | $($r.StartTime) | $($r.LastUpdated) |`n"
+                }
+            } catch {
+                Write-Warning "Failed to render Update Run History markdown table: $($_.Exception.Message)"
+            }
+        }
+
         $summary += @"
 
         ### Reports Available
         - ``readiness-status.csv`` - Detailed cluster status for spreadsheet analysis
         - ``readiness-status.json`` - Machine-readable format for integrations
-        - ``readiness-status.xml`` - JUnit XML for CI/CD visualization
+        - ``readiness-status.xml`` - JUnit XML for CI/CD visualization (now includes the '📜 Update Run History and Error Details' suite)
         - ``cluster-inventory.csv`` - Full cluster inventory
         - ``update-summaries.csv`` - Fleet-wide update state summaries
         - ``available-updates.csv`` - All available updates across fleet
         - ``update-runs.csv`` - Recent update run history (if enabled)
+        - ``update-run-history.csv`` - Verbose error details for unresolved Failed update runs (ARG-first, fleet-scale, v0.7.70)
+        - ``update-run-history.json`` - Same as above in JSON form for integrations
 
         *Generated at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")*
         "@
@@ -547,3 +958,100 @@ jobs:
         fail-on-error: false  # Don't fail the action on test failures
         list-suites: failed    # collapse passing suites (compact view for large fleets)
         list-tests: failed     # within failed suites, only render failed tests
+
+    # ----------------------------------------------------------------------
+    # ITSM Connector (v0.7.70 Phase D - ServiceNow auto-raise on fleet failures)
+    #
+    # Fully opt-in (gated on inputs.raise_itsm_ticket == 'true'). Runs AFTER
+    # the JUnit file is uploaded + test results published, so a) failing
+    # clusters are already surfaced via dorny/test-reporter and the run
+    # summary, and b) the ITSM action is strictly additive - failures here
+    # never affect the fleet-update-status exit code.
+    #
+    # Reads the same readiness-status.xml that powers the run summary. The
+    # JUnit emitter writes per-testcase <properties> (ClusterName /
+    # ClusterResourceId / UpdateName / Status / ErrorCategory /
+    # CurrentStep / Duration / UpdateRunPortalUrl / ClusterPortalUrl) so
+    # New-AzureLocalIncident can compute the SHA256 dedupe key and the
+    # Mustache body template can deep-link straight into the Azure portal
+    # SingleInstanceHistoryDetails ReactView for the failed update run.
+    # ----------------------------------------------------------------------
+    - name: Install powershell-yaml (ITSM config parser)
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      run: |
+        if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
+            Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+        }
+
+    - name: Raise ITSM tickets
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      id: itsm
+      env:
+        # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+        # Bind your ITSM connector secrets here. Defaults match the
+        # ServiceNow OAuth client_credentials naming used by azurelocal-itsm.yml.
+        # Preserved by Update-AzureLocalPipelineExample across module upgrades.
+        ITSM_SN_INSTANCE_URL: ${{ secrets.ITSM_SN_INSTANCE_URL }}
+        ITSM_SN_CLIENT_ID:    ${{ secrets.ITSM_SN_CLIENT_ID }}
+        ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
+        # END-AZLOCAL-CUSTOMIZE:itsm-secrets
+        INPUT_ITSM_CONFIG_PATH:  ${{ github.event.inputs.itsm_config_path }}
+        INPUT_ITSM_DRY_RUN:      ${{ github.event.inputs.itsm_dry_run }}
+        INPUT_ITSM_FORCE_CREATE: ${{ github.event.inputs.itsm_force_create }}
+      run: |
+        Import-Module AzLocal.UpdateManagement -Force
+
+        $configPath = $env:INPUT_ITSM_CONFIG_PATH
+        $dryRun     = $env:INPUT_ITSM_DRY_RUN -eq 'true'
+        $force      = $env:INPUT_ITSM_FORCE_CREATE -eq 'true'
+
+        if (-not (Test-Path $configPath)) {
+            Write-Host "::warning::ITSM config not found at '$configPath' - skipping ticket creation."
+            exit 0
+        }
+
+        $cfg = Get-AzureLocalItsmConfig -Path $configPath
+
+        $junitInput = './reports/readiness-status.xml'
+        if (-not (Test-Path $junitInput)) {
+            Write-Host "::warning::No readiness-status.xml found at '$junitInput' - skipping ticket creation."
+            exit 0
+        }
+
+        $params = @{
+            InputArtifactPath = $junitInput
+            Config            = $cfg
+            RunMetadata       = @{
+                Platform = 'github'
+                RunId    = $env:GITHUB_RUN_ID
+                RunUrl   = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+                Branch   = $env:GITHUB_REF
+            }
+            DryRun            = $dryRun
+            ForceCreate       = $force
+            ExportPath        = './reports/itsm-results.csv'
+            ExportJUnitPath   = './reports/itsm-results.xml'
+        }
+
+        $results = New-AzureLocalIncident @params
+        $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
+
+    - name: Upload ITSM Artefacts
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: actions/upload-artifact@v6
+      with:
+        name: azlocal-fleet-update-status-itsm-results_${{ steps.artifact-stamp.outputs.timestamp }}
+        path: ./reports/itsm-*.*
+        retention-days: 30
+      continue-on-error: true
+
+    - name: Publish ITSM Test Results
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: dorny/test-reporter@v3
+      with:
+        name: ITSM Tickets (Step.6)
+        path: ./reports/itsm-results.xml
+        reporter: java-junit
+      continue-on-error: true
