@@ -155,13 +155,26 @@ If you are new to this module, work through these in order from a regular PowerS
 
 ## What's New in v0.7.70
 
-v0.7.70 is the **Step.3 dual-section UX + Step.7 fleet-health hyperlinks** release, plus a new exported cmdlet (`Get-AzLocalFleetHealthOverview`) that mirrors the LENS workbook "System Health Checks Overview" tile. All changes are additive over v0.7.69; no behaviour change for callers that don't read the new columns.
+v0.7.70 is the **Step.0 recurring authentication audit + Step.6 Update Run History section + Step.3 dual-section UX + Step.7 fleet-health hyperlinks** release, plus a new exported cmdlet (`Get-AzLocalFleetHealthOverview`) that delivers an ARG-first fleet-scale view of cluster health and update status. All changes are additive over v0.7.69; no behaviour change for callers that don't read the new columns.
 
 > Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
+### Step.0 repositioned as a recurring audit: Authentication Validation and Subscription Scope Report
+
+`Step.0_authentication-test.yml` (GitHub Actions + Azure DevOps twins) is renamed from "Authentication Validation Test" to **"Step.0 - Authentication Validation and Subscription Scope Report"** and repositioned from a one-shot smoke test into a **recurring audit** intended to be re-run monthly (or after any RBAC change in the tenant). The pipeline now emits:
+- A **JUnit XML** report (`auth-report.xml`) with three testsuites - **Authentication**, **Subscription Scope** (one testcase per accessible subscription, plus a count testcase), and **Resource Graph Reachability** (cluster count visible to the pipeline identity). Rendered in the GitHub Checks UI via `dorny/test-reporter@v3` and in the Azure DevOps **Tests** tab via `PublishTestResults@2`.
+- A **markdown summary** at the top of every run with `Count of subscriptions = N` and a per-subscription detail table (Name / SubscriptionId / TenantId / State). Written to `$GITHUB_STEP_SUMMARY` on GitHub Actions and uploaded via `##vso[task.uploadsummary]` on Azure DevOps.
+- A `auth-report` artifact (XML + `subscriptions.json` + `subscriptions.csv`) for ITSM / dashboard ingest.
+
+Drift in the subscription scope visible to the pipeline identity is the earliest signal that downstream fleet reports are about to silently under- or over-count clusters, which is why the cadence is recurring rather than one-shot.
+
+### Step.6 Fleet Update Status pipeline - new "Update Run History and Error Details" section
+
+A new `<testsuite name="Update Run History and Error Details">` testsuite in the Step.6 JUnit XML and a matching `### Update Run History and Error Details` markdown table in the run summary surface up to 25 of the most recent unresolved Failed update runs across the fleet (last 30 days). Each row links to the Azure portal `SingleInstanceHistoryDetails` deep-link and includes Status / CurrentStep / Duration / LastUpdated / DeepestErrMsg for at-a-glance triage. Sourced from `Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved` (ARG-first, fleet-scale).
+
 ### New cmdlet: `Get-AzLocalFleetHealthOverview`
 
-LENS workbook "System Health Checks Overview" parity. One row per cluster, joining `microsoft.azurestackhci/clusters` with the cluster's `updateSummaries` extensibility resource via a single Azure Resource Graph batch read. 12 columns in fixed order: `ClusterName`, `ClusterPortalUrl`, `HealthStatus`, `UpdateStatus`, `CurrentVersion`, `SbeVersion`, `AzureConnection`, `LastChecked`, `HealthResultsAgeDays` (computed as `datetime_diff('day', now(), LastChecked)`), `ResourceGroup`, `NodeCount`, `SubscriptionId`. Sort: `HealthResultsAgeDays desc, ClusterName asc` so the most-stale clusters surface first.
+ARG-first fleet health summary. One row per cluster, joining `microsoft.azurestackhci/clusters` with the cluster's `updateSummaries` extensibility resource via a single Azure Resource Graph batch read. 12 columns in fixed order: `ClusterName`, `ClusterPortalUrl`, `HealthStatus`, `UpdateStatus`, `CurrentVersion`, `SbeVersion`, `AzureConnection`, `LastChecked`, `HealthResultsAgeDays` (computed as `datetime_diff('day', now(), LastChecked)`), `ResourceGroup`, `NodeCount`, `SubscriptionId`. Sort: `HealthResultsAgeDays desc, ClusterName asc` so the most-stale clusters surface first.
 
 ```powershell
 # Whole-fleet rollup
@@ -191,14 +204,14 @@ The `Step.3_apply-updates-schedule-audit.yml` pipeline YAMLs (GH + ADO) mirror t
 - When `$hasIssues -and $reco`, the `-View Recommend` cmdlet output is prepended above the detail tables so operators see the fix before scrolling.
 - The zero-row JUnit placeholder text is centralised via a new `Write-Suite -EmptyPlaceholderName 'No tagged clusters found - nothing to audit'` helper (GH-vs-ADO parity preserved since v0.7.67).
 
-### Step.7 fleet-health pipeline - cluster portal hyperlinks + 3 new detailed columns + new System Health Checks Overview section
+### Step.7 fleet-health pipeline - cluster portal hyperlinks + 3 new detailed columns + new Fleet Health Overview section
 
 `Get-AzureLocalFleetHealthFailures` (the v0.7.65 cmdlet) gains three deep-link / target-resource properties on Detail rows - `TargetResourceName` (the sub-resource that emitted the check failure, e.g. the NIC name), `TargetResourceType` (e.g. `Microsoft.Compute/virtualMachines/networkInterfaces`), and `ClusterPortalUrl` (`https://portal.azure.com/#@/resource{ClusterResourceId}` deep-link). Summary rows gain `AffectedClusterPortalUrls` aligned with `AffectedClusters` (same element count, same order, joined with `'; '`). The Summary now sorts **Critical-first**: Severity (Critical, then Warning, then everything else), then `ClusterCount` desc, then `FailureCount` desc - a Critical failure on 1 cluster ranks above a Warning affecting many clusters.
 
 The `Step.7_fleet-health-status.yml` pipeline YAMLs (GH + ADO) consume these in three places:
 - **Summary and Detailed Results cluster cells** render as `[ClusterName](portalUrl)` markdown links. The Summary caps at the first 10 then renders `... (+N more)`; the Detail tables link every cell.
 - **Three new Detailed Results columns**: Failure Remediation (auto-renders as `[link](url)` when the value starts with `https://`, otherwise plain text), Target Resource Name, Target Resource Type.
-- **New `### System Health Checks Overview (fleet rollup)` section** calls the new `Get-AzLocalFleetHealthOverview` cmdlet and surfaces the per-cluster 9-column rollup alongside the failures table. The mapping `OK` / `Critical` / `Warning` / `In progress` / `Failed` is rendered with bracketed labels (`[OK]`, `[Critical]`, etc.) so the at-a-glance summary is greppable. New report artifacts: `fleet-health-overview.csv` and `fleet-health-overview.json`.
+- **New `### Fleet Health Overview (fleet rollup)` section** calls the new `Get-AzLocalFleetHealthOverview` cmdlet and surfaces the per-cluster 9-column rollup alongside the failures table. The mapping `OK` / `Critical` / `Warning` / `In progress` / `Failed` is rendered with bracketed labels (`[OK]`, `[Critical]`, etc.) so the at-a-glance summary is greppable. New report artifacts: `fleet-health-overview.csv` and `fleet-health-overview.json`.
 
 ### Pipeline pin bumps + migration
 
@@ -316,7 +329,7 @@ v0.7.68 is the **ARG-first refactor** and **pipeline-rename** release. Seven fle
 
 - **Backwards compatibility for already-deployed consumers:** `Read-AzLocalApplyUpdatesYamlCrons` (the schedule-audit scanner) glob list expanded to match both new (`Step.5_apply-updates*.yml`) and legacy (`apply-updates*.yml`) names. A customer who upgrades the module but has not yet re-run `Copy-AzureLocalPipelineExample` will still see correct schedule-coverage audits.
 
-- **Each YAML's workflow display name now also carries the `Step.N - ` prefix.** GitHub Actions sidebar sorts workflows alphabetically by the YAML's top-level `name:` field, so the 8 workflows now read `Step.0 - Auth Smoke Test` ... `Step.7 - Fleet Health Status` and list in execution order. For Azure DevOps the leading title comment in each YAML carries the same prefix so the import wizard prefills the suggested pipeline definition name correctly. See [`Automation-Pipeline-Examples/README.md` section 1.1](./Automation-Pipeline-Examples/README.md#11-why-the-pipelines-are-named-stepn---description) for the full convention.
+- **Each YAML's workflow display name now also carries the `Step.N - ` prefix.** GitHub Actions sidebar sorts workflows alphabetically by the YAML's top-level `name:` field, so the 8 workflows now read `Step.0 - Authentication Validation and Subscription Scope Report` ... `Step.7 - Fleet Health Status` and list in execution order. For Azure DevOps the leading title comment in each YAML carries the same prefix so the import wizard prefills the suggested pipeline definition name correctly. See [`Automation-Pipeline-Examples/README.md` section 1.1](./Automation-Pipeline-Examples/README.md#11-why-the-pipelines-are-named-stepn---description) for the full convention.
 
 ### Pipeline samples - Layer 1 customisation markers (scaffolding)
 

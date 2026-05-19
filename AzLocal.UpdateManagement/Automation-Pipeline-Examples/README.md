@@ -41,10 +41,11 @@ It is written in the same step-by-step style as [`ITSM/README.md`](../ITSM/READM
 13. [File layout](#13-file-layout)
 14. [Appendix A: Pipeline reference](#appendix-a-pipeline-reference)
 15. [Appendix B: Release history](#appendix-b-release-history)
-    - [B.1 v0.7.69 (current)](#b1-v0769-current)
-    - [B.2 v0.7.68](#b2-v0768)
-    - [B.3 v0.7.66](#b3-v0766)
-    - [B.4 v0.7.65](#b4-v0765)
+    - [B.1 v0.7.70 (current)](#b1-v0770-current)
+    - [B.2 v0.7.69](#b2-v0769)
+    - [B.3 v0.7.68](#b3-v0768)
+    - [B.4 v0.7.66](#b4-v0766)
+    - [B.5 v0.7.65](#b5-v0765)
     - [B.5 v0.7.4](#b5-v074)
     - [B.6 v0.7.2](#b6-v072)
     - [B.7 v0.7.1](#b7-v071)
@@ -77,7 +78,7 @@ The eight YAMLs ship with a `Step.N_` filename prefix **and** a matching `Step.N
 
 | Step | File / Workflow name |
 |---:|---|
-| 0 | Step.0 - Auth Smoke Test |
+| 0 | Step.0 - Authentication Validation and Subscription Scope Report |
 | 1 | Step.1 - Inventory Azure Local Clusters |
 | 2 | Step.2 - Manage UpdateRing Tags |
 | 3 | Step.3 - Apply-Updates Schedule Coverage Audit |
@@ -842,15 +843,15 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 > Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps
 > ```
 >
-> The function prints a short "next steps" summary pointing at the copied YAML location with the recommended workflow / pipeline to run first (the auth smoke test - see sections 5.1 and 5.2 below). Supports `-Platform GitHub | AzureDevOps | All`, `-PassThru`, `-WhatIf`, `-Confirm`.
+> The function prints a short "next steps" summary pointing at the copied YAML location with the recommended workflow / pipeline to run first (the **Authentication Validation and Subscription Scope Report** - see sections 5.1 and 5.2 below). Supports `-Platform GitHub | AzureDevOps | All`, `-PassThru`, `-WhatIf`, `-Confirm`.
 >
 > **Refusing to overwrite**: the function will refuse to overwrite any file that already exists in `-Destination`, listing the conflicts in the error message. To refresh after a module upgrade, delete the existing copies first (`Remove-Item .\.github\workflows\*.yml`) and re-run.
 
 ### 5.1 GitHub Actions
 
-1. **Smoke-test auth first (strongly recommended).** Before exercising all seven workflows, validate that the App Registration, federated credentials, GitHub secrets, environments, and RBAC role assignment all line up by running a one-shot **auth smoke test** workflow. This narrows any failure to *one* small YAML file instead of debugging seven interacting workflows simultaneously.
+1. **Run the Authentication Validation and Subscription Scope Report first (strongly recommended).** Before exercising all seven workflows, validate that the App Registration, federated credentials, GitHub secrets, environments, and RBAC role assignment all line up - and capture the count + per-subscription detail of subscriptions visible to the pipeline identity - by running **`Step.0 - Authentication Validation and Subscription Scope Report`**. This narrows any failure to *one* small YAML file instead of debugging seven interacting workflows simultaneously. **Re-run periodically** (recommended monthly, or after any RBAC change in the tenant) to confirm the pipeline identity's subscription scope has not silently widened or narrowed - drift here is the earliest signal that downstream fleet reports are about to under- or over-count clusters.
 
-   The smoke-test workflow ships with the module at [`github-actions/Step.0_authentication-test.yml`](./github-actions/Step.0_authentication-test.yml).
+   The validation workflow ships with the module at [`github-actions/Step.0_authentication-test.yml`](./github-actions/Step.0_authentication-test.yml). v0.7.70 emits a **JUnit XML** report (Authentication / Subscription Scope / Resource Graph Reachability) rendered in the run's Checks UI via `dorny/test-reporter`, a **markdown summary** with the subscription count + subscription detail table written to `$GITHUB_STEP_SUMMARY`, and a `auth-report` artifact (XML + `subscriptions.json` + `subscriptions.csv`) for ITSM / dashboard ingest.
 
    - **If you used the `Copy-AzureLocalPipelineExample` shortcut above**: the file is already in `.github/workflows/` alongside the other seven workflow YAMLs - those will ride along on the commit but stay dormant until you trigger them manually (`gh workflow run`) or their schedules fire. Commit and push to the default branch, then run the trigger commands below.
    - **If you didn't use the shortcut**: copy just that one file into your repo's `.github/workflows/`, commit, and push to the default branch.
@@ -873,22 +874,24 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    At the `gh` CLI level, `gh run watch` shows the run summary as the steps complete (`gh` actually renders these as Unicode check marks; reproduced here in ASCII):
 
    ```text
-   ? Select a workflow run * Auth Smoke Test, Auth Smoke Test [main] 12s ago
-   [OK] main Auth Smoke Test - <run-id>
+   ? Select a workflow run * Step.0 - Authentication Validation and Subscription Scope Report, Step.0 - Authentication Validation and Subscription Scope Report [main] 12s ago
+   [OK] main Step.0 - Authentication Validation and Subscription Scope Report - <run-id>
    Triggered via workflow_dispatch less than a minute ago
 
    JOBS
-   [OK] Validate OIDC + RBAC in 32s (ID <job-id>)
+   [OK] Validate OIDC + RBAC + Subscription Scope in 32s (ID <job-id>)
      [OK] Set up job
      [OK] Azure login (OIDC)
-     [OK] Confirm identity, RBAC, and cluster reachability
+     [OK] Collect Authentication and Subscription Scope Report
+     [OK] Upload auth report artifact
+     [OK] Publish Test Results
      [OK] Post Azure login (OIDC)
      [OK] Complete job
 
-   [OK] Run Auth Smoke Test (<run-id>) completed with 'success'
+   [OK] Run Step.0 - Authentication Validation and Subscription Scope Report (<run-id>) completed with 'success'
    ```
 
-   Inside the `Confirm identity, RBAC, and cluster reachability` step, the run log shows:
+   Inside the `Collect Authentication and Subscription Scope Report` step, the run log shows:
 
    ```text
    Login successful.
@@ -906,7 +909,7 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    <cluster-1>    <rg-1>                  <sub-guid>
    ```
 
-   ![Auth Smoke Test - Validate OIDC + RBAC job, showing the `Confirm identity, RBAC, and cluster reachability` step expanded with `az account show`, role assignments, and Resource Graph cluster count](../docs/images/auth-smoke-test-validate-oidc.png)
+   ![Step.0 - Authentication Validation and Subscription Scope Report - Validate OIDC + RBAC + Subscription Scope job, showing the `Collect Authentication and Subscription Scope Report` step expanded with `az account show`, role assignments, the per-subscription scope table, and Resource Graph cluster count](../docs/images/auth-smoke-test-validate-oidc.png)
 
    You may see one informational `windows-latest` -> `windows-2025-vs2026` migration notice in the run annotations. The sample workflows pin `runs-on: windows-latest` (the module is a Windows-side PowerShell module), and GitHub will retarget the alias to the new image automatically when it becomes the default - no action required on your part. As of v0.7.60 the previously-seen Node.js 20 deprecation banner (against `actions/checkout@v4`, `azure/login@v2`, `actions/upload-artifact@v4`, `dorny/test-reporter@v1`) is gone: the sample workflows have been refreshed to Node 24-compatible majors (`@v5`, `@v3`, `@v6`, `@v3` respectively).
 
@@ -915,11 +918,11 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    | Failure signature | Likely cause | Fix |
    |---|---|---|
    | `AADSTS70021: No matching federated identity record found` | The OIDC token's `sub` claim does not match any `subject` on the App Registration's federated credentials. | Check the actual `sub` in the run log (set `ACTIONS_STEP_DEBUG=true` to see it), then compare against `az ad app federated-credential list --id <appId>`. Mismatched env-name casing is the single most common cause. |
-   | `AuthorizationFailed` on `az graph query` (but `az account show` succeeded) | Auth works, but the role assignment is missing, scoped wrong, or not yet propagated. | Re-check section 3.1 step 2 ran against the correct subscription, then re-run the smoke test - role propagation can take 1-2 minutes. |
+   | `AuthorizationFailed` on `az graph query` (but `az account show` succeeded) | Auth works, but the role assignment is missing, scoped wrong, or not yet propagated. | Re-check section 3.1 step 2 ran against the correct subscription, then re-run the validation workflow - role propagation can take 1-2 minutes. |
    | `Error: Could not fetch access token for Azure` (no AADSTS code) | The workflow lacks `permissions: id-token: write` or the secrets are missing/misspelt. | Confirm the `permissions:` block is present and run `gh secret list --repo $repo` shows all three `AZURE_*` secrets. |
-   | Environment-scoped run hangs in **Waiting for review** | The environment has required-reviewers protection (good!) and is waiting for you to approve. | Approve in the **Actions** tab, or remove required reviewers from the smoke-test run via the environment settings. |
+   | Environment-scoped run hangs in **Waiting for review** | The environment has required-reviewers protection (good!) and is waiting for you to approve. | Approve in the **Actions** tab, or remove required reviewers from the validation run via the environment settings. |
 
-   Once both runs are green, delete `Step.0_authentication-test.yml` (it has no purpose after validation). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other seven workflows are already on the default branch - skip to step 4 to run them. Otherwise, proceed to step 2 to copy the remaining workflow files.
+   Once the run is green, leave `Step.0_authentication-test.yml` in place and schedule yourself to re-run it monthly (or whenever you change RBAC / federated credentials / subscription assignments). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other seven workflows are already on the default branch - skip to step 4 to run them. Otherwise, proceed to step 2 to copy the remaining workflow files.
 
 2. Copy every file from [`github-actions/`](./github-actions/) into `.github/workflows/` in your repo:
     ```text
@@ -938,14 +941,16 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
 
 ### 5.2 Azure DevOps
 
-1. **Smoke-test auth first (strongly recommended).** Before importing all seven pipelines, validate that the service connection (Workload Identity Federation), App Registration, and RBAC role assignment all line up by running a one-shot **auth smoke test** pipeline. This narrows any failure to *one* small YAML file instead of debugging seven interacting pipelines simultaneously.
+1. **Run the Authentication Validation and Subscription Scope Report first (strongly recommended).** Before importing all seven pipelines, validate that the service connection (Workload Identity Federation), App Registration, and RBAC role assignment all line up - and capture the count + per-subscription detail of subscriptions visible to the pipeline identity - by running **`Step.0 - Authentication Validation and Subscription Scope Report`**. This narrows any failure to *one* small YAML file instead of debugging seven interacting pipelines simultaneously. **Re-run periodically** (recommended monthly, or after any RBAC change in the tenant) to confirm the pipeline identity's subscription scope has not silently widened or narrowed - drift here is the earliest signal that downstream fleet reports are about to under- or over-count clusters.
 
-   The smoke-test pipeline ships with the module at [`azure-devops/Step.0_authentication-test.yml`](./azure-devops/Step.0_authentication-test.yml). If you used the `Copy-AzureLocalPipelineExample` shortcut above, the file is already in your chosen pipelines folder alongside the other seven pipeline YAMLs - those YAMLs sit dormant until you import each one as a pipeline, so they're harmless at rest. Otherwise, copy just that one file into your repo. Either way, import it as a new pipeline:
+   The validation pipeline ships with the module at [`azure-devops/Step.0_authentication-test.yml`](./azure-devops/Step.0_authentication-test.yml). v0.7.70 emits a **JUnit XML** report (Authentication / Subscription Scope / Resource Graph Reachability) published via `PublishTestResults@2` and rendered in the run's **Tests** tab, a **markdown summary** with the subscription count + subscription detail table uploaded to the run's **Summary** tab via `##vso[task.uploadsummary]`, and a `auth-report` pipeline artifact (XML + `subscriptions.json` + `subscriptions.csv`) for ITSM / dashboard ingest.
+
+   If you used the `Copy-AzureLocalPipelineExample` shortcut above, the file is already in your chosen pipelines folder alongside the other seven pipeline YAMLs - those YAMLs sit dormant until you import each one as a pipeline, so they're harmless at rest. Otherwise, copy just that one file into your repo. Either way, import it as a new pipeline:
 
    - **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file -> `/azure-devops/Step.0_authentication-test.yml`**.
    - **Save and run**. If your service connection has a name other than `AzureLocal-ServiceConnection`, edit `azureSubscription:` in the YAML first (the only configurable line).
 
-   Unlike GitHub Actions, ADO does **not** have environment-scoped federated credentials at the auth layer - the service connection itself is the federation, so a single pipeline run validates everything. ADO **Environments** (Pipelines -> Environments) are approval gates only, layered on top of the service connection, and are not exercised by the smoke test.
+   Unlike GitHub Actions, ADO does **not** have environment-scoped federated credentials at the auth layer - the service connection itself is the federation, so a single pipeline run validates everything. ADO **Environments** (Pipelines -> Environments) are approval gates only, layered on top of the service connection, and are not exercised by this validation pipeline.
 
    **What success looks like** (excerpt from the run log):
 
@@ -970,10 +975,10 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    |---|---|---|
    | `There was a resource authorization issue: 'The pipeline is not valid. Job ... has authorization issues.'` | First-run pipeline approval is pending - ADO requires explicit consent to use a service connection from a new pipeline. | Open the run, click **View** next to the warning, and grant permission. |
    | `AADSTS700024: Client assertion is not within its valid time range` | Workload-identity-federation issuer is misconfigured on the auto-generated App Registration, or system clocks are skewed. | Re-create the service connection (UI flow in section 3.2) - ADO regenerates the federated credential cleanly. |
-   | `AuthorizationFailed` on `az graph query` (but `az account show` succeeded) | Auth works, but the role assignment is missing, scoped wrong, or not yet propagated. | Re-check section 3.2 ran against the correct subscription, then re-run the smoke test - role propagation can take 1-2 minutes. |
+   | `AuthorizationFailed` on `az graph query` (but `az account show` succeeded) | Auth works, but the role assignment is missing, scoped wrong, or not yet propagated. | Re-check section 3.2 ran against the correct subscription, then re-run the validation pipeline - role propagation can take 1-2 minutes. |
    | `(InvalidScope) The scope '/subscriptions/<id>' is not valid` from `az role assignment list` | The service connection scope is set narrower than the role assignment, e.g. resource-group-scoped. | Widen the service connection scope to the subscription, or pass `--scope` explicitly to `az role assignment list`. |
 
-   Once the run is green, delete `Step.0_authentication-test.yml` (and its imported pipeline). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other seven YAML files are already in your repo - skip to step 3 to import each as a pipeline. Otherwise, proceed to step 2 to copy the remaining pipeline files.
+   Once the run is green, leave the imported pipeline in place and schedule yourself to re-run it monthly (or whenever you change RBAC / service connection / subscription assignments). If you used the `Copy-AzureLocalPipelineExample` shortcut, the other seven YAML files are already in your repo - skip to step 3 to import each as a pipeline. Otherwise, proceed to step 2 to copy the remaining pipeline files.
 
 2. Copy every file from [`azure-devops/`](./azure-devops/) into your repository at a path of your choice (the README assumes the same folder layout as this repo).
 3. **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file**, then point at the path of each file. Repeat for all seven.
@@ -1786,9 +1791,21 @@ The table below is the ground truth for what each shipped YAML does **out of the
 
 ## Appendix B: Release history
 
-The body of this document tracks **v0.7.69** behaviour. Older versions are preserved below for reference.
+The body of this document tracks **v0.7.70** behaviour. Older versions are preserved below for reference.
 
-### B.1 v0.7.69 (current)
+### B.1 v0.7.70 (current)
+
+> **Backward compatible.** All v0.7.70 changes are additive over v0.7.69. The Step.0 validation pipeline (`Step.0_authentication-test.yml`) is repositioned from a one-shot smoke test to a recurring **Authentication Validation and Subscription Scope Report**; the existing inline-script structure is preserved underneath. Pipeline pin bumps to `'0.7.70'`; refresh existing copies with `Update-AzureLocalPipelineExample`.
+
+- **Step.0 repositioned as a recurring audit (`Step.0_authentication-test.yml`, GH + ADO).** Renamed from "Authentication Validation Test" to **"Step.0 - Authentication Validation and Subscription Scope Report"**. Now emits a **JUnit XML** report (Authentication / Subscription Scope / Resource Graph Reachability suites - one testcase per subscription accessible to the pipeline identity), a **markdown summary** with the subscription count + per-subscription detail table (rendered in the GitHub Checks UI via `dorny/test-reporter@v3` and the ADO **Tests** + **Summary** tabs via `PublishTestResults@2` + `##vso[task.uploadsummary]`), and a `auth-report` artifact (XML + `subscriptions.json` + `subscriptions.csv`). Operator guidance updated: run the validation periodically (recommended monthly, or after any RBAC change in the tenant) instead of deleting the file after the first green run - drift in subscription scope is the earliest signal that downstream fleet reports are about to under- or over-count clusters.
+- **New cmdlet `Get-AzLocalFleetHealthOverview`.** ARG-first fleet health summary - one row per cluster, joining `microsoft.azurestackhci/clusters` with the cluster's `updateSummaries` extensibility resource via a single Azure Resource Graph batch read for fleet-scale performance. 12 columns including `ClusterName`, `ClusterPortalUrl`, `HealthStatus`, `UpdateStatus`, `CurrentVersion`, `SbeVersion`, `AzureConnection`, `LastChecked`, `HealthResultsAgeDays`. Supports `-SubscriptionId`, `-UpdateRingTag` (incl. wildcard `***` + semicolon-list), `-ExportPath`, `-PassThru`.
+- **Step.6 Fleet Update Status pipeline (`Step.6_fleet-update-status.yml`, GH + ADO) - new "Update Run History and Error Details" section.** A new `<testsuite name="Update Run History and Error Details">` in the JUnit XML and a matching `### Update Run History and Error Details` markdown table in the run summary surface up to 25 of the most recent unresolved Failed update runs across the fleet (last 30 days). Each row links to the Azure portal `SingleInstanceHistoryDetails` deep-link and includes Status / CurrentStep / Duration / LastUpdated / DeepestErrMsg for at-a-glance triage. Sourced from `Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved` (ARG-first, fleet-scale).
+- **Step.7 Fleet Health Status pipeline (`Step.7_fleet-health-status.yml`, GH + ADO) - cluster portal hyperlinks + 3 new detailed columns + new Fleet Health Overview section.** Summary and Detailed Results tables now render cluster cells as `[ClusterName](portalUrl)` markdown links. Detailed Results adds three columns: `Failure Remediation` (auto-renders as `[link](url)` when the value starts with `https://`), `Target Resource Name`, and `Target Resource Type`. A new `### Fleet Health Overview (fleet rollup)` section calls `Get-AzLocalFleetHealthOverview` and publishes `fleet-health-overview.csv` / `.json` to the Reports list.
+- **`Test-AzureLocalApplyUpdatesScheduleCoverage` Audit rows now carry a `Section` discriminator** (`Schedule` for ring-level rows, `Cron` for cron-coverage rows). Default sort is Schedule-section first, then cron coverage. `-View Recommend` emits a multi-section markdown report with "add these rings to apply-updates-schedule.yml" first, then the cron-paste section.
+- **`Get-AzureLocalFleetHealthFailures` Summary now sorts Critical-first** (Severity then ClusterCount desc then FailureCount desc). Detail rows gain `TargetResourceName`, `TargetResourceType`, and `ClusterPortalUrl`. Summary rows gain `AffectedClusterPortalUrls` aligned 1:1 with `AffectedClusters` (semicolon-space separator).
+- **Module version pin bumped to 0.7.70** in every production sample YAML. Run `Update-AzureLocalPipelineExample` (preferred, marker-aware) or `Copy-AzureLocalPipelineExample -Update` after upgrading.
+
+### B.2 v0.7.69
 
 > **Hard break vs v0.7.68.** Schema `schemaVersion: 1` for `apply-updates-schedule.yml` is the first stable version of this file. If you were running an experimental schedule from earlier development builds, regenerate via `New-AzLocalApplyUpdatesScheduleConfig`.
 
@@ -1805,7 +1822,7 @@ The body of this document tracks **v0.7.69** behaviour. Older versions are prese
 - **Module version pin bumped to 0.7.69** in every production sample YAML. Run `Update-AzureLocalPipelineExample` (preferred, marker-aware) or `Copy-AzureLocalPipelineExample -Update` after upgrading.
 - **Test suite: 540 passed / 0 failed / 0 skipped.** 19 new tests cover reader, resolver, next-firings, generator, and update across the new ring-aware schedule cmdlets.
 
-### B.2 v0.7.68
+### B.3 v0.7.68
 
 - **ARG-first refactor of every fleet-scale read cmdlet.** Seven cmdlets - `Get-AzureLocalUpdateSummary`, `Get-AzureLocalAvailableUpdates`, `Get-AzureLocalClusterUpdateReadiness`, `Test-AzureLocalClusterHealth`, `Get-AzureLocalFleetProgress`, `Get-AzureLocalFleetStatusData`, `New-AzureLocalFleetStatusHtmlReport` - and the new `Get-AzureLocalUpdateRunFailures` and the existing `Get-AzureLocalUpdateRuns` are now backed by a single Azure Resource Graph batch query each. No more N-way per-cluster ARM calls, no more `Start-Job` fan-out on the read path, no more 6-hour-runner-window failure mode on 1000+ cluster fleets. Read pipelines on a 1500-cluster fleet that previously consumed the bulk of a runner window complete in seconds.
 - **`-ThrottleLimit` removed from those nine cmdlets.** The value was a silent no-op against an ARG batch read, so the parameter is now explicitly absent and any pipeline still passing it fails parameter binding loudly. All bundled pipeline YAMLs were updated to stop passing `-ThrottleLimit`. The apply-side cmdlet `Start-AzureLocalClusterUpdate` retains its internal job-pool throttle (no operator-facing parameter). See [Section 9](#9-tuning-throughput--throttlelimit) for the migration story.
@@ -1817,11 +1834,11 @@ The body of this document tracks **v0.7.69** behaviour. Older versions are prese
 - **Test suite: 511 passed / 0 failed / 0 skipped.** Five previously-skipped Describes for the ARG-first read cmdlets were rewritten against the new code paths and now pass deterministically with `InModuleScope` + `function global:az { ... }` shim + `Mock Invoke-AzResourceGraphQuery`; the five rewritten Describes contribute 10 new tests. The v0.7.68 entry also adds +4 throttle-handling tests against `Invoke-AzResourceGraphQuery` (retry-then-succeed on 429, max-retries-exhausted, no-retry on non-throttle errors, diagnostic flags reset per call) and +3 `Get-AzureLocalFleetStatusData` schema-contract tests (top-level shape + types, `ValidateNotNullOrEmpty` on `-ClusterResourceIds`, `ModuleVersion` field tracks the module-scope constant).
 - **Module version pin bumped to 0.7.68 in every production sample YAML.** Run `Update-AzureLocalPipelineExample` (preferred) or `Copy-AzureLocalPipelineExample -Update` after upgrading.
 
-### B.3 v0.7.66
+### B.4 v0.7.66
 
 - **Fixed (critical) - `Get-AzureLocalFleetHealthFailures` failed JSON parsing on hosted Windows runners when the Azure CLI emitted a cp1252 encoding warning to stderr.** On `windows-latest` GitHub Actions runners (and any ADO Windows agent whose console code page is `cp1252`) the Azure CLI's underlying Python layer can surface `WARNING: Unable to encode the output with cp1252 encoding. Unsupported characters are discarded.` to stderr; the shared `Invoke-AzResourceGraphQuery` helper was capturing `2>&1` into a single merged stream and feeding it to `ConvertFrom-Json`, which then threw `Unexpected character encountered while parsing value: W. Path '', line 0, position 0.` **The actual fix** is the post-capture stream split: stderr lines surface as `[System.Management.Automation.ErrorRecord]` objects under `2>&1`, stdout lines as strings, and only the string stream is fed to `ConvertFrom-Json`. (The helper already passed `--only-show-errors` since v0.7.2, matching the existing `Invoke-AzRestJson` hardening, but the cp1252 encode warning can still leak through on some character paths, hence the belt-and-braces split.) The helper also sets `PYTHONIOENCODING=utf-8` as **cosmetic defence-in-depth only** - this is a structural no-op for stock `az.cmd` because `az.cmd` launches Python with `-I` (isolated) which implies `-E` and forces Python to ignore every `PYTHON*` env var per [Azure/azure-cli#28497](https://github.com/Azure/azure-cli/issues/28497) and the v0.7.2 root-cause analysis; it only takes effect on hosts that have manually patched `az.cmd` to remove `-I`.
 - **Fixed (critical) - `Step.3_apply-updates-schedule-audit.yml` default `pipeline_path` only existed in this module's source repo.** The shipped default was `AzLocal.UpdateManagement/Automation-Pipeline-Examples` (i.e. the in-source path for *this* repo); every default-trigger run in a consumer repo therefore failed with `PipelineYamlPath '...' does not exist on the runner` before the schedule advisor could emit its JUnit XML, which then crashed `dorny/test-reporter` with `No test report files were found`. Defaults are now `'.github/workflows'` on GH Actions and `'.azure-pipelines'` on Azure DevOps - the standard consumer locations - and the path-missing error message now lists which common pipeline folders **do** exist in the checked-out repo so the operator knows what value to pass via `workflow_dispatch` / queue-time override.
-- **Module version pin bumped to 0.7.66 in every production sample YAML that installs the module from PowerShell Gallery (14 across GitHub Actions and Azure DevOps; the two auth-smoke-test YAMLs do not install the module and so are not version-pinned).** Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh the samples in your repo.
+- **Module version pin bumped to 0.7.66 in every production sample YAML that installs the module from PowerShell Gallery (14 across GitHub Actions and Azure DevOps; the two Step.0 validation YAMLs do not install the module and so are not version-pinned).** Run `Copy-AzureLocalPipelineExample -Update` after upgrading to refresh the samples in your repo.
 
 #### v0.7.66 UX + capability refresh
 
@@ -1837,7 +1854,7 @@ The body of this document tracks **v0.7.69** behaviour. Older versions are prese
   The ADO `Step.5_apply-updates.yml` lost its closed `values:` enum (kept `type: string` so users still get a free-text editor in the ADO run dialog). The cmdlet-side `[ValidatePattern]` is tightened to `^(\*\*\*|[A-Za-z0-9_-]{1,64}(;[A-Za-z0-9_-]{1,64})*)$` on 14 cmdlets that take `-UpdateRingValue` and on the 1 cmdlet (`Get-AzureLocalFleetHealthFailures`) that takes `-UpdateRingTag`. Hostile/malformed inputs (spaces, embedded quotes, `<script>`, leading/trailing `;`) are still rejected at the parameter binder before any Azure call.
 - **New private helper `ConvertTo-AzLocalUpdateRingKqlFilter`.** Centralises the KQL clause construction for the three forms above. Returns `| where isnotempty(tags['UpdateRing'])` for `***` (matches only tagged clusters), a `| where tags['UpdateRing'] =~ 'single'` clause for a single value, and a `| where tags['UpdateRing'] in~ ('a','b')` clause for a list. Embedded single quotes are doubled (KQL string-literal escape). All 12 ARG-query call sites in the public cmdlets now go through this helper.
 
-### B.4 v0.7.65
+### B.5 v0.7.65
 
 - **`Test-AzureLocalApplyUpdatesScheduleCoverage` cmdlet + `apply-updates-schedule-audit` pipelines (GitHub Actions + Azure DevOps).** Read-only weekly audit (Mon 05:00 UTC + manual) that compares the cron schedule(s) in your `apply-updates` pipeline to the `UpdateRing` / `UpdateWindow` tags actually present on your clusters and flags any pair that no cron will ever reach. Three views (`Audit`, `Matrix`, `Recommend`), per-segment cron generation for multi-window tags (`Sat-Sun_02:00-06:00;Mon-Fri_22:00-04:00`) and day ranges (`Fri-Mon`), configurable `-LeadTimeMinutes` (0-60, default 5). Each pipeline run emits JUnit XML (one `<testcase>` per `(Ring, Window)`), three CSV/MD exports (`schedule-coverage-audit.csv`, `schedule-coverage-matrix.csv`, `schedule-coverage-recommend.md`), and a Markdown step summary. Full step-by-step runbook in [Section 8.3](#83-end-to-end-runbook-apply-updates-schedule-coverage-audit); reference card in [Appendix A.7](#a7-apply-updates-schedule-coverage-audit-v0765).
 - **`Get-AzureLocalFleetHealthFailures` cmdlet + `fleet-health-status` pipelines (GitHub Actions + Azure DevOps).** Dedicated entry point for surfacing the in-flight 24-hour system health-check failures across every readable cluster - independent of update activity (clusters that are already "up to date" can still surface Critical / Warning issues that need triage). Daily 07:00 UTC schedule (offset from `fleet-update-status` at 06:00). JUnit XML grouped under `Critical Health Failures` / `Warning Health Failures` testsuites + per-failure-reason and per-cluster CSV exports + Markdown step summary pivoted by `FailureReason`. Reference card in [Appendix A.6](#a6-fleet-health-status-v0765).

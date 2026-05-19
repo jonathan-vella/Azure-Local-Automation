@@ -170,7 +170,7 @@
         'Get-AzLocalApplyUpdatesScheduleNextFirings',
         'New-AzLocalApplyUpdatesScheduleConfig',
         'Update-AzLocalApplyUpdatesScheduleConfig',
-        # Fleet Health Overview (v0.7.70) - one row per cluster, mirrors LENS workbook 'System Health Checks Overview'
+        # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries (fleet-scale)
         'Get-AzLocalFleetHealthOverview'
     )
 
@@ -200,12 +200,12 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.70 - Step.3 dual-section audit UX, Step.7 fleet health hyperlinks + new System Health Checks Overview cmdlet
+## Version 0.7.70 - Step.0 recurring auth audit, Step.6 update run history, Step.3/Step.7 UX + new ARG-first fleet health summary cmdlet
 
 ### Added
 
-- New cmdlet `Get-AzLocalFleetHealthOverview`: LENS workbook
-  "System Health Checks Overview" parity. One row per cluster joining
+- New cmdlet `Get-AzLocalFleetHealthOverview`: ARG-first fleet
+  health summary. One row per cluster joining
   `microsoft.azurestackhci/clusters` with the cluster's
   `updateSummaries` extensibility resource via ARG. 12 columns
   including ClusterName, ClusterPortalUrl, HealthStatus, UpdateStatus,
@@ -216,41 +216,45 @@
 ### Changed (cmdlets)
 
 - `Test-AzureLocalApplyUpdatesScheduleCoverage` Audit rows carry a
-  new `Section` discriminator: `Schedule` for `RingMissingFromSchedule`
-  / `RingOrphanedInSchedule`, `Cron` for ring/window coverage rows.
-  Output sorts Schedule-first then Cron. `-View Recommend` now emits
-  a multi-section markdown report ("Action required - add these rings"
-  followed by "Action required - cron coverage"). When `-SchedulePath`
-  is omitted only the cron section is emitted (back-compat).
-- `Get-AzureLocalFleetHealthFailures` Summary now sorts by Severity
-  first (Critical, Warning, then else), then ClusterCount desc, then
-  FailureCount desc - a Critical-with-1-cluster ranks above
-  Warning-with-many. Detail rows gain `TargetResourceName`,
-  `TargetResourceType`, `ClusterPortalUrl`. Summary rows gain
-  `AffectedClusterPortalUrls` aligned with `AffectedClusters`
-  ('; ' separator, same element count and order).
+  new `Section` discriminator (`Schedule` / `Cron`). Output sorts
+  Schedule-first. `-View Recommend` emits a multi-section markdown
+  report. When `-SchedulePath` is omitted only the cron section is
+  emitted (back-compat).
+- `Get-AzureLocalFleetHealthFailures` Summary sorts Severity-first
+  (Critical, Warning, else), then ClusterCount desc, FailureCount
+  desc. Detail rows gain `TargetResourceName`, `TargetResourceType`,
+  `ClusterPortalUrl`. Summary rows gain `AffectedClusterPortalUrls`.
 
 ### Changed (pipeline samples)
 
+- `Step.0_authentication-test.yml` (GH + ADO) repositioned as a
+  recurring `Authentication Validation and Subscription Scope Report`:
+  emits JUnit XML (Authentication / Subscription Scope / Resource
+  Graph suites - one testcase per accessible subscription), a
+  markdown summary with subscription count + per-subscription detail
+  table, and an `auth-report` artifact (XML + JSON + CSV). Re-run
+  monthly (or after RBAC changes) instead of deleting after the
+  first green run.
+- `Step.6_fleet-update-status.yml` (GH + ADO) gains an "Update Run
+  History and Error Details" section: new JUnit `<testsuite>` +
+  markdown table surfacing up to 25 recent unresolved Failed update
+  runs (last 30d) with portal deep-links, from
+  `Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved`.
 - `Step.3_apply-updates-schedule-audit.yml` (GH + ADO) emits TWO
-  JUnit `<testsuite>` blocks (`ScheduleCoverage` + `CronCoverage`) and
-  TWO Audit Detail markdown tables. When `$hasIssues -and $reco`, the
-  Recommend cmdlet output is prepended above the detail tables so
-  operators see the fix before scrolling. Zero-row JUnit placeholder
-  is centralised via a `Write-Suite -EmptyPlaceholderName` helper.
-- `Step.7_fleet-health-status.yml` (GH + ADO): Summary and Detailed
+  JUnit `<testsuite>` blocks and TWO Audit Detail tables; Recommend
+  output prepended when `$hasIssues -and $reco`.
+- `Step.7_fleet-health-status.yml` (GH + ADO): Summary + Detailed
   Results cluster cells render as `[ClusterName](portalUrl)` markdown
-  links. Detailed Results adds three columns: Failure Remediation
-  (auto-renders as `[link](url)` for https values), Target Resource
-  Name, Target Resource Type. New "System Health Checks Overview
-  (fleet rollup)" section calls `Get-AzLocalFleetHealthOverview` and
-  publishes `fleet-health-overview.csv` / `.json`.
+  links. Detailed Results adds Failure Remediation (auto-renders as
+  `[link](url)` for https values), Target Resource Name, Target
+  Resource Type columns. New "Fleet Health Overview (fleet rollup)"
+  section calls `Get-AzLocalFleetHealthOverview` and publishes
+  `fleet-health-overview.csv` / `.json`.
 
 ### Notes
 
-- All v0.7.70 changes are backward compatible. The `Section` column
-  defaults to `Cron`; new `TargetResource*` / `ClusterPortalUrl`
-  properties are additive.
+- All v0.7.70 changes are backward compatible. New columns/properties
+  are additive (`Section` defaults to `Cron`).
 - Pipeline samples bump to `GENERATED_AGAINST_MODULE_VERSION: '0.7.70'`.
   Refresh existing copies with `Update-AzureLocalPipelineExample`.
 
