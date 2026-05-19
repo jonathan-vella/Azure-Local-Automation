@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.69 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.69)
+**Latest Version:** v0.7.70 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.70)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.69](#whats-new-in-v0769)
+- [What's New in v0.7.70](#whats-new-in-v0770)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -153,7 +153,67 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.69
+## What's New in v0.7.70
+
+v0.7.70 is the **Step.3 dual-section UX + Step.7 fleet-health hyperlinks** release, plus a new exported cmdlet (`Get-AzLocalFleetHealthOverview`) that mirrors the LENS workbook "System Health Checks Overview" tile. All changes are additive over v0.7.69; no behaviour change for callers that don't read the new columns.
+
+> Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
+
+### New cmdlet: `Get-AzLocalFleetHealthOverview`
+
+LENS workbook "System Health Checks Overview" parity. One row per cluster, joining `microsoft.azurestackhci/clusters` with the cluster's `updateSummaries` extensibility resource via a single Azure Resource Graph batch read. 12 columns in fixed order: `ClusterName`, `ClusterPortalUrl`, `HealthStatus`, `UpdateStatus`, `CurrentVersion`, `SbeVersion`, `AzureConnection`, `LastChecked`, `HealthResultsAgeDays` (computed as `datetime_diff('day', now(), LastChecked)`), `ResourceGroup`, `NodeCount`, `SubscriptionId`. Sort: `HealthResultsAgeDays desc, ClusterName asc` so the most-stale clusters surface first.
+
+```powershell
+# Whole-fleet rollup
+Get-AzLocalFleetHealthOverview -SubscriptionId <subId> | Format-Table
+
+# Filter to a ring (wildcard '***' = every cluster carrying ANY UpdateRing tag)
+Get-AzLocalFleetHealthOverview -UpdateRingTag '***' -SubscriptionId <subId>
+
+# Export to CSV for ITSM / dashboard ingest
+Get-AzLocalFleetHealthOverview -SubscriptionId <subId> -ExportPath .\fleet-health-overview.csv -PassThru
+```
+
+### Step.3 audit pipeline - dual-section UX
+
+The `Test-AzureLocalApplyUpdatesScheduleCoverage` cmdlet's Audit rows now carry a `Section` discriminator that splits the audit into two conceptually distinct concerns:
+
+| `Section` | Status values | Unit of work |
+|---|---|---|
+| `Schedule` | `RingMissingFromSchedule`, `RingOrphanedInSchedule` | The ring (`UpdateWindow` / `RequiredCronUTC` deliberately empty - these are about ring mapping, not window mapping) |
+| `Cron` | `Covered`, `PartiallyCovered`, `Uncovered`, `MalformedTag`, `UnparseableCron` | The `(ring, UpdateWindow)` pair vs the Step.5 cron entries |
+
+Audit rows now sort `Schedule`-first, then `Cron`. `-View Recommend` is now a multi-section markdown report: an "Action required - add these rings to apply-updates-schedule.yml" block when `RingMissingFromSchedule` rows exist (emitted FIRST), followed by an "Action required - cron coverage (paste into Step.5_apply-updates.yml)" block. When `-SchedulePath` is omitted, only the cron section is emitted (back-compat for v0.7.68 callers).
+
+The `Step.3_apply-updates-schedule-audit.yml` pipeline YAMLs (GH + ADO) mirror this in their summary:
+- Two JUnit `<testsuite>` blocks (`ScheduleCoverage` + `CronCoverage`) so the Tests tab shows per-section pass/fail counts.
+- Two Audit Detail markdown tables (one per section) with conditional headings - empty sections still emit a placeholder row so the operator can see the section was evaluated.
+- When `$hasIssues -and $reco`, the `-View Recommend` cmdlet output is prepended above the detail tables so operators see the fix before scrolling.
+- The zero-row JUnit placeholder text is centralised via a new `Write-Suite -EmptyPlaceholderName 'No tagged clusters found - nothing to audit'` helper (GH-vs-ADO parity preserved since v0.7.67).
+
+### Step.7 fleet-health pipeline - cluster portal hyperlinks + 3 new detailed columns + new System Health Checks Overview section
+
+`Get-AzureLocalFleetHealthFailures` (the v0.7.65 cmdlet) gains three deep-link / target-resource properties on Detail rows - `TargetResourceName` (the sub-resource that emitted the check failure, e.g. the NIC name), `TargetResourceType` (e.g. `Microsoft.Compute/virtualMachines/networkInterfaces`), and `ClusterPortalUrl` (`https://portal.azure.com/#@/resource{ClusterResourceId}` deep-link). Summary rows gain `AffectedClusterPortalUrls` aligned with `AffectedClusters` (same element count, same order, joined with `'; '`). The Summary now sorts **Critical-first**: Severity (Critical, then Warning, then everything else), then `ClusterCount` desc, then `FailureCount` desc - a Critical failure on 1 cluster ranks above a Warning affecting many clusters.
+
+The `Step.7_fleet-health-status.yml` pipeline YAMLs (GH + ADO) consume these in three places:
+- **Summary and Detailed Results cluster cells** render as `[ClusterName](portalUrl)` markdown links. The Summary caps at the first 10 then renders `... (+N more)`; the Detail tables link every cell.
+- **Three new Detailed Results columns**: Failure Remediation (auto-renders as `[link](url)` when the value starts with `https://`, otherwise plain text), Target Resource Name, Target Resource Type.
+- **New `### System Health Checks Overview (fleet rollup)` section** calls the new `Get-AzLocalFleetHealthOverview` cmdlet and surfaces the per-cluster 9-column rollup alongside the failures table. The mapping `OK` / `Critical` / `Warning` / `In progress` / `Failed` is rendered with bracketed labels (`[OK]`, `[Critical]`, etc.) so the at-a-glance summary is greppable. New report artifacts: `fleet-health-overview.csv` and `fleet-health-overview.json`.
+
+### Pipeline pin bumps + migration
+
+All 14 `Step.*.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.69'` to `'0.7.70'`. The recommended upgrade path is the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
+
+```powershell
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+### Compatibility
+
+All v0.7.70 changes are backward compatible. The `Section` column defaults to `Cron` for downstream filters that don't know about the discriminator; new `TargetResource*` / `ClusterPortalUrl` / `AffectedClusterPortalUrls` properties are additive (existing pipeline summaries that read only the v0.7.69 schema keep working).
+
+### What's New in v0.7.69
 
 v0.7.69 introduces the **ring-aware apply-updates schedule** - a single human-readable YAML file (`apply-updates-schedule.yml`, `schemaVersion: 1`) that controls which `UpdateRing` tag value the apply-updates pipeline targets on any given UTC date. The schedule is decoupled from cron entirely: Step.5's cron only controls **how often** the pipeline wakes up, the per-cluster `UpdateWindow` tag controls **when** during an eligible day the update actually runs, and this new file controls **which ring** is eligible TODAY. Five new cmdlets (one generator + one reader + one resolver + one previewer + one migrator) plus a two-way ring diff on `Test-AzureLocalApplyUpdatesScheduleCoverage` round out the feature.
 
