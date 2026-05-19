@@ -985,7 +985,7 @@ stages:
       condition: and(always(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
       inputs:
         PathtoPublish: '$(reportsPath)'
-        ArtifactName: 'azlocal-fleet-update-status-itsm-results_$(Build.BuildId)'
+        ArtifactName: 'azlocal-fleet-update-status-itsm-results_$(stamp.artifactStamp)'
         publishLocation: 'Container'
       continueOnError: true
 
