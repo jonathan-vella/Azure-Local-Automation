@@ -1,6 +1,6 @@
 # ITSM Connector for AzLocal.UpdateManagement
 
-> Optional feature. Disabled by default. Module: `AzLocal.UpdateManagement` v0.7.4+
+> Optional feature. Disabled by default. Module: `AzLocal.UpdateManagement` v0.7.4+ (Phase 1 shipped in v0.7.4; current module is v0.7.70).
 > Phase 1 (this release): ServiceNow incident creation + dedupe + connection probe. Phase 2 (Sync close-out via `Sync-AzureLocalIncident`) and Phase 3 (Teams / Slack mirror adapters) are **deferred** to a future release - the design lives in [`ITSM-Connector-Plan.md`](./ITSM-Connector-Plan.md) but the functions are not yet shipped.
 
 This folder is the setup-and-configure landing page for the ITSM Connector. It walks an operator through every step from "nothing wired" to "the apply-updates pipeline opens a deduped ServiceNow incident when a cluster needs human intervention".
@@ -19,12 +19,14 @@ A working sample config plus the Mustache ticket-body template live at [`../Auto
 
 ## 1. What this connector does
 
-When the `apply-updates` or `fleet-update-status` pipeline finishes, the connector reads the JUnit results file the module already emits and, for each cluster row whose `Status` is in your trigger matrix:
+When the `Step.5_apply-updates` pipeline finishes (the only pipeline wired to `New-AzureLocalIncident` in v0.7.70), the connector reads the JUnit results file the module already emits and, for each cluster row whose `Status` is in your trigger matrix:
 
 1. Computes a deterministic dedupe key (SHA256 of `ClusterResourceId | UpdateName | TriggerCategory`).
 2. Asks ServiceNow whether an incident with that key already exists in state New / In Progress / On Hold.
 3. If yes -> returns `Action='DedupedToExisting'` (no new ticket).
 4. If no -> creates a new incident with the trigger's severity, category, and the five `u_azlocal_*` custom fields populated.
+
+> **v0.7.70 status of read-pipeline wiring.** `Step.6_fleet-update-status` and `Step.7_fleet-health-status` emit JUnit reports with the v0.7.70 hyperlinked deep-link columns (`UpdateRunPortalUrl`, `ClusterPortalUrl`, `CurrentStep`, `Duration`, `ErrorCategory`, `HealthResultsAgeDays`), but the in-line raise-ticket step in those YAMLs is gated by a `raise_itsm_ticket` workflow input that defaults to `false`. Set the input to `true` (and provide the same `itsm-secrets` block Step.5 uses) to have either pipeline call `New-AzureLocalIncident -InputArtifactPath <junit-xml> -ConfigPath <itsm.yml>` automatically. You can also call the cmdlet manually against the artifact the pipelines upload.
 
 What it deliberately does **not** do in Phase 1: open Jira / ADO Work Items, send Teams / Slack notifications, or close tickets on success. See [ITSM-Connector-Plan.md Sections 2 + 9](./ITSM-Connector-Plan.md) for the phased roadmap.
 
