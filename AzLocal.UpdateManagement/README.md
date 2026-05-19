@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.72 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.72)
+**Latest Version:** v0.7.73 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.73)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.72](#whats-new-in-v0772)
+- [What's New in v0.7.73](#whats-new-in-v0773)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -153,7 +153,47 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.72
+## What's New in v0.7.73
+
+v0.7.73 is a **bug-fix** release on top of v0.7.72. `Get-AzLocalFleetHealthOverview` (the cmdlet that powers `Step.7 - Fleet Health Status`) was emitting the raw Azure Resource Graph `properties.healthState` enum values (`Success` / `Failure` / `Warning` / `InProgress` / `NotKnown`) on the `HealthStatus` column, but the cmdlet's own doc comment, the Step.7 pipeline filter `Where-Object { $_.HealthStatus -eq 'Healthy' }`, and the Step.7 Fleet Health Overview rendering `switch ($o.HealthStatus)` all expected the operator-friendly vocabulary `Healthy` / `Critical` / `Warning` / `In progress` / `Unknown`. Symptom: Step.7 reported `Healthy Clusters = 0` against any fleet (live-verified against a 20-cluster fleet: 10 Success / 8 Failure / 2 Warning) and the overview table rendered the `[Success]` / `[Failure]` default-bracket fallback instead of the intended `✅ Healthy` / `❌ Critical` icons. The KQL projection in the cmdlet now normalises in a `case()` clause so the `HealthStatus` column matches the documented contract; no pipeline-sample YAML change is required (the v0.7.72 pin already used the correct vocabulary). Pipeline pin bumps to `'0.7.73'`; refresh existing copies via `Update-AzureLocalPipelineExample`.
+
+### Step.7 "Healthy Clusters = 0" against any fleet - fixed
+
+`Get-AzLocalFleetHealthOverview.HealthStatus` is documented (and consumed) as one of `Healthy` / `Critical` / `Warning` / `In progress` / `Unknown`. The KQL projection joining `microsoft.azurestackhci/clusters` with the `updateSummaries` extensibility resource was, however, a one-line passthrough:
+
+```kusto
+HealthStatus = iif(isempty(HealthState), 'Unknown', HealthState),
+```
+
+The upstream ARG field `properties.healthState` emits the raw ARM enum values `Success` / `Failure` / `Warning` / `InProgress` / `NotKnown`, so `Healthy` / `Critical` / `In progress` literally never appeared on any row. The pipeline filter `Where-Object { $_.HealthStatus -eq 'Healthy' }` therefore matched zero rows and the `HEALTHY_CLUSTERS` GitHub Actions output was always `0`; the rendering switch fell through to the default arm and rendered `[Success]` / `[Failure]` instead of `✅ Healthy` / `❌ Critical`. The projection is now:
+
+```kusto
+HealthStatus = case(
+    isempty(HealthState),         'Unknown',
+    HealthState =~ 'Success',     'Healthy',
+    HealthState =~ 'Failure',     'Critical',
+    HealthState =~ 'InProgress',  'In progress',
+    HealthState =~ 'NotKnown',    'Unknown',
+    HealthState
+),
+```
+
+`Warning` is passed through unchanged, and any unrecognised future state also passes through (rather than being silently bucketed as `Unknown`) so a platform addition stays visible. Verified end-to-end against a live 20-cluster fleet (10 Success / 8 Failure / 2 Warning): after the fix, Step.7 reports `Healthy Clusters = 10`, the Fleet Health Overview table renders the intended icons, and the Step.7 numbers are internally consistent with the Step.6 panel for the same fleet (Step.6 reports `Up to Date = 10` and `Critical Health Status: 12 passed / 8 failed`; the 2 Warning clusters surface as `⚠️ Warning` in the overview without being counted as either Healthy or Critical). The cmdlet's doc comment is also corrected to describe the normalised vocabulary and to spell out the raw-to-normalised mapping for future-proof clarity.
+
+### Pipeline pin bumps + migration
+
+All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.72'` to `'0.7.73'`. The Step.0 authentication validation workflow does not pin a module version. **No filter or switch changes required in the pipeline samples** - the v0.7.72 pin already used the correct vocabulary; the v0.7.73 module simply emits values that match. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
+
+```powershell
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+### Compatibility
+
+All v0.7.73 changes are backward compatible. The `HealthStatus` column type (`string`) and column position (third column, after `ClusterName` and `ClusterPortalUrl`) are unchanged - only the value set narrows from the raw ARG enum to the documented operator-friendly vocabulary. Operators who built custom downstream automation that explicitly filtered for the **raw** `Success` / `Failure` / `InProgress` / `NotKnown` strings against the v0.7.70 - v0.7.72 builds must update those filters to the new `Healthy` / `Critical` / `In progress` / `Unknown` vocabulary (or pull the raw value back via a separate ARG call on `updateSummaries.properties.healthState` if they specifically need the platform enum).
+
+### What's New in v0.7.72
 
 v0.7.72 is a **pipeline-samples hotfix** release on top of v0.7.71. Two issues observed when operators ran the v0.7.71 GitHub Actions samples in production: (1) the Step.1 / Step.2 / Step.5 GitHub Actions `Summary` panels rendered empty because the workflows used `Write-Host "<markdown>" >> $env:GITHUB_STEP_SUMMARY` - `Write-Host` writes to the PowerShell information/host stream (6), not stdout (1), so the `>>` redirect appended nothing to the summary file; (2) `AZURE_TENANT_ID` was stored as a GitHub Secret on the same rationale as the v0.7.71 `AZURE_SUBSCRIPTION_ID` treatment - a public ARM/AAD identifier, not a credential. Both are fixed. **No PowerShell source files changed** - this release is scoped to pipeline-sample YAMLs and Markdown docs. Refresh existing copies via `Update-AzureLocalPipelineExample`.
 

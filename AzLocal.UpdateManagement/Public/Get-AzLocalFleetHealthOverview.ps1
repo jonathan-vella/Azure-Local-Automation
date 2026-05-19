@@ -51,8 +51,11 @@ function Get-AzLocalFleetHealthOverview {
           CurrentVersion, SbeVersion, AzureConnection, LastChecked,
           HealthResultsAgeDays, ResourceGroup, NodeCount, SubscriptionId.
 
-        HealthStatus values: Healthy, Critical, Warning, In progress,
-        Health check failed, Unknown.
+        HealthStatus values (normalised from ARG `properties.healthState`
+        to an operator-friendly vocabulary): Healthy (Success), Critical
+        (Failure), Warning, In progress (InProgress), Unknown (empty or
+        NotKnown). Any other raw value the platform may add in future is
+        passed through unchanged so it is still visible.
 
     .EXAMPLE
         Get-AzLocalFleetHealthOverview
@@ -132,7 +135,20 @@ $ringFilter
 | project
     ClusterName,
     ClusterPortalUrl,
-    HealthStatus    = iif(isempty(HealthState),     'Unknown',   HealthState),
+    // Normalise raw ARG values from `properties.healthState` (Success / Failure /
+    // InProgress / Warning / NotKnown) to the documented operator-friendly
+    // vocabulary the rest of the module + pipeline samples consume: Healthy,
+    // Critical, Warning, In progress, Unknown. Anything not in the known set
+    // is passed through so a future-added state is still visible (rather than
+    // silently bucketed as 'Unknown').
+    HealthStatus    = case(
+        isempty(HealthState),         'Unknown',
+        HealthState =~ 'Success',     'Healthy',
+        HealthState =~ 'Failure',     'Critical',
+        HealthState =~ 'InProgress',  'In progress',
+        HealthState =~ 'NotKnown',    'Unknown',
+        HealthState
+    ),
     UpdateStatus    = iif(isempty(UpdateState),     'Unknown',   UpdateState),
     CurrentVersion  = iif(isempty(CurrentVersion),  '(unknown)', CurrentVersion),
     SbeVersion      = iif(isempty(SbeVersion),      '(none)',    SbeVersion),
