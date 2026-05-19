@@ -290,9 +290,101 @@ stages:
           $ready = $stReadyForUpdate
           $upToDate = $stUpToDate
 
+          # v0.7.70: Fleet Version Distribution - pivot clusters by CurrentVersion
+          # so the JUnit XML (and the markdown summary) lead with "what versions
+          # are presently installed across the fleet, and what % of clusters
+          # are on each one". One row per distinct CurrentVersion, sorted by
+          # cluster count (descending). SupportStatus is a fleet-derived heuristic:
+          #   Supported   = YYMM in top-6 most-recent distinct YYMM values across the fleet
+          #   Unsupported = parseable YYMM older than the top-6
+          #   Unknown     = CurrentVersion empty / malformed / no YYMM token
+          # YYMM token must match regex '^[0-9]{4}$'. Always cross-check against
+          # the Microsoft Azure Local lifecycle docs before operator action.
+          $versionGroups = @($readiness | Group-Object {
+              if ([string]::IsNullOrWhiteSpace($_.CurrentVersion)) { '(unknown)' } else { [string]$_.CurrentVersion }
+          } | Sort-Object Count -Descending)
+          $versionDistribution = @($versionGroups | ForEach-Object {
+              $clusterNames = @($_.Group | Sort-Object ClusterName | ForEach-Object { [string]$_.ClusterName })
+              [PSCustomObject]@{
+                  Version    = $_.Name
+                  Count      = $_.Count
+                  Percentage = if ($totalTests -gt 0) { [math]::Round(($_.Count / $totalTests) * 100, 1) } else { 0 }
+                  Clusters   = ($clusterNames -join ', ')
+              }
+          })
+          $distinctVersions = $versionDistribution.Count
+          $mostCommonVersion = if ($distinctVersions -gt 0) { $versionDistribution[0].Version } else { '(none)' }
+          $mostCommonVersionPct = if ($distinctVersions -gt 0) { $versionDistribution[0].Percentage } else { 0 }
+
+          $observedYymms = @($versionDistribution | ForEach-Object {
+              $parts = ([string]$_.Version) -split '\.'
+              if ($parts.Count -ge 2) { $parts[1] } else { '' }
+          } | Where-Object { $_ -match '^[0-9]{4}$' } | Sort-Object -Unique)
+          $supportedYymms = @($observedYymms | Sort-Object -Descending | Select-Object -First 6)
+          $supportedCount = 0
+          $unsupportedCount = 0
+          $unknownVersionCount = 0
+          foreach ($v in $versionDistribution) {
+              $parts = ([string]$v.Version) -split '\.'
+              $yymm = if ($parts.Count -ge 2) { $parts[1] } else { '' }
+              $supportStatus = if ($yymm -match '^[0-9]{4}$') {
+                  if ($supportedYymms -contains $yymm) { 'Supported' } else { 'Unsupported' }
+              } else { 'Unknown' }
+              $v | Add-Member -MemberType NoteProperty -Name Yymm -Value $yymm -Force
+              $v | Add-Member -MemberType NoteProperty -Name SupportStatus -Value $supportStatus -Force
+              switch ($supportStatus) {
+                  'Supported'   { $supportedCount   += [int]$v.Count }
+                  'Unsupported' { $unsupportedCount += [int]$v.Count }
+                  'Unknown'     { $unknownVersionCount += [int]$v.Count }
+              }
+          }
+          $supportedYymmWindow = if ($supportedYymms.Count -gt 0) { ($supportedYymms -join ',') } else { '(none)' }
+
+          Write-Host ""
+          Write-Host "Fleet Version Distribution ($distinctVersions distinct version(s) across $totalTests cluster(s)):" -ForegroundColor Cyan
+          Write-Host ("Supported YYMM window (top {0}): {1}" -f $supportedYymms.Count, $supportedYymmWindow)
+          foreach ($v in $versionDistribution) {
+              Write-Host ("  {0,-30} {1,5} cluster(s)  ({2,5}%)  [{3}]" -f $v.Version, $v.Count, $v.Percentage, $v.SupportStatus)
+          }
+
           $xmlContent = @"
           <?xml version="1.0" encoding="UTF-8"?>
           <testsuites>
+            <testsuite name="Fleet Version Distribution" tests="$distinctVersions" failures="0" errors="0" skipped="0" time="0" timestamp="$timestamp">
+              <properties>
+                <property name="testCategory" value="FleetVersionDistribution"/>
+                <property name="description" value="Overall Fleet Update Status - cluster count and percentage per distinct CurrentVersion (StackHCI build presently installed). Source field: Get-AzureLocalClusterUpdateReadiness.CurrentVersion. SupportStatus is a heuristic derived from the fleet's own YYMM window (top 6 most-recent distinct YYMM values); validate against Microsoft Azure Local lifecycle docs before operator action."/>
+                <property name="totalClusters" value="$totalTests"/>
+                <property name="distinctVersions" value="$distinctVersions"/>
+                <property name="mostCommonVersion" value="$mostCommonVersion"/>
+                <property name="mostCommonVersionPercentage" value="$mostCommonVersionPct"/>
+                <property name="supportedYymmWindow" value="$supportedYymmWindow"/>
+                <property name="supportedClusters" value="$supportedCount"/>
+                <property name="unsupportedClusters" value="$unsupportedCount"/>
+                <property name="unknownVersionClusters" value="$unknownVersionCount"/>
+              </properties>
+          "@
+          foreach ($v in $versionDistribution) {
+              $vNameEsc     = ([string]$v.Version)  -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+              $vTestName    = "Version-$vNameEsc"
+              $vClustersEsc = ([string]$v.Clusters) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
+              $vSystemOut   = "Version: $($v.Version)`nYYMM: $($v.Yymm)`nSupportStatus: $($v.SupportStatus)`nClusters: $($v.Count)`nPercentage: $($v.Percentage)%`nClusterNames: $($v.Clusters)"
+              $vSystemOut   = $vSystemOut -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+              $xmlContent += "    <testcase name=`"$vTestName`" classname=`"FleetVersionDistribution`" time=`"0`">`n"
+              $xmlContent += "      <properties>`n"
+              $xmlContent += "        <property name=`"Version`" value=`"$vNameEsc`"/>`n"
+              $xmlContent += "        <property name=`"Yymm`" value=`"$($v.Yymm)`"/>`n"
+              $xmlContent += "        <property name=`"SupportStatus`" value=`"$($v.SupportStatus)`"/>`n"
+              $xmlContent += "        <property name=`"ClusterCount`" value=`"$($v.Count)`"/>`n"
+              $xmlContent += "        <property name=`"Percentage`" value=`"$($v.Percentage)`"/>`n"
+              $xmlContent += "        <property name=`"Clusters`" value=`"$vClustersEsc`"/>`n"
+              $xmlContent += "      </properties>`n"
+              $xmlContent += "      <system-out><![CDATA[$vSystemOut]]></system-out>`n"
+              $xmlContent += "    </testcase>`n"
+          }
+          $xmlContent += "  </testsuite>`n"
+
+          $xmlContent += @"
             <testsuite name="AzureLocalFleetUpdateStatus" tests="$totalTests" failures="$failures" errors="0" skipped="0" time="0" timestamp="$timestamp">
               <properties>
                 <property name="testCategory" value="CriticalHealthStatus"/>
@@ -590,6 +682,28 @@ stages:
           Write-Host "##vso[task.setvariable variable=hasPrerequisite;isOutput=true]$hasPrerequisite"
           Write-Host "##vso[task.setvariable variable=runHistoryCount;isOutput=true]$runHistoryCount"
 
+          # v0.7.70: persist version-distribution rows as a base64 JSON blob so
+          # the 'Display Status Summary' step can render the markdown table
+          # (with SupportStatus) without re-reading the CSV.
+          if ($distinctVersions -gt 0) {
+              $vTop = $versionDistribution | Select-Object Version, Yymm, SupportStatus, Count, Percentage, Clusters
+              $vJson = $vTop | ConvertTo-Json -Depth 3 -Compress
+              $vB64  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($vJson))
+              Write-Host "##vso[task.setvariable variable=versionDistB64;isOutput=true]$vB64"
+              Write-Host "##vso[task.setvariable variable=versionDistCount;isOutput=true]$distinctVersions"
+              Write-Host "##vso[task.setvariable variable=supportedYymmWindow;isOutput=true]$supportedYymmWindow"
+              Write-Host "##vso[task.setvariable variable=supportedClusters;isOutput=true]$supportedCount"
+              Write-Host "##vso[task.setvariable variable=unsupportedClusters;isOutput=true]$unsupportedCount"
+              Write-Host "##vso[task.setvariable variable=unknownVersionClusters;isOutput=true]$unknownVersionCount"
+          } else {
+              Write-Host "##vso[task.setvariable variable=versionDistB64;isOutput=true]"
+              Write-Host "##vso[task.setvariable variable=versionDistCount;isOutput=true]0"
+              Write-Host "##vso[task.setvariable variable=supportedYymmWindow;isOutput=true]"
+              Write-Host "##vso[task.setvariable variable=supportedClusters;isOutput=true]0"
+              Write-Host "##vso[task.setvariable variable=unsupportedClusters;isOutput=true]0"
+              Write-Host "##vso[task.setvariable variable=unknownVersionClusters;isOutput=true]0"
+          }
+
           # v0.7.70: persist update-run-history rows as a base64 JSON blob so the
           # 'Display Status Summary' step can render the markdown table without
           # re-querying ARG. Truncated to top 25 failures to keep the variable size sane.
@@ -642,13 +756,50 @@ stages:
         $needsInvestigation = "$(collect.needsInvestigation)"
         $failures = "$(collect.failures)"
         $hasPrerequisite = "$(collect.hasPrerequisite)"
+        $versionDistB64    = "$(collect.versionDistB64)"
+        $versionDistCount  = "$(collect.versionDistCount)"
+        $supportedYymmWin  = "$(collect.supportedYymmWindow)"
+        $supportedClusters = "$(collect.supportedClusters)"
+        $unsupportedClusters = "$(collect.unsupportedClusters)"
+        $unknownVersionClusters = "$(collect.unknownVersionClusters)"
         $generatedUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss UTC')
 
         Write-Host "##vso[task.uploadsummary]Fleet Status: $total clusters, $chPassed healthy / $chFailed failed (CriticalHealthStatus)"
 
+        # v0.7.70: Render the Overall Fleet Update Status (Version Distribution)
+        # table FIRST so it leads the summary, matching the position of the
+        # 'Fleet Version Distribution' testsuite at the top of the JUnit XML.
+        $versionSection = ''
+        if ($versionDistCount -and [int]$versionDistCount -gt 0 -and $versionDistB64) {
+            try {
+                $vRows = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($versionDistB64)) | ConvertFrom-Json
+                $versionSection += "### Overall Fleet Update Status (Version Distribution)`n`n"
+                $versionSection += "_One row per distinct ``CurrentVersion`` reported by ``Get-AzureLocalClusterUpdateReadiness``. Sorted by cluster count (descending). Percentage is share of the $total cluster(s) in scope._`n`n"
+                $versionSection += "_``SupportStatus`` is a fleet-derived heuristic: **Supported** = YYMM is in the top-6 most-recent distinct YYMM values observed across the fleet ($supportedYymmWin); **Unsupported** = older YYMM; **Unknown** = ``CurrentVersion`` empty or not in ``Solution.YYMM.X.X`` form. Always cross-check against the [Azure Local lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and the [Azure Local release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) before taking action._`n`n"
+                $versionSection += "| Version | YYMM | Support | Cluster Count | Percentage | Clusters |`n"
+                $versionSection += "|---------|------|---------|---------------|------------|----------|`n"
+                foreach ($vr in @($vRows)) {
+                    $supportEmoji = switch ($vr.SupportStatus) {
+                        'Supported'   { '✅ Supported' }
+                        'Unsupported' { '⚠️ Unsupported' }
+                        default       { '❓ Unknown' }
+                    }
+                    $clCell = [string]$vr.Clusters
+                    if ($clCell.Length -gt 250) { $clCell = $clCell.Substring(0,250) + ' ...' }
+                    $clCell = $clCell -replace '\|','\|'
+                    $versionSection += ('| {0} | {1} | {2} | {3} | {4}% | {5} |' -f $vr.Version, $vr.Yymm, $supportEmoji, $vr.Count, $vr.Percentage, $clCell) + "`n"
+                }
+                $versionSection += "`n_Support roll-up: Supported = $supportedClusters cluster(s), Unsupported = $unsupportedClusters, Unknown = $unknownVersionClusters._`n`n"
+            } catch {
+                Write-Warning "Failed to render Fleet Version Distribution markdown table: $($_.Exception.Message)"
+                $versionSection = ''
+            }
+        }
+
         $summary = @"
         ## Fleet Update Status Summary  _(generated $generatedUtc)_
 
+        $versionSection
         ### Critical Health Status (matches JUnit XML pass/fail)
 
         | Metric | Count | Status |
