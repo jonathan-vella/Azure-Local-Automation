@@ -22,8 +22,7 @@ function Get-AzureLocalUpdateRunFailures {
         deepest error message.
 
         This cmdlet replicates the "Update Run Errors" KQL pattern used by
-        the Azure Local LENS Workbook
-        (https://github.com/Azure/AzureLocal-LENS-Workbook):
+        the Azure Resource Graph cluster updateSummaries extensibility resource:
 
           - mv-expand the progress tree across s1..s7 (seven explicit levels)
           - reach into s7.steps[0] for the eighth level
@@ -57,7 +56,7 @@ function Get-AzureLocalUpdateRunFailures {
     .PARAMETER SubscriptionId
         Optional. Limit the query to a specific Azure subscription ID. If
         not specified, queries across all accessible subscriptions (default
-        mode) - matches the LENS workbook's fleet-wide behaviour.
+        mode) - applies a fleet-wide ARG-first scan.
 
     .PARAMETER UpdateRingTag
         Optional. When supplied, only update runs from clusters whose
@@ -149,8 +148,7 @@ function Get-AzureLocalUpdateRunFailures {
         Added:   v0.7.68
         Module:  AzLocal.UpdateManagement
 
-        Architectural reference: the Azure Local LENS Workbook
-        (https://github.com/Azure/AzureLocal-LENS-Workbook) treats ARG
+        Architectural reference: this cmdlet treats ARG
         `extensibilityresources` as the single source of truth for update
         run history and pioneered the nine-level mv-expand pattern this
         cmdlet ports to PowerShell.
@@ -262,6 +260,8 @@ extensibilityresources
 | where StartTime >= datetime($sinceUtc)
 $clusterClause
 | extend progressObj = properties.progress
+| extend progressStatus = tostring(progressObj.status)
+| extend progressDescription = tostring(progressObj.description)
 | extend progressJsonFull = tostring(properties.progress)
 | extend ProgressJsonBytes = strlen(progressJsonFull)
 | extend progressJsonCapped = substring(progressJsonFull, 0, 204800)
@@ -300,7 +300,7 @@ $clusterClause
     DeepestErrMsg has 'administrator operation' or DeepestErrMsg has 'blocked by administrator', 'AdminBlocked',
     strlen(DeepestErrMsg) > 0, 'Other',
     'Unclassified')
-| project ClusterName, ResourceGroup, SubscriptionId, ClusterResourceId, UpdateName, RunId, State = state, StartTime, EndTime, DurationMinutes, DeepestStepDepth = mvDepth, DeepestStepName = mvStepName, DeepestErrMsg, StackTracePreview = stackTraceMatch, ErrorCategory, ProgressJsonBytes, ProgressJson = progressJsonCapped
+| project ClusterName, ResourceGroup, SubscriptionId, ClusterResourceId, UpdateName, RunId, State = state, StartTime, EndTime, DurationMinutes, DeepestStepDepth = mvDepth, DeepestStepName = mvStepName, DeepestErrMsg, StackTracePreview = stackTraceMatch, ErrorCategory, Status = progressStatus, ProgressDescription = progressDescription, ProgressJsonBytes, ProgressJson = progressJsonCapped
 | order by StartTime desc, ClusterName asc
 "@
 
@@ -385,8 +385,16 @@ extensibilityresources
         }
         $latestSucceededMap = @{}
         foreach ($s in @($succeededRows)) {
+            if (-not $s) { continue }
+            if (-not $s.ClusterResourceId) { continue }
+            if (-not $s.LatestSucceededStart) { continue }
             $key = "$(($s.ClusterResourceId).ToLower())|$($s.UpdateName)"
-            $latestSucceededMap[$key] = [datetime]$s.LatestSucceededStart
+            try {
+                $latestSucceededMap[$key] = [datetime]$s.LatestSucceededStart
+            }
+            catch {
+                Write-Log -Message "Skipping unresolved-check entry with unparseable LatestSucceededStart '$($s.LatestSucceededStart)' for $key" -Level Verbose
+            }
         }
         Write-Log -Message "Latest-succeeded lookup loaded $($latestSucceededMap.Count) (cluster, update) entries." -Level Verbose
     }
@@ -430,24 +438,66 @@ extensibilityresources
             if ($null -ne $latestSucc -and $null -ne $r.StartTime -and ([datetime]$latestSucc) -ge ([datetime]$r.StartTime)) {
                 $isUnresolved = $false
             }
+
+            # v0.7.70: Fleet-scale failure-detail columns. The Azure portal SingleInstanceHistoryDetails
+            # ReactView deep-link requires the cluster resource ID URL-encoded (the same
+            # encoding the Azure portal expects). We URL-encode aggressively (every slash)
+            # which the portal accepts as-is.
+            $portalLink = ''
+            if ($r.ClusterResourceId) {
+                $encoded = [System.Uri]::EscapeDataString([string]$r.ClusterResourceId)
+                $portalLink = "https://portal.azure.com/#view/Microsoft_AzureStackHCI_PortalExtension/SingleInstanceHistoryDetails.ReactView/resourceId/$encoded/updateName~/null/updateRunName~/null/refresh~/false"
+            }
+
+            # CurrentStep is a computed column derived from the deepest in-progress step:
+            #   Failed -> the deepest failing step name (fall back to ProgressDescription)
+            #   else  -> ProgressDescription
+            $currentStep = ''
+            if ($r.State -eq 'Failed') {
+                if ($r.DeepestStepName) { $currentStep = $r.DeepestStepName }
+                elseif ($r.ProgressDescription) { $currentStep = $r.ProgressDescription }
+            } elseif ($r.ProgressDescription) {
+                $currentStep = $r.ProgressDescription
+            }
+
+            # Formatted duration string "Xh Ym Zs" computed from StartTime/EndTime
+            # (KQL gives us only DurationMinutes rounded). Skip if either bound is null.
+            $durationFormatted = ''
+            if ($r.StartTime -and $r.EndTime) {
+                try {
+                    $ts = ([datetime]$r.EndTime) - ([datetime]$r.StartTime)
+                    $parts = @()
+                    if ($ts.Days -gt 0)    { $parts += "$($ts.Days)d" }
+                    if ($ts.Hours -gt 0)   { $parts += "$($ts.Hours)h" }
+                    if ($ts.Minutes -gt 0) { $parts += "$($ts.Minutes)m" }
+                    if ($ts.Seconds -gt 0 -or $parts.Count -eq 0) { $parts += "$($ts.Seconds)s" }
+                    $durationFormatted = $parts -join ' '
+                } catch { $durationFormatted = '' }
+            }
+
             $obj = [PSCustomObject]@{
-                ClusterName       = $r.ClusterName
-                ResourceGroup     = $r.ResourceGroup
-                SubscriptionId    = $r.SubscriptionId
-                ClusterResourceId = $r.ClusterResourceId
-                UpdateName        = $r.UpdateName
-                RunId             = $r.RunId
-                State             = $r.State
-                StartTime         = $r.StartTime
-                EndTime           = $r.EndTime
-                DurationMinutes   = $r.DurationMinutes
-                DeepestStepDepth  = $r.DeepestStepDepth
-                DeepestStepName   = $r.DeepestStepName
-                DeepestErrMsg     = $r.DeepestErrMsg
-                StackTracePreview = $r.StackTracePreview
-                ErrorCategory     = $r.ErrorCategory
-                ProgressJsonBytes = $r.ProgressJsonBytes
-                IsUnresolved      = $isUnresolved
+                ClusterName        = $r.ClusterName
+                ResourceGroup      = $r.ResourceGroup
+                SubscriptionId     = $r.SubscriptionId
+                ClusterResourceId  = $r.ClusterResourceId
+                UpdateName         = $r.UpdateName
+                RunId              = $r.RunId
+                State              = $r.State
+                Status             = $r.Status
+                CurrentStep        = $currentStep
+                StartTime          = $r.StartTime
+                EndTime            = $r.EndTime
+                LastUpdated        = $r.EndTime
+                Duration           = $durationFormatted
+                DurationMinutes    = $r.DurationMinutes
+                DeepestStepDepth   = $r.DeepestStepDepth
+                DeepestStepName    = $r.DeepestStepName
+                DeepestErrMsg      = $r.DeepestErrMsg
+                StackTracePreview  = $r.StackTracePreview
+                ErrorCategory      = $r.ErrorCategory
+                UpdateRunPortalUrl = $portalLink
+                ProgressJsonBytes  = $r.ProgressJsonBytes
+                IsUnresolved       = $isUnresolved
             }
             if ($IncludeRawProgress) {
                 $obj | Add-Member -NotePropertyName 'ProgressJson' -NotePropertyValue $r.ProgressJson
