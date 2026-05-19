@@ -173,25 +173,35 @@ stages:
           $detail | ConvertTo-Json -Depth 6 | Out-File -FilePath $detailJson -Encoding utf8
 
           # SUMMARY view (grouped by FailureReason, Severity) - aggregated in-process.
+          # v0.7.70: AffectedClusters uses '; ' separator (matches cmdlet); adds positionally-paired
+          # AffectedClusterPortalUrls so the markdown task below can zip them into hyperlinks.
+          # Severity sorts FIRST (Critical before Warning) regardless of cluster count.
           $summary = @()
           if ($detail.Count -gt 0) {
               $summary = @(
                   $detail | Group-Object -Property FailureReason, Severity | ForEach-Object {
                       $first       = $_.Group | Select-Object -First 1
                       $clusterList = @($_.Group | Select-Object -ExpandProperty ClusterName -Unique | Sort-Object)
+                      $clusterPortalUrls = @(
+                          foreach ($cn in $clusterList) {
+                              $portalRow = $_.Group | Where-Object { $_.ClusterName -eq $cn } | Select-Object -First 1
+                              if ($portalRow -and $portalRow.ClusterPortalUrl) { $portalRow.ClusterPortalUrl } else { '' }
+                          }
+                      )
                       $latest      = ($_.Group | Measure-Object -Property LastOccurrence -Maximum).Maximum
                       [PSCustomObject]@{
-                          FailureReason    = $first.FailureReason
-                          Severity         = $first.Severity
-                          ClusterCount     = $clusterList.Count
-                          FailureCount     = $_.Group.Count
-                          AffectedClusters = ($clusterList -join ';')
-                          LatestOccurrence = $latest
-                          Description      = $first.Description
-                          Remediation      = $first.Remediation
+                          FailureReason             = $first.FailureReason
+                          Severity                  = $first.Severity
+                          ClusterCount              = $clusterList.Count
+                          FailureCount              = $_.Group.Count
+                          AffectedClusters          = ($clusterList -join '; ')
+                          AffectedClusterPortalUrls = ($clusterPortalUrls -join '; ')
+                          LatestOccurrence          = $latest
+                          Description               = $first.Description
+                          Remediation               = $first.Remediation
                       }
-                  } | Sort-Object @{Expression={$_.ClusterCount};Descending=$true},
-                                  @{Expression={ if($_.Severity -eq 'Critical'){1}else{2} };Descending=$false},
+                  } | Sort-Object @{Expression={ if($_.Severity -eq 'Critical'){1}elseif($_.Severity -eq 'Warning'){2}else{3} };Descending=$false},
+                                  @{Expression={$_.ClusterCount};Descending=$true},
                                   @{Expression={$_.FailureCount};Descending=$true}
               )
           }
@@ -230,7 +240,25 @@ stages:
                       (Convert-XmlEscape $r.ClusterName),
                       (Convert-XmlEscape $caseName))
                   $msg  = "{0}: {1} (last occurred {2:yyyy-MM-ddTHH:mm:ssZ})" -f $r.Severity, $r.FailureReason, $r.LastOccurrence
-                  $body = ($r.Description, $r.Remediation, "ResourceGroup: $($r.ResourceGroup)", "SubscriptionId: $($r.SubscriptionId)") -join "`n"
+                  # v0.7.70: failure body adds TargetResourceName, TargetResourceType, and ClusterPortalUrl
+                  # so reviewers reading the JUnit XML can click straight to the cluster blade in the
+                  # Azure portal and see which specific resource failed.
+                  $bodyLines = @(
+                      $r.Description,
+                      $r.Remediation,
+                      "ResourceGroup: $($r.ResourceGroup)",
+                      "SubscriptionId: $($r.SubscriptionId)"
+                  )
+                  if ($r.PSObject.Properties.Match('TargetResourceName').Count -gt 0 -and $r.TargetResourceName) {
+                      $bodyLines += "TargetResourceName: $($r.TargetResourceName)"
+                  }
+                  if ($r.PSObject.Properties.Match('TargetResourceType').Count -gt 0 -and $r.TargetResourceType) {
+                      $bodyLines += "TargetResourceType: $($r.TargetResourceType)"
+                  }
+                  if ($r.PSObject.Properties.Match('ClusterPortalUrl').Count -gt 0 -and $r.ClusterPortalUrl) {
+                      $bodyLines += "ClusterPortalUrl: $($r.ClusterPortalUrl)"
+                  }
+                  $body = $bodyLines -join "`n"
                   [void]$sb.AppendFormat('      <failure type="{0}" message="{1}">{2}</failure>' + "`n",
                       (Convert-XmlEscape $r.Severity),
                       (Convert-XmlEscape $msg),
@@ -247,18 +275,35 @@ stages:
           [void]$sb.AppendLine('</testsuites>')
           $sb.ToString() | Out-File -FilePath $xmlPath -Encoding utf8
 
+          # ------------------------------------------------------------------
+          # v0.7.70: Fleet Health Overview (one row per cluster, mirrors the LENS
+          # workbook "System Health Checks Overview" table). Separate cmdlet from
+          # the failures view above so a fleet with zero failing checks still gets
+          # an overview-level rollup (last-checked age, current version, SBE
+          # version, Azure connection, node count).
+          # ------------------------------------------------------------------
+          $overviewArgs = @{}
+          if ($scope -eq 'by-update-ring' -and $ring) { $overviewArgs.UpdateRingTag = $ring }
+          $overviewCsv  = Join-Path $outputDir 'fleet-health-overview.csv'
+          $overviewJson = Join-Path $outputDir 'fleet-health-overview.json'
+          $overview     = Get-AzLocalFleetHealthOverview @overviewArgs -ExportPath $overviewCsv -PassThru
+          if (-not $overview) { $overview = @() }
+          $overview | ConvertTo-Json -Depth 6 | Out-File -FilePath $overviewJson -Encoding utf8
+
           # Persist counts for the summary task below.
           "##vso[task.setvariable variable=totalClusters;isOutput=true]$totalClusters"   | Write-Host
           "##vso[task.setvariable variable=totalFailures;isOutput=true]$totalFailures"   | Write-Host
           "##vso[task.setvariable variable=criticalCount;isOutput=true]$criticalCount"   | Write-Host
           "##vso[task.setvariable variable=warningCount;isOutput=true]$warningCount"     | Write-Host
           "##vso[task.setvariable variable=distinctReasons;isOutput=true]$($summary.Count)" | Write-Host
+          "##vso[task.setvariable variable=overviewRows;isOutput=true]$($overview.Count)"   | Write-Host
 
           Write-Host ""
           Write-Host "Fleet Health Collection complete:"
           Write-Host "  Affected clusters       : $totalClusters"
           Write-Host "  Total failing checks    : $totalFailures (Critical=$criticalCount, Warning=$warningCount)"
           Write-Host "  Distinct failure reasons: $($summary.Count)"
+          Write-Host "  Overview rows           : $($overview.Count)"
       name: collect
 
     # v0.7.66: compute a UTC timestamp variable so every downloadable artifact name is unique per run.
@@ -289,13 +334,16 @@ stages:
         $crit     = "$(collect.criticalCount)"
         $warn     = "$(collect.warningCount)"
         $reasons  = "$(collect.distinctReasons)"
+        $ovRows   = "$(collect.overviewRows)"
 
-        Write-Host "##vso[task.uploadsummary]Fleet Health: $total clusters affected, $failures failing check(s) ($crit Critical / $warn Warning) across $reasons reason(s)"
+        Write-Host "##vso[task.uploadsummary]Fleet Health: $total clusters affected, $failures failing check(s) ($crit Critical / $warn Warning) across $reasons reason(s); overview rows = $ovRows"
 
-        $summaryPath = Join-Path '$(reportsPath)' 'fleet-health-summary.csv'
-        $detailPath  = Join-Path '$(reportsPath)' 'fleet-health-detail.csv'
-        $summaryRows = if (Test-Path $summaryPath) { @(Import-Csv -Path $summaryPath) } else { @() }
-        $detailRows  = if (Test-Path $detailPath)  { @(Import-Csv -Path $detailPath)  } else { @() }
+        $summaryPath  = Join-Path '$(reportsPath)' 'fleet-health-summary.csv'
+        $detailPath   = Join-Path '$(reportsPath)' 'fleet-health-detail.csv'
+        $overviewPath = Join-Path '$(reportsPath)' 'fleet-health-overview.csv'
+        $summaryRows  = if (Test-Path $summaryPath)  { @(Import-Csv -Path $summaryPath)  } else { @() }
+        $detailRows   = if (Test-Path $detailPath)   { @(Import-Csv -Path $detailPath)   } else { @() }
+        $overviewRows = if (Test-Path $overviewPath) { @(Import-Csv -Path $overviewPath) } else { @() }
 
         $md = @"
         ## Fleet Health Status Summary
@@ -318,8 +366,21 @@ stages:
             $md += "|----------|----------------|---------------|---------------|--------------------|--------|`n"
             foreach ($r in ($summaryRows | Select-Object -First 25)) {
                 $sevTag = if ($r.Severity -eq 'Critical') { '[Critical]' } else { '[Warning]' }
-                $clList = $r.AffectedClusters
-                if ($clList -and $clList.Length -gt 120) { $clList = $clList.Substring(0,117) + '...' }
+                # v0.7.70: zip AffectedClusters with AffectedClusterPortalUrls to render markdown
+                # hyperlinks. Cap at first 10 names then '... (+N more)' so widespread failures stay
+                # readable; full list is in the CSV artifact.
+                $names = if ($r.AffectedClusters) { @($r.AffectedClusters -split '; ') } else { @() }
+                $urls  = if ($r.AffectedClusterPortalUrls) { @($r.AffectedClusterPortalUrls -split '; ') } else { @() }
+                $linkedParts = for ($i = 0; $i -lt $names.Count; $i++) {
+                    $n = $names[$i]
+                    $u = if ($i -lt $urls.Count) { $urls[$i] } else { '' }
+                    if ($u) { '[{0}]({1})' -f $n, $u } else { $n }
+                }
+                $clList = if ($linkedParts.Count -le 10) {
+                    $linkedParts -join ', '
+                } else {
+                    (($linkedParts | Select-Object -First 10) -join ', ') + (' ... (+{0} more)' -f ($linkedParts.Count - 10))
+                }
                 $md += ('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $sevTag, $r.FailureReason, $r.ClusterCount, $r.FailureCount, $clList, $r.LatestOccurrence) + "`n"
             }
             if ($summaryRows.Count -gt 25) {
@@ -332,14 +393,56 @@ stages:
         if ($detailRows.Count -eq 0) {
             $md += "`n*No detail rows.*`n"
         } else {
-            $md += "`n| Cluster | Severity | Failure Reason | Last Occurrence | Resource Group |`n"
-            $md += "|---------|----------|----------------|------------------|----------------|`n"
+            # v0.7.70: cluster name linkifies to ClusterPortalUrl; +3 columns (Failure Remediation,
+            # Target Resource Name, Target Resource Type). Remediation auto-linkifies when value
+            # starts 'https://' so docs links are one click away.
+            $md += "`n| Cluster | Severity | Failure Reason | Failure Remediation | Target Resource Name | Target Resource Type | Last Occurrence | Resource Group |`n"
+            $md += "|---------|----------|----------------|---------------------|----------------------|----------------------|------------------|----------------|`n"
             foreach ($r in ($detailRows | Select-Object -First 100)) {
-                $sevTag = if ($r.Severity -eq 'Critical') { '[Critical]' } else { '[Warning]' }
-                $md += ('| {0} | {1} | {2} | {3} | {4} |' -f $r.ClusterName, $sevTag, $r.FailureReason, $r.LastOccurrence, $r.ResourceGroup) + "`n"
+                $sevTag      = if ($r.Severity -eq 'Critical') { '[Critical]' } else { '[Warning]' }
+                $clusterCell = if ($r.PSObject.Properties.Match('ClusterPortalUrl').Count -gt 0 -and $r.ClusterPortalUrl) {
+                    '[{0}]({1})' -f $r.ClusterName, $r.ClusterPortalUrl
+                } else {
+                    $r.ClusterName
+                }
+                $rem = if ($r.PSObject.Properties.Match('Remediation').Count -gt 0) { [string]$r.Remediation } else { '' }
+                $remCell = if ($rem -and $rem.StartsWith('https://')) { '[link]({0})' -f $rem } else { $rem }
+                $tName = if ($r.PSObject.Properties.Match('TargetResourceName').Count -gt 0) { [string]$r.TargetResourceName } else { '' }
+                $tType = if ($r.PSObject.Properties.Match('TargetResourceType').Count -gt 0) { [string]$r.TargetResourceType } else { '' }
+                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} |' -f $clusterCell, $sevTag, $r.FailureReason, $remCell, $tName, $tType, $r.LastOccurrence, $r.ResourceGroup) + "`n"
             }
             if ($detailRows.Count -gt 100) {
                 $md += "`n*Showing first 100 rows of $($detailRows.Count); see ``fleet-health-detail.csv`` artifact for the full list.*`n"
+            }
+        }
+
+        # v0.7.70: NEW section - System Health Checks Overview (fleet rollup, one row per cluster).
+        # Sourced from Get-AzLocalFleetHealthOverview. HealthResultsAgeDays surfaces clusters whose
+        # 24-hour health check has not run in a while (negative = no LastChecked at all).
+        $md += "`n### System Health Checks Overview (fleet rollup)`n"
+        if ($overviewRows.Count -eq 0) {
+            $md += "`n*No clusters returned from Get-AzLocalFleetHealthOverview.*`n"
+        } else {
+            $md += "`n| Cluster | Health | Update Status | Current Version | SBE Version | Azure Connection | Last Checked | Age (days) | Node Count |`n"
+            $md += "|---------|--------|---------------|------------------|--------------|------------------|---------------|------------|------------|`n"
+            foreach ($o in ($overviewRows | Select-Object -First 100)) {
+                $clusterCell = if ($o.ClusterPortalUrl) {
+                    '[{0}]({1})' -f $o.ClusterName, $o.ClusterPortalUrl
+                } else {
+                    $o.ClusterName
+                }
+                $healthTag = switch ($o.HealthStatus) {
+                    'Healthy'              { '[OK]' }
+                    'Critical'             { '[Critical]' }
+                    'Warning'              { '[Warning]' }
+                    'In progress'          { '[In progress]' }
+                    'Health check failed'  { '[Failed]' }
+                    default                { '[' + $o.HealthStatus + ']' }
+                }
+                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} |' -f $clusterCell, $healthTag, $o.UpdateStatus, $o.CurrentVersion, $o.SbeVersion, $o.AzureConnection, $o.LastChecked, $o.HealthResultsAgeDays, $o.NodeCount) + "`n"
+            }
+            if ($overviewRows.Count -gt 100) {
+                $md += "`n*Showing first 100 clusters of $($overviewRows.Count); see ``fleet-health-overview.csv`` artifact for the full list.*`n"
             }
         }
 
@@ -347,8 +450,9 @@ stages:
 
         ### Reports Available in Artifacts
         - ``fleet-health-detail.csv`` - one row per (cluster, failing health check)
-        - ``fleet-health-summary.csv`` - one row per (FailureReason, Severity); ordered by ClusterCount desc
-        - ``fleet-health-detail.json`` / ``fleet-health-summary.json`` - machine-readable
+        - ``fleet-health-summary.csv`` - one row per (FailureReason, Severity); ordered Critical-first, then by ClusterCount desc
+        - ``fleet-health-overview.csv`` - one row per cluster (LENS workbook 'System Health Checks Overview' parity)
+        - ``fleet-health-detail.json`` / ``fleet-health-summary.json`` / ``fleet-health-overview.json`` - machine-readable
         - ``fleet-health-status.xml`` - JUnit XML (see Tests tab)
         "@
 
