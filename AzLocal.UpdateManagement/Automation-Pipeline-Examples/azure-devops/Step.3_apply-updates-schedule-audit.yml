@@ -271,7 +271,7 @@ stages:
               Write-Suite -Sb $sb `
                   -SuiteName 'Apply-Updates Schedule Coverage - Cron coverage' `
                   -Rows $cronRows `
-                  -EmptyPlaceholderName 'No tagged clusters found - nothing to audit.'
+                  -EmptyPlaceholderName 'No tagged clusters found - nothing to audit'
           }
           [void]$sb.AppendLine('</testsuites>')
           [System.IO.File]::WriteAllText($xmlPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
