@@ -79,6 +79,15 @@ jobs:
     environment: ${{ inputs.environment }}
 
     steps:
+      # dorny/test-reporter@v3 (used at the end of this job) shells out to
+      # `git ls-files` to resolve the JUnit XML path against the repo's
+      # tracked files. Without a checkout, it fails with exit 128:
+      #   fatal: not a git repository (or any of the parent directories): .git
+      # The checkout itself is otherwise unnecessary for Step.0 (the auth probe
+      # does not consume any repo content) but is required for the report step.
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
