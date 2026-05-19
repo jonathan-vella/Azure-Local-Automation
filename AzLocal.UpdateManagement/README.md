@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.71 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.71)
+**Latest Version:** v0.7.72 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.72)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 - [Where to Start](#where-to-start)
   - [Getting started interactively](#getting-started-interactively)
   - [Common workflows (function-invocation order)](#common-workflows-function-invocation-order)
-- [What's New in v0.7.71](#whats-new-in-v0771)
+- [What's New in v0.7.72](#whats-new-in-v0772)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements)
@@ -153,7 +153,40 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.71
+## What's New in v0.7.72
+
+v0.7.72 is a **pipeline-samples hotfix** release on top of v0.7.71. Two issues observed when operators ran the v0.7.71 GitHub Actions samples in production: (1) the Step.1 / Step.2 / Step.5 GitHub Actions `Summary` panels rendered empty because the workflows used `Write-Host "<markdown>" >> $env:GITHUB_STEP_SUMMARY` - `Write-Host` writes to the PowerShell information/host stream (6), not stdout (1), so the `>>` redirect appended nothing to the summary file; (2) `AZURE_TENANT_ID` was stored as a GitHub Secret on the same rationale as the v0.7.71 `AZURE_SUBSCRIPTION_ID` treatment - a public ARM/AAD identifier, not a credential. Both are fixed. **No PowerShell source files changed** - this release is scoped to pipeline-sample YAMLs and Markdown docs. Refresh existing copies via `Update-AzureLocalPipelineExample`.
+
+### Step.1 / Step.2 / Step.5 GitHub Actions `Summary` blocks now render content (was blank)
+
+Across these three workflows, 62 `Write-Host "<markdown>" >> $env:GITHUB_STEP_SUMMARY` lines were silent no-ops because `Write-Host` emits to PowerShell's information stream (stream 6), not stdout (stream 1). The file-redirect operator `>>` only attaches to stdout, so the GitHub Actions Summary file received an empty append on every line. The job log printed the markdown to the runner console (where operators do not normally look) but the GitHub Actions Summary panel - the canonical post-run report surface - rendered blank. All 62 lines now use the bare-string-to-stdout form (`"<markdown>" >> $env:GITHUB_STEP_SUMMARY`), so the totals/tables/actions-required block coded in v0.7.71 finally surface in the GitHub Actions UI. Affected:
+
+- **Step.1**: cluster-inventory totals + UpdateRing distribution.
+- **Step.2**: UpdateRing tag-management settings + dry-run notice.
+- **Step.5**: update-application readiness/results matrix + actions-required block + `no-clusters-ready` job summary.
+
+ADO pipelines were unaffected (they use the `##vso[task.uploadsummary]` mechanism, not stdout redirection).
+
+### GitHub Actions: AZURE_TENANT_ID is now a Variable, not a Secret
+
+All 8 GitHub Actions `Step.*.yml` workflows (including the four commented-out legacy `azure/login@v3` `creds:` JSON examples in Step.1 / Step.2 / Step.5) now read the Entra ID tenant id from `vars.AZURE_TENANT_ID` instead of `secrets.AZURE_TENANT_ID`. Rationale matches the v0.7.71 `AZURE_SUBSCRIPTION_ID` switch: the tenant id is a public ARM/AAD identifier - it is rendered in workflow telemetry on every `azure/login@v3` run, present in the OIDC token issuer URL, and visible to anyone with read access to the App Registration - not a credential. It is consumed in exactly one place: the `tenant-id:` input to `azure/login@v3`, which exchanges the OIDC token for an Azure AD token in the named tenant. It is **NOT** used to scope Azure Resource Graph queries and is **NOT** interpolated into portal deep-link URLs. Treating it as a Variable also means it appears plaintext in workflow logs (matching its non-sensitive nature) and removes the need for an extra Secret rotation in tenants that already track it as a Variable. Steady-state setup is now **one repo-level Secret** (`AZURE_CLIENT_ID`) and **two repo-level Variables** (`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`); see updated docs in `Automation-Pipeline-Examples/README.md`. Azure DevOps pipelines authenticate via a service connection and need no change (the connection itself stores `tenantId`).
+
+### Pipeline pin bumps + migration
+
+All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.71'` to `'0.7.72'`. The Step.0 authentication validation workflow does not pin a module version. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
+
+```powershell
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+GitHub Actions operators must also create `AZURE_TENANT_ID` as a **repository Variable** (`gh variable set AZURE_TENANT_ID --body <tenantId>`) and delete the existing `AZURE_TENANT_ID` **Secret** to avoid drift between the two values.
+
+### Compatibility
+
+All v0.7.72 changes are backward compatible. No cmdlet signatures or output shapes change. The Variable migration is a per-tenant setup change (GitHub Actions only).
+
+### What's New in v0.7.71
 
 v0.7.71 is a **bug-fix + UX polish** release on top of v0.7.70. Two render-correctness fixes (Step.3 markdown rendering as a code block, Step.4 critical-count under-reporting as 0), one new action-required section in `Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend` for unparseable cron expressions, hyperlinked Cluster Name + collapsible Verbose Error in the Step.6 Update Run History table, and the AZURE_SUBSCRIPTION_ID Secret -> Variable migration for GitHub Actions samples. All changes are additive over v0.7.70; no behaviour change for callers that don't read the new columns.
 
@@ -661,15 +694,17 @@ Connect-AzureLocalServicePrincipal -UseManagedIdentity -ManagedIdentityClientId 
 **OpenID Connect (OIDC) for CI/CD:**
 ```yaml
 # In GitHub Actions - OIDC authentication (no client secret).
-# AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*) not a Secret. It is consumed
-# only here, by azure/login@v3, to set the runner's default `az account` context. The
+# AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID are repository *Variables* (vars.*) not Secrets.
+# Both are public ARM/AAD identifiers (not credentials) and each is consumed in exactly one
+# place here: the `tenant-id:` / `subscription-id:` inputs to azure/login@v3, which exchange
+# the OIDC token in the named tenant and set the runner's default `az account` context. The
 # bundled cmdlets run Azure Resource Graph queries fleet-wide (no --subscriptions scoping)
 # and build portal deep-link URLs from the per-row `subscriptionId` returned by ARG.
 - name: Azure CLI Login (OIDC)
   uses: azure/login@v2
   with:
     client-id: ${{ secrets.AZURE_CLIENT_ID }}
-    tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+    tenant-id: ${{ vars.AZURE_TENANT_ID }}
     subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 ```
 

@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.71'
+    ModuleVersion = '0.7.72'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -203,6 +203,56 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.72 - Pipeline samples hotfix: Step.1/2/5 GitHub Actions Summary panels now render (Write-Host stripped from >> $env:GITHUB_STEP_SUMMARY), AZURE_TENANT_ID secret->variable, pipeline pin bumps to 0.7.72
+
+### Fixed
+
+- **Step.1 / Step.2 / Step.5 GitHub Actions `Summary` panels now render content.**
+  Across these three workflows, 62 `Write-Host "<markdown>" >> $env:GITHUB_STEP_SUMMARY`
+  lines were silent no-ops because `Write-Host` writes to PowerShell's
+  information stream (6), not stdout (1), so the file-redirect operator
+  `>>` only ever appended empty content to the summary file. The GitHub
+  Actions Summary panel - the canonical post-run report surface -
+  rendered blank even though the job log printed the markdown to the
+  runner console. All 62 lines now use the bare-string-to-stdout form
+  (`"<markdown>" >> $env:GITHUB_STEP_SUMMARY`), so the totals / tables /
+  actions-required block surface in the GitHub Actions UI. Affected:
+  Step.1 cluster-inventory totals + UpdateRing distribution; Step.2
+  UpdateRing tag-management settings + dry-run notice; Step.5
+  update-application readiness/results matrix + actions-required block
+  + `no-clusters-ready` job summary. ADO pipelines were unaffected
+  (they use the `##vso[task.uploadsummary]` mechanism, not stdout
+  redirection).
+
+### Changed (pipeline samples)
+
+- **`AZURE_TENANT_ID` Secret -> Variable migration (GitHub Actions only).**
+  All 8 GitHub Actions `Step.*.yml` workflows (and the commented-out
+  legacy `azure/login@v3` `creds:` JSON in Step.1 / Step.2 / Step.5)
+  now read the Entra ID tenant id from `vars.AZURE_TENANT_ID` instead
+  of `secrets.AZURE_TENANT_ID`. Matches the v0.7.71 treatment of
+  `AZURE_SUBSCRIPTION_ID`: a tenant id is a public ARM/AAD identifier
+  (rendered in workflow telemetry on every `azure/login@v3` run,
+  present in the OIDC token issuer URL, visible to anyone with read
+  access to the App Registration) - not a credential. Consumed in
+  exactly one place: the `tenant-id:` input to `azure/login@v3`.
+  Steady-state is now one repo-level Secret (`AZURE_CLIENT_ID`) and
+  two repo-level Variables (`AZURE_TENANT_ID`,
+  `AZURE_SUBSCRIPTION_ID`). Azure DevOps pipelines were already
+  authenticating via a service connection and need no change.
+- **Pipeline pin bumps.** All 14 `Step.{1..7}.yml` files (7 GitHub
+  Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION`
+  from `'0.7.71'` to `'0.7.72'`. Refresh existing copies via
+  `Update-AzureLocalPipelineExample`.
+
+### Migration
+
+- GitHub Actions operators: add `AZURE_TENANT_ID` as a repository
+  Variable (`gh variable set AZURE_TENANT_ID --body <tenantId>`) and
+  delete the existing `AZURE_TENANT_ID` Secret to avoid drift.
+- No cmdlet signature changes. v0.7.72 is scoped to pipeline-sample
+  YAML files and Markdown docs.
+
 ## Version 0.7.71 - Step.3 markdown render fix + UnparseableCron action-required section, Step.4 critical-count undercount fix, Step.6 cluster portal link + collapsible Verbose Error, AZURE_SUBSCRIPTION_ID secret->variable
 
 ### Fixed
@@ -283,63 +333,7 @@ https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANG
 
 ## Version 0.7.70 - Step.0 recurring auth audit, Step.6 update run history, Step.3/Step.7 UX + new ARG-first fleet health summary cmdlet
 
-### Added
-
-- New cmdlet `Get-AzLocalFleetHealthOverview`: ARG-first fleet
-  health summary. One row per cluster joining
-  `microsoft.azurestackhci/clusters` with the cluster's
-  `updateSummaries` extensibility resource via ARG. 12 columns
-  including ClusterName, ClusterPortalUrl, HealthStatus, UpdateStatus,
-  CurrentVersion, SbeVersion, AzureConnection, LastChecked,
-  HealthResultsAgeDays. Supports `-SubscriptionId`, `-UpdateRingTag`
-  (incl. wildcard `***`), `-ExportPath`, `-PassThru`.
-
-### Changed (cmdlets)
-
-- `Test-AzureLocalApplyUpdatesScheduleCoverage` Audit rows carry a
-  new `Section` discriminator (`Schedule` / `Cron`). Output sorts
-  Schedule-first. `-View Recommend` emits a multi-section markdown
-  report. When `-SchedulePath` is omitted only the cron section is
-  emitted (back-compat).
-- `Get-AzureLocalFleetHealthFailures` Summary sorts Severity-first
-  (Critical, Warning, else), then ClusterCount desc, FailureCount
-  desc. Detail rows gain `TargetResourceName`, `TargetResourceType`,
-  `ClusterPortalUrl`. Summary rows gain `AffectedClusterPortalUrls`.
-
-### Changed (pipeline samples)
-
-- `Step.0_authentication-test.yml` (GH + ADO) repositioned as a
-  recurring `Authentication Validation and Subscription Scope Report`:
-  emits JUnit XML (Authentication / Subscription Scope / Resource
-  Graph suites - one testcase per accessible subscription), a
-  markdown summary with subscription count + per-subscription detail
-  table, and an `auth-report` artifact (XML + JSON + CSV). Re-run
-  monthly (or after RBAC changes) instead of deleting after the
-  first green run.
-- `Step.6_fleet-update-status.yml` (GH + ADO) gains an "Update Run
-  History and Error Details" section: new JUnit `<testsuite>` +
-  markdown table surfacing up to 25 recent unresolved Failed update
-  runs (last 30d) with portal deep-links, from
-  `Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved`.
-- `Step.3_apply-updates-schedule-audit.yml` (GH + ADO) emits TWO
-  JUnit `<testsuite>` blocks and TWO Audit Detail tables; Recommend
-  output prepended when `$hasIssues -and $reco`.
-- `Step.7_fleet-health-status.yml` (GH + ADO): Summary + Detailed
-  Results cluster cells render as `[ClusterName](portalUrl)` markdown
-  links. Detailed Results adds Failure Remediation (auto-renders as
-  `[link](url)` for https values), Target Resource Name, Target
-  Resource Type columns. New "Fleet Health Overview (fleet rollup)"
-  section calls `Get-AzLocalFleetHealthOverview` and publishes
-  `fleet-health-overview.csv` / `.json`.
-
-### Notes
-
-- All v0.7.70 changes are backward compatible. New columns/properties
-  are additive (`Section` defaults to `Cron`).
-- Pipeline samples bump to `GENERATED_AGAINST_MODULE_VERSION: '0.7.70'`.
-  Refresh existing copies with `Update-AzureLocalPipelineExample`.
-
-For full release notes on this and previous versions, see:
+For v0.7.70 details and release notes covering v0.7.69 and earlier, see the CHANGELOG:
 https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ---

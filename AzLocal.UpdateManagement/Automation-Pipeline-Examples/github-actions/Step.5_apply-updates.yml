@@ -112,7 +112,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.72'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -164,7 +164,7 @@ jobs:
       uses: azure/login@v3
       with:
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        tenant-id: ${{ vars.AZURE_TENANT_ID }}
         # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
         # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
         # <id>` after the OIDC token exchange so the runner has a default
@@ -179,7 +179,7 @@ jobs:
     # - name: Azure CLI Login (Client Secret)
     #   uses: azure/login@v3
     #   with:
-    #     creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+    #     creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ vars.AZURE_TENANT_ID }}"}'
     
     - name: Install Azure CLI Resource Graph Extension
       shell: pwsh
@@ -359,7 +359,7 @@ jobs:
       uses: azure/login@v3
       with:
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        tenant-id: ${{ vars.AZURE_TENANT_ID }}
         # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
         # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
         # <id>` after the OIDC token exchange so the runner has a default
@@ -374,7 +374,7 @@ jobs:
     # - name: Azure CLI Login (Client Secret)
     #   uses: azure/login@v3
     #   with:
-    #     creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+    #     creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ vars.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ vars.AZURE_TENANT_ID }}"}'
     
     - name: Install Azure CLI Resource Graph Extension
       shell: pwsh
@@ -653,34 +653,34 @@ jobs:
         $readyCount = "${{ needs.check-readiness.outputs.ready_count }}"
         $totalCount = "${{ needs.check-readiness.outputs.total_count }}"
         
-        Write-Host "## Update Application Summary" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "**Target UpdateRing:** $updateRing" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "" >> $env:GITHUB_STEP_SUMMARY
+        "## Update Application Summary" >> $env:GITHUB_STEP_SUMMARY
+        "" >> $env:GITHUB_STEP_SUMMARY
+        "**Target UpdateRing:** $updateRing" >> $env:GITHUB_STEP_SUMMARY
+        "" >> $env:GITHUB_STEP_SUMMARY
         
         if ($dryRun) {
-            Write-Host " **This was a dry run. No updates were applied.**" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
+            " **This was a dry run. No updates were applied.**" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
         }
         
-        Write-Host "### Readiness" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Metric | Count |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "|--------|-------|" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Total Clusters | $totalCount |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Ready for Update | $readyCount |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "" >> $env:GITHUB_STEP_SUMMARY
+        "### Readiness" >> $env:GITHUB_STEP_SUMMARY
+        "" >> $env:GITHUB_STEP_SUMMARY
+        "| Metric | Count |" >> $env:GITHUB_STEP_SUMMARY
+        "|--------|-------|" >> $env:GITHUB_STEP_SUMMARY
+        "| Total Clusters | $totalCount |" >> $env:GITHUB_STEP_SUMMARY
+        "| Ready for Update | $readyCount |" >> $env:GITHUB_STEP_SUMMARY
+        "" >> $env:GITHUB_STEP_SUMMARY
         
-        Write-Host "### Results" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Status | Count |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "|--------|-------|" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Updates Started | $succeeded |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Skipped | $skipped |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Failed | $failed |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Health Blocked | $healthBlocked |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Schedule Blocked | $scheduleBlocked |" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "| Sideloaded Blocked | $sideloadedBlocked |" >> $env:GITHUB_STEP_SUMMARY
+        "### Results" >> $env:GITHUB_STEP_SUMMARY
+        "" >> $env:GITHUB_STEP_SUMMARY
+        "| Status | Count |" >> $env:GITHUB_STEP_SUMMARY
+        "|--------|-------|" >> $env:GITHUB_STEP_SUMMARY
+        "| Updates Started | $succeeded |" >> $env:GITHUB_STEP_SUMMARY
+        "| Skipped | $skipped |" >> $env:GITHUB_STEP_SUMMARY
+        "| Failed | $failed |" >> $env:GITHUB_STEP_SUMMARY
+        "| Health Blocked | $healthBlocked |" >> $env:GITHUB_STEP_SUMMARY
+        "| Schedule Blocked | $scheduleBlocked |" >> $env:GITHUB_STEP_SUMMARY
+        "| Sideloaded Blocked | $sideloadedBlocked |" >> $env:GITHUB_STEP_SUMMARY
         
         # Actions Required section - summarize what needs manual attention
         $actionsNeeded = @()
@@ -690,11 +690,11 @@ jobs:
         if ([int]$sideloadedBlocked -gt 0) { $actionsNeeded += "- **$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False** - Operator must stage the sideloaded payload and flip the tag to True (or run Reset-AzureLocalSideloadedTag) before updates can proceed" }
         
         if ($actionsNeeded.Count -gt 0) {
-            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "### Actions Required" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
+            "### Actions Required" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
             foreach ($action in $actionsNeeded) {
-                Write-Host $action >> $env:GITHUB_STEP_SUMMARY
+                $action >> $env:GITHUB_STEP_SUMMARY
             }
         }
 
@@ -714,22 +714,22 @@ jobs:
         $updateRing = $env:INPUT_UPDATE_RING
         $totalCount = "${{ needs.check-readiness.outputs.total_count }}"
         
-        Write-Host "## No Clusters Ready for Update" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "**Target UpdateRing:** $updateRing" >> $env:GITHUB_STEP_SUMMARY
-        Write-Host "" >> $env:GITHUB_STEP_SUMMARY
+        "## No Clusters Ready for Update" >> $env:GITHUB_STEP_SUMMARY
+        "" >> $env:GITHUB_STEP_SUMMARY
+        "**Target UpdateRing:** $updateRing" >> $env:GITHUB_STEP_SUMMARY
+        "" >> $env:GITHUB_STEP_SUMMARY
         
         if ($totalCount -eq 0) {
-            Write-Host "No clusters found with UpdateRing tag value '$updateRing'" >> $env:GITHUB_STEP_SUMMARY
+            "No clusters found with UpdateRing tag value '$updateRing'" >> $env:GITHUB_STEP_SUMMARY
         } else {
-            Write-Host "Found $totalCount cluster(s) with UpdateRing='$updateRing', but none are ready for updates." >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "Possible reasons:" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "- Clusters may already be up to date" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "- Updates may be in progress" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "- Clusters may have health check failures" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "" >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "Download the readiness report artifact for details." >> $env:GITHUB_STEP_SUMMARY
+            "Found $totalCount cluster(s) with UpdateRing='$updateRing', but none are ready for updates." >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
+            "Possible reasons:" >> $env:GITHUB_STEP_SUMMARY
+            "- Clusters may already be up to date" >> $env:GITHUB_STEP_SUMMARY
+            "- Updates may be in progress" >> $env:GITHUB_STEP_SUMMARY
+            "- Clusters may have health check failures" >> $env:GITHUB_STEP_SUMMARY
+            "" >> $env:GITHUB_STEP_SUMMARY
+            "Download the readiness report artifact for details." >> $env:GITHUB_STEP_SUMMARY
         }
         
         Write-Warning "No clusters ready for update in ring '$updateRing'"

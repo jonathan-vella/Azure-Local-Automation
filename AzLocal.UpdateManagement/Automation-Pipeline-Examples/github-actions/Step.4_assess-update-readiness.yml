@@ -66,7 +66,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.71'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.72'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -92,7 +92,7 @@ jobs:
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
           # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
           # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
           # <id>` after the OIDC token exchange so the runner has a default
