@@ -1347,6 +1347,32 @@ Describe 'Helper Function: Get-HealthCheckFailureSummary (Internal)' {
             } -us $mock
             $result | Should -Match '^\[Critical\] C1; \[Critical\] C2; \[Critical\] C3; \[Critical\] C4; \[Critical\] C5 \(\+2 more\)$'
         }
+
+        It 'Should dedup byte-identical duplicate healthCheckResult entries (v0.7.76)' {
+            # Reproduces the ARM upstream-dup observed on a 2-node Azure Local
+            # cluster: the "Test Network intent on existing cluster nodes" check
+            # emitted twice with identical displayName / severity / targetResourceName.
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'Test Network intent on existing cluster nodes'; targetResourceName = 'NetworkIntent' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'Test Network intent on existing cluster nodes'; targetResourceName = 'NetworkIntent' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Be '[Critical] Test Network intent on existing cluster nodes (NetworkIntent)'
+        }
+
+        It 'Should keep distinct rows when targetResourceName differs (v0.7.76)' {
+            # Distinct per-node failures should NOT be collapsed by dedup.
+            $mock = [PSCustomObject]@{ properties = [PSCustomObject]@{ healthCheckResult = @(
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'Storage Job Health Check'; targetResourceName = 'UserStorage_1-Repair' }
+                [PSCustomObject]@{ status = 'Failed'; severity = 'Critical'; displayName = 'Storage Job Health Check'; targetResourceName = 'UserStorage_2-Repair' }
+            )}}
+            $result = & (Get-Module AzLocal.UpdateManagement) {
+                param($us) Get-HealthCheckFailureSummary -UpdateSummary $us
+            } -us $mock
+            $result | Should -Be '[Critical] Storage Job Health Check (UserStorage_1-Repair); [Critical] Storage Job Health Check (UserStorage_2-Repair)'
+        }
     }
 }
 

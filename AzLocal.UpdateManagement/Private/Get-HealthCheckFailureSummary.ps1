@@ -26,6 +26,13 @@ function Get-HealthCheckFailureSummary {
     $warnings  = @()
     $healthChecks = $UpdateSummary.properties.healthCheckResult
 
+    # Dedup byte-identical duplicates emitted by ARM upstream (v0.7.76 fix
+    # for the same bug as Test-AzLocalClusterHealth: the
+    # updateSummaries.healthCheckResult feed sometimes contains repeated
+    # entries for the same logical check, producing readiness summary
+    # lines like "[Critical] Foo (Bar); [Critical] Foo (Bar)").
+    $seenEntries = New-Object 'System.Collections.Generic.HashSet[string]'
+
     foreach ($check in $healthChecks) {
         if ($check.status -eq "Failed") {
             $severity = if ($check.severity) { $check.severity } else { "Unknown" }
@@ -36,6 +43,12 @@ function Get-HealthCheckFailureSummary {
             $displayName = if ($check.displayName) { $check.displayName } elseif ($check.name) { ($check.name -split '/')[0] } else { "Unknown Check" }
             $targetNode = if ($check.targetResourceName) { " ($($check.targetResourceName))" } else { "" }
             $entry = "[$severity] $displayName$targetNode"
+            if (-not $seenEntries.Add($entry)) {
+                # Already seen this exact entry; skip silently. Verbose
+                # diagnostics live in Test-AzLocalClusterHealth where the
+                # dedup is the primary code path.
+                continue
+            }
             if ($severity -eq "Critical") {
                 $criticals += $entry
             }

@@ -262,20 +262,46 @@ function Test-AzLocalClusterHealth {
 
             # Extract failures (Critical and Warning only; use -BlockingOnly for Critical only)
             $failures = @()
+            # Track seen rows for dedup. The ARM updateSummaries.healthCheckResult feed
+            # sometimes emits byte-identical duplicate entries for the same logical
+            # check (observed in v0.7.76 on a 2-node Azure Local cluster where the
+            # "Test Network intent on existing cluster nodes" check emitted two
+            # rows with identical CheckName/Severity/Description/Remediation/
+            # TargetResourceName/Timestamp). Faithfully echoing those into the
+            # operator's CSV doubled the displayed failure count and made
+            # Step.4_assess-update-readiness.yml reports confusing. We dedup
+            # by the COMPLETE row tuple: if every field is identical the row is
+            # a duplicate; per-node distinct findings (different TargetResource
+            # Name or Timestamp) stay separate.
+            $seenKeys = New-Object 'System.Collections.Generic.HashSet[string]'
+            # Composite-key field separator. U+001F (UNIT SEPARATOR) is never
+            # present in human-readable strings so no field value can ever
+            # collide with a separator boundary. Windows PowerShell 5.1 does
+            # not support the `u{XXXX} escape so we build the char explicitly.
+            $usSep = [char]0x1F
             foreach ($check in $healthChecks) {
                 if ($check.status -eq "Failed") {
                     $sev = if ($check.severity) { $check.severity } else { "Unknown" }
                     if ($BlockingOnly -and $sev -ne "Critical") { continue }
                     if ($sev -eq "Informational") { continue }
                     $displayName = if ($check.displayName) { $check.displayName } elseif ($check.name) { ($check.name -split '/')[0] } else { "Unknown" }
+                    $description = if ($check.description) { $check.description } else { "" }
+                    $remediation = if ($check.remediation) { $check.remediation } else { "" }
+                    $targetResName = if ($check.targetResourceName) { $check.targetResourceName } else { "" }
+                    $timestamp = if ($check.timestamp) { $check.timestamp } else { "" }
+                    $key = $clusterName + $usSep + $displayName + $usSep + $sev + $usSep + $description + $usSep + $remediation + $usSep + $targetResName + $usSep + $timestamp
+                    if (-not $seenKeys.Add($key)) {
+                        Write-Verbose "Suppressing duplicate healthCheckResult row for cluster '$clusterName' check '$displayName' target '$targetResName' timestamp '$timestamp' (ARM upstream duplicate)."
+                        continue
+                    }
                     $failures += [PSCustomObject]@{
                         ClusterName        = $clusterName
                         CheckName          = $displayName
                         Severity           = $sev
-                        Description        = if ($check.description) { $check.description } else { "" }
-                        Remediation        = if ($check.remediation) { $check.remediation } else { "" }
-                        TargetResourceName = if ($check.targetResourceName) { $check.targetResourceName } else { "" }
-                        Timestamp          = if ($check.timestamp) { $check.timestamp } else { "" }
+                        Description        = $description
+                        Remediation        = $remediation
+                        TargetResourceName = $targetResName
+                        Timestamp          = $timestamp
                     }
                 }
             }
