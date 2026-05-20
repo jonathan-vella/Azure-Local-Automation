@@ -26,6 +26,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **P0: ARG `mv-expand` 128-element cap silently dropped >50% of fleet
+  health checks in `Get-AzLocalFleetHealthFailures`.** Azure Resource
+  Graph silently caps `mv-expand` at 128 expanded child rows per parent.
+  The previous KQL used
+  `| extend checks = properties.healthCheckResult | mv-expand hc = checks | where tostring(hc.status) =~ 'Failed'`,
+  so any cluster whose `healthCheckResult` array exceeded 128 entries was
+  losing every check past position 128 - including Failed ones - before
+  the function ever saw them. Empirical measurement against an
+  AdaptiveCloudLab subscription showed **16 of 20 clusters affected** and
+  **2,711 healthCheckResult entries silently dropped fleet-wide**, with
+  the worst offender (NewYorkCity, 380 entries) losing 66% of its checks
+  and reporting only 4 Failed entries when ARM had additional Failed
+  entries beyond the cap. `fleet-health-detail.csv` and the matching
+  Summary view were therefore incomplete on every fleet of any
+  appreciable size. **Fix:** the KQL no longer uses `mv-expand`. It
+  projects `properties.healthCheckResult` as a raw array column and the
+  function expands the array client-side in PowerShell, applying the
+  `status == 'Failed'` and Severity filters in PS. Output schema is
+  unchanged. ARG-side filtering (and the previous KQL `severity in~ (...)`
+  clause) moved to the client. The 4 small clusters (<=128 entries) were
+  unaffected, and `Test-AzLocalClusterHealth` / `Get-AzLocalClusterUpdateReadiness`
+  were already safe because they project `properties` whole and expand
+  client-side. Two new Pester regression cases:
+  one synthesises a 200-entry `healthCheckResult` with a Failed marker at
+  index 150 (well past the 128 cap) and asserts the cmdlet returns it;
+  the second is a guard against the regression returning - it asserts
+  the emitted KQL contains `HealthCheckResult = properties.healthCheckResult`
+  and does NOT contain the string `mv-expand`.
 - **ARM `healthCheckResult` byte-identical duplicate suppression** in
   `Test-AzLocalClusterHealth` and the private `Get-HealthCheckFailureSummary`.
   ARM upstream was observed emitting two byte-identical rows for the same

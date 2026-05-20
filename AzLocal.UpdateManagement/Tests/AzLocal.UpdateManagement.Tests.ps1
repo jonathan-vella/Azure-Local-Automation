@@ -2917,60 +2917,78 @@ Describe 'Function: Get-AzLocalFleetHealthFailures' {
 
         It 'Returns one row per (cluster, failing health-check) with the expected shape' {
             InModuleScope AzLocal.UpdateManagement {
+                # v0.7.76: ARG now returns one row per cluster carrying the raw
+                # healthCheckResult array; the function expands client-side.
                 # Two clusters, two failing checks each across Critical + Warning.
                 $payload = @{
-                    count = 4
+                    count = 2
                     data  = @(
                         @{
                             ClusterName       = 'Cluster01'
                             ResourceGroup     = 'RG1'
                             SubscriptionId    = 'sub-1111'
                             ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
-                            Severity          = 'Critical'
-                            FailureName       = 'storage-pool-health'
-                            FailureReason     = 'Storage pool degraded'
-                            Description       = 'A storage pool drive is in degraded state.'
-                            Remediation       = 'Replace the failed drive.'
-                            LastOccurrence    = '2026-05-16T08:00:00Z'
-                        },
-                        @{
-                            ClusterName       = 'Cluster01'
-                            ResourceGroup     = 'RG1'
-                            SubscriptionId    = 'sub-1111'
-                            ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
-                            Severity          = 'Warning'
-                            FailureName       = 'time-skew'
-                            FailureReason     = 'Time skew detected'
-                            Description       = 'Cluster nodes time skew > 1s.'
-                            Remediation       = 'Validate NTP configuration.'
-                            LastOccurrence    = '2026-05-16T07:30:00Z'
-                        },
-                        @{
-                            ClusterName       = 'Cluster02'
-                            ResourceGroup     = 'RG2'
-                            SubscriptionId    = 'sub-1111'
-                            ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG2/providers/Microsoft.AzureStackHCI/clusters/Cluster02'
-                            Severity          = 'Critical'
-                            FailureName       = 'storage-pool-health'
-                            FailureReason     = 'Storage pool degraded'
-                            Description       = 'A storage pool drive is in degraded state.'
-                            Remediation       = 'Replace the failed drive.'
-                            LastOccurrence    = '2026-05-16T08:15:00Z'
+                            ClusterPortalUrl  = 'https://portal.azure.com/#@/resource/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            HealthCheckCount  = 2
+                            HealthCheckResult = @(
+                                @{
+                                    name               = 'storage-pool-health'
+                                    displayName        = 'Storage pool degraded'
+                                    description        = 'A storage pool drive is in degraded state.'
+                                    remediation        = 'Replace the failed drive.'
+                                    severity           = 'Critical'
+                                    status             = 'Failed'
+                                    targetResourceName = ''
+                                    targetResourceType = ''
+                                    timestamp          = '2026-05-16T08:00:00Z'
+                                },
+                                @{
+                                    name               = 'time-skew'
+                                    displayName        = 'Time skew detected'
+                                    description        = 'Cluster nodes time skew > 1s.'
+                                    remediation        = 'Validate NTP configuration.'
+                                    severity           = 'Warning'
+                                    status             = 'Failed'
+                                    targetResourceName = ''
+                                    targetResourceType = ''
+                                    timestamp          = '2026-05-16T07:30:00Z'
+                                }
+                            )
                         },
                         @{
                             ClusterName       = 'Cluster02'
                             ResourceGroup     = 'RG2'
                             SubscriptionId    = 'sub-1111'
                             ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG2/providers/Microsoft.AzureStackHCI/clusters/Cluster02'
-                            Severity          = 'Warning'
-                            FailureName       = 'network-mtu'
-                            FailureReason     = 'Network MTU misconfiguration'
-                            Description       = 'Cluster nodes have inconsistent MTU.'
-                            Remediation       = 'Align MTU across all NICs.'
-                            LastOccurrence    = '2026-05-16T07:00:00Z'
+                            ClusterPortalUrl  = 'https://portal.azure.com/#@/resource/subscriptions/sub-1111/resourceGroups/RG2/providers/Microsoft.AzureStackHCI/clusters/Cluster02'
+                            HealthCheckCount  = 2
+                            HealthCheckResult = @(
+                                @{
+                                    name               = 'storage-pool-health'
+                                    displayName        = 'Storage pool degraded'
+                                    description        = 'A storage pool drive is in degraded state.'
+                                    remediation        = 'Replace the failed drive.'
+                                    severity           = 'Critical'
+                                    status             = 'Failed'
+                                    targetResourceName = ''
+                                    targetResourceType = ''
+                                    timestamp          = '2026-05-16T08:15:00Z'
+                                },
+                                @{
+                                    name               = 'network-mtu'
+                                    displayName        = 'Network MTU misconfiguration'
+                                    description        = 'Cluster nodes have inconsistent MTU.'
+                                    remediation        = 'Align MTU across all NICs.'
+                                    severity           = 'Warning'
+                                    status             = 'Failed'
+                                    targetResourceName = ''
+                                    targetResourceType = ''
+                                    timestamp          = '2026-05-16T07:00:00Z'
+                                }
+                            )
                         }
                     )
-                } | ConvertTo-Json -Depth 6
+                } | ConvertTo-Json -Depth 8
                 function az { return $payload }
                 $global:LASTEXITCODE = 0
 
@@ -3001,19 +3019,27 @@ Describe 'Function: Get-AzLocalFleetHealthFailures' {
 
         It 'Aggregates rows by FailureReason + Severity and orders by ClusterCount desc' {
             InModuleScope AzLocal.UpdateManagement {
-                # Storage pool degraded hits 2 clusters; Time skew hits 1; Network MTU hits 1.
-                # Expected ordering: Storage pool degraded (ClusterCount=2) first, then
-                # Critical-before-Warning at the tie-break, then FailureCount desc.
+                # v0.7.76: cluster-shaped mock. Storage pool degraded hits 2
+                # clusters (C1, C2); Time skew hits 2 (C1, C3); Network MTU
+                # hits 1 (C2). Expected ordering: Critical first; among the
+                # two ClusterCount=2 reasons, Critical (Storage pool) outranks
+                # Warning (Time skew).
                 $payload = @{
-                    count = 5
+                    count = 3
                     data  = @(
-                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
-                        @{ ClusterName='C2'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c2'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:30:00Z' },
-                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; Severity='Warning'; FailureName='ts'; FailureReason='Time skew detected'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' },
-                        @{ ClusterName='C3'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c3'; Severity='Warning'; FailureName='ts'; FailureReason='Time skew detected'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:30:00Z' },
-                        @{ ClusterName='C2'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c2'; Severity='Warning'; FailureName='mtu'; FailureReason='Network MTU misconfiguration'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T06:00:00Z' }
+                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; HealthCheckCount=2; HealthCheckResult=@(
+                            @{ name='spd'; displayName='Storage pool degraded';        description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:00:00Z' },
+                            @{ name='ts';  displayName='Time skew detected';           description='d'; remediation='r'; severity='Warning';  status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T07:00:00Z' }
+                        ) },
+                        @{ ClusterName='C2'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c2'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c2'; HealthCheckCount=2; HealthCheckResult=@(
+                            @{ name='spd'; displayName='Storage pool degraded';        description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:30:00Z' },
+                            @{ name='mtu'; displayName='Network MTU misconfiguration'; description='d'; remediation='r'; severity='Warning';  status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T06:00:00Z' }
+                        ) },
+                        @{ ClusterName='C3'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c3'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c3'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='ts';  displayName='Time skew detected';           description='d'; remediation='r'; severity='Warning';  status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T07:30:00Z' }
+                        ) }
                     )
-                } | ConvertTo-Json -Depth 6
+                } | ConvertTo-Json -Depth 8
                 function az { return $payload }
                 $global:LASTEXITCODE = 0
 
@@ -3043,42 +3069,55 @@ Describe 'Function: Get-AzLocalFleetHealthFailures' {
 
     Context 'Severity filter' {
 
-        It 'Severity=Critical builds a KQL clause that filters to Critical' {
-            InModuleScope AzLocal.UpdateManagement {
-                $script:CapturedKql = $null
-                function az {
-                    # az graph query -q "<KQL>" --first 1000 --only-show-errors ...
-                    $argList = @($args)
-                    $qIdx = $argList.IndexOf('-q')
-                    if ($qIdx -ge 0 -and $qIdx + 1 -lt $argList.Count) {
-                        $script:CapturedKql = $argList[$qIdx + 1]
+        BeforeAll {
+            # v0.7.76: severity filtering moved client-side, so these tests
+            # exercise output filtering rather than KQL string content.
+            # Mock returns one cluster carrying three failed checks: one
+            # Critical, one Warning, one Informational.
+            # NOTE: $global: scope is required so InModuleScope (which switches
+            # the script scope to the module) can still read the payload.
+            $global:SeverityMockPayload = @{
+                count = 1
+                data  = @(
+                    @{
+                        ClusterName       = 'Cluster01'
+                        ResourceGroup     = 'RG1'
+                        SubscriptionId    = 's1'
+                        ClusterResourceId = '/x/c1'
+                        ClusterPortalUrl  = 'https://portal.azure.com/#@/resource/x/c1'
+                        HealthCheckCount  = 3
+                        HealthCheckResult = @(
+                            @{ name='spd'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical';      status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:00:00Z' },
+                            @{ name='ts';  displayName='Time skew detected';    description='d'; remediation='r'; severity='Warning';       status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T07:30:00Z' },
+                            @{ name='inf'; displayName='Info noise';            description='d'; remediation='r'; severity='Informational'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T07:00:00Z' }
+                        )
                     }
-                    return '{"count":0,"data":[]}'
-                }
+                )
+            } | ConvertTo-Json -Depth 8
+        }
+
+        It 'Severity=Critical filters output to Critical-only rows' {
+            InModuleScope AzLocal.UpdateManagement {
+                function az { return $global:SeverityMockPayload }
                 $global:LASTEXITCODE = 0
 
-                $null = Get-AzLocalFleetHealthFailures -Severity Critical
-                $script:CapturedKql | Should -Not -BeNullOrEmpty
-                $script:CapturedKql | Should -Match "hc\.severity\)\s*=~\s*'Critical'"
+                $rows = Get-AzLocalFleetHealthFailures -Severity Critical
+                $rows | Should -HaveCount 1
+                $rows[0].Severity | Should -Be 'Critical'
+                $rows[0].FailureReason | Should -Be 'Storage pool degraded'
             }
         }
 
-        It "Severity=All builds a KQL clause that filters in~ ('Critical','Warning')" {
+        It "Severity=All returns Critical + Warning rows and excludes Informational" {
             InModuleScope AzLocal.UpdateManagement {
-                $script:CapturedKql = $null
-                function az {
-                    $argList = @($args)
-                    $qIdx = $argList.IndexOf('-q')
-                    if ($qIdx -ge 0 -and $qIdx + 1 -lt $argList.Count) {
-                        $script:CapturedKql = $argList[$qIdx + 1]
-                    }
-                    return '{"count":0,"data":[]}'
-                }
+                function az { return $global:SeverityMockPayload }
                 $global:LASTEXITCODE = 0
 
-                $null = Get-AzLocalFleetHealthFailures -Severity All
-                $script:CapturedKql | Should -Not -BeNullOrEmpty
-                $script:CapturedKql | Should -Match "in~\s*\('Critical','Warning'\)"
+                $rows = Get-AzLocalFleetHealthFailures -Severity All
+                $rows | Should -HaveCount 2
+                @($rows | Where-Object { $_.Severity -eq 'Critical' }).Count | Should -Be 1
+                @($rows | Where-Object { $_.Severity -eq 'Warning'  }).Count | Should -Be 1
+                @($rows | Where-Object { $_.Severity -eq 'Informational' }).Count | Should -Be 0
             }
         }
     }
@@ -3091,14 +3130,19 @@ Describe 'Function: Get-AzLocalFleetHealthFailures' {
                 function az {
                     $script:Calls++
                     if ($script:Calls -eq 1) {
-                        # First call: health-check rows for two clusters
+                        # v0.7.76: first call returns cluster-shape rows with raw
+                        # healthCheckResult arrays.
                         return (@{
                             count = 2
                             data  = @(
-                                @{ ClusterName='Cluster01'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/subscriptions/s1/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
-                                @{ ClusterName='Cluster02'; ResourceGroup='RG2'; SubscriptionId='s1'; ClusterResourceId='/subscriptions/s1/resourceGroups/RG2/providers/Microsoft.AzureStackHCI/clusters/Cluster02'; Severity='Warning';  FailureName='ts';  FailureReason='Time skew detected';     Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' }
+                                @{ ClusterName='Cluster01'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/subscriptions/s1/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'; ClusterPortalUrl='https://portal.azure.com/#@/resource/c1'; HealthCheckCount=1; HealthCheckResult=@(
+                                    @{ name='spd'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:00:00Z' }
+                                ) },
+                                @{ ClusterName='Cluster02'; ResourceGroup='RG2'; SubscriptionId='s1'; ClusterResourceId='/subscriptions/s1/resourceGroups/RG2/providers/Microsoft.AzureStackHCI/clusters/Cluster02'; ClusterPortalUrl='https://portal.azure.com/#@/resource/c2'; HealthCheckCount=1; HealthCheckResult=@(
+                                    @{ name='ts'; displayName='Time skew detected'; description='d'; remediation='r'; severity='Warning'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T07:00:00Z' }
+                                ) }
                             )
-                        } | ConvertTo-Json -Depth 6)
+                        } | ConvertTo-Json -Depth 8)
                     }
                     elseif ($script:Calls -eq 2) {
                         # Second call: UpdateRing tag mapping - only Cluster01 is in Wave1
@@ -3130,9 +3174,11 @@ Describe 'Function: Get-AzLocalFleetHealthFailures' {
                 $payload = @{
                     count = 1
                     data  = @(
-                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' }
+                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='spd'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:00:00Z' }
+                        ) }
                     )
-                } | ConvertTo-Json -Depth 6
+                } | ConvertTo-Json -Depth 8
                 function az { return $payload }
                 $global:LASTEXITCODE = 0
 
@@ -3159,9 +3205,11 @@ Describe 'Function: Get-AzLocalFleetHealthFailures' {
                 $payload = @{
                     count = 1
                     data  = @(
-                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' }
+                        @{ ClusterName='C1'; ResourceGroup='RG1'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='spd'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:00:00Z' }
+                        ) }
                     )
-                } | ConvertTo-Json -Depth 6
+                } | ConvertTo-Json -Depth 8
                 function az { return $payload }
                 $global:LASTEXITCODE = 0
 
@@ -7526,18 +7574,27 @@ Describe 'Function: Get-AzLocalFleetHealthFailures - v0.7.70 schema + ordering' 
 
         It 'A widespread Warning does NOT outrank a less-widespread Critical' {
             InModuleScope AzLocal.UpdateManagement {
+                # v0.7.76: cluster-shape mock.
                 # Time-skew (Warning) hits THREE clusters; Storage pool (Critical) hits ONE.
                 # Old (pre-v0.7.70) sort would put Time skew first (ClusterCount=3 wins).
                 # New v0.7.70 sort puts Critical first regardless of count.
                 $payload = @{
                     count = 4
                     data  = @(
-                        @{ ClusterName='C1'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; TargetResourceName='c1'; TargetResourceType='cluster'; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
-                        @{ ClusterName='C2'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c2'; TargetResourceName='c2'; TargetResourceType='cluster'; Severity='Warning';  FailureName='ts';  FailureReason='Time skew detected';    Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' },
-                        @{ ClusterName='C3'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c3'; TargetResourceName='c3'; TargetResourceType='cluster'; Severity='Warning';  FailureName='ts';  FailureReason='Time skew detected';    Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' },
-                        @{ ClusterName='C4'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c4'; TargetResourceName='c4'; TargetResourceType='cluster'; Severity='Warning';  FailureName='ts';  FailureReason='Time skew detected';    Description='d'; Remediation='r'; LastOccurrence='2026-05-16T07:00:00Z' }
+                        @{ ClusterName='C1'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='spd'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName='c1'; targetResourceType='cluster'; timestamp='2026-05-16T08:00:00Z' }
+                        ) },
+                        @{ ClusterName='C2'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c2'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c2'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='ts';  displayName='Time skew detected';    description='d'; remediation='r'; severity='Warning';  status='Failed'; targetResourceName='c2'; targetResourceType='cluster'; timestamp='2026-05-16T07:00:00Z' }
+                        ) },
+                        @{ ClusterName='C3'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c3'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c3'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='ts';  displayName='Time skew detected';    description='d'; remediation='r'; severity='Warning';  status='Failed'; targetResourceName='c3'; targetResourceType='cluster'; timestamp='2026-05-16T07:00:00Z' }
+                        ) },
+                        @{ ClusterName='C4'; ResourceGroup='R'; SubscriptionId='s1'; ClusterResourceId='/x/c4'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c4'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='ts';  displayName='Time skew detected';    description='d'; remediation='r'; severity='Warning';  status='Failed'; targetResourceName='c4'; targetResourceType='cluster'; timestamp='2026-05-16T07:00:00Z' }
+                        ) }
                     )
-                } | ConvertTo-Json -Depth 6
+                } | ConvertTo-Json -Depth 8
                 function az { return $payload }
                 $global:LASTEXITCODE = 0
 
@@ -7561,22 +7618,28 @@ Describe 'Function: Get-AzLocalFleetHealthFailures - v0.7.70 schema + ordering' 
                     count = 1
                     data  = @(
                         @{
-                            ClusterName        = 'Cluster01'
-                            ResourceGroup      = 'RG1'
-                            SubscriptionId     = 'sub-1111'
-                            ClusterResourceId  = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
-                            ClusterPortalUrl   = 'https://portal.azure.com/#@/resource/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
-                            TargetResourceName = 'Drive-7'
-                            TargetResourceType = 'PhysicalDisk'
-                            Severity           = 'Critical'
-                            FailureName        = 'storage-pool-health'
-                            FailureReason      = 'Storage pool degraded'
-                            Description        = 'd'
-                            Remediation        = 'r'
-                            LastOccurrence     = '2026-05-16T08:00:00Z'
+                            ClusterName       = 'Cluster01'
+                            ResourceGroup     = 'RG1'
+                            SubscriptionId    = 'sub-1111'
+                            ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            ClusterPortalUrl  = 'https://portal.azure.com/#@/resource/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            HealthCheckCount  = 1
+                            HealthCheckResult = @(
+                                @{
+                                    name               = 'storage-pool-health'
+                                    displayName        = 'Storage pool degraded'
+                                    description        = 'd'
+                                    remediation        = 'r'
+                                    severity           = 'Critical'
+                                    status             = 'Failed'
+                                    targetResourceName = 'Drive-7'
+                                    targetResourceType = 'PhysicalDisk'
+                                    timestamp          = '2026-05-16T08:00:00Z'
+                                }
+                            )
                         }
                     )
-                } | ConvertTo-Json -Depth 6
+                } | ConvertTo-Json -Depth 8
                 function az { return $payload }
                 $global:LASTEXITCODE = 0
 
@@ -7594,22 +7657,18 @@ Describe 'Function: Get-AzLocalFleetHealthFailures - v0.7.70 schema + ordering' 
                     count = 1
                     data  = @(
                         @{
-                            ClusterName        = 'Cluster01'
-                            ResourceGroup      = 'RG1'
-                            SubscriptionId     = 'sub-1111'
-                            ClusterResourceId  = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
-                            ClusterPortalUrl   = 'https://portal.azure.com/#@/resource/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
-                            TargetResourceName = ''
-                            TargetResourceType = ''
-                            Severity           = 'Critical'
-                            FailureName        = 'x'
-                            FailureReason      = 'Storage pool degraded'
-                            Description        = 'd'
-                            Remediation        = 'r'
-                            LastOccurrence     = '2026-05-16T08:00:00Z'
+                            ClusterName       = 'Cluster01'
+                            ResourceGroup     = 'RG1'
+                            SubscriptionId    = 'sub-1111'
+                            ClusterResourceId = '/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            ClusterPortalUrl  = 'https://portal.azure.com/#@/resource/subscriptions/sub-1111/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01'
+                            HealthCheckCount  = 1
+                            HealthCheckResult = @(
+                                @{ name='x'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:00:00Z' }
+                            )
                         }
                     )
-                } | ConvertTo-Json -Depth 6
+                } | ConvertTo-Json -Depth 8
                 function az { return $payload }
                 $global:LASTEXITCODE = 0
 
@@ -7626,10 +7685,14 @@ Describe 'Function: Get-AzLocalFleetHealthFailures - v0.7.70 schema + ordering' 
                 $payload = @{
                     count = 2
                     data  = @(
-                        @{ ClusterName='C1'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; TargetResourceName=''; TargetResourceType=''; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
-                        @{ ClusterName='C2'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c2'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c2'; TargetResourceName=''; TargetResourceType=''; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:10:00Z' }
+                        @{ ClusterName='C1'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='spd'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:00:00Z' }
+                        ) },
+                        @{ ClusterName='C2'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c2'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c2'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='spd'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:10:00Z' }
+                        ) }
                     )
-                } | ConvertTo-Json -Depth 6
+                } | ConvertTo-Json -Depth 8
                 function az { return $payload }
                 $global:LASTEXITCODE = 0
 
@@ -7647,10 +7710,14 @@ Describe 'Function: Get-AzLocalFleetHealthFailures - v0.7.70 schema + ordering' 
                 $payload = @{
                     count = 2
                     data  = @(
-                        @{ ClusterName='C1'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; TargetResourceName=''; TargetResourceType=''; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:00:00Z' },
-                        @{ ClusterName='C2'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c2'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c2'; TargetResourceName=''; TargetResourceType=''; Severity='Critical'; FailureName='spd'; FailureReason='Storage pool degraded'; Description='d'; Remediation='r'; LastOccurrence='2026-05-16T08:10:00Z' }
+                        @{ ClusterName='C1'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c1'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c1'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='spd'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:00:00Z' }
+                        ) },
+                        @{ ClusterName='C2'; ResourceGroup='R'; SubscriptionId='s'; ClusterResourceId='/x/c2'; ClusterPortalUrl='https://portal.azure.com/#@/resource/x/c2'; HealthCheckCount=1; HealthCheckResult=@(
+                            @{ name='spd'; displayName='Storage pool degraded'; description='d'; remediation='r'; severity='Critical'; status='Failed'; targetResourceName=''; targetResourceType=''; timestamp='2026-05-16T08:10:00Z' }
+                        ) }
                     )
-                } | ConvertTo-Json -Depth 6
+                } | ConvertTo-Json -Depth 8
                 function az { return $payload }
                 $global:LASTEXITCODE = 0
 
@@ -7660,6 +7727,107 @@ Describe 'Function: Get-AzLocalFleetHealthFailures - v0.7.70 schema + ordering' 
                 $value | Should -Not -Match ';[^ ]'
                 # Multi-cluster value must contain at least one "; ".
                 $value | Should -Match '; '
+            }
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# v0.7.76 - Get-AzLocalFleetHealthFailures: ARG mv-expand 128-cap regression
+# -----------------------------------------------------------------------------
+# v0.7.76 removed the `mv-expand` from the ARG query because Azure Resource
+# Graph silently caps the operator at 128 expanded child rows per parent.
+# Any cluster whose `properties.healthCheckResult` array exceeded 128 entries
+# was silently losing >50% of its health checks - including Failed ones.
+# This Describe block proves the fix: when the ARG response carries a
+# 200-entry array with a Failed entry at index 150 (well past the old 128
+# cap), the cmdlet now expands it client-side and returns the entry.
+
+Describe 'Function: Get-AzLocalFleetHealthFailures - v0.7.76 ARG mv-expand 128-cap regression' {
+
+    Context 'Client-side expansion bypasses the ARG mv-expand cap' {
+
+        It 'Returns a Failed entry at array index 150 (well past the historical 128-row mv-expand cap)' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Build a 200-entry healthCheckResult: 199 Succeeded fillers
+                # plus one Failed entry placed at index 150. The OLD KQL
+                # would silently drop everything past index 128, so the
+                # Failed entry would never have appeared in the result.
+                $checks = New-Object System.Collections.ArrayList
+                for ($i = 0; $i -lt 200; $i++) {
+                    if ($i -eq 150) {
+                        [void]$checks.Add(@{
+                            name               = 'late-failure-marker'
+                            displayName        = 'Late array position failure (index 150)'
+                            description        = 'Synthetic failure placed beyond the historical mv-expand 128-row cap.'
+                            remediation        = 'Confirm client-side expansion is present.'
+                            severity           = 'Critical'
+                            status             = 'Failed'
+                            targetResourceName = 'BeyondCap'
+                            targetResourceType = 'RegressionMarker'
+                            timestamp          = '2026-05-19T12:00:00Z'
+                        })
+                    } else {
+                        [void]$checks.Add(@{
+                            name               = "filler-$i"
+                            displayName        = "Filler check $i"
+                            description        = 'd'
+                            remediation        = 'r'
+                            severity           = 'Critical'
+                            status             = 'Succeeded'
+                            targetResourceName = ''
+                            targetResourceType = ''
+                            timestamp          = '2026-05-19T11:00:00Z'
+                        })
+                    }
+                }
+
+                $payload = @{
+                    count = 1
+                    data  = @(
+                        @{
+                            ClusterName       = 'BigCluster'
+                            ResourceGroup     = 'RG-big'
+                            SubscriptionId    = 'sub-big'
+                            ClusterResourceId = '/subscriptions/sub-big/resourceGroups/RG-big/providers/Microsoft.AzureStackHCI/clusters/BigCluster'
+                            ClusterPortalUrl  = 'https://portal.azure.com/#@/resource/subscriptions/sub-big/resourceGroups/RG-big/providers/Microsoft.AzureStackHCI/clusters/BigCluster'
+                            HealthCheckCount  = 200
+                            HealthCheckResult = $checks.ToArray()
+                        }
+                    )
+                } | ConvertTo-Json -Depth 8
+                function az { return $payload }
+                $global:LASTEXITCODE = 0
+
+                $rows = Get-AzLocalFleetHealthFailures -View Detail
+                $rows | Should -HaveCount 1
+                $rows[0].ClusterName        | Should -Be 'BigCluster'
+                $rows[0].FailureName        | Should -Be 'late-failure-marker'
+                $rows[0].FailureReason      | Should -Be 'Late array position failure (index 150)'
+                $rows[0].Severity           | Should -Be 'Critical'
+                $rows[0].TargetResourceName | Should -Be 'BeyondCap'
+            }
+        }
+
+        It 'KQL no longer contains mv-expand on properties.healthCheckResult (regression guard)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:CapturedKql = $null
+                function az {
+                    $argList = @($args)
+                    $qIdx = $argList.IndexOf('-q')
+                    if ($qIdx -ge 0 -and $qIdx + 1 -lt $argList.Count) {
+                        $script:CapturedKql = $argList[$qIdx + 1]
+                    }
+                    return '{"count":0,"data":[]}'
+                }
+                $global:LASTEXITCODE = 0
+
+                $null = Get-AzLocalFleetHealthFailures
+                $script:CapturedKql | Should -Not -BeNullOrEmpty
+                # The KQL must project healthCheckResult as a raw array column,
+                # NOT mv-expand it - mv-expand silently caps at 128 rows.
+                $script:CapturedKql | Should -Not -Match 'mv-expand'
+                $script:CapturedKql | Should -Match 'HealthCheckResult\s*=\s*properties\.healthCheckResult'
             }
         }
     }

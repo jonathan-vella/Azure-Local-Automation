@@ -128,24 +128,19 @@ function Get-AzLocalFleetHealthFailures {
         catch { throw "ExportPath is not writable: $($_.Exception.Message)" }
     }
 
-    # Build the severity filter clause for the ARG query. Informational
-    # entries are excluded in every case - this function only surfaces
-    # actionable health issues (Critical / Warning).
-    $severityClause = switch ($Severity) {
-        'Critical' { "| where tostring(hc.severity) =~ 'Critical'" }
-        'Warning'  { "| where tostring(hc.severity) =~ 'Warning'" }
-        default    { "| where tostring(hc.severity) in~ ('Critical','Warning')" }
-    }
-
-    # ARG query: one row per (cluster, failing health-check entry).
+    # v0.7.76: ARG query projects the *raw* `properties.healthCheckResult`
+    # array per cluster - we expand it CLIENT-SIDE in PowerShell rather than
+    # using KQL `mv-expand`. This avoids ARG's silent 128-element cap on
+    # `mv-expand` (each parent row can emit at most 128 expanded child rows),
+    # which previously dropped >50% of health-check entries for any cluster
+    # whose array exceeded 128 items. Empirical measurement showed a 313-entry
+    # array being truncated to 128 mv-expanded rows, hiding Failed checks.
     # The `extensibilityresources` table holds the `updateSummaries` child
-    # resource for every Azure Local cluster the caller can read. The
-    # `properties.healthCheckResult` array is mv-expanded so each failing
-    # check becomes its own row, then projected to the output schema.
-    # Cluster identity (name, RG, subscription) is parsed from the
+    # resource for every Azure Local cluster the caller can read. Cluster
+    # identity (name, RG, subscription) is parsed from the resource ID:
     # `/subscriptions/{}/resourceGroups/{}/providers/Microsoft.AzureStackHCI/clusters/{}/updateSummaries/default`
-    # resource ID so the function does not need to issue a separate
-    # cluster-resource query.
+    # so the function does not need to issue a separate cluster-resource query.
+    # Status / severity filtering is applied client-side after expansion.
     $kql = @"
 extensibilityresources
 | where type =~ 'microsoft.azurestackhci/clusters/updatesummaries'
@@ -156,33 +151,20 @@ extensibilityresources
     ClusterName       = tostring(segments[8])
 | extend ClusterResourceId = strcat('/subscriptions/', SubscriptionId, '/resourceGroups/', ResourceGroup, '/providers/Microsoft.AzureStackHCI/clusters/', ClusterName)
 | extend ClusterPortalUrl  = strcat('https://portal.azure.com/#@/resource', ClusterResourceId)
-| extend checks = properties.healthCheckResult
-| mv-expand hc = checks
-| where tostring(hc.status) =~ 'Failed'
-$severityClause
 | project
     ClusterName,
     ResourceGroup,
     SubscriptionId,
     ClusterResourceId,
     ClusterPortalUrl,
-    Severity            = tostring(hc.severity),
-    FailureName         = tostring(hc.name),
-    FailureReason       = tostring(hc.displayName),
-    Description         = tostring(hc.description),
-    Remediation         = tostring(hc.remediation),
-    TargetResourceName  = tostring(hc.targetResourceName),
-    TargetResourceType  = tostring(hc.targetResourceType),
-    LastOccurrence      = todatetime(hc.timestamp)
-| extend SeverityOrder = case(Severity =~ 'Critical', 1, Severity =~ 'Warning', 2, 3)
-| order by SeverityOrder asc, ClusterName asc, FailureReason asc
-| project-away SeverityOrder
+    HealthCheckResult = properties.healthCheckResult,
+    HealthCheckCount  = array_length(properties.healthCheckResult)
 "@
 
     Write-Log -Message "Querying Azure Resource Graph for fleet health-check failures (View=$View, Severity=$Severity$(if($UpdateRingTag){", UpdateRingTag=$UpdateRingTag"})..." -Level Info
 
     try {
-        $rows = if ($SubscriptionId) {
+        $clusterRows = if ($SubscriptionId) {
             Invoke-AzResourceGraphQuery -Query $kql -SubscriptionId $SubscriptionId
         } else {
             Invoke-AzResourceGraphQuery -Query $kql
@@ -193,8 +175,69 @@ $severityClause
         throw
     }
 
-    if (-not $rows) { $rows = @() }
-    Write-Log -Message "Resource Graph returned $($rows.Count) failing health-check entries across the fleet." -Level Info
+    if (-not $clusterRows) { $clusterRows = @() }
+    Write-Log -Message "Resource Graph returned $($clusterRows.Count) cluster updateSummaries doc(s)." -Level Info
+
+    # v0.7.76: client-side expansion of properties.healthCheckResult.
+    # Iterate each cluster's array (which ARG returned in full), apply the
+    # status == 'Failed' filter plus the requested severity filter, and emit
+    # one detail row per matching check. Informational entries are always
+    # excluded; only Critical / Warning failures are surfaced regardless of
+    # the -Severity selector (mirrors the previous KQL semantics exactly).
+    $allowedSeverities = switch ($Severity) {
+        'Critical' { @('Critical') }
+        'Warning'  { @('Warning') }
+        default    { @('Critical', 'Warning') }
+    }
+    $expanded = New-Object System.Collections.ArrayList
+    $totalChecksScanned   = 0
+    $clustersWithChecks   = 0
+    foreach ($cluster in @($clusterRows)) {
+        $hcr = $cluster.HealthCheckResult
+        if (-not $hcr) { continue }
+        $clustersWithChecks++
+        foreach ($hc in @($hcr)) {
+            $totalChecksScanned++
+            $status = "$($hc.status)"
+            if ($status -ne 'Failed') { continue }
+            $sev = "$($hc.severity)"
+            if ($allowedSeverities -notcontains $sev) { continue }
+
+            $ts = $null
+            if ($hc.timestamp) {
+                try { $ts = [datetime]$hc.timestamp } catch { $ts = $null }
+            }
+
+            [void]$expanded.Add([PSCustomObject]@{
+                ClusterName        = "$($cluster.ClusterName)"
+                ResourceGroup      = "$($cluster.ResourceGroup)"
+                SubscriptionId     = "$($cluster.SubscriptionId)"
+                ClusterResourceId  = "$($cluster.ClusterResourceId)"
+                ClusterPortalUrl   = "$($cluster.ClusterPortalUrl)"
+                Severity           = $sev
+                FailureName        = "$($hc.name)"
+                FailureReason      = "$($hc.displayName)"
+                Description        = "$($hc.description)"
+                Remediation        = "$($hc.remediation)"
+                TargetResourceName = "$($hc.targetResourceName)"
+                TargetResourceType = "$($hc.targetResourceType)"
+                LastOccurrence     = $ts
+            })
+        }
+    }
+
+    # Apply the same severity / cluster / reason ordering the previous KQL
+    # `order by SeverityOrder asc, ClusterName asc, FailureReason asc`
+    # produced, so callers see the highest-impact rows first.
+    $rows = @(
+        $expanded |
+            Sort-Object `
+                @{Expression = { if ($_.Severity -eq 'Critical') { 1 } elseif ($_.Severity -eq 'Warning') { 2 } else { 3 } }; Descending = $false},
+                @{Expression = { $_.ClusterName };   Descending = $false},
+                @{Expression = { $_.FailureReason }; Descending = $false}
+    )
+
+    Write-Log -Message "Expanded $totalChecksScanned health-check entries across $clustersWithChecks cluster(s); $($rows.Count) match the status='Failed' + severity='$Severity' filter." -Level Info
 
     # Optional UpdateRing tag filter. We do this client-side rather than
     # joining inside KQL because the updateSummaries resource does NOT carry
