@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.76 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.76)
+**Latest Version:** v0.7.77 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.77)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.76](#whats-new-in-v0776)
+- [What's New in v0.7.77](#whats-new-in-v0777)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,9 +86,9 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.76
+## What's New in v0.7.77
 
-v0.7.76 is a **breaking-rename + nine-finding cleanup** release on top of v0.7.75. The headline change is that **every exported cmdlet was renamed from `-AzureLocal*` to `-AzLocal*`** so the verbs match the published module name (`AzLocal.UpdateManagement`). The module GUID is preserved; `Install-Module AzLocal.UpdateManagement -Force` is the upgrade path. This release also fixes a P0 row-collapse bug (Finding 1), tightens up a service-principal secret leak (Finding 3), adds three regression-test classes (Finding 2), splits the 3300-line README into a `docs/` tree (Findings 4 + 5), and includes a bonus ARM `healthCheckResult` byte-identical duplicate suppressor that fixes a doubled-CriticalCount symptom observed on a real 2-node Mobile cluster.
+v0.7.77 is a **targeted hotfix** release focused on Step.4 fleet-connectivity reliability. The primary fix hardens `Invoke-ArgQuery` in both bundled Step.4 templates (GitHub Actions + Azure DevOps) so az CLI warning text from stderr can no longer contaminate stdout JSON and crash `ConvertFrom-Json` during the Physical NIC query stage.
 
 ### Breaking: -AzureLocal* renamed to -AzLocal* (Finding 7)
 
@@ -120,7 +120,7 @@ Every exported function in `Public/` and every private helper in `Private/` was 
 
 ### Migration
 
-`Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`) and then search-and-replace `-AzureLocal` -> `-AzLocal` in any pinned scripts. The bundled `Step.{0..8}.yml` pipeline templates (18 files: 9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.75'` to `'0.7.76'`. The pin is a drift-detection constant only - `Install-Module -Force` always pulls PSGallery latest at runtime, so existing pre-v0.7.76 consumer YAMLs continue to function but will emit a Step Summary drift warning until refreshed via `Update-AzLocalPipelineExample`. **New in v0.7.76:** `Step.0_authentication-test.yml` itself now carries the pin (previously only `Step.{1..7}` did), per the 'Step.0 module-drift parity' line in the release title, so the warning fires from the very first job.
+`Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`) and refresh any pinned pipeline YAMLs. The bundled `Step.{0..8}.yml` templates (18 files: 9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.76'` to `'0.7.77'`. The pin is drift-detection only; `Install-Module -Force` still installs PSGallery latest at runtime.
 
 > Previous release notes have moved into [`docs/release-history.md`](docs/release-history.md).
 
@@ -596,7 +596,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.75 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.76** stay above under [`What's New in v0.7.76`](#whats-new-in-v0776).
+The most recent release notes for **v0.7.77** stay above under [`What's New in v0.7.77`](#whats-new-in-v0777).
 
 ---
 

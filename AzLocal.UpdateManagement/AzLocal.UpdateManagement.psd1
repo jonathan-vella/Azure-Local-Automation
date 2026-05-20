@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.76'
+    ModuleVersion = '0.7.77'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -204,6 +204,28 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.77 - Step.4 fleet-connectivity hotfix (ARG JSON parse hardening)
+
+### Fixed
+
+- **Step.4 `fleet-connectivity-status` (GitHub Actions + Azure DevOps):**
+  `Invoke-ArgQuery` no longer merges az CLI stderr into stdout before
+  `ConvertFrom-Json`. Some runs emitted warning text (notably around
+  `extensibilityresources`) that prefixed the JSON payload and caused
+  `ConvertFrom-Json` failures with `Unexpected character encountered while
+  parsing value: W`.
+- Query execution now uses `--only-show-errors` and captures stderr to a
+  temp file (`2> $errFile`) so warning noise cannot corrupt JSON parsing.
+- Parsed stdout is normalized with `($raw -join "`n").Trim()` before
+  `ConvertFrom-Json`, and non-zero az exit paths now surface stderr text
+  directly.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure
+  DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.76'` to
+  `'0.7.77'`.
+
 ## Version 0.7.76 - Renamed to -AzLocal* + nine MODULE-REVIEW findings + ARM healthCheckResult dedup
 
 ### Breaking (rename) - operator-controlled module, no other consumers

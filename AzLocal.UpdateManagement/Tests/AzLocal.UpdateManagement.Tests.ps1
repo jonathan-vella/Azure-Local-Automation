@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.76' {
-            $script:ModuleInfo.Version | Should -Be '0.7.76'
+        It 'Should have version 0.7.77' {
+            $script:ModuleInfo.Version | Should -Be '0.7.77'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
