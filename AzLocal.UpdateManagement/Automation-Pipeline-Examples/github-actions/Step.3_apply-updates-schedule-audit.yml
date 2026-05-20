@@ -60,7 +60,7 @@ on:
       include_untagged:
         description: 'Surface clusters with no UpdateWindow tag as their own row.'
         required: false
-        default: 'false'
+        default: 'true'
         type: choice
         options:
           - 'false'
