@@ -85,7 +85,15 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
         Migrate an existing schedule to the current schema via:
           Update-AzLocalApplyUpdatesScheduleConfig -Path .\apply-updates-schedule.yml -SchemaMigrate
     .PARAMETER Platform
-        Which platform's recommendation to emit (-View Recommend). Default 'Both'.
+        Which platform's recommendation to emit (-View Recommend). Default
+        'Both' for interactive use. When the caller does NOT pass -Platform
+        explicitly, the cmdlet auto-detects the CI host from environment
+        variables ($env:GITHUB_ACTIONS='true' -> 'GitHubActions';
+        $env:TF_BUILD='True' or $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI set
+        -> 'AzureDevOps') so a Step.3 pipeline run only ever emits the
+        snippet matching its own CI platform. An explicit -Platform value
+        is honoured unchanged (including explicit -Platform Both, which
+        suppresses auto-detect).
     .PARAMETER LeadTimeMinutes
         How many minutes before each window opens the pipeline should fire so
         that the first cluster's apply step starts inside the window. Default 5.
@@ -153,6 +161,34 @@ function Test-AzureLocalApplyUpdatesScheduleCoverage {
         [Parameter(Mandatory = $false)]
         [switch]$PassThru
     )
+
+    # v0.7.75: auto-detect CI host when the caller accepted the default
+    # 'Both'. The cmdlet runs in three contexts: interactive (operator at
+    # a workstation, wants 'Both' to compare snippets), GitHub Actions
+    # runner (wants 'GitHubActions'), Azure DevOps runner (wants
+    # 'AzureDevOps'). Only the interactive case is genuinely ambiguous -
+    # both CI hosts set canonical env vars that make the platform
+    # unambiguous (`$env:GITHUB_ACTIONS=true` for GH; `$env:TF_BUILD=True`
+    # for ADO, with `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` as a
+    # belt-and-braces fallback). An explicit caller -Platform argument
+    # is honoured unchanged; we only auto-resolve when the caller did NOT
+    # specify, so behaviour is backward compatible. This removes the
+    # cross-platform-noise failure mode (GH workflow emits ADO snippet)
+    # that surfaces when a consumer's yml is stale and does not pass
+    # -Platform - the cmdlet now self-heals from the runtime environment
+    # instead of trusting the yml to encode something it can already see.
+    if (-not $PSBoundParameters.ContainsKey('Platform')) {
+        if ($env:GITHUB_ACTIONS -eq 'true') {
+            Write-Verbose "Test-AzureLocalApplyUpdatesScheduleCoverage: auto-detected Platform='GitHubActions' from `$env:GITHUB_ACTIONS=true"
+            $Platform = 'GitHubActions'
+        } elseif ($env:TF_BUILD -eq 'True' -or $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI) {
+            Write-Verbose "Test-AzureLocalApplyUpdatesScheduleCoverage: auto-detected Platform='AzureDevOps' from `$env:TF_BUILD=True / SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"
+            $Platform = 'AzureDevOps'
+        }
+        # else: keep 'Both' (interactive operator at a workstation -
+        # showing both snippets lets them pick the form that matches
+        # their CI platform).
+    }
 
     # Pre-flight: -View Audit requires AT LEAST ONE of -PipelineYamlPath or -SchedulePath.
     if ($View -eq 'Audit' -and

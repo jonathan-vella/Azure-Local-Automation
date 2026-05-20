@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.74' {
-            $script:ModuleInfo.Version | Should -Be '0.7.74'
+        It 'Should have version 0.7.75' {
+            $script:ModuleInfo.Version | Should -Be '0.7.75'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -7263,6 +7263,97 @@ schedule:
                 $idxSched | Should -BeGreaterThan -1
                 $idxCron  | Should -BeGreaterThan -1
                 $idxSched | Should -BeLessThan $idxCron -Because 'schedule fixes have higher blast radius and must surface first'
+            }
+        }
+    }
+
+    # v0.7.75: when the caller does NOT pass -Platform, the cmdlet
+    # auto-detects the host CI platform from environment variables so a
+    # stale consumer yml (that does not pass -Platform) self-heals against
+    # the cross-platform-noise failure mode (GH workflow run still emits
+    # the ADO snippet). The tests below cover the four paths through the
+    # auto-detect block: GITHUB_ACTIONS, TF_BUILD, explicit -Platform Both
+    # honoured even in CI, and the "no CI env vars" interactive default.
+    Context 'AS7-AS10 v0.7.75 CI host auto-detection' {
+
+        BeforeEach {
+            # Pre-clear so each test starts from a known-clean env.
+            Remove-Item Env:GITHUB_ACTIONS                       -ErrorAction SilentlyContinue
+            Remove-Item Env:TF_BUILD                             -ErrorAction SilentlyContinue
+            Remove-Item Env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI   -ErrorAction SilentlyContinue
+        }
+        AfterEach {
+            Remove-Item Env:GITHUB_ACTIONS                       -ErrorAction SilentlyContinue
+            Remove-Item Env:TF_BUILD                             -ErrorAction SilentlyContinue
+            Remove-Item Env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI   -ErrorAction SilentlyContinue
+        }
+
+        It 'AS7: auto-detects Platform=GitHubActions when $env:GITHUB_ACTIONS=true and -Platform is omitted' {
+            $env:GITHUB_ACTIONS = 'true'
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; schedPath = $script:v7_70_schedPath; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $schedPath, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $rec = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Recommend -PipelineYamlPath $yamlDir -SchedulePath $schedPath -PassThru 6>$null
+
+                $snippet = ($rec | Select-Object -First 1).Snippet
+                $snippet | Should -Match 'workflow_dispatch'
+                $snippet | Should -Not -Match 'displayName: "Apply Updates - covers above window"' `
+                    -Because 'GH-host auto-detect must suppress the ADO snippet'
+            }
+        }
+
+        It 'AS8: auto-detects Platform=AzureDevOps when $env:TF_BUILD=True and -Platform is omitted' {
+            $env:TF_BUILD = 'True'
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; schedPath = $script:v7_70_schedPath; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $schedPath, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $rec = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Recommend -PipelineYamlPath $yamlDir -SchedulePath $schedPath -PassThru 6>$null
+
+                $snippet = ($rec | Select-Object -First 1).Snippet
+                $snippet | Should -Match 'displayName: "Apply Updates - covers above window"'
+                $snippet | Should -Not -Match 'workflow_dispatch' `
+                    -Because 'ADO-host auto-detect must suppress the GH snippet'
+            }
+        }
+
+        It 'AS9: explicit -Platform Both is honoured even inside a CI runner ($env:GITHUB_ACTIONS=true)' {
+            $env:GITHUB_ACTIONS = 'true'
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; schedPath = $script:v7_70_schedPath; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $schedPath, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $rec = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Recommend -PipelineYamlPath $yamlDir -SchedulePath $schedPath -Platform Both -PassThru 6>$null
+
+                $snippet = ($rec | Select-Object -First 1).Snippet
+                $snippet | Should -Match 'workflow_dispatch'
+                $snippet | Should -Match 'displayName: "Apply Updates - covers above window"' `
+                    -Because 'an explicit caller -Platform Both must suppress auto-detect (caller wins)'
+            }
+        }
+
+        It 'AS10: interactive default ("Both") preserved when neither $env:GITHUB_ACTIONS nor $env:TF_BUILD is set' {
+            # BeforeEach has already cleared both env vars; -Platform omitted.
+            InModuleScope AzLocal.UpdateManagement -Parameters @{
+                yamlDir = $script:v7_70_yamlDir; schedPath = $script:v7_70_schedPath; rows = $script:v7_70_argRows
+            } {
+                param($yamlDir, $schedPath, $rows)
+                Mock Invoke-AzResourceGraphQuery { $rows }
+                $rec = Test-AzureLocalApplyUpdatesScheduleCoverage `
+                    -View Recommend -PipelineYamlPath $yamlDir -SchedulePath $schedPath -PassThru 6>$null
+
+                $snippet = ($rec | Select-Object -First 1).Snippet
+                $snippet | Should -Match 'workflow_dispatch' `
+                    -Because 'interactive operator wants both snippets to compare'
+                $snippet | Should -Match 'displayName: "Apply Updates - covers above window"' `
+                    -Because 'interactive operator wants both snippets to compare'
             }
         }
     }

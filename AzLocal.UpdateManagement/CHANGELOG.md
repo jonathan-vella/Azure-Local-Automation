@@ -5,6 +5,35 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.75] - 2026-05-20
+
+> **Backward compatible.** Hardening release on top of v0.7.74. v0.7.74 patched the `Test-AzureLocalApplyUpdatesScheduleCoverage` cross-platform-noise bug at the **yml layer** by adding `-Platform GitHubActions` / `-Platform AzureDevOps` arguments to the bundled Step.3 yml templates. That fix only takes effect for consumers who refresh their yml via `Update-AzureLocalPipelineExample`; consumers whose Step.3 yml is a verbatim pre-v0.7.74 copy still see both the GitHub Actions snippet AND the Azure DevOps snippet in their Step Summary because their yml does not pass `-Platform` and the cmdlet defaults to `-Platform Both`. v0.7.75 closes that gap by adding the same auto-selection at the **cmdlet layer** so stale yml self-heals at runtime.
+
+### Fixed
+
+- **`Test-AzureLocalApplyUpdatesScheduleCoverage` auto-detects the CI host platform when `-Platform` is omitted.** When the caller does not bind `-Platform`, the cmdlet inspects the well-known CI environment variables: `$env:GITHUB_ACTIONS -eq 'true'` selects `'GitHubActions'`; `$env:TF_BUILD -eq 'True'` or any non-empty `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` selects `'AzureDevOps'`. If neither is set (the interactive operator-at-workstation case), the existing default `'Both'` is preserved so the operator continues to see both platform snippets side by side. Detection is gated on `$PSBoundParameters.ContainsKey('Platform')` so an explicit caller value (including an explicit `-Platform Both`) always wins. Effect on stale yml consumers: the very next workflow run against the v0.7.75 module emits only the GH snippet on GitHub Actions runners and only the ADO snippet on Azure DevOps agents - no yml change required. Defence in depth: the v0.7.74 explicit `-Platform GitHubActions` / `-Platform AzureDevOps` arguments in the bundled yml stay in place so runs against older modules continue to behave correctly.
+- **Audit confirmed scope.** Only `Test-AzureLocalApplyUpdatesScheduleCoverage` had the cross-platform-noise symptom (it is the only cmdlet whose default branches its emitted snippet by platform). `Copy-AzureLocalPipelineExample` and `Update-AzureLocalPipelineExample` were reviewed and intentionally NOT changed: `Copy-AzureLocalPipelineExample`'s default `'All'` is correct for the operator-at-workstation case (copy both platforms' samples so the operator can choose); `Update-AzureLocalPipelineExample` is mandatory-no-default by design so the operator must opt into which existing destination to refresh. All other GH-vs-ADO conditional output happens **inside** the yml templates (`>> $env:GITHUB_STEP_SUMMARY`, `##vso[task.uploadsummary]`), not in cmdlets - cmdlets emit platform-neutral PowerShell that the yml then routes.
+
+### Changed
+
+- **Test coverage** - four new Pester tests (AS7-AS10) in the existing `Test-AzureLocalApplyUpdatesScheduleCoverage` Describe verify all four auto-detect cases: (AS7) `$env:GITHUB_ACTIONS='true'` + no `-Platform` -> GH snippet only; (AS8) `$env:TF_BUILD='True'` + no `-Platform` -> ADO snippet only; (AS9) `$env:GITHUB_ACTIONS='true'` + explicit `-Platform Both` -> both snippets (explicit-wins / auto-detect suppressed); (AS10) no CI env vars + no `-Platform` -> both snippets (interactive default preserved). `BeforeEach` / `AfterEach` blocks clear `$env:GITHUB_ACTIONS`, `$env:TF_BUILD`, and `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` so the new tests do not pollute or depend on the calling environment.
+
+### Pipeline pin bumps
+
+All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.74'` to `'0.7.75'`. Refresh existing copies with:
+
+```powershell
+Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+### Migration notes
+
+- **No cmdlet signature change.** `[ValidateSet('GitHubActions','AzureDevOps','Both')] [string]$Platform = 'Both'` is unchanged - the default value is still `'Both'`, the new behaviour only fires when the caller does **not** bind the parameter.
+- **No yml change required** beyond the version pin bump. The v0.7.75 cmdlet fix self-heals stale Step.3 yml the next time the workflow runs against the v0.7.75 module on PSGallery. Refreshing the yml via `Update-AzureLocalPipelineExample` is still recommended (gets you any other v0.7.75 changes flagged by `GENERATED_AGAINST_MODULE_VERSION`) but no longer required for this specific symptom.
+- **Interactive operators**: behaviour is unchanged. Without `$env:GITHUB_ACTIONS` / `$env:TF_BUILD` set, the cmdlet still defaults to `-Platform Both` and emits both snippets so you can compare them side by side.
+- **Operators who explicitly want both snippets in a CI run** (rare - e.g. one-off comparison): pass `-Platform Both` explicitly. The `$PSBoundParameters.ContainsKey('Platform')` guard ensures explicit binding always wins over auto-detect.
+
 ## [0.7.74] - 2026-05-19
 
 > **Backward compatible.** Hot-fix on top of v0.7.73 that **(a)** fixes a regression in `Get-AzLocalFleetHealthOverview` where the v0.7.73 KQL grew past the `az graph query -q` argument-truncation threshold (~2.8 KB wire-side) and surfaced as `ParserFailure: token=<EOF>` at character 2757 on the wire, and **(b)** substantially improves the Step.3 - Apply-Updates Schedule Coverage Audit operator output so the recommendation block is a true step-by-step remediation guide rather than a sparse advisory.

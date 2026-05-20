@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.74'
+    ModuleVersion = '0.7.75'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -203,94 +203,48 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.74 - Bug fix: Get-AzLocalFleetHealthOverview KQL regression (ParserFailure at char 2757) + Step.3 recommendation UX rewrite (step-by-step remediation, before/after YAML, platform-pinned snippet)
+## Version 0.7.75 - Hardening: Test-AzureLocalApplyUpdatesScheduleCoverage auto-detects the CI host platform when -Platform is omitted, so stale consumer yml self-heals against cross-platform output noise
 
 ### Fixed
 
-- **`Get-AzLocalFleetHealthOverview` no longer fails with KQL
-  `ParserFailure: token=<EOF>`.** The v0.7.73 change added a `case()`
-  mapping plus a six-line `//` KQL comment block that grew the wire
-  query from ~2400 chars (v0.7.72 baseline) to 3115 chars. On Windows,
-  `az graph query -q <query>` truncates very long single-arg payloads
-  around 2.8 KB; the truncated query landed mid-projection so ARG
-  returned `BadRequest / InvalidQuery / ParserFailure` with
-  `characterPositionInLine=2757, token=<EOF>`. Symptom: Step.7 Fleet
-  Health Status failed with exit 1 the moment the cmdlet was invoked,
-  even though Step.7's separate "Detail" ARG query (shorter) succeeded.
-  Fix: the six `//` KQL comment lines are removed from the here-string
-  and re-expressed as PowerShell `#` comments above the assignment
-  (documentation for the source reader, no wire-side bytes); the
-  `case()` projection is compacted to one line (semantically
-  identical). Wire query length is back to 2396 chars. A new inline
-  `IMPORTANT` source comment above `$kql` flags the constraint so
-  future contributors do not re-introduce it. Verified end-to-end
-  against the same live 20-cluster fleet: 20 cluster rows returned,
-  `HealthStatus` distribution preserved
-  (`10 Healthy / 7 Critical / 2 Warning / 1 In progress`).
-- **Step.3 pipeline scripts no longer emit cross-platform noise.**
-  `Test-AzureLocalApplyUpdatesScheduleCoverage` defaults to
-  `-Platform Both`, so every Step.3 run surfaced both the GitHub
-  Actions `schedule:` block AND the Azure DevOps `schedules:` block
-  regardless of which CI platform was running it. Both Step.3 yml
-  files now pin `-Platform GitHubActions` (GH) / `-Platform
-  AzureDevOps` (ADO) on both `-View Audit` and `-View Recommend`
-  calls.
-
-### Changed
-
-- **Step.3 Apply-Updates Schedule Coverage recommendation block is
-  now a true step-by-step remediation guide.** Operators reported the
-  v0.7.73 output was "very hard to follow and understand what to do".
-  v0.7.74 adds:
-  - **Top-of-block "Fix-in-this-order checklist"** when 2+ action
-    sections are emitted. Names the file to edit and the consequence
-    of skipping each step (e.g. `Resolve-AzLocalCurrentUpdateRing`
-    silently returns nothing for missing rings;
-    `Test-AzureLocalUpdateScheduleAllowed` never opens the gate for
-    uncovered UpdateWindows).
-  - **`**Why this matters.**` paragraph in every section** that names
-    the specific runtime cmdlet that depends on the configuration
-    being fixed and spells out the silent-skip failure mode.
-  - **"How to fix" subsection in the missing-rings section** with a
-    full `apply-updates-schedule.yml` skeleton snippet showing the
-    existing `schedule:` block AND a placeholder row PER missing ring
-    with `TODO:` markers on `weeksInCycle`, `daysOfWeek`, `notes`.
-    The snippet carries an `AzLocal.UpdateManagement v<version>
-    advisor: add row(s) like these <<<` header so it is unambiguous
-    where the operator-edited content begins.
-  - **Ready-to-paste (uncommented) cron block** in the cron-coverage
-    section. Replaces the prior `# commented` form (which operators
-    were copy-pasting verbatim including the `# ` prefixes). The
-    snippet is now a real `on:` (GH) / `schedules:` (ADO) block, with
-    one cron line per UpdateWindow plus a yaml-`#` annotation showing
-    the rings and cluster count served by each cron.
-  - **Platform-aware file labels.** When `-Platform` is pinned to a
-    single platform, the text names the exact pipeline file
-    (`.github/workflows/Step.5_apply-updates.yml` vs
-    `.azuredevops/Step.5_apply-updates.yml`) and the exact schedule
-    file (`.github/apply-updates-schedule.yml` vs
-    `.azuredevops/apply-updates-schedule.yml`).
-  - **Two-choice fix tables for orphaned rings** spell out both
-    options - retag a cluster onto the ring (via
-    `Set-AzureLocalClusterUpdateRingTag`) OR remove the ring from the
-    schedule file - so operators do not default to deletion when they
-    actually wanted to add a cluster onto the ring.
+- **`Test-AzureLocalApplyUpdatesScheduleCoverage` cross-platform noise
+  is now fixed at the cmdlet layer**, not just the yml layer.
+  v0.7.74 patched the symptom by adding `-Platform GitHubActions` /
+  `-Platform AzureDevOps` to the bundled Step.3 yml templates, but
+  consumers whose Step.3 yml is a verbatim pre-v0.7.74 copy (i.e.
+  they have not yet run `Update-AzureLocalPipelineExample`) still see
+  both snippets in their Step Summary because the yml does not pass
+  `-Platform` and the cmdlet defaults to `'Both'`. v0.7.75 closes
+  that gap: when the caller does not bind `-Platform`, the cmdlet
+  inspects `$env:GITHUB_ACTIONS` (-> `GitHubActions`) and
+  `$env:TF_BUILD` / `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI`
+  (-> `AzureDevOps`) and self-selects. Result: GH workflow runs
+  emit only the GH snippet, ADO pipeline runs emit only the ADO
+  snippet, interactive sessions keep the existing `'Both'` default.
+  Auto-detect is gated on `$PSBoundParameters.ContainsKey('Platform')`
+  so an explicit caller value (including an explicit `-Platform Both`)
+  always wins. The v0.7.74 yml `-Platform` arguments stay in place
+  as defence in depth for runs against older modules.
 
 ### Pipeline pin bumps
 
 - All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps)
-  bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.73'` to `'0.7.74'`.
+  bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.74'` to `'0.7.75'`.
 
 ### Migration
 
-- No cmdlet signature changes. `Get-AzLocalFleetHealthOverview`
-  returns the same shape and the same normalised `HealthStatus`
-  vocabulary it returned in v0.7.73 - only the underlying wire query
-  is shorter.
-- The v0.7.74 Step.3 yml changes (adding `-Platform GitHubActions` /
-  `-Platform AzureDevOps`) are recommended-but-not-required - the
-  cmdlet still works against the v0.7.73 yml; you just continue to
-  see the cross-platform noise until the yml is refreshed.
+- No cmdlet signature change. No yml change required - the v0.7.75
+  cmdlet fix self-heals stale consumer yml the next time the workflow
+  runs against the v0.7.75 module on PSGallery. Refresh existing yml
+  copies (recommended for the version-pin bump and any other v0.7.75
+  changes flagged via `GENERATED_AGAINST_MODULE_VERSION`) with:
+  `Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`
+  and / or `-Destination .\.azure-pipelines -Platform AzureDevOps`.
+
+## Version 0.7.74 - Bug fix: Get-AzLocalFleetHealthOverview KQL regression (ParserFailure at char 2757) + Step.3 recommendation UX rewrite
+
+For full v0.7.74 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.73 - Bug fix: Get-AzLocalFleetHealthOverview normalises ARG HealthState values so Step.7 "Healthy Clusters" count is correct (was 0 against any fleet)
 
