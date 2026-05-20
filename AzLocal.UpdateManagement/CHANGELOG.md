@@ -338,10 +338,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The new ITSM/automation copies will appear under the new step
   numbers, plus the brand-new `Step.4_fleet-connectivity-status.yml`.
-- No yml change required for the cmdlet rename. `Step.*.yml` templates
-  still pin `GENERATED_AGAINST_MODULE_VERSION = '0.7.75'` and will pick
-  up the v0.7.76 module from PSGallery on next run. A pipeline-pin
-  refresh to `'0.7.76'` will ship in v0.7.77.
+- **Pipeline pin bumps (drift-detection only).** All 18 bundled
+  `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump
+  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.75'` to `'0.7.76'`. The
+  pin is a runtime drift-detection constant read by `Step.0_authentication-test.yml`
+  (and the other Step.* templates) and compared to the installed module
+  version from PSGallery; on mismatch the Step Summary emits a warning.
+  It does NOT control which module is installed (`Install-Module -Force`
+  always pulls PSGallery latest), so existing pre-v0.7.76 consumer YAMLs
+  continue to function - they just emit the warning. **New in v0.7.76:**
+  Step.0 itself now carries the pin (previously only `Step.{1..7}` did),
+  per the 'Step.0 module-drift parity' item, so the warning fires from
+  the first pipeline job. Refresh consumer YAMLs to silence the warning:
+  `Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHubActions`
+  and / or `-Destination .\.azure-pipelines -Platform AzureDevOps`.
 
 ## [0.7.75] - 2026-05-20
 

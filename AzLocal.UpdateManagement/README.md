@@ -120,7 +120,7 @@ Every exported function in `Public/` and every private helper in `Private/` was 
 
 ### Migration
 
-`Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`) and then search-and-replace `-AzureLocal` -> `-AzLocal` in any pinned scripts. No yml change required. `Step.*.yml` templates still pin `GENERATED_AGAINST_MODULE_VERSION = '0.7.75'` and will pick up the v0.7.76 module from PSGallery on next run. A pipeline-pin refresh to `'0.7.76'` will ship in v0.7.77.
+`Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`) and then search-and-replace `-AzureLocal` -> `-AzLocal` in any pinned scripts. The bundled `Step.{0..8}.yml` pipeline templates (18 files: 9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.75'` to `'0.7.76'`. The pin is a drift-detection constant only - `Install-Module -Force` always pulls PSGallery latest at runtime, so existing pre-v0.7.76 consumer YAMLs continue to function but will emit a Step Summary drift warning until refreshed via `Update-AzLocalPipelineExample`. **New in v0.7.76:** `Step.0_authentication-test.yml` itself now carries the pin (previously only `Step.{1..7}` did), per the 'Step.0 module-drift parity' line in the release title, so the warning fires from the very first job.
 
 > Previous release notes have moved into [`docs/release-history.md`](docs/release-history.md).
 

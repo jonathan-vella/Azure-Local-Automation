@@ -261,11 +261,23 @@
 
 ### Pipeline pin bumps
 
-- No `Step.*.yml` template changes in this release; the bundled templates
-  already pin `GENERATED_AGAINST_MODULE_VERSION = '0.7.75'` and will pick
-  up the v0.7.76 module from PSGallery on next run. A pipeline-pin refresh
-  to `'0.7.76'` will ship in v0.7.77 alongside the `Step.X` zip-filename
-  prefix improvement tracked in backlog.
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure
+  DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.75'` to
+  `'0.7.76'`. The pin is a runtime drift-detection constant read by
+  `Step.0_authentication-test.yml` (and the other Step.* templates) and
+  compared to the version of `AzLocal.UpdateManagement` it just installed
+  from PSGallery; on mismatch, the Step Summary emits a drift warning
+  telling the operator to refresh the YAML. The pin does NOT control
+  which module is installed (`Install-Module -Force` always pulls
+  PSGallery latest), so existing pre-v0.7.76 consumer YAMLs continue to
+  function - they just emit the warning until refreshed. **New in
+  v0.7.76:** Step.0 itself now carries the pin (previously only
+  `Step.{1..7}` did), per the 'Step.0 module-drift parity' item in the
+  release title - so the drift warning fires from the very first job in
+  the pipeline rather than waiting for Step.1. Refresh consumer YAMLs
+  to silence the warning with:
+  `Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHubActions`
+  and / or `-Destination .\.azure-pipelines -Platform AzureDevOps`.
 
 ### Migration
 
