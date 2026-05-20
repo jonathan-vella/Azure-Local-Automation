@@ -217,11 +217,31 @@ jobs:
         # typical fleets and we accept a "page 1 only" assumption here.
         function Invoke-ArgQuery {
             param([Parameter(Mandatory)][string]$Query, [string[]]$ExtraArgs)
-            $raw = az graph query -q $Query --first 1000 @ExtraArgs --output json 2>&1
-            if ($LASTEXITCODE -ne 0) { throw "az graph query failed (exit $LASTEXITCODE): $raw" }
-            $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
-            if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Match('data').Count) { return @() }
-            return @($parsed.data)
+            # Capture stderr to a temp file so az CLI warnings (preview-feature
+            # notices, extension load messages, etc. - especially against the
+            # 'extensibilityresources' table) cannot prefix the JSON payload
+            # and break ConvertFrom-Json with 'Unexpected character W' style
+            # errors. Also pass --only-show-errors to suppress non-error
+            # noise at the CLI layer.
+            $errFile = [System.IO.Path]::GetTempFileName()
+            try {
+                $raw = az graph query -q $Query --first 1000 @ExtraArgs --output json --only-show-errors 2> $errFile
+                if ($LASTEXITCODE -ne 0) {
+                    $errText = (Get-Content $errFile -Raw -ErrorAction SilentlyContinue) -join "`n"
+                    throw "az graph query failed (exit $LASTEXITCODE): $errText"
+                }
+                # az returns its stdout as an array of strings - join into one
+                # blob so ConvertFrom-Json sees a single JSON document, not
+                # one document per pipeline element.
+                $jsonText = ($raw -join "`n").Trim()
+                if ([string]::IsNullOrWhiteSpace($jsonText)) { return @() }
+                $parsed = $jsonText | ConvertFrom-Json -ErrorAction Stop
+                if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Match('data').Count) { return @() }
+                return @($parsed.data)
+            }
+            finally {
+                Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+            }
         }
 
         Write-Host "========================================"
