@@ -1,4 +1,4 @@
-# Step.5 - Apply Updates to Azure Local Clusters
+# Step.6 - Apply Updates to Azure Local Clusters
 # This pipeline applies updates to clusters filtered by UpdateRing tag value
 
 # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers

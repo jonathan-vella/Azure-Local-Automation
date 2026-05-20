@@ -69,7 +69,7 @@ function Test-AzLocalApplyUpdatesScheduleCoverage {
     .PARAMETER View
         'Audit' (default), 'Matrix', or 'Recommend'.
     .PARAMETER PipelineYamlPath
-        Optional for -View Audit. Path to a single Step.5_apply-updates.yml file, or to
+        Optional for -View Audit. Path to a single Step.6_apply-updates.yml file, or to
         a folder that contains apply-updates*.yml files (typically the
         Automation-Pipeline-Examples folder of your forked module). Drives the
         cron-vs-UpdateWindow coverage check. May be supplied together with
@@ -194,7 +194,7 @@ function Test-AzLocalApplyUpdatesScheduleCoverage {
     if ($View -eq 'Audit' -and
         [string]::IsNullOrWhiteSpace($PipelineYamlPath) -and
         [string]::IsNullOrWhiteSpace($SchedulePath)) {
-        throw "-View 'Audit' requires at least one of -PipelineYamlPath or -SchedulePath. Point -PipelineYamlPath at Step.5_apply-updates.yml (or the Automation-Pipeline-Examples folder) and/or -SchedulePath at your apply-updates-schedule.yml."
+        throw "-View 'Audit' requires at least one of -PipelineYamlPath or -SchedulePath. Point -PipelineYamlPath at Step.6_apply-updates.yml (or the Automation-Pipeline-Examples folder) and/or -SchedulePath at your apply-updates-schedule.yml."
     }
     if ($PipelineYamlPath -and -not (Test-Path -LiteralPath $PipelineYamlPath)) {
         throw "PipelineYamlPath not found: $PipelineYamlPath"
@@ -465,7 +465,7 @@ resources
 
             if ($emitGh) {
                 if ($emitAdo) {
-                    [void]$cronSb.AppendLine('### GitHub Actions - paste under the `on:` key in Step.5_apply-updates.yml')
+                    [void]$cronSb.AppendLine('### GitHub Actions - paste under the `on:` key in Step.6_apply-updates.yml')
                     [void]$cronSb.AppendLine()
                 }
                 [void]$cronSb.AppendLine('```yaml')
@@ -483,7 +483,7 @@ resources
             }
             if ($emitAdo) {
                 if ($emitGh) {
-                    [void]$cronSb.AppendLine('### Azure DevOps - paste at the top level of Step.5_apply-updates.yml')
+                    [void]$cronSb.AppendLine('### Azure DevOps - paste at the top level of Step.6_apply-updates.yml')
                     [void]$cronSb.AppendLine()
                 }
                 [void]$cronSb.AppendLine('```yaml')
@@ -532,9 +532,9 @@ resources
                 }
             }
             $step5FileLabel = switch ($Platform) {
-                'GitHubActions' { '.github/workflows/Step.5_apply-updates.yml' }
-                'AzureDevOps'   { '.azuredevops/Step.5_apply-updates.yml' }
-                default         { 'Step.5_apply-updates.yml' }
+                'GitHubActions' { '.github/workflows/Step.6_apply-updates.yml' }
+                'AzureDevOps'   { '.azuredevops/Step.6_apply-updates.yml' }
+                default         { 'Step.6_apply-updates.yml' }
             }
 
             $fullSb = New-Object System.Text.StringBuilder

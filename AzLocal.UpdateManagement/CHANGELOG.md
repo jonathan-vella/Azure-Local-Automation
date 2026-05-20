@@ -134,6 +134,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New `Step.4_fleet-connectivity-status.yml` pipeline (GitHub Actions
+  and Azure DevOps).** A daily fleet-wide network connectivity audit
+  that emits a JUnit-XML report covering four scopes:
+  - **Cluster connectivity** - per-cluster `connectivityStatus` and
+    `clusterStatus` from `microsoft.azurestackhci/clusters`, with the
+    cluster `currentVersion` joined in from
+    `extensibilityresources/microsoft.azurestackhci/clusters/updateSummaries`.
+  - **Arc agent connection status** - both a fleet-wide summary
+    histogram (one row per `AgentStatus` value) AND a detailed
+    "Non-Connected Machines" table (every machine whose status is not
+    `Connected`) using the Machines workbook column set: NodeName,
+    MachineId, ClusterName, ClusterId, AgentStatus, OsSku, OsVersion,
+    ClusterVersion, AgentVersion, LastStatusChange, ResourceGroup,
+    SubscriptionId.
+  - **Physical NICs** - emits a row per `networkInterfaces` child only
+    when `NicStatus == "Disconnected"` AND the IP address is non-empty
+    AND not an APIPA `169.254.*` address (so the report shows
+    interfaces that look configured but are not carrying traffic, and
+    suppresses the noise of unused / DHCP-pending adapters).
+  - **Azure Resource Bridge (ARB)** - per-cluster ARB resource status
+    where the resource exists.
+
+  Outputs five CSV/JSON pairs - `fleet-cluster-connectivity`,
+  `fleet-arc-status-summary`, `fleet-arc-non-connected-machines`,
+  `fleet-physical-nics`, and `fleet-arb-status` - plus a single
+  `fleet-connectivity-status-junit.xml` with one suite per scope and
+  cluster portal URLs in every test-case property block. Severity
+  classifier flags `Disconnected | Expired | Offline | Error` as
+  Critical and everything else as Warning. Both YAML files use OIDC
+  via `azure/login@v3` (GitHub Actions) and `AzureCLI@2` (Azure DevOps)
+  and page Azure Resource Graph at `--first 1000` with the implicit
+  `$skipToken` pagination.
+
 - **Finding 2 (test gaps):** new Pester cases covering the row-collapse
   regression, the ARM healthCheckResult dedup (identical / distinct
   target / empty), and KQL `len` arg-truncation safety.
@@ -161,6 +194,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Pipeline renumber to make room for the new connectivity pipeline.**
+  All four downstream pipeline samples shift up by one to free
+  `Step.4_*` for the new fleet-connectivity-status workflow:
+  - `Step.4_assess-update-readiness.yml` -> `Step.5_assess-update-readiness.yml`
+  - `Step.5_apply-updates.yml` -> `Step.6_apply-updates.yml`
+  - `Step.6_fleet-update-status.yml` -> `Step.7_fleet-update-status.yml`
+  - `Step.7_fleet-health-status.yml` -> `Step.8_fleet-health-status.yml`
+
+  This applies to both the GitHub Actions and Azure DevOps sample
+  trees. Display names, cross-references between pipelines, the
+  pipeline-examples README, the cmdlet docs, the ITSM guide, and the
+  Pester regression suite were all updated in lockstep.
+
 - **Finding 3 (service-principal secret leak):**
   `Connect-AzLocalServicePrincipal` no longer writes the SP secret to an
   environment variable. It is written to a temp file with restricted ACL,
@@ -183,10 +229,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Install-Module AzLocal.UpdateManagement -Force` or `Update-Module`.
 - Search-and-replace `-AzureLocal` -> `-AzLocal` in any pinned scripts.
-- No yml change required. `Step.*.yml` templates still pin
-  `GENERATED_AGAINST_MODULE_VERSION = '0.7.75'` and will pick up the
-  v0.7.76 module from PSGallery on next run. A pipeline-pin refresh to
-  `'0.7.76'` will ship in v0.7.77.
+- **Pipeline renumber:** after running
+  `Update-AzLocalPipelineExample -Force` (or
+  `Copy-AzLocalItsmSample`) to pick up the renumbered samples,
+  manually delete the old-named yaml files from your consumer
+  repository so the pipeline runner does not execute both the old and
+  new copies on the same trigger. Files to delete:
+  - `Step.4_assess-update-readiness.yml`
+  - `Step.5_apply-updates.yml`
+  - `Step.6_fleet-update-status.yml`
+  - `Step.7_fleet-health-status.yml`
+
+  The new ITSM/automation copies will appear under the new step
+  numbers, plus the brand-new `Step.4_fleet-connectivity-status.yml`.
+- No yml change required for the cmdlet rename. `Step.*.yml` templates
+  still pin `GENERATED_AGAINST_MODULE_VERSION = '0.7.75'` and will pick
+  up the v0.7.76 module from PSGallery on next run. A pipeline-pin
+  refresh to `'0.7.76'` will ship in v0.7.77.
 
 ## [0.7.75] - 2026-05-20
 

@@ -19,14 +19,14 @@ A working sample config plus the Mustache ticket-body template live at [`../Auto
 
 ## 1. What this connector does
 
-When any of the three "operator-attention" pipelines finishes - **`Step.5_apply-updates`**, **`Step.6_fleet-update-status`** (unresolved Failed update runs), and **`Step.7_fleet-health-status`** (Critical / Warning fleet-health failures) - the connector reads the JUnit results file the module already emits and, for each cluster row whose `Status` is in your trigger matrix:
+When any of the three "operator-attention" pipelines finishes - **`Step.6_apply-updates`**, **`Step.7_fleet-update-status`** (unresolved Failed update runs), and **`Step.8_fleet-health-status`** (Critical / Warning fleet-health failures) - the connector reads the JUnit results file the module already emits and, for each cluster row whose `Status` is in your trigger matrix:
 
 1. Computes a deterministic dedupe key (SHA256 of `ClusterResourceId | UpdateName | TriggerCategory`).
 2. Asks ServiceNow whether an incident with that key already exists in state New / In Progress / On Hold.
 3. If yes -> returns `Action='DedupedToExisting'` (no new ticket).
 4. If no -> creates a new incident with the trigger's severity, category, and the five `u_azlocal_*` custom fields populated.
 
-> **v0.7.70: Step.6 and Step.7 now raise tickets too (Phase D).** Until v0.7.69 only `Step.5_apply-updates` auto-called `New-AzLocalIncident`. In v0.7.70 the same opt-in wiring is present in both `Step.6_fleet-update-status` (sources from the `Update Run History and Error Details` testsuite produced by `Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved`) and `Step.7_fleet-health-status` (sources from the `Fleet Health Failures` testsuite produced by `Get-AzLocalFleetHealthFailures -View Detail`, sorted Critical-first). Both new wirings are **gated** by a `raise_itsm_ticket` workflow input (default `false`) and an `itsm_dry_run` input - so existing runs that do not toggle them on are byte-identical to v0.7.69. The `itsm-secrets` block is wrapped in `BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets` / `END-AZLOCAL-CUSTOMIZE:itsm-secrets` markers so operator-side secret bindings survive a `Update-AzLocalPipelineExample` upgrade. The JUnit files Step.6/Step.7 emit carry the v0.7.70 hyperlinked deep-link columns (`UpdateRunPortalUrl`, `ClusterPortalUrl`, `CurrentStep`, `Duration`, `DeepestErrMsg`, `Severity`, `TargetResourceName`, `TargetResourceType`, `HealthResultsAgeDays`) so the ticket title + body can deep-link straight into the Azure portal blade for the affected cluster / update run.
+> **v0.7.70: Step.6 and Step.7 now raise tickets too (Phase D).** Until v0.7.69 only `Step.6_apply-updates` auto-called `New-AzLocalIncident`. In v0.7.70 the same opt-in wiring is present in both `Step.7_fleet-update-status` (sources from the `Update Run History and Error Details` testsuite produced by `Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved`) and `Step.8_fleet-health-status` (sources from the `Fleet Health Failures` testsuite produced by `Get-AzLocalFleetHealthFailures -View Detail`, sorted Critical-first). Both new wirings are **gated** by a `raise_itsm_ticket` workflow input (default `false`) and an `itsm_dry_run` input - so existing runs that do not toggle them on are byte-identical to v0.7.69. The `itsm-secrets` block is wrapped in `BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets` / `END-AZLOCAL-CUSTOMIZE:itsm-secrets` markers so operator-side secret bindings survive a `Update-AzLocalPipelineExample` upgrade. The JUnit files Step.6/Step.7 emit carry the v0.7.70 hyperlinked deep-link columns (`UpdateRunPortalUrl`, `ClusterPortalUrl`, `CurrentStep`, `Duration`, `DeepestErrMsg`, `Severity`, `TargetResourceName`, `TargetResourceType`, `HealthResultsAgeDays`) so the ticket title + body can deep-link straight into the Azure portal blade for the affected cluster / update run.
 
 What it deliberately does **not** do in Phase 1: open Jira / ADO Work Items, send Teams / Slack notifications, or close tickets on success. See [ITSM-Connector-Plan.md Sections 2 + 9](./ITSM-Connector-Plan.md) for the phased roadmap.
 
@@ -251,9 +251,9 @@ The example pipelines under [`../Automation-Pipeline-Examples/`](../Automation-P
 
 | Pipeline | Trigger source | JUnit input | Default behaviour |
 |---|---|---|---|
-| `Step.5_apply-updates` | `Get-AzLocalUpdateRunFailures` (live, from the run that just executed) | `./reports/update-results.xml` | Wired since v0.7.4 |
-| `Step.6_fleet-update-status` | `Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved` (fleet, last 30 days) | `./reports/fleet-update-status.xml` | **v0.7.70 Phase D**, default OFF |
-| `Step.7_fleet-health-status` | `Get-AzLocalFleetHealthFailures -View Detail` (Critical-first) | `./reports/fleet-health-status.xml` | **v0.7.70 Phase D**, default OFF |
+| `Step.6_apply-updates` | `Get-AzLocalUpdateRunFailures` (live, from the run that just executed) | `./reports/update-results.xml` | Wired since v0.7.4 |
+| `Step.7_fleet-update-status` | `Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved` (fleet, last 30 days) | `./reports/fleet-update-status.xml` | **v0.7.70 Phase D**, default OFF |
+| `Step.8_fleet-health-status` | `Get-AzLocalFleetHealthFailures -View Detail` (Critical-first) | `./reports/fleet-health-status.xml` | **v0.7.70 Phase D**, default OFF |
 
 All three are gated on `raise_itsm_ticket` (a `workflow_dispatch` choice / pipeline parameter, default `false`) and fully opt-in - existing runs that do not toggle it on are byte-identical to before. The Step.6 / Step.7 wirings also expose an `itsm_dry_run` input (and Step.7 an `itsm_force_create`) so operators can preview tickets before flipping the switch.
 

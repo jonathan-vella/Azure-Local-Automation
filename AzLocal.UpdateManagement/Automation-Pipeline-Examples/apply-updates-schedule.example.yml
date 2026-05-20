@@ -5,7 +5,7 @@
 # This is the single source of truth for "which UpdateRing(s) is/are
 # eligible to apply updates on a given UTC date". It is consumed by:
 #
-#   * Step.5_apply-updates.yml    - reads it at every cron firing and
+#   * Step.6_apply-updates.yml    - reads it at every cron firing and
 #                                   resolves the UpdateRingValue to use
 #                                   for that run.
 #   * Step.3_apply-updates-schedule-audit.yml

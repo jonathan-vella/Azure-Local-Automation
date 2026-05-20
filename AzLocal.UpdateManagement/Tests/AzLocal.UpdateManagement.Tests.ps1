@@ -375,7 +375,7 @@ Describe 'Module: AzLocal.UpdateManagement' {
         # shipped with a default pipeline_path of
         # 'AzLocal.UpdateManagement/Automation-Pipeline-Examples' - a path that
         # only exists in this module's source repo. In a consumer repo (where
-        # Step.5_apply-updates.yml lives under .github/workflows or .azure-pipelines),
+        # Step.6_apply-updates.yml lives under .github/workflows or .azure-pipelines),
         # the default-trigger run failed with
         #   PipelineYamlPath '...' does not exist on the runner
         # before the schedule advisor could emit JUnit XML. The defaults are
@@ -5929,7 +5929,7 @@ on:
   schedule:
     - cron: '55 1 * * 6,0'
     - cron: "0 22 * * 5"
-"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'github-actions\Step.6_apply-updates.yml') -Encoding ASCII
             @"
 trigger: none
 schedules:
@@ -5937,7 +5937,7 @@ schedules:
     displayName: Weekday early-morning
     branches:
       include: [ main ]
-"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'azure-devops\Step.5_apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir 'azure-devops\Step.6_apply-updates.yml') -Encoding ASCII
         }
         AfterAll {
             Remove-Item -Path $script:tmpYamlDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -5988,7 +5988,7 @@ on:
 on:
   schedule:
     - cron: '0 7 * * *'
-"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.7_fleet-health-status.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.8_fleet-health-status.yml') -Encoding ASCII
                 # Apply-updates file: ships with only commented-out cron examples,
                 # so the reader should return ZERO crons for this folder overall.
                 @"
@@ -5996,7 +5996,7 @@ on:
   workflow_dispatch:
   # schedule:
   #   - cron: '0 22 * * 6'
-"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $regressionDir 'github-actions\Step.6_apply-updates.yml') -Encoding ASCII
 
                 InModuleScope AzLocal.UpdateManagement -Parameters @{ dir = $regressionDir } {
                     param($dir)
@@ -6022,7 +6022,7 @@ on:
   schedule:
     - cron: '   '
     - cron: '0 22 * * 6'
-"@ | Set-Content -Path (Join-Path $emptyDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $emptyDir 'github-actions\Step.6_apply-updates.yml') -Encoding ASCII
 
                 InModuleScope AzLocal.UpdateManagement -Parameters @{ dir = $emptyDir } {
                     param($dir)
@@ -6046,7 +6046,7 @@ on:
 on:
   schedule:
     - cron: '50 1 * * 6,0'
-"@ | Set-Content -Path (Join-Path $script:tmpYamlDir2 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:tmpYamlDir2 'github-actions\Step.6_apply-updates.yml') -Encoding ASCII
         }
         AfterAll {
             Remove-Item -Path $script:tmpYamlDir2 -Recurse -Force -ErrorAction SilentlyContinue
@@ -6148,7 +6148,7 @@ on:
   schedule:
     - cron: '50 1 * * 6,0'
     - cron: '55 21 * * 1-5'
-"@ | Set-Content -Path (Join-Path $script:multiYamlDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:multiYamlDir 'github-actions\Step.6_apply-updates.yml') -Encoding ASCII
         }
         AfterAll {
             Remove-Item -Path $script:multiYamlDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -6233,7 +6233,7 @@ on:
         # End-to-end smoke against the actual YAMLs published to PSGallery as
         # part of the module. This is the gap that let v0.7.68 ship with the
         # -LiteralPath/-Include glob regression: unit tests only fed the reader
-        # synthetic Step.5_apply-updates.yml files in isolation, never a real
+        # synthetic Step.6_apply-updates.yml files in isolation, never a real
         # multi-pipeline folder. Running the audit against the bundle now
         # guarantees that no future change re-introduces a glob that also picks
         # up sibling Step.N_*.yml schedule triggers.
@@ -6258,7 +6258,7 @@ on:
             InModuleScope AzLocal.UpdateManagement -Parameters @{ bundleGhDir = $script:bundleGhDir } {
                 param($bundleGhDir)
                 $r = Read-AzLocalApplyUpdatesYamlCrons -Path $bundleGhDir
-                @($r).Count | Should -Be 0 -Because 'the shipped Step.5_apply-updates.yml ships with only commented cron examples, and the reader must NOT pick up crons from sibling Step.N pipelines'
+                @($r).Count | Should -Be 0 -Because 'the shipped Step.6_apply-updates.yml ships with only commented cron examples, and the reader must NOT pick up crons from sibling Step.N pipelines'
             }
         }
     }
@@ -6447,7 +6447,7 @@ Describe 'v0.7.66 Artifact download names carry a UTC timestamp suffix' {
                 }
                 # Accept either the in-stage step-output form (`$(stamp.artifactStamp)`)
                 # OR a cross-stage variable that ends in `ArtifactStamp)`, which is
-                # how `Step.5_apply-updates.yml` consumes the CheckReadiness stage's stamp
+                # how `Step.6_apply-updates.yml` consumes the CheckReadiness stage's stamp
                 # via the `readinessArtifactStamp` mapped variable.
                 if ($name -notmatch '\$\(.+?[Aa]rtifactStamp\)') {
                     $offenders.Add("$($yml.Name): ${key} '$name' missing a `$(...artifactStamp) suffix")
@@ -6512,7 +6512,7 @@ Describe 'v0.7.66 Artifact download names carry a UTC timestamp suffix' {
 }
 
 Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups failures first' {
-    # Guards the v0.7.66 UX refresh of Step.6_fleet-update-status.yml summary blocks
+    # Guards the v0.7.66 UX refresh of Step.7_fleet-update-status.yml summary blocks
     # on both GH and ADO. The summary now uses 'red cross / green tick' emojis
     # instead of '[ok]/[fail]/...' bracket markers, and the per-cluster JUnit
     # block orders failed clusters first.
@@ -6520,12 +6520,12 @@ Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups fail
     BeforeAll {
         $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
         $script:fleetStatusFiles = @(
-            Join-Path $script:examplesRoot 'github-actions\Step.6_fleet-update-status.yml'
-            Join-Path $script:examplesRoot 'azure-devops\Step.6_fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'github-actions\Step.7_fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'azure-devops\Step.7_fleet-update-status.yml'
         )
     }
 
-    It "Both Step.6_fleet-update-status.yml files contain success and failure status emojis" {
+    It "Both Step.7_fleet-update-status.yml files contain success and failure status emojis" {
         foreach ($yml in $script:fleetStatusFiles) {
             # Must read explicitly as UTF-8; the YAML has no BOM, and PS 5.1
             # Get-Content -Raw without -Encoding defaults to Default (cp1252),
@@ -6542,7 +6542,7 @@ Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups fail
         }
     }
 
-    It "Both Step.6_fleet-update-status.yml files render a UTC timestamp in the summary heading" {
+    It "Both Step.7_fleet-update-status.yml files render a UTC timestamp in the summary heading" {
         foreach ($yml in $script:fleetStatusFiles) {
             $content = Get-Content -LiteralPath $yml -Raw
             ($content -match 'Fleet Update Status Summary\s*_\(generated \$generatedUtc\)_') | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must include the generated UTC timestamp in the H2 heading"
@@ -6550,7 +6550,7 @@ Describe 'v0.7.66 Fleet Update Status summary uses status emojis and groups fail
         }
     }
 
-    It "Both Step.6_fleet-update-status.yml files bucket failed clusters ahead of passed clusters before emitting the JUnit table" {
+    It "Both Step.7_fleet-update-status.yml files bucket failed clusters ahead of passed clusters before emitting the JUnit table" {
         foreach ($yml in $script:fleetStatusFiles) {
             $content = Get-Content -LiteralPath $yml -Raw
             ($content -match '\$failedClusters')    | Should -BeTrue -Because "$(Split-Path -Leaf $yml) must build a `$failedClusters bucket"
@@ -6916,14 +6916,14 @@ Describe 'Function: Update-AzLocalPipelineExample' {
     }
 
     Context 'Marker-aware merge preserves destination customisations' {
-        It 'Replaces the schedule-triggers body with the destination body in Step.5_apply-updates.yml' {
+        It 'Replaces the schedule-triggers body with the destination body in Step.6_apply-updates.yml' {
             $temp = Join-Path $env:TEMP "upe-merge-$([guid]::NewGuid())"
             New-Item -ItemType Directory -Path $temp -Force | Out-Null
             try {
-                # 1. Copy the bundled Step.5_apply-updates.yml to the destination.
-                $src = Join-Path $script:UpePlatformSrcGh 'Step.5_apply-updates.yml'
+                # 1. Copy the bundled Step.6_apply-updates.yml to the destination.
+                $src = Join-Path $script:UpePlatformSrcGh 'Step.6_apply-updates.yml'
                 Copy-Item -Path $src -Destination $temp
-                $destFile = Join-Path $temp 'Step.5_apply-updates.yml'
+                $destFile = Join-Path $temp 'Step.6_apply-updates.yml'
 
                 # 2. Inject a customer cron INSIDE the schedule-triggers marker block.
                 $customerBody = "`r`n  schedule:`r`n    - cron: '0 22 * * 6'  # Wave1 SatNight22UTC`r`n  "
@@ -6940,7 +6940,7 @@ Describe 'Function: Update-AzLocalPipelineExample' {
 
                 # 3. Run the cmdlet. Source body should be REPLACED with customer body.
                 $r = Update-AzLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Confirm:$false
-                $row = $r | Where-Object { $_.File -like '*Step.5_apply-updates.yml' }
+                $row = $r | Where-Object { $_.File -like '*Step.6_apply-updates.yml' }
                 $row.Action            | Should -Match 'Updated|Unchanged'
                 # Customer cron MUST survive
                 $newText = [System.IO.File]::ReadAllText($destFile, [System.Text.UTF8Encoding]::new($false))
@@ -6969,11 +6969,11 @@ Describe 'Function: Update-AzLocalPipelineExample' {
             New-Item -ItemType Directory -Path $temp -Force | Out-Null
             try {
                 # Place a stripped-down YAML at dest with NO markers, same filename as a bundled file.
-                $destFile = Join-Path $temp 'Step.5_apply-updates.yml'
+                $destFile = Join-Path $temp 'Step.6_apply-updates.yml'
                 'name: legacy file with no markers' | Set-Content -LiteralPath $destFile -Encoding utf8
 
                 $r = Update-AzLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Confirm:$false 3>$null
-                $row = $r | Where-Object { $_.File -like '*Step.5_apply-updates.yml' }
+                $row = $r | Where-Object { $_.File -like '*Step.6_apply-updates.yml' }
                 $row.Action | Should -Be 'Skipped-NeedsForce'
                 # Dest file unchanged
                 (Get-Content -Raw -LiteralPath $destFile) | Should -Match 'legacy file with no markers'
@@ -6984,11 +6984,11 @@ Describe 'Function: Update-AzLocalPipelineExample' {
             $temp = Join-Path $env:TEMP "upe-firstmig-force-$([guid]::NewGuid())"
             New-Item -ItemType Directory -Path $temp -Force | Out-Null
             try {
-                $destFile = Join-Path $temp 'Step.5_apply-updates.yml'
+                $destFile = Join-Path $temp 'Step.6_apply-updates.yml'
                 'name: legacy file with no markers' | Set-Content -LiteralPath $destFile -Encoding utf8
 
                 $r = Update-AzLocalPipelineExample -Destination $temp -Platform GitHub -PassThru -Force -Confirm:$false 3>$null
-                $row = $r | Where-Object { $_.File -like '*Step.5_apply-updates.yml' }
+                $row = $r | Where-Object { $_.File -like '*Step.6_apply-updates.yml' }
                 $row.Action | Should -Be 'Overwritten'
                 $row.NewMarkers | Should -Contain 'schedule-triggers'
                 (Get-Content -Raw -LiteralPath $destFile) | Should -Match 'BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers'
@@ -7295,7 +7295,7 @@ Describe 'Function: Test-AzLocalApplyUpdatesScheduleCoverage - v0.7.70 Section d
         @"
 on:
   workflow_dispatch:
-"@ | Set-Content -Path (Join-Path $script:v7_70_yamlDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+"@ | Set-Content -Path (Join-Path $script:v7_70_yamlDir 'github-actions\Step.6_apply-updates.yml') -Encoding ASCII
 
         # Schedule file that knows about Pilot + Wave1 but is MISSING 'Production'
         # (which is tagged on c3) and ORPHANS 'Pilot' (which no cluster carries).
@@ -8382,8 +8382,8 @@ Describe 'v0.7.70 Step.6 "📜 Update Run History and Error Details" JUnit + mar
     BeforeAll {
         $script:examplesRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot '..\Automation-Pipeline-Examples')).Path
         $script:step6Files = @(
-            Join-Path $script:examplesRoot 'github-actions\Step.6_fleet-update-status.yml'
-            Join-Path $script:examplesRoot 'azure-devops\Step.6_fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'github-actions\Step.7_fleet-update-status.yml'
+            Join-Path $script:examplesRoot 'azure-devops\Step.7_fleet-update-status.yml'
         )
     }
 
@@ -8652,8 +8652,8 @@ Describe 'Pipeline contract: Step.6 SupportStatus anchor (v0.7.70 Phase E)' {
     BeforeAll {
         $script:repoRoot = Split-Path -Path $PSScriptRoot -Parent
         $script:step6Files = @(
-            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/github-actions/Step.6_fleet-update-status.yml'
-            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/azure-devops/Step.6_fleet-update-status.yml'
+            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/github-actions/Step.7_fleet-update-status.yml'
+            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/azure-devops/Step.7_fleet-update-status.yml'
         )
     }
 

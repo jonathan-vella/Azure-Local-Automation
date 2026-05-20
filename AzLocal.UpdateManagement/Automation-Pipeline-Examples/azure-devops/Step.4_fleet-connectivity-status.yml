@@ -1,0 +1,825 @@
+# Step.4 - Fleet Connectivity Status Monitoring Pipeline
+# This pipeline surfaces network-connectivity issues across every Azure Local
+# cluster the service connection can read - four scopes in one pipeline:
+#
+#   1. Cluster Connectivity   - is the cluster reachable from Azure (properties.connectivityStatus)?
+#   2. Arc Agent (per node)   - is each physical node's Arc-enabled-server agent Connected?
+#   3. Physical NIC issues    - Disconnected adapters with a real (non-APIPA) IP
+#   4. Azure Resource Bridge  - is each cluster's ARB appliance Running (and how long offline if not)?
+#
+# USE CASES:
+# - Daily/scheduled fleet-wide network-connectivity audit
+# - Find clusters where Arc agent or ARB has dropped off and updates / management calls will fail
+# - Catch Disconnected physical NICs that still have a real IP (likely cable / driver / port issues -
+#   Disconnected adapters with no IP or APIPA self-assignment are intentionally excluded as noise)
+# - Triage hand-off into ITSM (wired identically to Step.7 / Step.8 - opt-in via parameter)
+#
+# REPORTS GENERATED:
+# - Pipeline run summary (uploaded via ##vso[task.uploadsummary]): one section per
+#   scope (cluster, ARB, Arc agent, NIC) with portal hyperlinks and emoji severity icons.
+#   NIC section lists only issues (Disconnected with non-APIPA IP); the other three
+#   scopes show the full universe with healthy + failing rows.
+# - JUnit XML: published to the Test Results tab. One <testcase> per failing resource,
+#   grouped under "Cluster Connectivity" / "Arc Agent Connectivity" /
+#   "Physical NIC Status" / "Azure Resource Bridge" testsuites.
+# - CSV exports per scope: fleet-cluster-connectivity.csv,
+#   fleet-arc-status-summary.csv, fleet-arc-non-connected-machines.csv,
+#   fleet-physical-nics.csv, fleet-arb-status.csv
+# - JSON copies (same shape, machine-readable)
+#
+# DATA SOURCE:
+# All four sections execute Azure Resource Graph queries directly via the
+# `az graph query` CLI (the `resource-graph` extension is installed below). No
+# per-cluster Az SDK or REST shell-outs - the entire job is ARG-only and runs
+# in seconds even on multi-hundred-cluster fleets.
+#
+# AUTHENTICATION:
+# Uses Workload Identity Federation (OIDC) - recommended for secretless authentication.
+
+# Pipeline display name carries the same Step.N - prefix as the filename so the
+# ADO pipelines list (sorts by `name:` field) lists pipelines in execution order.
+name: Step.4 - Fleet Connectivity Status
+
+# BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+# Edits inside this block are preserved across Update-AzLocalPipelineExample
+# module upgrades. Add or modify `schedules:` blocks below.
+trigger: none  # Manual or scheduled only
+
+schedules:
+  # Daily at 05:30 UTC - offset 30 min ahead of Step.7 (06:00) and Step.8 (07:00)
+  # so the three fleet-scope read pipelines stagger their ARG calls.
+  - cron: '30 5 * * *'
+    displayName: 'Daily Fleet Connectivity Check'
+    branches:
+      include:
+        - main
+    always: true
+# END-AZLOCAL-CUSTOMIZE:schedule-triggers
+
+parameters:
+  - name: subscriptionFilter
+    displayName: 'Optional Azure subscription ID(s) to constrain the ARG query (comma-separated). Leave empty to scan every subscription the federated identity can read.'
+    type: string
+    default: ''
+
+  - name: moduleVersion
+    displayName: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
+    type: string
+    default: ''
+
+  # --- ITSM Connector (ServiceNow auto-raise on connectivity failures) ---
+  # Set raiseItsmTicket=true to open ServiceNow incidents from each Critical /
+  # Warning connectivity failure published by this pipeline. Default is false
+  # so existing schedules stay byte-identical until you opt in. The connector
+  # reads the JUnit file this pipeline produces (fleet-connectivity-status.xml)
+  # and the trigger matrix in ./.itsm/azurelocal-itsm.yml. Dedupe granularity is
+  # one ticket per (cluster, failing resource) pair.
+  - name: raiseItsmTicket
+    displayName: 'Open ITSM tickets (ServiceNow) for connectivity failures'
+    type: boolean
+    default: false
+
+  - name: itsmConfigPath
+    displayName: 'Path to ITSM matrix config (YAML or JSON)'
+    type: string
+    default: './.itsm/azurelocal-itsm.yml'
+
+  - name: itsmDryRun
+    displayName: 'ITSM: build payloads + run read-only dedupe but do NOT create tickets'
+    type: boolean
+    default: false
+
+  - name: itsmForceCreate
+    displayName: 'ITSM: bypass dedupe and always create new tickets (use with caution)'
+    type: boolean
+    default: false
+
+variables:
+  # Module version this YAML was generated against. The install step compares this to
+  # the version actually installed and to the latest on PSGallery, and emits a warning
+  # log if the YAML appears stale - prompting you to refresh via
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.76'
+  # Resolution order for the module version pin (leave all unset to install the latest,
+  # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
+  # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
+  REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
+  reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
+  # ITSM connector. When raiseItsmTicket=true the Raise ITSM task below
+  # references $(ITSM_SN_INSTANCE_URL), $(ITSM_SN_CLIENT_ID),
+  # $(ITSM_SN_CLIENT_SECRET). The simplest binding is an ADO variable group
+  # named 'AzureLocal-ITSM-Secrets'. ADO does not allow mixing mapping-form
+  # variables with '- group:' entries in the same block, so to enable the
+  # group reference convert this entire 'variables:' block to list form (see
+  # Step.8 for the conversion recipe). When raiseItsmTicket=false the Raise
+  # ITSM task is skipped and the secrets are not consulted.
+
+stages:
+- stage: FleetConnectivity
+  displayName: 'Collect Fleet Connectivity Status'
+  jobs:
+  - job: CollectConnectivity
+    displayName: 'Collect and Report Fleet Connectivity'
+    pool:
+      vmImage: 'windows-latest'
+
+    steps:
+    - checkout: self
+      displayName: 'Checkout repository'
+
+    - task: PowerShell@2
+      displayName: 'Install AzLocal.UpdateManagement from PSGallery'
+      env:
+        REQUIRED_MODULE_VERSION: $(REQUIRED_MODULE_VERSION)
+        GENERATED_AGAINST_MODULE_VERSION: $(GENERATED_AGAINST_MODULE_VERSION)
+      inputs:
+        targetType: 'inline'
+        pwsh: true
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
+          if ($env:REQUIRED_MODULE_VERSION) {
+              $installArgs.RequiredVersion = $env:REQUIRED_MODULE_VERSION
+              Write-Host "REQUIRED_MODULE_VERSION is set - pinning install to v$($env:REQUIRED_MODULE_VERSION)."
+          } else {
+              Write-Host "REQUIRED_MODULE_VERSION is empty - installing the latest version from PSGallery (default fix-forward behaviour)."
+          }
+          Install-Module @installArgs
+          Import-Module AzLocal.UpdateManagement -Force
+          $installed = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+          $generated = [version]$env:GENERATED_AGAINST_MODULE_VERSION
+          $latest    = (Find-Module -Name AzLocal.UpdateManagement -Repository PSGallery -ErrorAction SilentlyContinue).Version
+          Write-Host ""
+          Write-Host "Module version summary"
+          Write-Host "  Installed on agent        : $installed"
+          Write-Host "  YAML generated against    : $generated"
+          Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
+          Write-Host ""
+          if ($installed -lt $generated) {
+              Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
+          }
+          if ($installed -gt $generated) {
+              Write-Host "##vso[task.logissue type=warning]Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Refresh via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
+          }
+          if ($latest -and ($latest -gt $installed)) {
+              Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed."
+          }
+
+    - task: AzureCLI@2
+      displayName: 'Collect Fleet Connectivity Data'
+      name: collect
+      inputs:
+        # Replace with your service connection name
+        azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
+        scriptType: 'pscore'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $ErrorActionPreference = 'Stop'
+          az extension add --name resource-graph --yes
+          Import-Module AzLocal.UpdateManagement -Force
+
+          $outputDir = "$(reportsPath)"
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+          $subFilterRaw = "${{ parameters.subscriptionFilter }}"
+          $subArgs = @()
+          if ($subFilterRaw) {
+              $subList = $subFilterRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+              if ($subList) {
+                  $subArgs = @('--subscriptions') + $subList
+                  Write-Host "Subscription filter active: $($subList -join ', ')"
+              }
+          }
+          if (-not $subArgs) { Write-Host "Subscription filter empty - scanning all subscriptions visible to the federated identity." }
+
+          function Invoke-ArgQuery {
+              param([Parameter(Mandatory)][string]$Query, [string[]]$ExtraArgs)
+              $raw = az graph query -q $Query --first 1000 @ExtraArgs --output json 2>&1
+              if ($LASTEXITCODE -ne 0) { throw "az graph query failed (exit $LASTEXITCODE): $raw" }
+              $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+              if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Match('data').Count) { return @() }
+              return @($parsed.data)
+          }
+
+          Write-Host "========================================"
+          Write-Host "Fleet Connectivity Status Collection"
+          Write-Host "========================================"
+
+          # ------------------------------------------------------------------
+          # 1. Cluster connectivity
+          # ------------------------------------------------------------------
+          Write-Host ""
+          Write-Host "[1/4] Cluster connectivity..."
+          $clusterKql = @"
+          resources
+          | where type =~ "microsoft.azurestackhci/clusters"
+          | extend ConnectivityStatus = tostring(properties.connectivityStatus)
+          | extend ClusterStatus = tostring(properties.status)
+          | extend NodeCount = tolong(properties.reportedProperties.nodeCount)
+          | project ClusterName=name, ClusterId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId,
+                    ConnectivityStatus, ClusterStatus, NodeCount, Location=location
+          | order by ConnectivityStatus asc, ClusterName asc
+          "@
+          $clusterRows = Invoke-ArgQuery -Query $clusterKql -ExtraArgs $subArgs
+          Write-Host "    -> $($clusterRows.Count) cluster row(s)"
+
+          # ------------------------------------------------------------------
+          # 2a. Connection Status Summary (one row per distinct Arc agent
+          #     status value across the full machine universe in scope -
+          #     Connected, Disconnected, Expired, Error, Unknown, etc.)
+          # ------------------------------------------------------------------
+          Write-Host "[2/4] Arc agent status..."
+          $arcSummaryKql = @"
+          resources
+          | where type =~ "microsoft.azurestackhci/clusters"
+          | extend nodes = todynamic(properties.reportedProperties.nodes)
+          | mv-expand node = nodes
+          | extend reportedNodeName = tolower(tostring(node.name))
+          | where isnotempty(reportedNodeName)
+          | project reportedNodeName
+          | join kind=inner (
+              resources
+              | where type =~ "microsoft.hybridcompute/machines"
+              | where tostring(properties.cloudMetadata.provider) =~ "AzSHCI"
+              | where tostring(kind) !~ "HCI"
+              | extend nodeNameLower = tolower(name)
+            ) on `$left.reportedNodeName == `$right.nodeNameLower
+          | extend AgentStatus = tostring(properties.status)
+          | summarize Count = count() by AgentStatus
+          | order by Count desc
+          "@
+          $arcSummary = Invoke-ArgQuery -Query $arcSummaryKql -ExtraArgs $subArgs
+          Write-Host "    -> $($arcSummary.Count) distinct status value(s)"
+
+          # ------------------------------------------------------------------
+          # 2b. Non-Connected Machines detail (one row per physical node whose
+          #     Arc agent status is NOT 'Connected' - Disconnected, Expired,
+          #     Error, Unknown, etc.). Columns match the cluster-management
+          #     dashboard 'Non-Connected Machines' view: Machine Name, Cluster
+          #     Name, Status, OS SKU, OS Version, Cluster Version, Disconnected
+          #     Since, Resource Group, Subscription.
+          # ------------------------------------------------------------------
+          $arcKql = @"
+          resources
+          | where type =~ "microsoft.azurestackhci/clusters"
+          | extend nodes = todynamic(properties.reportedProperties.nodes)
+          | mv-expand node = nodes
+          | extend reportedNodeName = tolower(tostring(node.name))
+          | where isnotempty(reportedNodeName)
+          | project reportedNodeName, clusterName = name, clusterResourceGroup = resourceGroup, clusterId = id
+          | join kind=leftouter (
+              extensibilityresources
+              | where type =~ "microsoft.azurestackhci/clusters/updateSummaries"
+              | extend cId = substring(id, 0, indexof(id, "/updateSummaries/"))
+              | project cId, currentVersion = tostring(properties.currentVersion)
+            ) on `$left.clusterId == `$right.cId
+          | join kind=inner (
+              resources
+              | where type =~ "microsoft.hybridcompute/machines"
+              | where tostring(properties.cloudMetadata.provider) =~ "AzSHCI"
+              | where tostring(kind) !~ "HCI"
+              | extend nodeNameLower = tolower(name)
+            ) on `$left.reportedNodeName == `$right.nodeNameLower
+          | where tostring(properties.status) != "Connected"
+          | extend AgentStatus    = tostring(properties.status)
+          | extend AgentVersion   = tostring(properties.agentVersion)
+          | extend OsSku          = tostring(properties.osSku)
+          | extend OsVersion      = tostring(properties.osVersion)
+          | extend LastStatusChange = tostring(properties.lastStatusChange)
+          | project NodeName=name, MachineId=id, ClusterName=clusterName, ClusterId=clusterId,
+                    AgentStatus, OsSku, OsVersion, ClusterVersion=coalesce(currentVersion, ""),
+                    AgentVersion, LastStatusChange,
+                    ResourceGroup=resourceGroup, SubscriptionId=subscriptionId
+          | order by LastStatusChange asc, ClusterName asc, NodeName asc
+          "@
+          $arcRows = Invoke-ArgQuery -Query $arcKql -ExtraArgs $subArgs
+          Write-Host "    -> $($arcRows.Count) non-connected machine row(s)"
+
+          # ------------------------------------------------------------------
+          # 3. Physical NIC issues only (extensibilityresources/edgedevices).
+          #    Filters at the ARG layer to actionable rows only:
+          #      * NicType  == Physical (skip Hyper-V / virtual adapters)
+          #      * NicStatus =~ Disconnected (Up adapters are not surfaced -
+          #        that would be noise; we only report issues)
+          #      * Ip4Address is not null AND does NOT start with '169.254.'
+          #        (APIPA / link-local self-assignment is noise too)
+          # ------------------------------------------------------------------
+          Write-Host "[3/4] Physical NIC issues..."
+          $nicKql = @"
+          extensibilityresources
+          | where type =~ "microsoft.azurestackhci/edgedevices"
+          | extend nicDetails = todynamic(properties.reportedProperties.networkProfile.nicDetails)
+          | extend edgeMachineName = tolower(tostring(split(id, '/')[8]))
+          | mv-expand nic = nicDetails
+          | extend NicName = tostring(nic.adapterName)
+          | extend NicStatus = tostring(nic.nicStatus)
+          | extend DriverVersion = tostring(nic.driverVersion)
+          | extend InterfaceDescription = tostring(nic.interfaceDescription)
+          | extend Ip4Address = tostring(nic.ip4Address)
+          | extend NicType = case(InterfaceDescription contains "Hyper-V", "Virtual", InterfaceDescription contains "Virtual", "Virtual", "Physical")
+          | where NicType == "Physical"
+          | where NicStatus =~ "Disconnected"
+          | where isnotempty(Ip4Address) and not(Ip4Address startswith "169.254.")
+          | join kind=inner (
+              resources
+              | where type =~ "microsoft.hybridcompute/machines"
+              | where tostring(properties.cloudMetadata.provider) =~ "AzSHCI"
+              | where tostring(kind) !~ "HCI"
+              | extend ClusterName = tostring(split(tostring(properties.parentClusterResourceId), '/')[8])
+              | extend nodeNameLower = tolower(name)
+              | project nodeNameLower, ClusterName, MachineId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId
+            ) on `$left.edgeMachineName == `$right.nodeNameLower
+          | project NodeName=edgeMachineName, ClusterName, NicName, NicStatus, DriverVersion, Ip4Address,
+                    InterfaceDescription, MachineId, ResourceGroup, SubscriptionId
+          | order by ClusterName asc, NodeName asc, NicName asc
+          "@
+          $nicRows = Invoke-ArgQuery -Query $nicKql -ExtraArgs $subArgs
+          Write-Host "    -> $($nicRows.Count) physical NIC issue row(s) (Disconnected with non-APIPA IP)"
+
+          # ------------------------------------------------------------------
+          # 4. ARB status per cluster
+          # ------------------------------------------------------------------
+          Write-Host "[4/4] Azure Resource Bridge status..."
+          $arbKql = @"
+          resources
+          | where type =~ "microsoft.resourceconnector/appliances"
+          | extend ArbStatus = tostring(properties.status)
+          | extend LastModified = tostring(systemData.lastModifiedAt)
+          | extend DaysSinceLastModified = iff(ArbStatus =~ "Running", toint(-1), datetime_diff('day', now(), todatetime(systemData.lastModifiedAt)))
+          | project ArbName=name, ArbId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId,
+                    ArbStatus, LastModified, DaysSinceLastModified
+          | join kind=leftouter (
+              resources
+              | where type =~ "microsoft.azurestackhci/clusters"
+              | extend ClusterStatus = tostring(properties.status)
+              | project ClusterName=name, ClusterId=id, ResourceGroup=resourceGroup, ClusterStatus
+            ) on ResourceGroup
+          | project ArbName, ArbStatus, ClusterName, ClusterId, ClusterStatus, LastModified, DaysSinceLastModified,
+                    ArbId, ResourceGroup, SubscriptionId
+          | order by ArbStatus asc, ClusterName asc
+          "@
+          $arbRows = Invoke-ArgQuery -Query $arbKql -ExtraArgs $subArgs
+          Write-Host "    -> $($arbRows.Count) ARB row(s)"
+
+          # Export CSV + JSON per scope (Arc emits two files: a status summary
+          # one row per status value, and a detail file with the non-connected
+          # machines and all their columns).
+          $clusterCsv    = Join-Path $outputDir 'fleet-cluster-connectivity.csv'
+          $arcSummaryCsv = Join-Path $outputDir 'fleet-arc-status-summary.csv'
+          $arcCsv        = Join-Path $outputDir 'fleet-arc-non-connected-machines.csv'
+          $nicCsv        = Join-Path $outputDir 'fleet-physical-nics.csv'
+          $arbCsv        = Join-Path $outputDir 'fleet-arb-status.csv'
+          $clusterRows | Export-Csv -Path $clusterCsv    -NoTypeInformation -Force
+          $arcSummary  | Export-Csv -Path $arcSummaryCsv -NoTypeInformation -Force
+          $arcRows     | Export-Csv -Path $arcCsv        -NoTypeInformation -Force
+          $nicRows     | Export-Csv -Path $nicCsv        -NoTypeInformation -Force
+          $arbRows     | Export-Csv -Path $arbCsv        -NoTypeInformation -Force
+          $clusterRows | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-cluster-connectivity.json')        -Encoding utf8
+          $arcSummary  | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-arc-status-summary.json')         -Encoding utf8
+          $arcRows     | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-arc-non-connected-machines.json') -Encoding utf8
+          $nicRows     | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-physical-nics.json')               -Encoding utf8
+          $arbRows     | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-arb-status.json')                  -Encoding utf8
+
+          # Severity classifiers - same as GH twin
+          function Convert-XmlEscape([string]$s) {
+              if ($null -eq $s) { return '' }
+              ($s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;').Replace("'",'&apos;'))
+          }
+          function Get-ClusterSeverity { param($s) switch -Regex ($s) { '^(Connected|ConnectedRecently)$' { 'Pass'; break } '^(Disconnected|Expired|Offline|Error)$' { 'Critical'; break } default { 'Warning' } } }
+          function Get-ArcSeverity     { param($s) switch -Regex ($s) { '^(Connected)$'                   { 'Pass'; break } '^(Disconnected|Expired|Offline|Error)$' { 'Critical'; break } default { 'Warning' } } }
+          function Get-NicSeverity     { param($s) switch -Regex ($s) { '^(Connected|Up)$'                { 'Pass'; break } '^(Disconnected|Down|Disabled)$'         { 'Critical'; break } default { 'Warning' } } }
+          function Get-ArbSeverity     { param($s) switch -Regex ($s) { '^(Running)$'                     { 'Pass'; break } '^(Offline|Failed)$'                    { 'Critical'; break } default { 'Warning' } } }
+
+          $clusterFail = @($clusterRows | Where-Object { (Get-ClusterSeverity $_.ConnectivityStatus) -ne 'Pass' })
+          $arcFail     = @($arcRows     | Where-Object { (Get-ArcSeverity     $_.AgentStatus)         -ne 'Pass' })
+          $nicFail     = @($nicRows     | Where-Object { (Get-NicSeverity     $_.NicStatus)           -ne 'Pass' })
+          $arbFail     = @($arbRows     | Where-Object { (Get-ArbSeverity     $_.ArbStatus)           -ne 'Pass' })
+          $totalFailures = $clusterFail.Count + $arcFail.Count + $nicFail.Count + $arbFail.Count
+          $criticalCount = @($clusterFail | Where-Object { (Get-ClusterSeverity $_.ConnectivityStatus) -eq 'Critical' }).Count `
+                         + @($arcFail     | Where-Object { (Get-ArcSeverity     $_.AgentStatus)         -eq 'Critical' }).Count `
+                         + @($nicFail     | Where-Object { (Get-NicSeverity     $_.NicStatus)           -eq 'Critical' }).Count `
+                         + @($arbFail     | Where-Object { (Get-ArbSeverity     $_.ArbStatus)           -eq 'Critical' }).Count
+          $warningCount  = $totalFailures - $criticalCount
+
+          $xmlPath = Join-Path $outputDir 'fleet-connectivity-status.xml'
+          $sb = New-Object System.Text.StringBuilder
+          [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
+          [void]$sb.AppendFormat('<testsuites name="AzureLocalFleetConnectivity" tests="{0}" failures="{0}">' + "`n", $totalFailures)
+
+          function Add-Suite {
+              param([string]$Name, [array]$Failures, [scriptblock]$GetCase, [System.Text.StringBuilder]$Sb)
+              if (-not $Failures -or $Failures.Count -eq 0) { return }
+              [void]$Sb.AppendFormat('  <testsuite name="{0}" tests="{1}" failures="{1}">' + "`n", (Convert-XmlEscape $Name), $Failures.Count)
+              foreach ($r in $Failures) {
+                  $c = & $GetCase $r
+                  [void]$Sb.AppendFormat('    <testcase classname="{0}" name="{1}">' + "`n", (Convert-XmlEscape $c.Classname), (Convert-XmlEscape $c.Name))
+                  [void]$Sb.AppendLine('      <properties>')
+                  foreach ($k in $c.Properties.Keys) {
+                      [void]$Sb.AppendFormat('        <property name="{0}" value="{1}"/>' + "`n", $k, (Convert-XmlEscape ([string]$c.Properties[$k])))
+                  }
+                  [void]$Sb.AppendLine('      </properties>')
+                  [void]$Sb.AppendFormat('      <failure type="{0}" message="{1}">{2}</failure>' + "`n", (Convert-XmlEscape $c.Severity), (Convert-XmlEscape $c.Message), (Convert-XmlEscape $c.Body))
+                  [void]$Sb.AppendLine('    </testcase>')
+              }
+              [void]$Sb.AppendLine('  </testsuite>')
+          }
+
+          Add-Suite -Name 'Cluster Connectivity' -Failures $clusterFail -Sb $sb -GetCase {
+              param($r)
+              $sev = Get-ClusterSeverity $r.ConnectivityStatus
+              $portal = "https://portal.azure.com/#@/resource$($r.ClusterId)"
+              return [PSCustomObject]@{
+                  Classname  = $r.ClusterName
+                  Name       = "Cluster '$($r.ClusterName)' :: ConnectivityStatus=$($r.ConnectivityStatus)"
+                  Severity   = $sev
+                  Message    = "Cluster connectivity is '$($r.ConnectivityStatus)' (cluster.status='$($r.ClusterStatus)')"
+                  Body       = "ResourceGroup: $($r.ResourceGroup)`nSubscriptionId: $($r.SubscriptionId)`nClusterPortalUrl: $portal"
+                  Properties = @{
+                      ClusterName        = $r.ClusterName
+                      ClusterResourceId  = $r.ClusterId
+                      UpdateName         = "ClusterConnectivity=$($r.ConnectivityStatus)"
+                      Status             = $sev
+                      FailureReason      = "Cluster connectivity '$($r.ConnectivityStatus)'"
+                      Severity           = $sev
+                      ClusterPortalUrl   = $portal
+                      TargetResourceName = $r.ClusterName
+                      TargetResourceType = 'microsoft.azurestackhci/clusters'
+                  }
+              }
+          }
+
+          Add-Suite -Name 'Arc Agent Connectivity' -Failures $arcFail -Sb $sb -GetCase {
+              param($r)
+              $sev = Get-ArcSeverity $r.AgentStatus
+              $portal = "https://portal.azure.com/#@/resource$($r.MachineId)"
+              return [PSCustomObject]@{
+                  Classname  = $r.ClusterName
+                  Name       = "Machine '$($r.NodeName)' :: Status=$($r.AgentStatus)"
+                  Severity   = $sev
+                  Message    = "Machine '$($r.NodeName)' has Arc agent status '$($r.AgentStatus)' (last status change: $($r.LastStatusChange))"
+                  Body       = ("ClusterName: $($r.ClusterName)`n" +
+                                "AgentStatus: $($r.AgentStatus)`n" +
+                                "OS SKU: $($r.OsSku)`n" +
+                                "OS Version: $($r.OsVersion)`n" +
+                                "Cluster Version: $($r.ClusterVersion)`n" +
+                                "AgentVersion: $($r.AgentVersion)`n" +
+                                "Disconnected Since (lastStatusChange): $($r.LastStatusChange)`n" +
+                                "ResourceGroup: $($r.ResourceGroup)`n" +
+                                "MachineId: $($r.MachineId)")
+                  Properties = @{
+                      ClusterName        = $r.ClusterName
+                      ClusterResourceId  = $r.ClusterId
+                      UpdateName         = "ArcAgent=$($r.AgentStatus) [$($r.NodeName)]"
+                      Status             = $sev
+                      FailureReason      = "Arc agent '$($r.AgentStatus)' on machine '$($r.NodeName)'"
+                      Severity           = $sev
+                      ClusterPortalUrl   = $portal
+                      TargetResourceName = $r.NodeName
+                      TargetResourceType = 'microsoft.hybridcompute/machines'
+                  }
+              }
+          }
+
+          Add-Suite -Name 'Physical NIC Status' -Failures $nicFail -Sb $sb -GetCase {
+              param($r)
+              $sev = Get-NicSeverity $r.NicStatus
+              $portal = "https://portal.azure.com/#@/resource$($r.MachineId)"
+              return [PSCustomObject]@{
+                  Classname  = $r.ClusterName
+                  Name       = "NIC '$($r.NicName)' on '$($r.NodeName)' :: NicStatus=$($r.NicStatus)"
+                  Severity   = $sev
+                  Message    = "Physical NIC '$($r.NicName)' on node '$($r.NodeName)' reports status '$($r.NicStatus)'"
+                  Body       = "ClusterName: $($r.ClusterName)`nInterface: $($r.InterfaceDescription)`nDriverVersion: $($r.DriverVersion)`nIp4Address: $($r.Ip4Address)`nMachineId: $($r.MachineId)"
+                  Properties = @{
+                      ClusterName        = $r.ClusterName
+                      ClusterResourceId  = ''
+                      UpdateName         = "PhysicalNic=$($r.NicStatus) [$($r.NodeName)/$($r.NicName)]"
+                      Status             = $sev
+                      FailureReason      = "Physical NIC '$($r.NicName)' status '$($r.NicStatus)' on node '$($r.NodeName)'"
+                      Severity           = $sev
+                      ClusterPortalUrl   = $portal
+                      TargetResourceName = "$($r.NodeName)/$($r.NicName)"
+                      TargetResourceType = 'microsoft.azurestackhci/edgedevices/nicDetails'
+                  }
+              }
+          }
+
+          Add-Suite -Name 'Azure Resource Bridge' -Failures $arbFail -Sb $sb -GetCase {
+              param($r)
+              $sev = Get-ArbSeverity $r.ArbStatus
+              $portal = "https://portal.azure.com/#@/resource$($r.ArbId)"
+              $clusterPortal = if ($r.ClusterId) { "https://portal.azure.com/#@/resource$($r.ClusterId)" } else { '' }
+              return [PSCustomObject]@{
+                  Classname  = if ($r.ClusterName) { $r.ClusterName } else { '(no cluster mapping)' }
+                  Name       = "ARB '$($r.ArbName)' :: ArbStatus=$($r.ArbStatus)"
+                  Severity   = $sev
+                  Message    = "Azure Resource Bridge '$($r.ArbName)' is '$($r.ArbStatus)' (days since lastModified=$($r.DaysSinceLastModified))"
+                  Body       = "ClusterName: $($r.ClusterName)`nArbId: $($r.ArbId)`nLastModified: $($r.LastModified)`nDaysSinceLastModified: $($r.DaysSinceLastModified)`nClusterPortalUrl: $clusterPortal"
+                  Properties = @{
+                      ClusterName        = if ($r.ClusterName) { $r.ClusterName } else { '' }
+                      ClusterResourceId  = if ($r.ClusterId) { $r.ClusterId } else { '' }
+                      UpdateName         = "ARB=$($r.ArbStatus) [$($r.ArbName)]"
+                      Status             = $sev
+                      FailureReason      = "ARB '$($r.ArbName)' status '$($r.ArbStatus)'"
+                      Severity           = $sev
+                      ClusterPortalUrl   = $clusterPortal
+                      TargetResourceName = $r.ArbName
+                      TargetResourceType = 'microsoft.resourceconnector/appliances'
+                  }
+              }
+          }
+
+          if ($totalFailures -eq 0) {
+              [void]$sb.AppendLine('  <testsuite name="Fleet Connectivity" tests="1" failures="0">')
+              [void]$sb.AppendLine('    <testcase classname="Fleet Connectivity" name="No connectivity issues across the fleet" />')
+              [void]$sb.AppendLine('  </testsuite>')
+          }
+          [void]$sb.AppendLine('</testsuites>')
+          $sb.ToString() | Out-File -FilePath $xmlPath -Encoding utf8
+
+          # Pipeline output variables consumed by the markdown summary task below.
+          # Arc totals come from the status-summary histogram so the markdown
+          # table can show <Connected count> healthy + <total non-connected>.
+          $arcTotalMachines = ($arcSummary | Measure-Object -Property Count -Sum).Sum
+          if ($null -eq $arcTotalMachines) { $arcTotalMachines = 0 }
+          Write-Host "##vso[task.setvariable variable=clusterTotal;isOutput=true]$($clusterRows.Count)"
+          Write-Host "##vso[task.setvariable variable=clusterFail;isOutput=true]$($clusterFail.Count)"
+          Write-Host "##vso[task.setvariable variable=arcTotal;isOutput=true]$arcTotalMachines"
+          Write-Host "##vso[task.setvariable variable=arcFail;isOutput=true]$($arcRows.Count)"
+          Write-Host "##vso[task.setvariable variable=nicTotal;isOutput=true]$($nicRows.Count)"
+          Write-Host "##vso[task.setvariable variable=nicFail;isOutput=true]$($nicFail.Count)"
+          Write-Host "##vso[task.setvariable variable=arbTotal;isOutput=true]$($arbRows.Count)"
+          Write-Host "##vso[task.setvariable variable=arbFail;isOutput=true]$($arbFail.Count)"
+          Write-Host "##vso[task.setvariable variable=totalFailures;isOutput=true]$totalFailures"
+          Write-Host "##vso[task.setvariable variable=criticalCount;isOutput=true]$criticalCount"
+          Write-Host "##vso[task.setvariable variable=warningCount;isOutput=true]$warningCount"
+
+          Write-Host ""
+          Write-Host "Fleet Connectivity Collection complete:"
+          Write-Host "  Clusters : $($clusterRows.Count) total ($($clusterFail.Count) failing)"
+          Write-Host "  Arc agents: $arcTotalMachines machine(s) across $($arcSummary.Count) distinct status value(s); $($arcRows.Count) NOT 'Connected'"
+          Write-Host "  Physical NIC issues: $($nicRows.Count) (Disconnected with non-APIPA IP - 'Up' adapters and adapters without a real IP are filtered as noise)"
+          Write-Host "  ARB appliances: $($arbRows.Count) total ($($arbFail.Count) failing)"
+          Write-Host "  TOTAL FAILURES: $totalFailures (Critical=$criticalCount, Warning=$warningCount)"
+
+    - pwsh: |
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        Write-Host "##vso[task.setvariable variable=artifactStamp;isOutput=true]$stamp"
+        Write-Host "Artifact timestamp: $stamp"
+      name: stamp
+      displayName: 'Compute Artifact Timestamp'
+      condition: always()
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Fleet Connectivity Reports'
+      condition: always()
+      inputs:
+        PathtoPublish: '$(reportsPath)'
+        ArtifactName: 'azlocal-fleet-connectivity-status-report_$(stamp.artifactStamp)'
+        publishLocation: 'Container'
+
+    # Create the markdown summary FIRST (before PublishTestResults below) so the
+    # uploaded summary appears at the top of the pipeline run extensions view.
+    - pwsh: |
+        $clusterTotal = "$(collect.clusterTotal)"
+        $clusterFail  = "$(collect.clusterFail)"
+        $arcTotal     = "$(collect.arcTotal)"
+        $arcFail      = "$(collect.arcFail)"
+        $nicTotal     = "$(collect.nicTotal)"
+        $nicFail      = "$(collect.nicFail)"
+        $arbTotal     = "$(collect.arbTotal)"
+        $arbFail      = "$(collect.arbFail)"
+        $totalFail    = "$(collect.totalFailures)"
+        $crit         = "$(collect.criticalCount)"
+        $warn         = "$(collect.warningCount)"
+
+        Write-Host "##vso[task.uploadsummary]Fleet Connectivity: $totalFail failure(s) across the fleet ($crit Critical / $warn Warning). Clusters=$clusterFail/$clusterTotal failing; Arc=$arcFail/$arcTotal; NIC=$nicFail/$nicTotal; ARB=$arbFail/$arbTotal."
+
+        $clusterRows = if (Test-Path '$(reportsPath)/fleet-cluster-connectivity.csv')         { @(Import-Csv -Path '$(reportsPath)/fleet-cluster-connectivity.csv') }         else { @() }
+        $arcSummary  = if (Test-Path '$(reportsPath)/fleet-arc-status-summary.csv')          { @(Import-Csv -Path '$(reportsPath)/fleet-arc-status-summary.csv') }          else { @() }
+        $arcRows     = if (Test-Path '$(reportsPath)/fleet-arc-non-connected-machines.csv')  { @(Import-Csv -Path '$(reportsPath)/fleet-arc-non-connected-machines.csv') }  else { @() }
+        $nicRows     = if (Test-Path '$(reportsPath)/fleet-physical-nics.csv')               { @(Import-Csv -Path '$(reportsPath)/fleet-physical-nics.csv') }               else { @() }
+        $arbRows     = if (Test-Path '$(reportsPath)/fleet-arb-status.csv')                  { @(Import-Csv -Path '$(reportsPath)/fleet-arb-status.csv') }                  else { @() }
+
+        $okIcon   = "$([char]0x2705)"
+        $critIcon = "$([char]0x274C)"
+        $warnIcon = "$([char]0x26A0)$([char]0xFE0F)"
+        function Get-StatusIcon([string]$Severity) { switch ($Severity) { 'Pass' { $okIcon } 'Critical' { $critIcon } 'Warning' { $warnIcon } default { $warnIcon } } }
+        function Get-ClusterSev([string]$s) { switch -Regex ($s) { '^(Connected|ConnectedRecently)$' { 'Pass'; break } '^(Disconnected|Expired|Offline|Error)$' { 'Critical'; break } default { 'Warning' } } }
+        function Get-ArcSev([string]$s)     { switch -Regex ($s) { '^(Connected)$'                   { 'Pass'; break } '^(Disconnected|Expired|Offline|Error)$' { 'Critical'; break } default { 'Warning' } } }
+        function Get-NicSev([string]$s)     { switch -Regex ($s) { '^(Connected|Up)$'                { 'Pass'; break } '^(Disconnected|Down|Disabled)$'         { 'Critical'; break } default { 'Warning' } } }
+        function Get-ArbSev([string]$s)     { switch -Regex ($s) { '^(Running)$'                     { 'Pass'; break } '^(Offline|Failed)$'                    { 'Critical'; break } default { 'Warning' } } }
+
+        $md = @"
+        ## Fleet Connectivity Status Summary
+
+        | Scope | Total | Failing | Healthy |
+        |-------|-------|---------|---------|
+        | **Clusters** | $clusterTotal | $clusterFail | $([math]::Max(0, [int]$clusterTotal - [int]$clusterFail)) |
+        | **Arc Agents (per machine)** | $arcTotal | $arcFail | $([math]::Max(0, [int]$arcTotal - [int]$arcFail)) |
+        | **Physical NICs (issues only)** | - | $nicFail | - |
+        | **Azure Resource Bridges** | $arbTotal | $arbFail | $([math]::Max(0, [int]$arbTotal - [int]$arbFail)) |
+        | **TOTAL FAILURES** | - | **$totalFail** | (Critical=$crit, Warning=$warn) |
+
+        > _**Physical NICs** is filtered at the query layer to actionable issues only: NicStatus=Disconnected with a non-APIPA IPv4 address. 'Up' adapters and adapters without a real IP are intentionally NOT reported (noise reduction)._
+        "@
+
+        $md += "`n`n### Cluster Connectivity`n"
+        if ($clusterRows.Count -eq 0) {
+            $md += "`n*No clusters returned.*`n"
+        } else {
+            $md += "`n| Cluster | Connectivity | Cluster Status | Nodes | Resource Group | Location |`n"
+            $md += "|---------|---------------|-----------------|-------|----------------|----------|`n"
+            foreach ($r in ($clusterRows | Select-Object -First 100)) {
+                $sev   = Get-ClusterSev $r.ConnectivityStatus
+                $icon  = Get-StatusIcon $sev
+                $cell  = if ($r.ClusterId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ClusterName, $r.ClusterId } else { $r.ClusterName }
+                $md += ('| {0} | {1} {2} | {3} | {4} | {5} | {6} |' -f $cell, $icon, $r.ConnectivityStatus, $r.ClusterStatus, $r.NodeCount, $r.ResourceGroup, $r.Location) + "`n"
+            }
+            if ($clusterRows.Count -gt 100) { $md += "`n*Showing first 100 of $($clusterRows.Count); see ``fleet-cluster-connectivity.csv`` for the full list.*`n" }
+        }
+
+        $md += "`n### Azure Resource Bridges (per cluster)`n"
+        if ($arbRows.Count -eq 0) {
+            $md += "`n*No ARB appliances returned.*`n"
+        } else {
+            $md += "`n| ARB | Status | Cluster | Cluster Status | Days Since LastModified | Resource Group |`n"
+            $md += "|-----|--------|---------|-----------------|--------------------------|----------------|`n"
+            foreach ($r in ($arbRows | Select-Object -First 100)) {
+                $sev   = Get-ArbSev $r.ArbStatus
+                $icon  = Get-StatusIcon $sev
+                $arbCell    = if ($r.ArbId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ArbName, $r.ArbId } else { $r.ArbName }
+                $clusterCell = if ($r.ClusterId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ClusterName, $r.ClusterId } else { ($r.ClusterName) }
+                $md += ('| {0} | {1} {2} | {3} | {4} | {5} | {6} |' -f $arbCell, $icon, $r.ArbStatus, $clusterCell, $r.ClusterStatus, $r.DaysSinceLastModified, $r.ResourceGroup) + "`n"
+            }
+            if ($arbRows.Count -gt 100) { $md += "`n*Showing first 100 of $($arbRows.Count); see ``fleet-arb-status.csv`` for the full list.*`n" }
+        }
+
+        $md += "`n### Arc Agent Connection Status Summary`n"
+        if ($arcSummary.Count -eq 0) {
+            $md += "`n*No Arc-enabled machines returned for the selected scope.*`n"
+        } else {
+            $md += "`n| Status | Machine Count | Severity |`n"
+            $md += "|--------|----------------|----------|`n"
+            foreach ($r in ($arcSummary | Sort-Object @{Expression={[int]$_.Count};Descending=$true})) {
+                $sev  = Get-ArcSev $r.AgentStatus
+                $icon = Get-StatusIcon $sev
+                $md += ('| {0} | {1} | {2} {3} |' -f $r.AgentStatus, $r.Count, $icon, $sev) + "`n"
+            }
+        }
+
+        $md += "`n### Non-Connected Machines`n"
+        $md += "`n_Physical machines whose Arc agent status is NOT 'Connected' (Disconnected, Expired, Error, Unknown, etc.). Columns mirror the cluster-management dashboard's 'Non-Connected Machines' view._`n"
+        if ($arcRows.Count -eq 0) {
+            $md += "`n*All machines are Connected.*`n"
+        } else {
+            $arcSorted = $arcRows | Sort-Object LastStatusChange, ClusterName, NodeName
+            $md += "`n| Machine Name | Cluster Name | Status | OS SKU | OS Version | Cluster Version | Disconnected Since | Resource Group | Subscription |`n"
+            $md += "|--------------|--------------|--------|--------|------------|------------------|---------------------|----------------|--------------|`n"
+            foreach ($r in ($arcSorted | Select-Object -First 100)) {
+                $sev   = Get-ArcSev $r.AgentStatus
+                $icon  = Get-StatusIcon $sev
+                $nodeCell    = if ($r.MachineId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.NodeName, $r.MachineId } else { $r.NodeName }
+                $clusterCell = if ($r.ClusterId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ClusterName, $r.ClusterId } else { $r.ClusterName }
+                $md += ('| {0} | {1} | {2} {3} | {4} | {5} | {6} | {7} | {8} | {9} |' -f $nodeCell, $clusterCell, $icon, $r.AgentStatus, $r.OsSku, $r.OsVersion, $r.ClusterVersion, $r.LastStatusChange, $r.ResourceGroup, $r.SubscriptionId) + "`n"
+            }
+            if ($arcRows.Count -gt 100) { $md += "`n*Showing first 100 of $($arcRows.Count); see ``fleet-arc-non-connected-machines.csv`` for the full list.*`n" }
+        }
+
+        $md += "`n### Physical NIC Issues (Disconnected, non-APIPA IP)`n"
+        if ($nicRows.Count -eq 0) {
+            $md += "`n*No physical NIC issues. All physical adapters either Up, or Disconnected without a real IP (filtered as noise).*`n"
+        } else {
+            $nicSorted = $nicRows | Sort-Object ClusterName, NodeName, NicName
+            $md += "`n| Node | NIC | Status | Driver | IP | Interface | Cluster |`n"
+            $md += "|------|-----|--------|--------|-----|-----------|---------|`n"
+            foreach ($r in ($nicSorted | Select-Object -First 100)) {
+                $sev   = Get-NicSev $r.NicStatus
+                $icon  = Get-StatusIcon $sev
+                $md += ('| {0} | {1} | {2} {3} | {4} | {5} | {6} | {7} |' -f $r.NodeName, $r.NicName, $icon, $r.NicStatus, $r.DriverVersion, $r.Ip4Address, $r.InterfaceDescription, $r.ClusterName) + "`n"
+            }
+            if ($nicRows.Count -gt 100) { $md += "`n*Showing first 100 of $($nicRows.Count); see ``fleet-physical-nics.csv`` for the full list.*`n" }
+        }
+
+        $md += @"
+
+        ### Reports Available in Artifacts
+        - ``fleet-cluster-connectivity.csv`` - one row per cluster (connectivityStatus + cluster.status)
+        - ``fleet-arc-status-summary.csv`` - one row per distinct Arc agent status value (histogram)
+        - ``fleet-arc-non-connected-machines.csv`` - one row per machine whose Arc agent status is NOT Connected (full column set: Machine Name, Cluster Name, Status, OS SKU, OS Version, Cluster Version, Disconnected Since, Resource Group, Subscription)
+        - ``fleet-physical-nics.csv`` - one row per physical NIC issue (Disconnected, non-APIPA IP)
+        - ``fleet-arb-status.csv`` - one row per ARB appliance (status + days since lastModified)
+        - JSON copies of each, same shape, machine-readable
+        - ``fleet-connectivity-status.xml`` - JUnit XML (see Tests tab)
+        "@
+
+        Write-Host $md
+      displayName: 'Display Fleet Connectivity Summary'
+      condition: always()
+
+    # Publish JUnit test results LAST so the Test Results tab is populated but the
+    # markdown summary above is the first thing visible on the run extensions view.
+    - task: PublishTestResults@2
+      displayName: 'Publish Fleet Connectivity as Test Results'
+      condition: always()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '$(reportsPath)/fleet-connectivity-status.xml'
+        testRunTitle: 'Fleet Connectivity Status - $(Build.BuildNumber)'
+        mergeTestResults: false
+        failTaskOnFailedTests: false  # Don't fail pipeline on connectivity failures
+
+    # ----------------------------------------------------------------------
+    # ITSM Connector (ServiceNow auto-raise on connectivity failures)
+    # Opt-in (gated on parameters.raiseItsmTicket == true). Mirrors the
+    # Step.7 / Step.8 wiring - reads the JUnit file produced above, uses
+    # the same azurelocal-itsm.yml trigger matrix, same dedupe key.
+    # ----------------------------------------------------------------------
+    - task: PowerShell@2
+      displayName: 'Install powershell-yaml (ITSM config parser)'
+      condition: and(succeeded(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
+      inputs:
+        targetType: 'inline'
+        pwsh: true
+        script: |
+          if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
+              Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+          }
+
+    - task: AzureCLI@2
+      displayName: 'Raise ITSM tickets'
+      name: itsm
+      condition: and(succeeded(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
+      env:
+        # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+        # Bind your ITSM connector secrets from the variable group above.
+        # Defaults assume the ServiceNow OAuth client_credentials naming used
+        # by azurelocal-itsm.yml (env://ITSM_SN_*). If your secret names differ,
+        # update them here - this block is preserved by
+        # Update-AzLocalPipelineExample across module upgrades.
+        ITSM_SN_INSTANCE_URL: $(ITSM_SN_INSTANCE_URL)
+        ITSM_SN_CLIENT_ID: $(ITSM_SN_CLIENT_ID)
+        ITSM_SN_CLIENT_SECRET: $(ITSM_SN_CLIENT_SECRET)
+        # END-AZLOCAL-CUSTOMIZE:itsm-secrets
+      inputs:
+        azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
+        scriptType: 'pscore'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module AzLocal.UpdateManagement -Force
+
+          $configPath = "${{ parameters.itsmConfigPath }}"
+          $dryRun     = [bool]::Parse("${{ parameters.itsmDryRun }}")
+          $force      = [bool]::Parse("${{ parameters.itsmForceCreate }}")
+
+          if (-not (Test-Path $configPath)) {
+              Write-Host "##vso[task.logissue type=warning]ITSM config not found at '$configPath' - skipping ticket creation."
+              exit 0
+          }
+
+          $cfg = Get-AzLocalItsmConfig -Path $configPath
+
+          $junitInput = "$(reportsPath)/fleet-connectivity-status.xml"
+          if (-not (Test-Path $junitInput)) {
+              Write-Host "##vso[task.logissue type=warning]No fleet-connectivity-status.xml found at '$junitInput' - skipping ticket creation."
+              exit 0
+          }
+
+          $params = @{
+              InputArtifactPath = $junitInput
+              Config            = $cfg
+              RunMetadata       = @{
+                  Platform = 'azure-devops'
+                  RunId    = $env:BUILD_BUILDID
+                  RunUrl   = "$env:SYSTEM_COLLECTIONURI$env:SYSTEM_TEAMPROJECT/_build/results?buildId=$env:BUILD_BUILDID"
+                  Branch   = $env:BUILD_SOURCEBRANCH
+              }
+              DryRun            = $dryRun
+              ForceCreate       = $force
+              ExportPath        = "$(reportsPath)/itsm-results.csv"
+              ExportJUnitPath   = "$(reportsPath)/itsm-results.xml"
+          }
+
+          $results = New-AzLocalIncident @params
+          $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish ITSM Artefacts'
+      condition: and(always(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
+      continueOnError: true
+      inputs:
+        PathtoPublish: '$(reportsPath)'
+        ArtifactName: 'azlocal-fleet-connectivity-status-itsm-results_$(stamp.artifactStamp)'
+        publishLocation: 'Container'
+
+    - task: PublishTestResults@2
+      displayName: 'Publish ITSM Test Results'
+      condition: and(always(), eq('${{ parameters.raiseItsmTicket }}', 'true'))
+      continueOnError: true
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '$(reportsPath)/itsm-results.xml'
+        testRunTitle: 'ITSM Tickets (Step.4) - $(Build.BuildNumber)'
+        mergeTestResults: false
+        failTaskOnFailedTests: false

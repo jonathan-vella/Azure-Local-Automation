@@ -11,7 +11,7 @@
 # Workflow name carries the same Step.N - prefix as the filename so the GitHub
 # Actions sidebar (which sorts workflows alphabetically by this `name:` field)
 # lists the eight pipelines in execution order.
-name: Step.5 - Apply Updates
+name: Step.6 - Apply Updates
 
 on:
   # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers

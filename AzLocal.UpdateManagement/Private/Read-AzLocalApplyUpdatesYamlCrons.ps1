@@ -10,7 +10,7 @@ function Read-AzLocalApplyUpdatesYamlCrons {
         Discovery rules:
           - If Path is a file, scan that file.
           - If Path is a directory, recursively find files matching any of
-            'Step.5_apply-updates*.yml', 'Step.5_apply-updates*.yaml',
+            'Step.6_apply-updates*.yml', 'Step.6_apply-updates*.yaml',
             'apply-updates*.yml', or 'apply-updates*.yaml'.
             (The 'Step.5_' prefix is the v0.7.68+ shipped name; the un-prefixed
              form is the legacy name still supported for backwards compatibility.)
@@ -67,8 +67,8 @@ function Read-AzLocalApplyUpdatesYamlCrons {
         # Use -Filter (which is honoured under -Recurse) one pattern at a time,
         # then dedupe by FullName.
         $patterns = @(
-            'Step.5_apply-updates*.yml',
-            'Step.5_apply-updates*.yaml',
+            'Step.6_apply-updates*.yml',
+            'Step.6_apply-updates*.yaml',
             'apply-updates*.yml',
             'apply-updates*.yaml'
         )

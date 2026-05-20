@@ -269,7 +269,7 @@ function Test-AzLocalClusterHealth {
             # rows with identical CheckName/Severity/Description/Remediation/
             # TargetResourceName/Timestamp). Faithfully echoing those into the
             # operator's CSV doubled the displayed failure count and made
-            # Step.4_assess-update-readiness.yml reports confusing. We dedup
+            # Step.5_assess-update-readiness.yml reports confusing. We dedup
             # by the COMPLETE row tuple: if every field is identical the row is
             # a duplicate; per-node distinct findings (different TargetResource
             # Name or Timestamp) stay separate.
