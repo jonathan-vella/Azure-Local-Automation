@@ -125,6 +125,17 @@
     Author: Neil Bird, Microsoft. 
     Requires: Azure CLI (az) installed and authenticated
     API Reference: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
+
+    Strict mode: This module sets `Set-StrictMode -Version 1.0` at module
+    load (NOT `-Version Latest`). Version 1.0 catches the most common
+    correctness bug class - references to uninitialized variables (e.g.
+    `$cluster` vs `$clusterEntry` typos) - without breaking on the dozens
+    of Azure ARM REST dot-notation property accesses that legitimately
+    return $null when a property is omitted (e.g.
+    `additionalProperties.SBEPublisher`, `tags.UpdateRing`). Hardening
+    every such site to satisfy `-Version Latest` is tracked as a future
+    refactor; see comment block immediately above the `Set-StrictMode`
+    call in this file, and Finding 9 of v0.7.76 module review.
 #>
 
 # Enforce defensive coding at module scope.
@@ -218,24 +229,16 @@ $script:DayAbbreviations = @('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
 $script:FleetOperationState = $null
 
 # ---------------------------------------------------------------------------
-# Dot-source all function files listed in the manifest's NestedModules.
-# When loaded via the .psd1, these are already imported by NestedModules; this
-# loop is a harmless no-op in that case (PowerShell tolerates redefinition).
-# When loaded via the .psm1 directly (e.g. some Pester scenarios), this
-# guarantees all functions are present in the module scope.
+# Function loading.
+# All Public/* and Private/* function files are listed in the manifest's
+# NestedModules and are imported by PowerShell at module load time. No
+# dot-source loop is needed here. Removing the loop (v0.7.76, Finding 6)
+# eliminates a duplicate parse of every script when the module is loaded
+# via its .psd1 (the supported path), shaving a measurable amount off cold
+# start. If you load this file directly (e.g. some Pester scenarios that
+# Import-Module the .psm1 path), import the .psd1 instead so NestedModules
+# is honoured.
 # ---------------------------------------------------------------------------
-$manifestPath = Join-Path -Path $PSScriptRoot -ChildPath 'AzLocal.UpdateManagement.psd1'
-if (Test-Path -LiteralPath $manifestPath) {
-    $manifestData = Import-PowerShellDataFile -LiteralPath $manifestPath -ErrorAction SilentlyContinue
-    if ($manifestData -and $manifestData.NestedModules) {
-        foreach ($nestedModule in $manifestData.NestedModules) {
-            $nestedPath = Join-Path -Path $PSScriptRoot -ChildPath $nestedModule
-            if (Test-Path -LiteralPath $nestedPath) {
-                . $nestedPath
-            }
-        }
-    }
-}
 Export-ModuleMember -Function @(
     'Connect-AzLocalServicePrincipal',
     'Start-AzLocalClusterUpdate',
