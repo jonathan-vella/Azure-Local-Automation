@@ -3,14 +3,14 @@
 # Runs Get-AzLocalClusterUpdateReadiness and Test-AzLocalClusterHealth -BlockingOnly
 # against a target UpdateRing (or the whole fleet) BEFORE Step.6_apply-updates.yml runs.
 #
-# Publishes two JUnit XML results to the Azure DevOps Tests tab:
+# Publishes two JUnit XML diagnostic results to the Azure DevOps Tests tab:
 #   - readiness.xml       (one test per cluster; fails if ReadyForUpdate = $false)
 #   - health-blocking.xml (one test per cluster; fails if any Critical health failure exists)
 #
 # CSV artifacts are also attached for spreadsheet triage.
 #
 # This pipeline is REPORT-ONLY and always succeeds. It surfaces not-ready / unhealthy
-# clusters via the Tests tab (JUnit), the CSV artifacts, and the job summary - but it
+# clusters via the Tests tab (JUnit diagnostics), the CSV artifacts, and the job summary - but it
 # does NOT block downstream runs. In large fleets, day-to-day environmental issues
 # (transient storage noise, a single node out, etc.) routinely affect a small subset of
 # clusters; blocking the entire wave for one unhealthy cluster is rarely the desired
@@ -223,7 +223,7 @@ stages:
                 $summaryLines.Add("**Scope**: $scopeLabel")
                 $summaryLines.Add('')
                 if ($notReady -gt 0 -or $clustersWithCritical -gt 0) {
-                    $summaryLines.Add("**Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. The healthy clusters are safe to proceed - Step.6_apply-updates.yml is per-cluster scoped.")
+                    $summaryLines.Add("**Action required**: $notReady cluster(s) not ready and/or $clustersWithCritical cluster(s) with Critical health failures. Review the markdown table above and the CSV artifacts first; use the Tests tab JUnit output as **diagnostic detail** for CI tooling. Remediate (hardware vendor SBE / firmware / cluster health) before or alongside the next apply-updates run. The healthy clusters are safe to proceed - Step.6_apply-updates.yml is per-cluster scoped.")
                 } else {
                     $summaryLines.Add('**All clear**: every cluster in scope is ready for update. Safe to proceed with apply-updates for this ring.')
                 }
@@ -243,27 +243,30 @@ stages:
                     }
                 }
 
+                  $summaryLines.Add('')
+                  $summaryLines.Add('_Note: Tests-tab entries prefixed **[JUnit Debug]** are diagnostic mirrors for CI/test tooling. For primary readability, use this summary table and the CSV artifacts._')
+
                 ($summaryLines -join [Environment]::NewLine) | Out-File -FilePath $summaryPath -Encoding utf8
                 Write-Host "##vso[task.uploadsummary]$summaryPath"
             name: gate
 
           - task: PublishTestResults@2
-            displayName: 'Publish Readiness JUnit'
+            displayName: 'Publish Readiness JUnit Diagnostics'
             condition: always()
             inputs:
               testResultsFormat: 'JUnit'
               testResultsFiles: '$(artifactsPath)/readiness.xml'
-              testRunTitle: 'Readiness (one test per cluster)'
+              testRunTitle: '[JUnit Debug] Readiness (one test per cluster)'
               mergeTestResults: false
               failTaskOnFailedTests: false
 
           - task: PublishTestResults@2
-            displayName: 'Publish Blocking-Health JUnit'
+            displayName: 'Publish Blocking-Health JUnit Diagnostics'
             condition: always()
             inputs:
               testResultsFormat: 'JUnit'
               testResultsFiles: '$(artifactsPath)/health-blocking.xml'
-              testRunTitle: 'Blocking Health Checks (one test per cluster)'
+              testRunTitle: '[JUnit Debug] Blocking Health Checks (one test per cluster)'
               mergeTestResults: false
               failTaskOnFailedTests: false
 
