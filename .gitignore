@@ -30,4 +30,5 @@ _tmp_*
 
 # Agent-generated planning / review docs (kept locally, never committed)
 **/COMBINED-REVIEW-ACTION-PLAN.md
+**/MODULE-REVIEW-AND-RECOMMENDATIONS.md
 
