@@ -7834,6 +7834,374 @@ Describe 'Function: Get-AzLocalFleetHealthFailures - v0.7.76 ARG mv-expand 128-c
 }
 
 # -----------------------------------------------------------------------------
+# v0.7.76 - Get-AzLocalFleetHealthOverview: ARG mv-expand 128-cap regression
+# -----------------------------------------------------------------------------
+# v0.7.76 also removed the `mv-expand pkg = properties.packageVersions`
+# from this cmdlet for the same reason as Get-AzLocalFleetHealthFailures:
+# Azure Resource Graph silently caps mv-expand at 128 child rows per
+# parent. While `packageVersions` is normally small (~4 entries), there is
+# no schema upper bound, so we now project the raw array and roll up
+# SbeVersion client-side. These tests prove the new behaviour.
+
+Describe 'Function: Get-AzLocalFleetHealthOverview - v0.7.76 ARG mv-expand 128-cap regression' {
+
+    Context 'Client-side SBE roll-up bypasses the ARG mv-expand cap' {
+
+        It 'Returns the SBE version when packageVersions has 200 entries with SBE at index 150 (past the historical 128-row cap)' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Build a 200-entry packageVersions array: 199 non-SBE
+                # fillers plus one SBE entry placed at index 150. The OLD
+                # KQL `mv-expand pkg = properties.packageVersions` would
+                # silently drop everything past index 128, including the
+                # SBE entry, and SbeVersion would have been '(none)'.
+                $pkgs = New-Object System.Collections.ArrayList
+                for ($i = 0; $i -lt 200; $i++) {
+                    if ($i -eq 150) {
+                        [void]$pkgs.Add([PSCustomObject]@{
+                            packageType = 'SBE'
+                            version     = '4.5.6.7-RegressionMarker'
+                        })
+                    } else {
+                        [void]$pkgs.Add([PSCustomObject]@{
+                            packageType = "Filler-$i"
+                            version     = "0.0.0.$i"
+                        })
+                    }
+                }
+
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName          = 'BigPkgCluster'
+                            ClusterPortalUrl     = 'https://portal.azure.com/#@/resource/x/big'
+                            HealthStatus         = 'Healthy'
+                            UpdateStatus         = 'AppliedSuccessfully'
+                            CurrentVersion       = '12.2604.0'
+                            SbeVersion           = ''
+                            PackageVersions      = $pkgs.ToArray()
+                            AzureConnection      = 'Connected'
+                            LastChecked          = '2026-05-16T08:00:00Z'
+                            HealthResultsAgeDays = 0
+                            ResourceGroup        = 'RG-big'
+                            NodeCount            = 4
+                            SubscriptionId       = 'sub-big'
+                        }
+                    )
+                }
+
+                $rows = Get-AzLocalFleetHealthOverview 6>$null
+                $rows | Should -HaveCount 1
+                $rows[0].SbeVersion | Should -Be '4.5.6.7-RegressionMarker'
+                # PackageVersions must be stripped from the output schema.
+                $rows[0].PSObject.Properties.Name | Should -Not -Contain 'PackageVersions'
+            }
+        }
+
+        It 'Defaults SbeVersion to "(none)" when packageVersions is empty and the column is present' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName          = 'EmptyPkgCluster'
+                            ClusterPortalUrl     = 'https://portal.azure.com/#@/resource/x/empty'
+                            HealthStatus         = 'Healthy'
+                            UpdateStatus         = 'AppliedSuccessfully'
+                            CurrentVersion       = '12.2604.0'
+                            SbeVersion           = ''
+                            PackageVersions      = @()
+                            AzureConnection      = 'Connected'
+                            LastChecked          = '2026-05-16T08:00:00Z'
+                            HealthResultsAgeDays = 0
+                            ResourceGroup        = 'RG-empty'
+                            NodeCount            = 4
+                            SubscriptionId       = 'sub-empty'
+                        }
+                    )
+                }
+                $rows = Get-AzLocalFleetHealthOverview 6>$null
+                $rows[0].SbeVersion | Should -Be '(none)'
+                $rows[0].PSObject.Properties.Name | Should -Not -Contain 'PackageVersions'
+            }
+        }
+
+        It 'KQL no longer contains mv-expand on properties.packageVersions (regression guard)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:CapturedKqlOverview = $null
+                Mock Invoke-AzResourceGraphQuery -ParameterFilter { $true } -MockWith {
+                    param($Query, $SubscriptionId)
+                    $script:CapturedKqlOverview = $Query
+                    return @()
+                }
+                $null = Get-AzLocalFleetHealthOverview 6>$null
+                $script:CapturedKqlOverview | Should -Not -BeNullOrEmpty
+                $script:CapturedKqlOverview | Should -Not -Match 'mv-expand'
+                $script:CapturedKqlOverview | Should -Match 'PackageVersions\s*=\s*properties\.packageVersions'
+            }
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# v0.7.76 - Get-AzLocalUpdateRunFailures: ARG mv-expand 128-cap regression
+# -----------------------------------------------------------------------------
+# v0.7.76 also removed the 7-level nested `mv-expand` chain (s1..s7) from
+# this cmdlet. Each level independently capped at 128 child rows, so any
+# update-run step with >128 siblings risked having its deepest error
+# silently dropped (compounded across all 7 levels). The deepest-error
+# walk now runs client-side via Resolve-AzLocalUpdateRunDeepestError on
+# the raw `progress.steps` array. These tests prove the new behaviour.
+
+Describe 'Function: Get-AzLocalUpdateRunFailures - v0.7.76 ARG mv-expand 128-cap regression' {
+
+    Context 'Client-side step-tree walk bypasses the ARG mv-expand cap' {
+
+        It 'Surfaces the deepest errorMessage from sibling index 150 of a 200-sibling step level (past the historical 128-row cap)' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Build a step tree where level 2 has 200 siblings and the
+                # only one carrying a meaningful errorMessage is at index
+                # 150. The OLD KQL `mv-expand s2 = s1.steps` would silently
+                # drop everything past index 128, so the error would never
+                # have surfaced.
+                $level2Siblings = New-Object System.Collections.ArrayList
+                for ($i = 0; $i -lt 200; $i++) {
+                    if ($i -eq 150) {
+                        [void]$level2Siblings.Add([PSCustomObject]@{
+                            name         = "Level2-Step-$i-DEEP-ERROR"
+                            errorMessage = 'Action plan Check Update readiness ID xyz failed with state: Failed - regression marker at sibling 150'
+                            steps        = @()
+                        })
+                    } else {
+                        [void]$level2Siblings.Add([PSCustomObject]@{
+                            name         = "Level2-Filler-$i"
+                            errorMessage = ''
+                            steps        = @()
+                        })
+                    }
+                }
+
+                $progressSteps = @(
+                    [PSCustomObject]@{
+                        name         = 'Level1-Apply'
+                        description  = 'Apply update'
+                        errorMessage = ''
+                        steps        = $level2Siblings.ToArray()
+                    }
+                )
+
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName       = 'BigStepCluster'
+                            ResourceGroup     = 'RG-bigstep'
+                            SubscriptionId    = 'sub-bigstep'
+                            ClusterResourceId = '/subscriptions/sub-bigstep/resourceGroups/RG-bigstep/providers/Microsoft.AzureStackHCI/clusters/BigStepCluster'
+                            UpdateName        = 'Solution.X'
+                            RunId             = 'run-big-1'
+                            State             = 'Failed'
+                            StartTime         = '2026-05-15T20:00:00Z'
+                            EndTime           = '2026-05-15T21:30:00Z'
+                            DurationMinutes   = 90
+                            ProgressSteps     = $progressSteps
+                            StackTracePreview = ''
+                            Status            = 'Failed'
+                            ProgressDescription = 'Apply update'
+                            ProgressJsonBytes = 1234
+                            ProgressJson      = ''
+                        }
+                    )
+                }
+
+                $rows = Get-AzLocalUpdateRunFailures -State All 6>$null
+                $rows | Should -HaveCount 1
+                $rows[0].DeepestStepDepth | Should -Be 2
+                $rows[0].DeepestStepName  | Should -Be 'Level2-Step-150-DEEP-ERROR'
+                $rows[0].DeepestErrMsg    | Should -Match 'regression marker at sibling 150'
+                $rows[0].ErrorCategory    | Should -Be 'HealthCheck'
+                $rows[0].PSObject.Properties.Name | Should -Not -Contain 'ProgressSteps'
+            }
+        }
+
+        It 'Walks at least 8 levels deep (matches or exceeds the historical 8-level KQL ceiling)' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Construct an 8-level chain. The deepest step carries the
+                # only errorMessage; the walker must return Depth=8.
+                $deep = [PSCustomObject]@{
+                    name         = 'L8-Deepest'
+                    errorMessage = 'Deepest error at level 8 - certificate rotation failed'
+                    steps        = @()
+                }
+                for ($lvl = 7; $lvl -ge 1; $lvl--) {
+                    $deep = [PSCustomObject]@{
+                        name         = "L$lvl-Step"
+                        errorMessage = ''
+                        steps        = @($deep)
+                    }
+                }
+                # `$deep` is now the root; the walker treats the input as
+                # the steps[] array, so wrap it.
+                $progressSteps = @($deep)
+
+                Mock Invoke-AzResourceGraphQuery {
+                    return @(
+                        [PSCustomObject]@{
+                            ClusterName       = 'DeepCluster'
+                            ResourceGroup     = 'RG-deep'
+                            SubscriptionId    = 'sub-deep'
+                            ClusterResourceId = '/subscriptions/sub-deep/resourceGroups/RG-deep/providers/Microsoft.AzureStackHCI/clusters/DeepCluster'
+                            UpdateName        = 'Solution.Y'
+                            RunId             = 'run-deep-1'
+                            State             = 'Failed'
+                            StartTime         = '2026-05-15T20:00:00Z'
+                            EndTime           = '2026-05-15T21:00:00Z'
+                            DurationMinutes   = 60
+                            ProgressSteps     = $progressSteps
+                            StackTracePreview = ''
+                            Status            = 'Failed'
+                            ProgressDescription = ''
+                            ProgressJsonBytes = 100
+                            ProgressJson      = ''
+                        }
+                    )
+                }
+
+                $rows = Get-AzLocalUpdateRunFailures -State All 6>$null
+                $rows | Should -HaveCount 1
+                $rows[0].DeepestStepDepth | Should -Be 8
+                $rows[0].DeepestStepName  | Should -Be 'L8-Deepest'
+                $rows[0].DeepestErrMsg    | Should -Match 'level 8'
+                $rows[0].ErrorCategory    | Should -Be 'Certificates'
+            }
+        }
+
+        It 'KQL no longer contains mv-expand on progress.steps (regression guard)' {
+            InModuleScope AzLocal.UpdateManagement {
+                $script:CapturedKqlRuns = $null
+                Mock Invoke-AzResourceGraphQuery -ParameterFilter { $true } -MockWith {
+                    param($Query, $SubscriptionId)
+                    if ($null -eq $script:CapturedKqlRuns) {
+                        $script:CapturedKqlRuns = $Query
+                    }
+                    return @()
+                }
+                $null = Get-AzLocalUpdateRunFailures -State All 6>$null
+                $script:CapturedKqlRuns | Should -Not -BeNullOrEmpty
+                $script:CapturedKqlRuns | Should -Not -Match 'mv-expand'
+                $script:CapturedKqlRuns | Should -Match 'ProgressSteps\s*=\s*progressObj\.steps'
+            }
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# v0.7.76 - Resolve-AzLocalUpdateRunDeepestError private helper unit tests
+# -----------------------------------------------------------------------------
+
+Describe 'Private Helper: Resolve-AzLocalUpdateRunDeepestError - v0.7.76 step-tree walker' {
+
+    It 'Returns Depth=0 for $null input' {
+        InModuleScope AzLocal.UpdateManagement {
+            $r = Resolve-AzLocalUpdateRunDeepestError -Steps $null
+            $r.Depth | Should -Be 0
+            $r.Msg   | Should -Be ''
+        }
+    }
+
+    It 'Returns Depth=0 for empty array' {
+        InModuleScope AzLocal.UpdateManagement {
+            $r = Resolve-AzLocalUpdateRunDeepestError -Steps @()
+            $r.Depth | Should -Be 0
+        }
+    }
+
+    It 'Returns Depth=1 with the step name for a single-level errorMessage' {
+        InModuleScope AzLocal.UpdateManagement {
+            $steps = @(
+                [PSCustomObject]@{ name = 'Step-A'; errorMessage = 'Something failed at level 1'; steps = @() }
+            )
+            $r = Resolve-AzLocalUpdateRunDeepestError -Steps $steps
+            $r.Depth | Should -Be 1
+            $r.Name  | Should -Be 'Step-A'
+            $r.Msg   | Should -Match 'level 1'
+        }
+    }
+
+    It 'Picks the DEEPEST errorMessage when multiple levels carry one' {
+        InModuleScope AzLocal.UpdateManagement {
+            $steps = @(
+                [PSCustomObject]@{
+                    name         = 'L1'
+                    errorMessage = 'Shallow error at level 1'
+                    steps        = @(
+                        [PSCustomObject]@{
+                            name         = 'L2'
+                            errorMessage = 'Mid error at level 2'
+                            steps        = @(
+                                [PSCustomObject]@{
+                                    name         = 'L3-Deepest'
+                                    errorMessage = 'Deepest error at level 3'
+                                    steps        = @()
+                                }
+                            )
+                        }
+                    )
+                }
+            )
+            $r = Resolve-AzLocalUpdateRunDeepestError -Steps $steps
+            $r.Depth | Should -Be 3
+            $r.Name  | Should -Be 'L3-Deepest'
+            $r.Msg   | Should -Match 'level 3'
+        }
+    }
+
+    It 'Captures FirstDescription from the first top-level step with a non-empty description' {
+        InModuleScope AzLocal.UpdateManagement {
+            $steps = @(
+                [PSCustomObject]@{ name = 'A'; description = 'First top-level description'; errorMessage = ''; steps = @() }
+                [PSCustomObject]@{ name = 'B'; description = 'Second description';          errorMessage = ''; steps = @() }
+            )
+            $r = Resolve-AzLocalUpdateRunDeepestError -Steps $steps
+            $r.Depth            | Should -Be 0
+            $r.FirstDescription | Should -Be 'First top-level description'
+        }
+    }
+
+    It 'Walks past 200 siblings to find an error at index 150 (mv-expand 128-cap regression)' {
+        InModuleScope AzLocal.UpdateManagement {
+            $siblings = New-Object System.Collections.ArrayList
+            for ($i = 0; $i -lt 200; $i++) {
+                if ($i -eq 150) {
+                    [void]$siblings.Add([PSCustomObject]@{
+                        name         = "S-$i-DEEP"
+                        errorMessage = 'Sibling 150 carries the only meaningful error'
+                        steps        = @()
+                    })
+                } else {
+                    [void]$siblings.Add([PSCustomObject]@{
+                        name         = "S-$i"
+                        errorMessage = ''
+                        steps        = @()
+                    })
+                }
+            }
+            $r = Resolve-AzLocalUpdateRunDeepestError -Steps $siblings.ToArray()
+            $r.Depth | Should -Be 1
+            $r.Name  | Should -Be 'S-150-DEEP'
+            $r.Msg   | Should -Match 'Sibling 150'
+        }
+    }
+
+    It 'Ignores errorMessages shorter than the 10-character meaningful threshold' {
+        InModuleScope AzLocal.UpdateManagement {
+            $steps = @(
+                [PSCustomObject]@{ name = 'X'; errorMessage = 'short'; steps = @() }
+            )
+            $r = Resolve-AzLocalUpdateRunDeepestError -Steps $steps
+            $r.Depth | Should -Be 0
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
 # v0.7.70 - Workstream B: Get-AzLocalFleetHealthOverview (BS6, BS7, BS8)
 # -----------------------------------------------------------------------------
 

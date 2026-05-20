@@ -217,31 +217,32 @@ function Get-AzLocalUpdateRunFailures {
     }
 
     # Build server-side filter clauses. The State filter is applied AFTER the
-    # mv-expand projection so we still see the full step tree on Failed runs.
-    # The Since filter is pushed down BEFORE mv-expand for efficiency.
-    # Note: $State is injected into the projected `State` column via a
-    # post-build string replace below (after the `project ... State = state`
-    # line) so the filter sees the renamed column.
+    # raw projection so it operates on the renamed `State` column. The Since
+    # filter is pushed down BEFORE the heavy `progress` projection for
+    # efficiency.
 
     # ISO-8601 UTC representation safe for embedding in KQL (no quoting needed
     # inside datetime() literal). Since the helper now normalises multi-line
     # KQL to single-line we can keep the query as a here-string for clarity.
     $sinceUtc = $Since.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 
-    # ClusterName client-side narrowing is handled server-side as a where
-    # filter on the parsed segment so we don't pay for the mv-expand on
-    # uninteresting clusters.
+    # ClusterName narrowing is pushed server-side as a where filter on the
+    # parsed segment so we don't pull `progress` for uninteresting clusters.
     $clusterClause = if ($PSBoundParameters.ContainsKey('ClusterName')) {
         "| where ClusterName =~ '$ClusterName'"
     } else { '' }
 
-    # The KQL: parse identity from id segments, project StartTime/EndTime,
-    # capture raw progressJson once (capped), then mv-expand the step tree
-    # up to seven explicit levels (s1..s7) plus a synthetic eighth level via
-    # s7.steps[0]. The coalesce picks the deepest non-empty errorMessage and
-    # records its depth. summarize arg_max ... by id collapses the cartesian
-    # explosion back down to one row per update run, keeping the columns
-    # from the row that hit the maximum depth.
+    # v0.7.76: KQL no longer does the 7-level `mv-expand` of the step tree.
+    # Each level of ARG `mv-expand` silently caps at 128 expanded child rows
+    # per parent (the same cap that caused the v0.7.76 P0 bug in
+    # Get-AzLocalFleetHealthFailures). On nested operator trees the cap
+    # compounds at every level, so any step with >128 siblings risked having
+    # its deepest error silently dropped. The query now projects the raw
+    # `progress.steps` array; the deepest-error walk runs client-side via
+    # Resolve-AzLocalUpdateRunDeepestError. The ErrorCategory bucketing
+    # likewise moves client-side. `stackTraceMatch` is computed server-side
+    # because `extract()` is a scalar regex over the single (capped)
+    # progressJson string and is not affected by mv-expand truncation.
     $kql = @"
 extensibilityresources
 | where type =~ 'microsoft.azurestackhci/clusters/updates/updateruns'
@@ -260,47 +261,13 @@ extensibilityresources
 | where StartTime >= datetime($sinceUtc)
 $clusterClause
 | extend progressObj = properties.progress
-| extend progressStatus = tostring(progressObj.status)
+| extend progressStatus      = tostring(progressObj.status)
 | extend progressDescription = tostring(progressObj.description)
-| extend progressJsonFull = tostring(properties.progress)
-| extend ProgressJsonBytes = strlen(progressJsonFull)
-| extend progressJsonCapped = substring(progressJsonFull, 0, 204800)
-| mv-expand s1 = progressObj.steps
-| mv-expand s2 = s1.steps
-| mv-expand s3 = s2.steps
-| mv-expand s4 = s3.steps
-| mv-expand s5 = s4.steps
-| mv-expand s6 = iff(array_length(s5.steps) > 0, s5.steps, dynamic([null]))
-| mv-expand s7 = iff(isnotnull(s6) and array_length(s6.steps) > 0, s6.steps, dynamic([null]))
-| extend e1Msg = tostring(s1.errorMessage), e1Name = tostring(s1.name), e1Desc = tostring(s1.description)
-| extend e2Msg = tostring(s2.errorMessage), e2Name = tostring(s2.name)
-| extend e3Msg = tostring(s3.errorMessage), e3Name = tostring(s3.name)
-| extend e4Msg = tostring(s4.errorMessage), e4Name = tostring(s4.name)
-| extend e5Msg = tostring(s5.errorMessage), e5Name = tostring(s5.name)
-| extend e6Msg = iff(isnotnull(s6), tostring(s6.errorMessage), ''), e6Name = iff(isnotnull(s6), tostring(s6.name), '')
-| extend e7Msg = iff(isnotnull(s7), tostring(s7.errorMessage), ''), e7Name = iff(isnotnull(s7), tostring(s7.name), '')
-| extend e8Arr = iff(isnotnull(s7), s7.steps, dynamic(null))
-| extend e8First = iff(isnotnull(e8Arr) and array_length(e8Arr) > 0, e8Arr[0], dynamic(null))
-| extend e8Msg = tostring(e8First.errorMessage), e8Name = tostring(e8First.name)
-| extend mvDepth = case(strlen(e8Msg) > 10, 8, strlen(e7Msg) > 10, 7, strlen(e6Msg) > 10, 6, strlen(e5Msg) > 10, 5, strlen(e4Msg) > 10, 4, strlen(e3Msg) > 10, 3, strlen(e2Msg) > 10, 2, strlen(e1Msg) > 10, 1, 0)
-| extend mvDeepest = case(mvDepth == 8, e8Msg, mvDepth == 7, e7Msg, mvDepth == 6, e6Msg, mvDepth == 5, e5Msg, mvDepth == 4, e4Msg, mvDepth == 3, e3Msg, mvDepth == 2, e2Msg, mvDepth == 1, e1Msg, '')
-| extend mvStepName = case(mvDepth == 8, e8Name, mvDepth == 7, e7Name, mvDepth == 6, e6Name, mvDepth == 5, e5Name, mvDepth == 4, e4Name, mvDepth == 3, e3Name, mvDepth == 2, e2Name, mvDepth == 1, e1Name, '')
-| extend stackTraceMatch = extract(@'raised an exception:[^\r\n]{0,500}', 0, progressJsonFull)
-| extend descriptionFallback = iff(strlen(mvDeepest) > 0, '', e1Desc)
-| summarize arg_max(mvDepth, *) by id
-| extend DeepestErrMsg = iff(strlen(mvDeepest) > 0, mvDeepest, descriptionFallback)
-| extend ErrorCategory = case(
-    DeepestErrMsg has 'UpdateSecuredCore' or DeepestErrMsg has 'Secured-core', 'SecuredCore',
-    DeepestErrMsg has 'health check' or DeepestErrMsg has 'HealthCheck' or DeepestErrMsg has 'Check Update readiness', 'HealthCheck',
-    DeepestErrMsg has 'CAU' or DeepestErrMsg has 'Cluster-Aware', 'CAU',
-    DeepestErrMsg has 'RotateSecrets' or DeepestErrMsg has 'Rotate Secrets', 'RotateSecrets',
-    DeepestErrMsg has 'MocArb' or DeepestErrMsg has 'CliExtensions' or DeepestErrMsg has 'Arc Prereq', 'ArcPrereqs',
-    DeepestErrMsg has 'certificate rotation' or DeepestErrMsg has 'Certificate Rotation', 'Certificates',
-    DeepestErrMsg has 'preparation was terminated', 'PreparationTerminated',
-    DeepestErrMsg has 'administrator operation' or DeepestErrMsg has 'blocked by administrator', 'AdminBlocked',
-    strlen(DeepestErrMsg) > 0, 'Other',
-    'Unclassified')
-| project ClusterName, ResourceGroup, SubscriptionId, ClusterResourceId, UpdateName, RunId, State = state, StartTime, EndTime, DurationMinutes, DeepestStepDepth = mvDepth, DeepestStepName = mvStepName, DeepestErrMsg, StackTracePreview = stackTraceMatch, ErrorCategory, Status = progressStatus, ProgressDescription = progressDescription, ProgressJsonBytes, ProgressJson = progressJsonCapped
+| extend progressJsonFull    = tostring(properties.progress)
+| extend ProgressJsonBytes   = strlen(progressJsonFull)
+| extend progressJsonCapped  = substring(progressJsonFull, 0, 204800)
+| extend stackTraceMatch     = extract(@'raised an exception:[^\r\n]{0,500}', 0, progressJsonFull)
+| project ClusterName, ResourceGroup, SubscriptionId, ClusterResourceId, UpdateName, RunId, State = state, StartTime, EndTime, DurationMinutes, ProgressSteps = progressObj.steps, StackTracePreview = stackTraceMatch, Status = progressStatus, ProgressDescription = progressDescription, ProgressJsonBytes, ProgressJson = progressJsonCapped
 | order by StartTime desc, ClusterName asc
 "@
 
@@ -327,6 +294,69 @@ $clusterClause
 
     if (-not $rows) { $rows = @() }
     Write-Log -Message "Resource Graph returned $($rows.Count) update-run row(s)." -Level Info
+
+    # v0.7.76: Client-side deepest-error walk + ErrorCategory bucketing.
+    # The KQL above projects the raw `progress.steps` array as ProgressSteps;
+    # the legacy server-side mv-expand chain capped at 128 children per
+    # level. We compute DeepestStepDepth / DeepestStepName / DeepestErrMsg /
+    # ErrorCategory here so every step in the tree contributes regardless of
+    # its sibling count.
+    #
+    # Tests that mock the already-projected post-ARG schema (rows that
+    # arrive with DeepestStepDepth etc. already populated and no
+    # ProgressSteps column) are left untouched so backward compatibility
+    # is preserved.
+    foreach ($r in $rows) {
+        if ($null -eq $r) { continue }
+        $hasSteps = ($r.PSObject -and ($r.PSObject.Properties.Match('ProgressSteps').Count -gt 0))
+        if (-not $hasSteps) { continue }
+
+        $walk = Resolve-AzLocalUpdateRunDeepestError -Steps $r.ProgressSteps
+        $deepDepth = [int]$walk.Depth
+        $deepName  = [string]$walk.Name
+        $deepMsg   = if ($deepDepth -gt 0 -and $walk.Msg) {
+            [string]$walk.Msg
+        } elseif ($walk.FirstDescription) {
+            [string]$walk.FirstDescription
+        } else { '' }
+
+        # ErrorCategory bucketing - mirrors the legacy KQL `case(...)`
+        # exactly, using PowerShell `-match` (case-insensitive by default)
+        # for `has`-style substring tests.
+        $deepCategory =
+            if     ($deepMsg -match 'UpdateSecuredCore|Secured-core')                                              { 'SecuredCore' }
+            elseif ($deepMsg -match 'health check|HealthCheck|Check Update readiness')                             { 'HealthCheck' }
+            elseif ($deepMsg -match 'CAU|Cluster-Aware')                                                            { 'CAU' }
+            elseif ($deepMsg -match 'RotateSecrets|Rotate Secrets')                                                 { 'RotateSecrets' }
+            elseif ($deepMsg -match 'MocArb|CliExtensions|Arc Prereq')                                              { 'ArcPrereqs' }
+            elseif ($deepMsg -match 'certificate rotation|Certificate Rotation')                                    { 'Certificates' }
+            elseif ($deepMsg -match 'preparation was terminated')                                                   { 'PreparationTerminated' }
+            elseif ($deepMsg -match 'administrator operation|blocked by administrator')                             { 'AdminBlocked' }
+            elseif ($deepMsg.Length -gt 0)                                                                          { 'Other' }
+            else                                                                                                    { 'Unclassified' }
+
+        # Attach the computed columns. Add-Member -Force overwrites if the
+        # property already exists (defensive against mocks that pre-populate
+        # them).
+        $r | Add-Member -NotePropertyName 'DeepestStepDepth' -NotePropertyValue $deepDepth   -Force
+        $r | Add-Member -NotePropertyName 'DeepestStepName'  -NotePropertyValue $deepName    -Force
+        $r | Add-Member -NotePropertyName 'DeepestErrMsg'    -NotePropertyValue $deepMsg     -Force
+        $r | Add-Member -NotePropertyName 'ErrorCategory'    -NotePropertyValue $deepCategory -Force
+    }
+
+    # Drop the intermediate ProgressSteps column so callers see the
+    # documented schema only. (StackTracePreview, ProgressJson, and
+    # ProgressJsonBytes are part of the documented schema and stay.)
+    if ($rows.Count -gt 0) {
+        $rows = @($rows | ForEach-Object {
+            if ($null -eq $_) { return }
+            if ($_.PSObject.Properties.Match('ProgressSteps').Count -gt 0) {
+                $_ | Select-Object -Property * -ExcludeProperty ProgressSteps
+            } else {
+                $_
+            }
+        })
+    }
 
     # Optional UpdateRing tag filter via secondary ARG query. The updateruns
     # resource does NOT carry the cluster's tags, so a second hop is needed.

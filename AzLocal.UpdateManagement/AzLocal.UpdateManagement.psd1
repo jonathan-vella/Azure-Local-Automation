@@ -71,6 +71,7 @@
         'Private/Invoke-FleetOpClusterAction.ps1',
         'Private/Read-AzLocalApplyUpdatesYamlCrons.ps1',
         'Private/Resolve-AzLocalItsmSecret.ps1',
+        'Private/Resolve-AzLocalUpdateRunDeepestError.ps1',
         'Private/Resolve-SafeOutputPath.ps1',
         'Private/Resolve-WildcardDate.ps1',
         'Private/Resolve-WildcardDateRange.ps1',

@@ -54,6 +54,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the second is a guard against the regression returning - it asserts
   the emitted KQL contains `HealthCheckResult = properties.healthCheckResult`
   and does NOT contain the string `mv-expand`.
+- **Class-of-bug sweep: two more ARG `mv-expand` 128-cap instances eliminated
+  in the same release.** Audit of all 36 exported cmdlets surfaced two
+  additional KQL pipelines suffering the same bug class:
+  - **`Get-AzLocalFleetHealthOverview`** previously used
+    `mv-expand pkg = properties.packageVersions | summarize ... by ClusterResourceIdLower`
+    to derive `SbeVersion`. While `packageVersions` is normally small
+    (~4 entries), there is no schema-level upper bound, so the cmdlet
+    was theoretically vulnerable to the same silent truncation. **Fix:**
+    KQL now projects `PackageVersions = properties.packageVersions` as a
+    raw array; the SBE roll-up runs client-side
+    (`packageType -ieq 'SBE'` -> `version`), and the intermediate
+    `PackageVersions` column is stripped from the output schema. Output
+    contract is unchanged. Backward-compatible against test fixtures
+    that mock the projected post-ARG schema without `PackageVersions`.
+  - **`Get-AzLocalUpdateRunFailures`** previously used a 7-level nested
+    `mv-expand s1..s7` chain over `progress.steps` to find the deepest
+    error in an update-run tree, with a synthetic 8th level via
+    `s7.steps[0]`. Every level independently capped at 128 children,
+    and the truncation compounded across levels. **High-risk** because
+    the cmdlet exists specifically to surface deep failure detail on
+    long-running update runs, which are exactly the runs most likely
+    to have wide step trees. **Fix:** KQL drops every `mv-expand` and
+    projects `ProgressSteps = progressObj.steps` as a raw array. A new
+    private helper `Resolve-AzLocalUpdateRunDeepestError` walks the
+    tree recursively in PowerShell (MaxDepth = 16, up from the legacy
+    8-level KQL ceiling), choosing the deepest `errorMessage` longer
+    than the 10-char meaningful-threshold (matches legacy
+    `strlen(eNMsg) > 10`). The walker also captures the first
+    non-empty top-level `description` as a fallback when no
+    errorMessage is found. `ErrorCategory` bucketing (SecuredCore,
+    HealthCheck, CAU, RotateSecrets, ArcPrereqs, Certificates,
+    PreparationTerminated, AdminBlocked, Other, Unclassified) moved
+    client-side using `-match` patterns that mirror the legacy KQL
+    `has` operators. `StackTracePreview` stays server-side because
+    `extract()` is a scalar regex over the single capped
+    progressJson string and is unaffected by `mv-expand` truncation.
+    Output schema is unchanged. Backward-compatible against test
+    fixtures that mock the projected post-ARG schema with
+    `DeepestStepDepth/Name/Msg/ErrorCategory` pre-populated and no
+    `ProgressSteps` column - those rows pass through unchanged.
+
+  Six new Pester regression cases cover the sweep: a 200-entry
+  `packageVersions` test with the SBE entry placed at index 150
+  (asserts client-side roll-up surfaces it); a 200-sibling
+  `progress.steps` test with the deepest error at sibling 150 (asserts
+  the walker finds it); an 8-level depth test (asserts the walker
+  matches or exceeds the legacy KQL ceiling); two KQL guards (asserts
+  the emitted query contains neither `mv-expand` nor the bug-prone
+  pattern); plus six direct unit tests of
+  `Resolve-AzLocalUpdateRunDeepestError` covering null/empty/single-level
+  /multi-level/description-fallback/200-sibling/threshold cases.
 - **ARM `healthCheckResult` byte-identical duplicate suppression** in
   `Test-AzLocalClusterHealth` and the private `Get-HealthCheckFailureSummary`.
   ARM upstream was observed emitting two byte-identical rows for the same
