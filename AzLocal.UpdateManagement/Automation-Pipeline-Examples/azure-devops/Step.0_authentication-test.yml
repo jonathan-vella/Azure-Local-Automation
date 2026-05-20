@@ -54,7 +54,7 @@ variables:
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
-    value: '0.7.76'
+    value: '0.7.77'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -278,12 +278,12 @@ stages:
                 Write-Host "##vso[task.setvariable variable=clusterCount;isOutput=false]$clusterCount"
 
           - task: PublishTestResults@2
-            displayName: 'Publish Authentication Validation and Subscription Scope Report (JUnit)'
+            displayName: 'Publish Authentication Validation JUnit Diagnostics'
             condition: always()
             inputs:
               testResultsFormat: 'JUnit'
               testResultsFiles: '$(Build.ArtifactStagingDirectory)/auth-report/auth-report.xml'
-              testRunTitle: 'Authentication Validation and Subscription Scope'
+              testRunTitle: '[JUnit Debug] Authentication Validation and Subscription Scope'
               failTaskOnFailedTests: false
               mergeTestResults: false
 

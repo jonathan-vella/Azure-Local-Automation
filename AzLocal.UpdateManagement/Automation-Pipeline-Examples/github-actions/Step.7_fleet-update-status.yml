@@ -104,7 +104,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.76'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.77'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -847,20 +847,31 @@ jobs:
                 } else {
                     $versionSection += "_``SupportStatus`` falls back to a **fleet-observed heuristic** (aka.ms/AzureEdgeUpdates was unreachable from the runner). **Supported** = YYMM is in the top-6 most-recent distinct YYMM values observed across the fleet (``$supportedYymmWin``); **Unsupported** = older YYMM; **Unknown** = ``CurrentVersion`` empty or not in ``<prefix>.YYMM.X.X`` form. Always cross-check against the [Azure Local lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and the [Azure Local release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) before taking action._`n`n"
                 }
-                $versionSection += "| Version | YYMM | Support | Cluster Count | Percentage | Clusters |`n"
-                $versionSection += "|---------|------|---------|---------------|------------|----------|`n"
+                $versionSection += "| Version | YYMM | Support | Cluster Count | Percentage | Clusters (first 15 shown only) |`n"
+                $versionSection += "|---------|------|---------|---------------|------------|----------------------------------|`n"
                 foreach ($vr in @($vRows)) {
                     $supportEmoji = switch ($vr.SupportStatus) {
                         'Supported'   { '✅ Supported' }
                         'Unsupported' { '⚠️ Unsupported' }
                         default       { '❓ Unknown' }
                     }
-                    $clCell = [string]$vr.Clusters
-                    if ($clCell.Length -gt 250) { $clCell = $clCell.Substring(0,250) + ' ...' }
+                    # Show only the first 15 cluster names so the markdown table
+                    # stays scannable on large fleets. Full list remains in CSV/JSON.
+                    $clusterNames = if ($vr.Clusters) {
+                        @($vr.Clusters -split '; ' | Where-Object { $_ })
+                    } else {
+                        @()
+                    }
+                    $clCell = if ($clusterNames.Count -le 15) {
+                        $clusterNames -join '; '
+                    } else {
+                        (($clusterNames | Select-Object -First 15) -join '; ') + (' ... (+{0} more)' -f ($clusterNames.Count - 15))
+                    }
                     $clCell = $clCell -replace '\|','\|'
                     $versionSection += ('| {0} | {1} | {2} | {3} | {4}% | {5} |' -f $vr.Version, $vr.Yymm, $supportEmoji, $vr.Count, $vr.Percentage, $clCell) + "`n"
                 }
-                $versionSection += "`n_Support roll-up: Supported = $supportedClusters cluster(s), Unsupported = $unsupportedClusters, Unknown = $unknownVersionClusters. Anchor source: ``$supportSource``._`n`n"
+                $versionSection += "`n_Support roll-up: Supported = $supportedClusters cluster(s), Unsupported = $unsupportedClusters, Unknown = $unknownVersionClusters. Anchor source: ``$supportSource``._`n"
+                $versionSection += "_Note: the **Clusters (first 15 shown only)** column is intentionally truncated for readability. Download ``readiness-status.csv`` from artifacts to see the full cluster-name list._`n`n"
             } catch {
                 Write-Warning "Failed to render Fleet Version Distribution markdown table: $($_.Exception.Message)"
                 $versionSection = ''

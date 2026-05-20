@@ -60,7 +60,7 @@ parameters:
   - name: includeUntagged
     displayName: 'Surface clusters with no UpdateWindow tag as their own row'
     type: boolean
-    default: false
+    default: true
 
   - name: moduleVersion
     displayName: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
@@ -73,7 +73,7 @@ parameters:
     default: false
 
 variables:
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.76'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.77'
   REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
   reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
 

@@ -109,7 +109,7 @@ env:
   # PSGallery, and emits a ::notice annotation if the YAML appears stale -
   # prompting you to refresh via Copy-AzLocalPipelineExample -Update. See
   # Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.76'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.77'
   # Resolution order for the module version pin (leave all unset to install
   # the latest, the default "fix-forward" behaviour): manual workflow_dispatch
   # input > repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -217,11 +217,31 @@ jobs:
         # typical fleets and we accept a "page 1 only" assumption here.
         function Invoke-ArgQuery {
             param([Parameter(Mandatory)][string]$Query, [string[]]$ExtraArgs)
-            $raw = az graph query -q $Query --first 1000 @ExtraArgs --output json 2>&1
-            if ($LASTEXITCODE -ne 0) { throw "az graph query failed (exit $LASTEXITCODE): $raw" }
-            $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
-            if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Match('data').Count) { return @() }
-            return @($parsed.data)
+            # Capture stderr to a temp file so az CLI warnings (preview-feature
+            # notices, extension load messages, etc. - especially against the
+            # 'extensibilityresources' table) cannot prefix the JSON payload
+            # and break ConvertFrom-Json with 'Unexpected character W' style
+            # errors. Also pass --only-show-errors to suppress non-error
+            # noise at the CLI layer.
+            $errFile = [System.IO.Path]::GetTempFileName()
+            try {
+                $raw = az graph query -q $Query --first 1000 @ExtraArgs --output json --only-show-errors 2> $errFile
+                if ($LASTEXITCODE -ne 0) {
+                    $errText = (Get-Content $errFile -Raw -ErrorAction SilentlyContinue) -join "`n"
+                    throw "az graph query failed (exit $LASTEXITCODE): $errText"
+                }
+                # az returns its stdout as an array of strings - join into one
+                # blob so ConvertFrom-Json sees a single JSON document, not
+                # one document per pipeline element.
+                $jsonText = ($raw -join "`n").Trim()
+                if ([string]::IsNullOrWhiteSpace($jsonText)) { return @() }
+                $parsed = $jsonText | ConvertFrom-Json -ErrorAction Stop
+                if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Match('data').Count) { return @() }
+                return @($parsed.data)
+            }
+            finally {
+                Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+            }
         }
 
         Write-Host "========================================"
@@ -926,6 +946,8 @@ jobs:
         - JSON copies of each, same shape, machine-readable
         - ``fleet-connectivity-status.xml`` - JUnit XML for CI/CD test-reporter visualisation
 
+        _Note: test sections prefixed **[JUnit Debug]** in the Checks view are a diagnostic mirror of the tables above (for CI tooling/ITSM integration). For primary readability, use this summary and the CSV artifacts._
+
         *Generated at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")*
         "@
 
@@ -934,11 +956,11 @@ jobs:
     # Publish JUnit test results AFTER the markdown summary so the summary
     # tables are the first thing visible. list-suites/list-tests=failed keeps
     # the expansion compact for large fleets.
-    - name: Publish Test Results
+    - name: Publish JUnit Diagnostic Results
       uses: dorny/test-reporter@v3
       if: always()
       with:
-        name: Fleet Connectivity Status Report
+        name: '[JUnit Debug] Fleet Connectivity Status Report'
         path: ./reports/fleet-connectivity-status.xml
         reporter: java-junit
         fail-on-error: false

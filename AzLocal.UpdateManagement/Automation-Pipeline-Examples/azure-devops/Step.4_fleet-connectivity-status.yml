@@ -102,7 +102,7 @@ variables:
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.76'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.77'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -197,11 +197,31 @@ stages:
 
           function Invoke-ArgQuery {
               param([Parameter(Mandatory)][string]$Query, [string[]]$ExtraArgs)
-              $raw = az graph query -q $Query --first 1000 @ExtraArgs --output json 2>&1
-              if ($LASTEXITCODE -ne 0) { throw "az graph query failed (exit $LASTEXITCODE): $raw" }
-              $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
-              if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Match('data').Count) { return @() }
-              return @($parsed.data)
+              # Capture stderr to a temp file so az CLI warnings (preview-feature
+              # notices, extension load messages, etc. - especially against the
+              # 'extensibilityresources' table) cannot prefix the JSON payload
+              # and break ConvertFrom-Json with 'Unexpected character W' style
+              # errors. Also pass --only-show-errors to suppress non-error
+              # noise at the CLI layer.
+              $errFile = [System.IO.Path]::GetTempFileName()
+              try {
+                  $raw = az graph query -q $Query --first 1000 @ExtraArgs --output json --only-show-errors 2> $errFile
+                  if ($LASTEXITCODE -ne 0) {
+                      $errText = (Get-Content $errFile -Raw -ErrorAction SilentlyContinue) -join "`n"
+                      throw "az graph query failed (exit $LASTEXITCODE): $errText"
+                  }
+                  # az returns its stdout as an array of strings - join into one
+                  # blob so ConvertFrom-Json sees a single JSON document, not
+                  # one document per pipeline element.
+                  $jsonText = ($raw -join "`n").Trim()
+                  if ([string]::IsNullOrWhiteSpace($jsonText)) { return @() }
+                  $parsed = $jsonText | ConvertFrom-Json -ErrorAction Stop
+                  if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Match('data').Count) { return @() }
+                  return @($parsed.data)
+              }
+              finally {
+                  Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+              }
           }
 
           Write-Host "========================================"
@@ -887,23 +907,25 @@ stages:
         - ``fleet-arb-status.csv`` - one row per ARB appliance (status + days since lastModified; multi-cluster-per-RG safe via summarize/make_set)
         - JSON copies of each, same shape, machine-readable
         - ``fleet-connectivity-status.xml`` - JUnit XML (see Tests tab)
+
+        _Note: test sections prefixed **[JUnit Debug]** in the Tests tab are a diagnostic mirror of the tables above (for CI tooling/ITSM integration). For primary readability, use this summary and the CSV artifacts._
         "@
 
-        Write-Host $md
-      displayName: 'Display Fleet Connectivity Summary'
-      condition: always()
+                Write-Host $md
+            displayName: 'Display Fleet Connectivity Summary'
+            condition: always()
 
-    # Publish JUnit test results LAST so the Test Results tab is populated but the
-    # markdown summary above is the first thing visible on the run extensions view.
-    - task: PublishTestResults@2
-      displayName: 'Publish Fleet Connectivity as Test Results'
-      condition: always()
-      inputs:
-        testResultsFormat: 'JUnit'
-        testResultsFiles: '$(reportsPath)/fleet-connectivity-status.xml'
-        testRunTitle: 'Fleet Connectivity Status - $(Build.BuildNumber)'
-        mergeTestResults: false
-        failTaskOnFailedTests: false  # Don't fail pipeline on connectivity failures
+        # Publish JUnit test results LAST so the Test Results tab is populated but the
+        # markdown summary above is the first thing visible on the run extensions view.
+        - task: PublishTestResults@2
+            displayName: 'Publish Fleet Connectivity JUnit Diagnostics'
+            condition: always()
+            inputs:
+                testResultsFormat: 'JUnit'
+                testResultsFiles: '$(reportsPath)/fleet-connectivity-status.xml'
+                testRunTitle: '[JUnit Debug] Fleet Connectivity Status - $(Build.BuildNumber)'
+                mergeTestResults: false
+                failTaskOnFailedTests: false  # Don't fail pipeline on connectivity failures
 
     # ----------------------------------------------------------------------
     # ITSM Connector (ServiceNow auto-raise on connectivity failures)

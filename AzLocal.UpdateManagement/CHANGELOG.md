@@ -5,6 +5,31 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.77] - 2026-05-22
+
+> **Hotfix: Step.4 fleet-connectivity-status JSON parsing hardening**
+> (GitHub Actions + Azure DevOps).
+
+### Fixed
+
+- **Step.4 `Collect Fleet Connectivity Data` no longer fails with**
+  `ConvertFrom-Json ... Unexpected character encountered while parsing value: W`.
+  Root cause was `Invoke-ArgQuery` using `2>&1` with `az graph query`, which
+  merged warning text from stderr into stdout and polluted the JSON payload.
+- `Invoke-ArgQuery` now executes `az graph query` with `--only-show-errors`
+  and redirects stderr to a temp file (`2> $errFile`) so warnings cannot
+  corrupt JSON parsing.
+- On non-zero az exit, stderr is read from the temp file and surfaced in the
+  thrown error for accurate diagnostics.
+- az stdout is normalized with `($raw -join "`n").Trim()` before
+  `ConvertFrom-Json` so the parser always receives one JSON document.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure
+  DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.76'` to
+  `'0.7.77'`.
+
 ## [0.7.76] - 2026-05-21
 
 > **Breaking rename + nine MODULE-REVIEW findings + bonus ARM dedup fix.**

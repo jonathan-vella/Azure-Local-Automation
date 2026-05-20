@@ -16,9 +16,10 @@
 # - Pipeline run summary (uploaded via ##vso[task.uploadsummary]): pivoted by
 #   FailureReason (top failures by cluster impact), with a per-cluster "Detailed
 #   Results" table further down.
-# - JUnit XML: published to the Test Results tab. One <testcase> per (cluster,
-#   failing health check), grouped under "Critical Health Failures" /
-#   "Warning Health Failures" testsuites for two-level drill-down.
+# - JUnit XML (diagnostic mirror): published to the Test Results tab.
+#   One <testcase> per (cluster, failing health check), grouped under
+#   "[JUnit Debug] Critical Health Failures" /
+#   "[JUnit Debug] Warning Health Failures" testsuites for two-level drill-down.
 # - CSV (detail):  fleet-health-detail.csv  - one row per (cluster, failing check)
 # - CSV (summary): fleet-health-summary.csv - one row per (FailureReason, Severity)
 # - JSON: same shape, machine-readable for downstream automation
@@ -103,7 +104,7 @@ variables:
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.76'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.77'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -117,7 +118,7 @@ variables:
   # group reference convert this entire 'variables:' block to list form:
   #   variables:
   #     - name: GENERATED_AGAINST_MODULE_VERSION
-  #       value: '0.7.76'
+  #       value: '0.7.77'
   #     - name: REQUIRED_MODULE_VERSION
   #       value: '${{ parameters.moduleVersion }}'
   #     - name: reportsPath
@@ -276,7 +277,7 @@ stages:
           foreach ($severityLabel in @('Critical','Warning')) {
               $rows = if ($severityLabel -eq 'Critical') { $criticalDetail } else { $warningDetail }
               if (-not $rows -or $rows.Count -eq 0) { continue }
-              $suiteName = "$severityLabel Health Failures"
+              $suiteName = "[JUnit Debug] $severityLabel Health Failures"
               [void]$sb.AppendFormat('  <testsuite name="{0}" tests="{1}" failures="{1}">' + "`n", (Convert-XmlEscape $suiteName), $rows.Count)
               foreach ($r in $rows) {
                   $caseName = "{0} :: {1}" -f $r.ClusterName, $r.FailureReason
@@ -543,6 +544,8 @@ stages:
         - ``fleet-health-overview.csv`` - one row per cluster (ARG-first fleet health summary)
         - ``fleet-health-detail.json`` / ``fleet-health-summary.json`` / ``fleet-health-overview.json`` - machine-readable
         - ``fleet-health-status.xml`` - JUnit XML (see Tests tab)
+
+        _Note: test sections prefixed **[JUnit Debug]** in the Tests tab are a diagnostic mirror of the tables above (for CI tooling/ITSM integration). For primary readability, use this summary and the CSV artifacts._
         "@
 
         Write-Host $md
@@ -552,12 +555,12 @@ stages:
     # Publish JUnit test results LAST so the Test Results tab is populated but the
     # markdown summary above is the first thing visible on the run extensions view.
     - task: PublishTestResults@2
-      displayName: 'Publish Fleet Health as Test Results'
+      displayName: 'Publish Fleet Health JUnit Diagnostics'
       condition: always()
       inputs:
         testResultsFormat: 'JUnit'
         testResultsFiles: '$(reportsPath)/fleet-health-status.xml'
-        testRunTitle: 'Fleet Health Status - $(Build.BuildNumber)'
+        testRunTitle: 'Fleet Health Status [JUnit Debug] - $(Build.BuildNumber)'
         mergeTestResults: false
         failTaskOnFailedTests: false  # Don't fail pipeline on health failures
 
