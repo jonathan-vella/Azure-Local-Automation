@@ -744,41 +744,76 @@ jobs:
         > _**Physical NICs** is filtered at the query layer to actionable issues only: NicStatus=Disconnected with a non-APIPA IPv4 address. 'Up' adapters and adapters without a real IP are intentionally NOT reported (noise reduction)._
         "@
 
-        # --- Cluster connectivity table ---
-        $md += "`n`n### Cluster Connectivity`n"
+        # --- Merged Cluster + ARB per-cluster table ---
+        # Each cluster has at most one ARB. Build a ClusterId -> ARB lookup
+        # by splitting the (potentially comma-separated) ARB ClusterId field
+        # and indexing each ID. Then left-join $arbRows onto $clusterRows.
+        # ARBs whose RG contains no HCI cluster in scope are surfaced
+        # separately below as 'Orphan ARBs'.
+        $arbByClusterId = @{}
+        foreach ($a in $arbRows) {
+            $ids = if ($a.ClusterId) { @(($a.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
+            foreach ($id in $ids) {
+                $key = $id.Trim().ToLowerInvariant()
+                if ($key -and -not $arbByClusterId.ContainsKey($key)) { $arbByClusterId[$key] = $a }
+            }
+        }
+        $md += "`n`n### Cluster Connectivity (with ARB Status)`n"
+        $md += "`n_One row per cluster, left-joined to the cluster's Azure Resource Bridge (ARB) appliance status. Each cluster has at most one ARB. ARBs without a matching cluster in scope are listed separately as 'Orphan ARBs'._`n"
         if ($clusterRows.Count -eq 0) {
             $md += "`n*No clusters returned.*`n"
         } else {
-            $md += "`n| Cluster | Connectivity | Cluster Status | Nodes | Resource Group | Location |`n"
-            $md += "|---------|---------------|-----------------|-------|----------------|----------|`n"
+            $md += "`n| Cluster | Connectivity | Cluster Status | Nodes | ARB | ARB Status | ARB Days Since LastModified | Resource Group | Location |`n"
+            $md += "|---------|---------------|-----------------|-------|-----|-------------|------------------------------|----------------|----------|`n"
             foreach ($r in ($clusterRows | Select-Object -First 100)) {
-                $sev   = Get-ClusterSev $r.ConnectivityStatus
-                $icon  = Get-StatusIcon $sev
-                $cell  = if ($r.ClusterId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ClusterName, $r.ClusterId } else { $r.ClusterName }
-                $md += ('| {0} | {1} {2} | {3} | {4} | {5} | {6} |' -f $cell, $icon, $r.ConnectivityStatus, $r.ClusterStatus, $r.NodeCount, $r.ResourceGroup, $r.Location) + "`n"
+                $sev          = Get-ClusterSev $r.ConnectivityStatus
+                $icon         = Get-StatusIcon $sev
+                $clusterCell  = if ($r.ClusterId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ClusterName, $r.ClusterId } else { $r.ClusterName }
+
+                $arb = $null
+                if ($r.ClusterId) { $arb = $arbByClusterId[$r.ClusterId.ToLowerInvariant()] }
+
+                if ($arb) {
+                    $arbSev        = Get-ArbSev $arb.ArbStatus
+                    $arbIcon       = Get-StatusIcon $arbSev
+                    $arbCell       = if ($arb.ArbId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $arb.ArbName, $arb.ArbId } else { $arb.ArbName }
+                    $arbStatusCell = '{0} {1}' -f $arbIcon, $arb.ArbStatus
+                    $arbDaysCell   = $arb.DaysSinceLastModified
+                } else {
+                    $arbCell       = '_(no ARB)_'
+                    $arbStatusCell = '-'
+                    $arbDaysCell   = '-'
+                }
+
+                $md += ('| {0} | {1} {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} |' -f $clusterCell, $icon, $r.ConnectivityStatus, $r.ClusterStatus, $r.NodeCount, $arbCell, $arbStatusCell, $arbDaysCell, $r.ResourceGroup, $r.Location) + "`n"
             }
-            if ($clusterRows.Count -gt 100) { $md += "`n*Showing first 100 of $($clusterRows.Count); see ``fleet-cluster-connectivity.csv`` for the full list.*`n" }
+            if ($clusterRows.Count -gt 100) { $md += "`n*Showing first 100 of $($clusterRows.Count); see ``fleet-cluster-connectivity.csv`` and ``fleet-arb-status.csv`` for the full lists.*`n" }
         }
 
-        # --- ARB table ---
-        $md += "`n### Azure Resource Bridges (per cluster)`n"
-        if ($arbRows.Count -eq 0) {
-            $md += "`n*No ARB appliances returned.*`n"
-        } else {
-            $md += "`n| ARB | Status | Cluster | Cluster Status | Days Since LastModified | Resource Group |`n"
-            $md += "|-----|--------|---------|-----------------|--------------------------|----------------|`n"
-            foreach ($r in ($arbRows | Select-Object -First 100)) {
-                $sev   = Get-ArbSev $r.ArbStatus
-                $icon  = Get-StatusIcon $sev
-                $arbCell    = if ($r.ArbId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ArbName, $r.ArbId } else { $r.ArbName }
-                # ClusterId may be comma-separated when one RG hosts multiple
-                # HCI clusters - link the first cluster; show all names.
-                $clusterIds = if ($r.ClusterId) { @(($r.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
-                $primaryClusterId = if ($clusterIds.Count -gt 0) { $clusterIds[0].Trim() } else { '' }
-                $clusterCell = if ($primaryClusterId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ClusterName, $primaryClusterId } else { ($r.ClusterName) }
-                $md += ('| {0} | {1} {2} | {3} | {4} | {5} | {6} |' -f $arbCell, $icon, $r.ArbStatus, $clusterCell, $r.ClusterStatus, $r.DaysSinceLastModified, $r.ResourceGroup) + "`n"
+        # --- Orphan ARBs (ARB appliances whose RG contains no HCI cluster
+        # in scope - may indicate a stale/zombie appliance, or a cluster
+        # outside the configured subscription/RG scope) ---
+        $clusterIdsLower = @{}
+        foreach ($c in $clusterRows) {
+            if ($c.ClusterId) { $clusterIdsLower[$c.ClusterId.ToLowerInvariant()] = $true }
+        }
+        $orphanArbs = @($arbRows | Where-Object {
+            $ids = if ($_.ClusterId) { @(($_.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
+            $matched = $false
+            foreach ($id in $ids) { if ($clusterIdsLower.ContainsKey($id.Trim().ToLowerInvariant())) { $matched = $true; break } }
+            -not $matched
+        })
+        if ($orphanArbs.Count -gt 0) {
+            $md += "`n### Orphan ARBs (no matching cluster in scope)`n"
+            $md += "`n_ARB appliances whose resource group does not contain any HCI cluster visible to this run. May indicate a stale appliance, or a cluster outside the configured scope._`n"
+            $md += "`n| ARB | Status | Resource Group | Days Since LastModified |`n"
+            $md += "|-----|--------|----------------|--------------------------|`n"
+            foreach ($a in ($orphanArbs | Select-Object -First 50)) {
+                $arbSev  = Get-ArbSev $a.ArbStatus
+                $arbIcon = Get-StatusIcon $arbSev
+                $arbCell = if ($a.ArbId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $a.ArbName, $a.ArbId } else { $a.ArbName }
+                $md += ('| {0} | {1} {2} | {3} | {4} |' -f $arbCell, $arbIcon, $a.ArbStatus, $a.ResourceGroup, $a.DaysSinceLastModified) + "`n"
             }
-            if ($arbRows.Count -gt 100) { $md += "`n*Showing first 100 of $($arbRows.Count); see ``fleet-arb-status.csv`` for the full list.*`n" }
         }
 
         # --- Arc agent: Connection Status Summary + Non-Connected Machines table ---

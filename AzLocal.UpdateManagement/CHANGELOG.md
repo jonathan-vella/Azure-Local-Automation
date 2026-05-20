@@ -148,6 +148,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`Tools/smoke-test-connectivity-status.ps1` - new) asserts the
   updated column shape against the live subscription.
 
+### Changed
+
+- **Step.4 fleet-connectivity-status markdown summary: merged the
+  per-cluster Cluster Connectivity table and the per-cluster ARB Status
+  table into a single per-cluster table.** Each cluster has at most
+  one ARB, so the two tables had a 1:1 row relationship. The new
+  "Cluster Connectivity (with ARB Status)" section is one row per
+  cluster, with `ARB`, `ARB Status` and `ARB Days Since LastModified`
+  columns left-joined from the ARB query by `ClusterId` (the join is
+  multi-cluster-per-RG safe because it consumes the comma-separated
+  `ClusterId` field produced by the new `summarize/make_set` ARB
+  query). Clusters with no ARB show `_(no ARB)_`. ARB appliances whose
+  resource group contains no HCI cluster in scope are surfaced
+  separately as "Orphan ARBs (no matching cluster in scope)" so
+  stale/zombie appliances are not silently dropped. The two
+  underlying CSVs (`fleet-cluster-connectivity.csv` and
+  `fleet-arb-status.csv`) are unchanged - the merge is a markdown
+  presentation concern only. Mirror edit applied to the ADO twin.
+
 ### Added
 
 - **Step.4 fleet-connectivity-status: full unfiltered NIC inventory
