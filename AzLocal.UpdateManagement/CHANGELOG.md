@@ -5,6 +5,34 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.78] - 2026-05-20
+
+> **Hotfix: Step.4 fleet-connectivity blank-field regression + ARG tabular-shape hardening**
+> (GitHub Actions + Azure DevOps).
+
+### Fixed
+
+- **Step.4 reports no longer render blank key fields while still showing counts.**
+  The regression produced rows where summary totals looked correct but
+  fields such as Cluster/Machine/ARB/NIC names and status text were empty
+  in markdown and JUnit output.
+- `Invoke-ArgQuery` now handles both ARG payload shapes:
+  - object rows: `data: [{...}]`
+  - tabular rows: `columns + data: [[...]]`
+  Tabular rows are normalized into `PSCustomObject` instances keyed by
+  column name before downstream processing.
+- Step.4 KQL projections now use `coalesce(...)` for key identity/status
+  fields so the report emits stable non-empty values (`Unknown` fallback)
+  instead of blank cells when providers return partial payloads.
+- Step.4 JSON export depth increased from `6` to `20` to eliminate
+  serialization truncation warnings for deeper objects.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure
+  DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.77'` to
+  `'0.7.78'`.
+
 ## [0.7.77] - 2026-05-22
 
 > **Hotfix: Step.4 fleet-connectivity-status JSON parsing hardening**

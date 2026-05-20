@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.77' {
-            $script:ModuleInfo.Version | Should -Be '0.7.77'
+        It 'Should have version 0.7.78' {
+            $script:ModuleInfo.Version | Should -Be '0.7.78'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -178,6 +178,29 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 $pinned = if ($match.Groups['gh'].Success) { $match.Groups['gh'].Value } else { $match.Groups['ado'].Value }
                 $pinned | Should -Be $manifestVersion -Because "$($yaml.Name) pins GENERATED_AGAINST_MODULE_VERSION='$pinned' but manifest ModuleVersion='$manifestVersion' - did you forget to bump the pipeline sample?"
             }
+        }
+
+        It 'Step.4 pipeline templates normalize ARG tabular rows and coalesce key fields (blank-field regression guard)' -ForEach @(
+            @{ Platform = 'github-actions'; Path = '..\Automation-Pipeline-Examples\github-actions\Step.4_fleet-connectivity-status.yml' }
+            @{ Platform = 'azure-devops';   Path = '..\Automation-Pipeline-Examples\azure-devops\Step.4_fleet-connectivity-status.yml' }
+        ) {
+            $yamlPath = Join-Path -Path $PSScriptRoot -ChildPath $Path
+            Test-Path $yamlPath | Should -BeTrue -Because "Step.4 template for $Platform must exist at $yamlPath"
+            $content = Get-Content -Path $yamlPath -Raw
+
+            # Guard 1: parser must normalize ARG tabular payloads (columns + data)
+            # to PSCustomObject rows, otherwise downstream '$row.Property' access
+            # silently renders blank fields while counts still look non-zero.
+            $content | Should -Match 'PSObject\.Properties\.Match\(''columns''\)' -Because "Step.4 $Platform must detect ARG tabular payload shape"
+            $content | Should -Match '\[PSCustomObject\]\$obj' -Because "Step.4 $Platform must normalize tabular rows into PSCustomObject records"
+
+            # Guard 2: key projected fields used by markdown/JUnit must be
+            # null-safe so the report does not emit blank identity/status cells.
+            $content | Should -Match 'ClusterName\s*=\s*coalesce\(' -Because "Step.4 $Platform must coalesce ClusterName projection"
+            $content | Should -Match 'AgentStatus\s*=\s*coalesce\(' -Because "Step.4 $Platform must coalesce AgentStatus projection"
+            $content | Should -Match 'NodeName\s*=\s*coalesce\(' -Because "Step.4 $Platform must coalesce NodeName projection"
+            $content | Should -Match 'ArbStatus\s*=\s*coalesce\(' -Because "Step.4 $Platform must coalesce ARB status projection"
+            $content | Should -Match 'ConvertTo-Json\s+-Depth\s+20' -Because "Step.4 $Platform should serialize deep objects without depth-6 truncation warnings"
         }
 
         It 'Should export exactly 36 functions' {

@@ -1,4 +1,4 @@
-# Step.4 - Fleet Connectivity Status Monitoring Pipeline
+﻿# Step.4 - Fleet Connectivity Status Monitoring Pipeline
 # This pipeline surfaces network-connectivity issues across every Azure Local
 # cluster the service connection can read - four scopes in one pipeline:
 #
@@ -102,7 +102,7 @@ variables:
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.77'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.78'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -217,7 +217,28 @@ stages:
                   if ([string]::IsNullOrWhiteSpace($jsonText)) { return @() }
                   $parsed = $jsonText | ConvertFrom-Json -ErrorAction Stop
                   if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Match('data').Count) { return @() }
-                  return @($parsed.data)
+
+                  $dataRows = @($parsed.data)
+                  if ($dataRows.Count -eq 0) { return @() }
+
+                  # Some ARG client versions return tabular payloads where
+                  # .data is an array-of-arrays and .columns carries names.
+                  # Normalize to PSCustomObject rows so downstream property
+                  # access ($row.ClusterName, etc.) remains stable.
+                  if ($parsed.PSObject.Properties.Match('columns').Count -and ($dataRows[0] -is [System.Collections.IList]) -and -not ($dataRows[0] -is [string])) {
+                      $columnNames = @($parsed.columns | ForEach-Object { [string]$_.name })
+                      $normalizedRows = foreach ($row in $dataRows) {
+                          $obj = [ordered]@{}
+                          for ($i = 0; $i -lt $columnNames.Count; $i++) {
+                              $key = if ([string]::IsNullOrWhiteSpace($columnNames[$i])) { "col_$i" } else { $columnNames[$i] }
+                              $obj[$key] = if ($row.Count -gt $i) { $row[$i] } else { $null }
+                          }
+                          [PSCustomObject]$obj
+                      }
+                      return @($normalizedRows)
+                  }
+
+                  return $dataRows
               }
               finally {
                   Remove-Item $errFile -Force -ErrorAction SilentlyContinue
@@ -236,10 +257,11 @@ stages:
           $clusterKql = @"
           resources
           | where type =~ "microsoft.azurestackhci/clusters"
-          | extend ConnectivityStatus = tostring(properties.connectivityStatus)
-          | extend ClusterStatus = tostring(properties.status)
-          | extend NodeCount = tolong(properties.reportedProperties.nodeCount)
-          | project ClusterName=name, ClusterId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId,
+          | extend ClusterName = coalesce(tostring(name), tostring(split(id, '/')[8]), tostring(resourceGroup))
+          | extend ConnectivityStatus = coalesce(tostring(properties.connectivityStatus), tostring(properties.status), 'Unknown')
+          | extend ClusterStatus = coalesce(tostring(properties.status), 'Unknown')
+          | extend NodeCount = tolong(coalesce(properties.reportedProperties.nodeCount, 0))
+          | project ClusterName, ClusterId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId,
                     ConnectivityStatus, ClusterStatus, NodeCount, Location=location
           | order by ConnectivityStatus asc, ClusterName asc
           "@
@@ -265,9 +287,11 @@ stages:
               | where type =~ "microsoft.hybridcompute/machines"
               | where tostring(properties.cloudMetadata.provider) =~ "AzSHCI"
               | where tostring(kind) !~ "HCI"
-              | extend nodeNameLower = tolower(name)
+                            | extend nodeNameLower = tolower(name)
+                            | extend MachineStatus = tostring(properties.status)
+                            | project nodeNameLower, MachineStatus
             ) on `$left.reportedNodeName == `$right.nodeNameLower
-          | extend AgentStatus = tostring(properties.status)
+                    | extend AgentStatus = coalesce(MachineStatus, 'Unknown')
           | summarize Count = count() by AgentStatus
           | order by Count desc
           "@
@@ -301,18 +325,22 @@ stages:
               | where type =~ "microsoft.hybridcompute/machines"
               | where tostring(properties.cloudMetadata.provider) =~ "AzSHCI"
               | where tostring(kind) !~ "HCI"
-              | extend nodeNameLower = tolower(name)
+                            | extend nodeNameLower = tolower(name)
+                            | extend MachineStatus = tostring(properties.status)
+                            | extend MachineAgentVersion = tostring(properties.agentVersion)
+                            | extend MachineOsSku = tostring(properties.osSku)
+                            | extend MachineOsVersion = tostring(properties.osVersion)
+                            | extend MachineLastStatusChange = tostring(properties.lastStatusChange)
+                            | project nodeNameLower, MachineName=name, MachineId=id,
+                                                MachineStatus, MachineAgentVersion, MachineOsSku, MachineOsVersion, MachineLastStatusChange,
+                                                MachineResourceGroup=resourceGroup, MachineSubscriptionId=subscriptionId
             ) on `$left.reportedNodeName == `$right.nodeNameLower
-          | where tostring(properties.status) != "Connected"
-          | extend AgentStatus    = tostring(properties.status)
-          | extend AgentVersion   = tostring(properties.agentVersion)
-          | extend OsSku          = tostring(properties.osSku)
-          | extend OsVersion      = tostring(properties.osVersion)
-          | extend LastStatusChange = tostring(properties.lastStatusChange)
-          | project NodeName=name, MachineId=id, ClusterName=clusterName, ClusterId=clusterId,
-                    AgentStatus, OsSku, OsVersion, ClusterVersion=coalesce(currentVersion, ""),
-                    AgentVersion, LastStatusChange,
-                    ResourceGroup=resourceGroup, SubscriptionId=subscriptionId
+                    | where MachineStatus !~ "Connected"
+                    | project NodeName=coalesce(MachineName, reportedNodeName), MachineId, ClusterName=clusterName, ClusterId=clusterId,
+                                        AgentStatus=coalesce(MachineStatus, 'Unknown'),
+                                        OsSku=coalesce(MachineOsSku, ''), OsVersion=coalesce(MachineOsVersion, ''), ClusterVersion=coalesce(currentVersion, ''),
+                                        AgentVersion=coalesce(MachineAgentVersion, ''), LastStatusChange=coalesce(MachineLastStatusChange, ''),
+                                        ResourceGroup=MachineResourceGroup, SubscriptionId=MachineSubscriptionId
           | order by LastStatusChange asc, ClusterName asc, NodeName asc
           "@
           $arcRows = Invoke-ArgQuery -Query $arcKql -ExtraArgs $subArgs
@@ -350,9 +378,10 @@ stages:
               | where tostring(kind) !~ "HCI"
               | extend ClusterName = tostring(split(tostring(properties.parentClusterResourceId), '/')[8])
               | extend nodeNameLower = tolower(name)
-              | project nodeNameLower, ClusterName, MachineId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId
+                            | project nodeNameLower, ClusterName, MachineName=name, MachineId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId
             ) on `$left.edgeMachineName == `$right.nodeNameLower
-          | project NodeName=edgeMachineName, ClusterName, NicName, NicStatus, DriverVersion, Ip4Address,
+                    | project NodeName=coalesce(MachineName, edgeMachineName), ClusterName=coalesce(ClusterName, ''),
+                                        NicName=coalesce(NicName, '(unknown)'), NicStatus=coalesce(NicStatus, 'Unknown'), DriverVersion, Ip4Address,
                     InterfaceDescription, MachineId, ResourceGroup, SubscriptionId
           | order by ClusterName asc, NodeName asc, NicName asc
           "@
@@ -429,10 +458,11 @@ stages:
           $arbKql = @"
           resources
           | where type =~ "microsoft.resourceconnector/appliances"
-          | extend ArbStatus = tostring(properties.status)
+          | extend ArbName = coalesce(tostring(name), tostring(split(id, '/')[8]), tostring(resourceGroup))
+          | extend ArbStatus = coalesce(tostring(properties.status), 'Unknown')
           | extend LastModified = tostring(systemData.lastModifiedAt)
           | extend DaysSinceLastModified = iff(ArbStatus =~ "Running", toint(-1), datetime_diff('day', now(), todatetime(systemData.lastModifiedAt)))
-          | project ArbName=name, ArbId=id, ArbResourceGroup=resourceGroup, ArbSubscriptionId=subscriptionId,
+          | project ArbName, ArbId=id, ArbResourceGroup=resourceGroup, ArbSubscriptionId=subscriptionId,
                     ArbStatus, LastModified, DaysSinceLastModified
           | join kind=leftouter (
               resources
@@ -469,13 +499,13 @@ stages:
           $nicAllRows  | Export-Csv -Path $nicAllCsv     -NoTypeInformation -Force
           $nicStats    | Export-Csv -Path $nicStatsCsv   -NoTypeInformation -Force
           $arbRows     | Export-Csv -Path $arbCsv        -NoTypeInformation -Force
-          $clusterRows | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-cluster-connectivity.json')        -Encoding utf8
-          $arcSummary  | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-arc-status-summary.json')         -Encoding utf8
-          $arcRows     | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-arc-non-connected-machines.json') -Encoding utf8
-          $nicRows     | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-physical-nics.json')               -Encoding utf8
-          $nicAllRows  | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-physical-nic-all.json')            -Encoding utf8
-          $nicStats    | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-physical-nic-stats.json')          -Encoding utf8
-          $arbRows     | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $outputDir 'fleet-arb-status.json')                  -Encoding utf8
+          $clusterRows | ConvertTo-Json -Depth 20 | Out-File -FilePath (Join-Path $outputDir 'fleet-cluster-connectivity.json')        -Encoding utf8
+          $arcSummary  | ConvertTo-Json -Depth 20 | Out-File -FilePath (Join-Path $outputDir 'fleet-arc-status-summary.json')         -Encoding utf8
+          $arcRows     | ConvertTo-Json -Depth 20 | Out-File -FilePath (Join-Path $outputDir 'fleet-arc-non-connected-machines.json') -Encoding utf8
+          $nicRows     | ConvertTo-Json -Depth 20 | Out-File -FilePath (Join-Path $outputDir 'fleet-physical-nics.json')               -Encoding utf8
+          $nicAllRows  | ConvertTo-Json -Depth 20 | Out-File -FilePath (Join-Path $outputDir 'fleet-physical-nic-all.json')            -Encoding utf8
+          $nicStats    | ConvertTo-Json -Depth 20 | Out-File -FilePath (Join-Path $outputDir 'fleet-physical-nic-stats.json')          -Encoding utf8
+          $arbRows     | ConvertTo-Json -Depth 20 | Out-File -FilePath (Join-Path $outputDir 'fleet-arb-status.json')                  -Encoding utf8
 
           # Severity classifiers - same as GH twin
           function Convert-XmlEscape([string]$s) {
@@ -1021,3 +1051,4 @@ stages:
         testRunTitle: 'ITSM Tickets (Step.4) - $(Build.BuildNumber)'
         mergeTestResults: false
         failTaskOnFailedTests: false
+
