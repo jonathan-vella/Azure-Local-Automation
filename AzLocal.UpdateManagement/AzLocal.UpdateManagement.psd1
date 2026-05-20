@@ -122,7 +122,8 @@
         'Public/Test-AzLocalItsmConnection.ps1',
         'Public/Test-AzLocalUpdateScheduleAllowed.ps1',
         'Public/Update-AzLocalApplyUpdatesScheduleConfig.ps1',
-        'Public/Update-AzLocalPipelineExample.ps1'
+        'Public/Update-AzLocalPipelineExample.ps1',
+        'Public/Get-AzLocalFleetConnectivityStatus.ps1'
     )
 
     FunctionsToExport = @(
@@ -175,7 +176,9 @@
         # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries (fleet-scale)
         'Get-AzLocalFleetHealthOverview',
         # Latest Released Solution Version (v0.7.70) - public manifest probe (aka.ms/AzureEdgeUpdates) that anchors the rolling YYMM support window
-        'Get-AzLocalLatestSolutionVersion'
+        'Get-AzLocalLatestSolutionVersion',
+        # Fleet Connectivity Status (v0.7.79) - 4-scope connectivity audit: cluster, Arc agent, physical NIC, ARB
+        'Get-AzLocalFleetConnectivityStatus'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.

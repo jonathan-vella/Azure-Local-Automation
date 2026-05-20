@@ -268,3 +268,103 @@ Describe 'Live-Integration: Get-AzLocalUpdateRunFailures' -Tag 'Live' -Skip:$Ski
         }
     }
 }
+
+Describe 'Live-Integration: Get-AzLocalFleetConnectivityStatus (v0.7.79)' -Tag 'Live' -Skip:$SkipLive {
+    # v0.7.79: End-to-end validation of the new module cmdlet that replaced Step.4's
+    # inline ARG queries. Validates that all 7 output properties are present, schemas
+    # are correct, and ArcSummary is grouped client-side (not via KQL summarize).
+
+    BeforeAll {
+        $script:connectivityData = Get-AzLocalFleetConnectivityStatus -PassThru
+    }
+
+    It 'Returns a result object' {
+        $script:connectivityData | Should -Not -BeNullOrEmpty
+    }
+
+    It 'ClusterRows is present and non-empty' {
+        $script:connectivityData.ClusterRows | Should -Not -BeNullOrEmpty
+        $script:connectivityData.ClusterRows.Count | Should -BeGreaterThan 0
+    }
+
+    It 'ClusterRows has expected columns' {
+        $row = $script:connectivityData.ClusterRows[0]
+        $row.PSObject.Properties.Name | Should -Contain 'ClusterName'
+        $row.PSObject.Properties.Name | Should -Contain 'ConnectivityStatus'
+        $row.PSObject.Properties.Name | Should -Contain 'ClusterStatus'
+        $row.PSObject.Properties.Name | Should -Contain 'NodeCount'
+        $row.PSObject.Properties.Name | Should -Contain 'Location'
+        $row.PSObject.Properties.Name | Should -Contain 'ResourceGroup'
+        $row.PSObject.Properties.Name | Should -Contain 'SubscriptionId'
+    }
+
+    It 'ClusterRows ClusterName values are not null or blank' {
+        foreach ($row in $script:connectivityData.ClusterRows) {
+            [string]::IsNullOrWhiteSpace($row.ClusterName) | Should -BeFalse -Because "ClusterName must be populated for row $($row.ClusterId)"
+        }
+    }
+
+    It 'ArcSummary is present' {
+        $script:connectivityData.PSObject.Properties.Name | Should -Contain 'ArcSummary'
+    }
+
+    It 'ArcSummary has AgentStatus and Count columns' {
+        $row = $script:connectivityData.ArcSummary | Select-Object -First 1
+        if ($row) {
+            $row.PSObject.Properties.Name | Should -Contain 'AgentStatus'
+            $row.PSObject.Properties.Name | Should -Contain 'Count'
+        }
+    }
+
+    It 'ArcSummary Count values are integers greater than zero' {
+        foreach ($row in $script:connectivityData.ArcSummary) {
+            $row.Count | Should -BeGreaterThan 0 -Because "ArcSummary row for '$($row.AgentStatus)' must have Count > 0"
+        }
+    }
+
+    It 'ArcSummary is grouped (fewer rows than total machines)' {
+        # If ArcSummary rows == total machine count it means summarize was not applied
+        # and we got raw machine rows - the bug we fixed in v0.7.79
+        $totalMachineCount = ($script:connectivityData.ArcSummary | Measure-Object -Property Count -Sum).Sum
+        $script:connectivityData.ArcSummary.Count | Should -BeLessThan $totalMachineCount `
+            -Because 'ArcSummary must be grouped by status (fewer groups than total machines)'
+    }
+
+    It 'NonConnectedMachines is present' {
+        $script:connectivityData.PSObject.Properties.Name | Should -Contain 'NonConnectedMachines'
+    }
+
+    It 'NicIssues is present' {
+        $script:connectivityData.PSObject.Properties.Name | Should -Contain 'NicIssues'
+    }
+
+    It 'NicAll is present' {
+        $script:connectivityData.PSObject.Properties.Name | Should -Contain 'NicAll'
+    }
+
+    It 'NicStats is present and has NicType, NicStatus, Count columns' {
+        $script:connectivityData.PSObject.Properties.Name | Should -Contain 'NicStats'
+        $row = $script:connectivityData.NicStats | Select-Object -First 1
+        if ($row) {
+            $row.PSObject.Properties.Name | Should -Contain 'NicType'
+            $row.PSObject.Properties.Name | Should -Contain 'NicStatus'
+            $row.PSObject.Properties.Name | Should -Contain 'Count'
+        }
+    }
+
+    It 'ArbRows is present' {
+        $script:connectivityData.PSObject.Properties.Name | Should -Contain 'ArbRows'
+    }
+
+    It 'ArbRows has expected columns when appliances exist' {
+        $row = $script:connectivityData.ArbRows | Select-Object -First 1
+        if ($row) {
+            $row.PSObject.Properties.Name | Should -Contain 'ArbName'
+            $row.PSObject.Properties.Name | Should -Contain 'ArbStatus'
+            $row.PSObject.Properties.Name | Should -Contain 'ClusterName'
+            $row.PSObject.Properties.Name | Should -Contain 'ResourceGroup'
+            $row.PSObject.Properties.Name | Should -Contain 'SubscriptionId'
+        }
+    }
+}
+
