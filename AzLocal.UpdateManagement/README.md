@@ -196,138 +196,6 @@ Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDe
 
 All v0.7.75 changes are backward compatible. `[ValidateSet('GitHubActions','AzureDevOps','Both')] [string]$Platform = 'Both'` is unchanged - the default value is still `'Both'`, the new behaviour only fires when the caller does **not** bind the parameter. Interactive operators see no change. Operators who explicitly want both snippets in a CI run (rare - e.g. one-off comparison) can pass `-Platform Both` explicitly; the `$PSBoundParameters.ContainsKey('Platform')` guard ensures explicit binding always wins.
 
-### What's New in v0.7.74
-
-v0.7.74 is a **bug-fix + UX** release on top of v0.7.73. It addresses **two distinct findings** raised against v0.7.73 against the same live 20-cluster fleet: **(1)** `Get-AzLocalFleetHealthOverview` started failing with a KQL `ParserFailure: token=<EOF>` at character `2757` because the v0.7.73 query growth crossed the `az graph query -q` argument-truncation threshold (~2.8 KB wire-side); **(2)** the `Step.3 - Apply-Updates Schedule Coverage Audit` recommendation block was reported as "very hard to follow and understand what to do" - it was a four-section advisory but lacked an explicit fix-in-this-order checklist, did not explain *why* each finding mattered, did not include a before/after YAML snippet for missing rings, and shipped a commented-out cron block that operators were copy-pasting verbatim including the `# ` prefixes. Both are fixed. Pipeline pin bumps to `'0.7.74'`; refresh existing copies via `Update-AzLocalPipelineExample`.
-
-### Get-AzLocalFleetHealthOverview `ParserFailure: token=<EOF>` at char 2757 - fixed
-
-The v0.7.73 change (HealthStatus normalisation via `case()`) added ~250 chars of KQL projection, and the v0.7.73 commit also added a six-line `//` KQL comment block above the projection (~470 chars). The combined wire query grew from `~2400` chars (v0.7.72 baseline) to `3115` chars. On Windows the Azure CLI's `az graph query -q <query>` argument layer truncates very long single-arg payloads around the 2.8 KB mark; the truncated query lands mid-projection, so ARG returns:
-
-```json
-{
-  "error": {
-    "code": "BadRequest",
-    "details": [
-      { "code": "InvalidQuery", "message": "Query is invalid." },
-      { "code": "ParserFailure",
-        "message": "... characterPositionInLine=2757 token=<EOF> ..." }
-    ]
-  }
-}
-```
-
-Symptom: `Step.7 - Fleet Health Status` failed with exit code 1 the moment the cmdlet was invoked. Step.7's separate, shorter "Detail" ARG query (rendered after Overview) was unaffected, which made the failure look like a HealthStatus-projection bug rather than an arg-length bug.
-
-**Fix:** (1) the six `//` KQL comment lines are removed from the here-string and re-expressed as PowerShell `#` source comments above the `$kql` assignment - documentation for the source reader, no wire-side bytes. (2) The `case()` projection is compacted to one line (semantically identical). The wire query is now `2396` chars, back below the v0.7.72 baseline. A new inline `IMPORTANT` source comment above `$kql` flags the constraint so future contributors do not re-introduce it.
-
-Verified end-to-end against the same live 20-cluster fleet: 20 cluster rows returned; HealthStatus distribution preserved from v0.7.73 (`10 Healthy / 7 Critical / 2 Warning / 1 In progress`); Step.7 `HEALTHY_CLUSTERS` output still writes `10` and the Fleet Health Overview table still renders the intended icons.
-
-### Step.3 recommendation block rewritten as a step-by-step remediation guide
-
-Operators reported the v0.7.73 Step.3 output was "very hard to follow and understand what to do, it needs much more detail and step by step for exactly what the operator needs to do to 'fix' the Apply Updates schedules, across the CRON jump for Step 5 and the Config YML file." v0.7.74 adds:
-
-- **Top-of-block "Fix-in-this-order checklist"** when 2+ action sections are emitted, with N+1 ordered bullets that name the file to edit AND the silent-skip consequence of skipping that step (e.g. `Resolve-AzLocalCurrentUpdateRing` returns nothing for missing rings so Step.5 silently skips them; `Test-AzLocalUpdateScheduleAllowed` never opens the gate for uncovered UpdateWindows). The checklist surfaces the order the advisor uses internally (ring diff -> orphans -> unparseable crons -> cron coverage -> re-run) so the operator does not have to derive it from the section headings.
-- **`**Why this matters.**` paragraph in every section** that names the specific runtime cmdlet that depends on the configuration being fixed (`Resolve-AzLocalCurrentUpdateRing`, `Test-AzLocalUpdateScheduleAllowed`) and the silent-skip failure mode the operator avoids by following the fix.
-- **"How to fix - edit `<file>`" subsection in the missing-rings section** with a full `apply-updates-schedule.yml` skeleton snippet showing the existing `schedule:` block AND a placeholder row PER missing ring (`TODO:` markers on `weeksInCycle`, `daysOfWeek`, `notes`, annotated with the cluster count for the missing ring). The snippet carries an `AzLocal.UpdateManagement v<version> advisor: add row(s) like these <<<` header so it is unambiguous where the operator-edited content begins.
-- **Ready-to-paste (uncommented) cron block** in the cron-coverage section. Replaces the prior `# commented` form (which operators were copy-pasting verbatim including the `# ` prefixes). The snippet is now a real `on:` (GitHub Actions) / `schedules:` (Azure DevOps) block, with one cron line per UpdateWindow plus a trailing yaml-`#` annotation showing the rings and cluster count served by each cron.
-- **Platform-aware file labels.** When `-Platform` is pinned to a single platform, the text names the exact pipeline file (`.github/workflows/Step.5_apply-updates.yml` vs `.azuredevops/Step.5_apply-updates.yml`) and the exact schedule file (`.github/apply-updates-schedule.yml` vs `.azuredevops/apply-updates-schedule.yml`).
-- **Two-choice fix tables for orphaned rings** spell out both options (retag a cluster onto the ring via `Set-AzLocalClusterUpdateRingTag`, OR remove the ring from the schedule file) so operators do not default to deletion when they actually wanted to bring a cluster onto the ring.
-
-### Step.3 pipeline scripts pin `-Platform` so cross-platform noise is gone
-
-`Test-AzLocalApplyUpdatesScheduleCoverage` defaults to `-Platform Both`, which surfaced both the GitHub Actions `schedule:` block AND the Azure DevOps `schedules:` block in every Step.3 run regardless of which CI platform was running it. Both Step.3 yml files now pin `-Platform GitHubActions` (GH) / `-Platform AzureDevOps` (ADO) on both `-View Audit` and `-View Recommend` calls so the Step Summary contains exactly one platform-appropriate snippet.
-
-### Pipeline pin bumps + migration
-
-All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.73'` to `'0.7.74'`. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
-
-```powershell
-Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
-Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
-```
-
-### Compatibility
-
-All v0.7.74 changes are backward compatible. `Get-AzLocalFleetHealthOverview` returns the same shape and the same normalised `HealthStatus` vocabulary it returned in v0.7.73 - only the underlying wire query is shorter so it no longer trips the truncation. The v0.7.74 Step.3 yml changes (adding `-Platform GitHubActions` / `-Platform AzureDevOps`) are recommended-but-not-required - the cmdlet still works against the v0.7.73 yml; you just continue to see the cross-platform noise until the yml is refreshed.
-
-### What's New in v0.7.73
-
-v0.7.73 is a **bug-fix** release on top of v0.7.72. `Get-AzLocalFleetHealthOverview` (the cmdlet that powers `Step.7 - Fleet Health Status`) was emitting the raw Azure Resource Graph `properties.healthState` enum values (`Success` / `Failure` / `Warning` / `InProgress` / `NotKnown`) on the `HealthStatus` column, but the cmdlet's own doc comment, the Step.7 pipeline filter `Where-Object { $_.HealthStatus -eq 'Healthy' }`, and the Step.7 Fleet Health Overview rendering `switch ($o.HealthStatus)` all expected the operator-friendly vocabulary `Healthy` / `Critical` / `Warning` / `In progress` / `Unknown`. Symptom: Step.7 reported `Healthy Clusters = 0` against any fleet (live-verified against a 20-cluster fleet: 10 Success / 8 Failure / 2 Warning) and the overview table rendered the `[Success]` / `[Failure]` default-bracket fallback instead of the intended `✅ Healthy` / `❌ Critical` icons. The KQL projection in the cmdlet now normalises in a `case()` clause so the `HealthStatus` column matches the documented contract; no pipeline-sample YAML change is required (the v0.7.72 pin already used the correct vocabulary). Pipeline pin bumps to `'0.7.73'`; refresh existing copies via `Update-AzLocalPipelineExample`.
-
-### Step.7 "Healthy Clusters = 0" against any fleet - fixed
-
-`Get-AzLocalFleetHealthOverview.HealthStatus` is documented (and consumed) as one of `Healthy` / `Critical` / `Warning` / `In progress` / `Unknown`. The KQL projection joining `microsoft.azurestackhci/clusters` with the `updateSummaries` extensibility resource was, however, a one-line passthrough:
-
-```kusto
-HealthStatus = iif(isempty(HealthState), 'Unknown', HealthState),
-```
-
-The upstream ARG field `properties.healthState` emits the raw ARM enum values `Success` / `Failure` / `Warning` / `InProgress` / `NotKnown`, so `Healthy` / `Critical` / `In progress` literally never appeared on any row. The pipeline filter `Where-Object { $_.HealthStatus -eq 'Healthy' }` therefore matched zero rows and the `HEALTHY_CLUSTERS` GitHub Actions output was always `0`; the rendering switch fell through to the default arm and rendered `[Success]` / `[Failure]` instead of `✅ Healthy` / `❌ Critical`. The projection is now:
-
-```kusto
-HealthStatus = case(
-    isempty(HealthState),         'Unknown',
-    HealthState =~ 'Success',     'Healthy',
-    HealthState =~ 'Failure',     'Critical',
-    HealthState =~ 'InProgress',  'In progress',
-    HealthState =~ 'NotKnown',    'Unknown',
-    HealthState
-),
-```
-
-`Warning` is passed through unchanged, and any unrecognised future state also passes through (rather than being silently bucketed as `Unknown`) so a platform addition stays visible. Verified end-to-end against a live 20-cluster fleet (10 Success / 8 Failure / 2 Warning): after the fix, Step.7 reports `Healthy Clusters = 10`, the Fleet Health Overview table renders the intended icons, and the Step.7 numbers are internally consistent with the Step.6 panel for the same fleet (Step.6 reports `Up to Date = 10` and `Critical Health Status: 12 passed / 8 failed`; the 2 Warning clusters surface as `⚠️ Warning` in the overview without being counted as either Healthy or Critical). The cmdlet's doc comment is also corrected to describe the normalised vocabulary and to spell out the raw-to-normalised mapping for future-proof clarity.
-
-### Pipeline pin bumps + migration
-
-All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.72'` to `'0.7.73'`. The Step.0 authentication validation workflow does not pin a module version. **No filter or switch changes required in the pipeline samples** - the v0.7.72 pin already used the correct vocabulary; the v0.7.73 module simply emits values that match. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
-
-```powershell
-Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
-Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
-```
-
-### Compatibility
-
-All v0.7.73 changes are backward compatible. The `HealthStatus` column type (`string`) and column position (third column, after `ClusterName` and `ClusterPortalUrl`) are unchanged - only the value set narrows from the raw ARG enum to the documented operator-friendly vocabulary. Operators who built custom downstream automation that explicitly filtered for the **raw** `Success` / `Failure` / `InProgress` / `NotKnown` strings against the v0.7.70 - v0.7.72 builds must update those filters to the new `Healthy` / `Critical` / `In progress` / `Unknown` vocabulary (or pull the raw value back via a separate ARG call on `updateSummaries.properties.healthState` if they specifically need the platform enum).
-
-### What's New in v0.7.72
-
-v0.7.72 is a **pipeline-samples hotfix** release on top of v0.7.71. Two issues observed when operators ran the v0.7.71 GitHub Actions samples in production: (1) the Step.1 / Step.2 / Step.5 GitHub Actions `Summary` panels rendered empty because the workflows used `Write-Host "<markdown>" >> $env:GITHUB_STEP_SUMMARY` - `Write-Host` writes to the PowerShell information/host stream (6), not stdout (1), so the `>>` redirect appended nothing to the summary file; (2) `AZURE_TENANT_ID` was stored as a GitHub Secret on the same rationale as the v0.7.71 `AZURE_SUBSCRIPTION_ID` treatment - a public ARM/AAD identifier, not a credential. Both are fixed. **No PowerShell source files changed** - this release is scoped to pipeline-sample YAMLs and Markdown docs. Refresh existing copies via `Update-AzLocalPipelineExample`.
-
-### Step.1 / Step.2 / Step.5 GitHub Actions `Summary` blocks now render content (was blank)
-
-Across these three workflows, 62 `Write-Host "<markdown>" >> $env:GITHUB_STEP_SUMMARY` lines were silent no-ops because `Write-Host` emits to PowerShell's information stream (stream 6), not stdout (stream 1). The file-redirect operator `>>` only attaches to stdout, so the GitHub Actions Summary file received an empty append on every line. The job log printed the markdown to the runner console (where operators do not normally look) but the GitHub Actions Summary panel - the canonical post-run report surface - rendered blank. All 62 lines now use the bare-string-to-stdout form (`"<markdown>" >> $env:GITHUB_STEP_SUMMARY`), so the totals/tables/actions-required block coded in v0.7.71 finally surface in the GitHub Actions UI. Affected:
-
-- **Step.1**: cluster-inventory totals + UpdateRing distribution.
-- **Step.2**: UpdateRing tag-management settings + dry-run notice.
-- **Step.5**: update-application readiness/results matrix + actions-required block + `no-clusters-ready` job summary.
-
-ADO pipelines were unaffected (they use the `##vso[task.uploadsummary]` mechanism, not stdout redirection).
-
-### GitHub Actions: AZURE_TENANT_ID is now a Variable, not a Secret
-
-All 8 GitHub Actions `Step.*.yml` workflows (including the four commented-out legacy `azure/login@v3` `creds:` JSON examples in Step.1 / Step.2 / Step.5) now read the Entra ID tenant id from `vars.AZURE_TENANT_ID` instead of `secrets.AZURE_TENANT_ID`. Rationale matches the v0.7.71 `AZURE_SUBSCRIPTION_ID` switch: the tenant id is a public ARM/AAD identifier - it is rendered in workflow telemetry on every `azure/login@v3` run, present in the OIDC token issuer URL, and visible to anyone with read access to the App Registration - not a credential. It is consumed in exactly one place: the `tenant-id:` input to `azure/login@v3`, which exchanges the OIDC token for an Azure AD token in the named tenant. It is **NOT** used to scope Azure Resource Graph queries and is **NOT** interpolated into portal deep-link URLs. Treating it as a Variable also means it appears plaintext in workflow logs (matching its non-sensitive nature) and removes the need for an extra Secret rotation in tenants that already track it as a Variable. Steady-state setup is now **one repo-level Secret** (`AZURE_CLIENT_ID`) and **two repo-level Variables** (`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`); see updated docs in `Automation-Pipeline-Examples/README.md`. Azure DevOps pipelines authenticate via a service connection and need no change (the connection itself stores `tenantId`).
-
-### Pipeline pin bumps + migration
-
-All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.71'` to `'0.7.72'`. The Step.0 authentication validation workflow does not pin a module version. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
-
-```powershell
-Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
-Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
-```
-
-GitHub Actions operators must also create `AZURE_TENANT_ID` as a **repository Variable** (`gh variable set AZURE_TENANT_ID --body <tenantId>`) and delete the existing `AZURE_TENANT_ID` **Secret** to avoid drift between the two values.
-
-### Compatibility
-
-All v0.7.72 changes are backward compatible. No cmdlet signatures or output shapes change. The Variable migration is a per-tenant setup change (GitHub Actions only).
-
-### What's New in v0.7.71
-
-v0.7.71 is a **bug-fix + UX polish** release on top of v0.7.70. Two render-correctness fixes (Step.3 markdown rendering as a code block, Step.4 critical-count under-reporting as 0), one new action-required section in `Test-AzLocalApplyUpdatesScheduleCoverage -View Recommend` for unparseable cron expressions, hyperlinked Cluster Name + collapsible Verbose Error in the Step.6 Update Run History table, and the AZURE_SUBSCRIPTION_ID Secret -> Variable migration for GitHub Actions samples. All changes are additive over v0.7.70; no behaviour change for callers that don't read the new columns.
-
 > Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
 ### Step.3 markdown render fix (was rendering as one grey code block)
@@ -370,292 +238,6 @@ Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDe
 ### Compatibility
 
 All v0.7.71 changes are backward compatible. The new `ClusterPortalUrl` property on `Get-AzLocalUpdateRunFailures` is additive; the new `## Action required - simplify unparseable cron expression(s)` section in `-View Recommend` only renders when unparseable cron lines exist; the GH Variable switch is a per-tenant setup change (see updated docs in `Automation-Pipeline-Examples/README.md`).
-
-### What's New in v0.7.70
-
-v0.7.70 is the **Step.0 recurring authentication audit + Step.6 Update Run History section + Step.6 manifest-anchored rolling support window + Step.3 dual-section UX + Step.7 fleet-health hyperlinks** release, plus two new exported cmdlets - `Get-AzLocalFleetHealthOverview` (ARG-first fleet-scale view of cluster health and update status) and `Get-AzLocalLatestSolutionVersion` (unauthenticated probe of the Microsoft Azure Local public solution-update catalog at `aka.ms/AzureEdgeUpdates`, used by Step.6 to anchor the SupportStatus column on the upstream release calendar). All changes are additive over v0.7.69; no behaviour change for callers that don't read the new columns.
-
-> Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
-
-### Step.0 repositioned as a recurring audit: Authentication Validation and Subscription Scope Report
-
-`Step.0_authentication-test.yml` (GitHub Actions + Azure DevOps twins) is renamed from "Authentication Validation Test" to **"Step.0 - Authentication Validation and Subscription Scope Report"** and repositioned from a one-shot smoke test into a **recurring audit** intended to be re-run monthly (or after any RBAC change in the tenant). The pipeline now emits:
-- A **JUnit XML** report (`auth-report.xml`) with three testsuites - **Authentication**, **Subscription Scope** (one testcase per accessible subscription, plus a count testcase), and **Resource Graph Reachability** (cluster count visible to the pipeline identity). Rendered in the GitHub Checks UI via `dorny/test-reporter@v3` and in the Azure DevOps **Tests** tab via `PublishTestResults@2`.
-- A **markdown summary** at the top of every run with `Count of subscriptions = N` and a per-subscription detail table (Name / SubscriptionId / TenantId / State). Written to `$GITHUB_STEP_SUMMARY` on GitHub Actions and uploaded via `##vso[task.uploadsummary]` on Azure DevOps.
-- A `auth-report` artifact (XML + `subscriptions.json` + `subscriptions.csv`) for ITSM / dashboard ingest.
-
-Drift in the subscription scope visible to the pipeline identity is the earliest signal that downstream fleet reports are about to silently under- or over-count clusters, which is why the cadence is recurring rather than one-shot.
-
-### Step.6 Fleet Update Status pipeline - new "Update Run History and Error Details" section
-
-A new `<testsuite name="Update Run History and Error Details">` testsuite in the Step.6 JUnit XML and a matching `### Update Run History and Error Details` markdown table in the run summary surface up to 25 of the most recent unresolved Failed update runs across the fleet (last 30 days). Each row links to the Azure portal `SingleInstanceHistoryDetails` deep-link and includes Status / CurrentStep / Duration / LastUpdated / DeepestErrMsg for at-a-glance triage. Sourced from `Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved` (ARG-first, fleet-scale).
-
-### Step.6 Fleet Update Status pipeline - new "Overall Fleet Update Status (Version Distribution)" section with manifest-anchored rolling support window
-
-A new `<testsuite name="Fleet Version Distribution">` testsuite is emitted as the **first** child of `<testsuites>` (before `AzureLocalFleetUpdateStatus`) and a matching `### Overall Fleet Update Status (Version Distribution)` markdown section is prepended to the run summary (above `### Critical Health Status`). One row per distinct `CurrentVersion` reported by `Get-AzLocalClusterUpdateReadiness`, sorted by cluster count descending, with columns: Version / YYMM / SupportStatus / Cluster Count / Percentage / Clusters.
-
-`SupportStatus` uses a **rolling 6-month YYMM window anchored on the Microsoft public catalog** when reachable. The Step.6 step calls the new `Get-AzLocalLatestSolutionVersion` cmdlet (see below) to fetch the latest released solution version's YYMM from `https://aka.ms/AzureEdgeUpdates` and seeds a calendar-stepped 6-month window from it (e.g. latest YYMM `2604` -> `2604,2603,2602,2601,2512,2511`). As soon as Microsoft publishes any release with a newer YYMM, the window slides forward and the oldest in-window YYMM falls out automatically - independent of what is installed in the fleet. The JUnit testsuite carries `supportSource` / `latestReleasedYymm` / `latestReleasedVersion` / `manifestUrl` / `manifestFetchedAt` properties; the markdown summary annotates which anchor source was used and (on success) prints the latest released YYMM + version.
-
-When the manifest is unreachable from the runner the pipeline emits a non-fatal warning (`::warning::` on GitHub Actions, `##vso[task.logissue type=warning]` on Azure DevOps) and falls back to a **fleet-observed top-6 YYMM heuristic** so Step.6 still reports (`supportSource='fleet-observed'`). **Supported** = cluster's YYMM is inside the anchor window; **Unsupported** = older parseable YYMM; **Unknown** = empty / malformed `CurrentVersion`. The markdown section includes inline links to the Microsoft Azure Local [lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and [release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) docs as the operator cross-check. No `<failure>` tags - the testsuite is informational and never breaks the build.
-
-### New cmdlet: `Get-AzLocalLatestSolutionVersion`
-
-Unauthenticated probe of the Microsoft Azure Local public solution-update catalog at `https://aka.ms/AzureEdgeUpdates`. Returns the latest released solution version plus the rolling YYMM support window calendar-stepped from it (year-rollover honoured). Used by Step.6 to anchor the SupportStatus column on the upstream catalog instead of fleet-observed values, so older releases drop out of support automatically as soon as Microsoft publishes a newer YYMM.
-
-Output PSCustomObject: `LatestYYMM`, `LatestVersion`, `SupportedYYMMs[]` (length = `-SupportWindowMonths`, default 6, configurable 1-24), `AllReleases[]`, `ManifestUrl`, `ManifestFetchedAt` (UTC), `SupportWindowMonths`, `Source = 'aka.ms/AzureEdgeUpdates'`. Tolerant of both XML shapes the manifest exposes (`ApplicableUpdate/UpdateInfo` and `PackageMetadata/ServicesUpdates/Update/UpdateInfo`).
-
-```powershell
-# Default - latest released YYMM + 6-month rolling window
-Get-AzLocalLatestSolutionVersion | Format-List LatestYYMM, LatestVersion, SupportedYYMMs
-
-# 12-month rolling window (e.g. for slower-moving regulated fleets)
-Get-AzLocalLatestSolutionVersion -SupportWindowMonths 12
-
-# Pin to a private mirror of the manifest (must be http(s))
-Get-AzLocalLatestSolutionVersion -ManifestUrl 'https://internal.example.com/AzureEdgeUpdates.xml' -TimeoutSeconds 60
-```
-
-### New cmdlet: `Get-AzLocalFleetHealthOverview`
-
-ARG-first fleet health summary. One row per cluster, joining `microsoft.azurestackhci/clusters` with the cluster's `updateSummaries` extensibility resource via a single Azure Resource Graph batch read. 12 columns in fixed order: `ClusterName`, `ClusterPortalUrl`, `HealthStatus`, `UpdateStatus`, `CurrentVersion`, `SbeVersion`, `AzureConnection`, `LastChecked`, `HealthResultsAgeDays` (computed as `datetime_diff('day', now(), LastChecked)`), `ResourceGroup`, `NodeCount`, `SubscriptionId`. Sort: `HealthResultsAgeDays desc, ClusterName asc` so the most-stale clusters surface first.
-
-```powershell
-# Whole-fleet rollup
-Get-AzLocalFleetHealthOverview -SubscriptionId <subId> | Format-Table
-
-# Filter to a ring (wildcard '***' = every cluster carrying ANY UpdateRing tag)
-Get-AzLocalFleetHealthOverview -UpdateRingTag '***' -SubscriptionId <subId>
-
-# Export to CSV for ITSM / dashboard ingest
-Get-AzLocalFleetHealthOverview -SubscriptionId <subId> -ExportPath .\fleet-health-overview.csv -PassThru
-```
-
-### Step.3 audit pipeline - dual-section UX
-
-The `Test-AzLocalApplyUpdatesScheduleCoverage` cmdlet's Audit rows now carry a `Section` discriminator that splits the audit into two conceptually distinct concerns:
-
-| `Section` | Status values | Unit of work |
-|---|---|---|
-| `Schedule` | `RingMissingFromSchedule`, `RingOrphanedInSchedule` | The ring (`UpdateWindow` / `RequiredCronUTC` deliberately empty - these are about ring mapping, not window mapping) |
-| `Cron` | `Covered`, `PartiallyCovered`, `Uncovered`, `MalformedTag`, `UnparseableCron` | The `(ring, UpdateWindow)` pair vs the Step.5 cron entries |
-
-Audit rows now sort `Schedule`-first, then `Cron`. `-View Recommend` is now a multi-section markdown report: an "Action required - add these rings to apply-updates-schedule.yml" block when `RingMissingFromSchedule` rows exist (emitted FIRST), followed by an "Action required - cron coverage (paste into Step.5_apply-updates.yml)" block. When `-SchedulePath` is omitted, only the cron section is emitted (back-compat for v0.7.68 callers).
-
-The `Step.3_apply-updates-schedule-audit.yml` pipeline YAMLs (GH + ADO) mirror this in their summary:
-- Two JUnit `<testsuite>` blocks (`ScheduleCoverage` + `CronCoverage`) so the Tests tab shows per-section pass/fail counts.
-- Two Audit Detail markdown tables (one per section) with conditional headings - empty sections still emit a placeholder row so the operator can see the section was evaluated.
-- When `$hasIssues -and $reco`, the `-View Recommend` cmdlet output is prepended above the detail tables so operators see the fix before scrolling.
-- The zero-row JUnit placeholder text is centralised via a new `Write-Suite -EmptyPlaceholderName 'No tagged clusters found - nothing to audit'` helper (GH-vs-ADO parity preserved since v0.7.67).
-
-### Step.7 fleet-health pipeline - cluster portal hyperlinks + 3 new detailed columns + new Fleet Health Overview section
-
-`Get-AzLocalFleetHealthFailures` (the v0.7.65 cmdlet) gains three deep-link / target-resource properties on Detail rows - `TargetResourceName` (the sub-resource that emitted the check failure, e.g. the NIC name), `TargetResourceType` (e.g. `Microsoft.Compute/virtualMachines/networkInterfaces`), and `ClusterPortalUrl` (`https://portal.azure.com/#@/resource{ClusterResourceId}` deep-link). Summary rows gain `AffectedClusterPortalUrls` aligned with `AffectedClusters` (same element count, same order, joined with `'; '`). The Summary now sorts **Critical-first**: Severity (Critical, then Warning, then everything else), then `ClusterCount` desc, then `FailureCount` desc - a Critical failure on 1 cluster ranks above a Warning affecting many clusters.
-
-The `Step.7_fleet-health-status.yml` pipeline YAMLs (GH + ADO) consume these in three places:
-- **Summary and Detailed Results cluster cells** render as `[ClusterName](portalUrl)` markdown links. The Summary caps at the first 10 then renders `... (+N more)`; the Detail tables link every cell.
-- **Three new Detailed Results columns**: Failure Remediation (auto-renders as `[link](url)` when the value starts with `https://`, otherwise plain text), Target Resource Name, Target Resource Type.
-- **New `### Fleet Health Overview (fleet rollup)` section** calls the new `Get-AzLocalFleetHealthOverview` cmdlet and surfaces the per-cluster 9-column rollup alongside the failures table. The mapping `OK` / `Critical` / `Warning` / `In progress` / `Failed` is rendered with bracketed labels (`[OK]`, `[Critical]`, etc.) so the at-a-glance summary is greppable. New report artifacts: `fleet-health-overview.csv` and `fleet-health-overview.json`.
-
-### Pipeline pin bumps + migration
-
-All 14 `Step.*.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.69'` to `'0.7.70'`. The recommended upgrade path is the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
-
-```powershell
-Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
-Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
-```
-
-### Compatibility
-
-All v0.7.70 changes are backward compatible. The `Section` column defaults to `Cron` for downstream filters that don't know about the discriminator; new `TargetResource*` / `ClusterPortalUrl` / `AffectedClusterPortalUrls` properties are additive (existing pipeline summaries that read only the v0.7.69 schema keep working).
-
-### Pester baseline
-
-**585 passed / 0 failed / 0 skipped (unit) + 16 passed / 0 failed / 0 skipped (Live-Integration, opt-in)** - the unit suite stays hermetic and now includes a parallel, tag-gated `Tests/Live-Integration.Tests.ps1` durable suite that asserts the three v0.7.70 ARG-first cmdlets (`Get-AzLocalFleetHealthOverview`, `Get-AzLocalFleetHealthFailures`, `Get-AzLocalUpdateRunFailures`) against a real Azure Local fleet. The Live suite is **excluded by default** and safe to leave in the repo: each Describe self-skips when `az` is not installed, not logged in, or pointed at a non-target subscription. Opt in with `.\Tests\Invoke-Tests.ps1 -IncludeLive` or `-LiveOnly`. Validated end-to-end against a 20-cluster fleet (49 unresolved health failures, 9 unresolved Failed update runs) in 1m26s.
-
-### What's New in v0.7.69
-
-v0.7.69 introduces the **ring-aware apply-updates schedule** - a single human-readable YAML file (`apply-updates-schedule.yml`, `schemaVersion: 1`) that controls which `UpdateRing` tag value the apply-updates pipeline targets on any given UTC date. The schedule is decoupled from cron entirely: Step.5's cron only controls **how often** the pipeline wakes up, the per-cluster `UpdateWindow` tag controls **when** during an eligible day the update actually runs, and this new file controls **which ring** is eligible TODAY. Five new cmdlets (one generator + one reader + one resolver + one previewer + one migrator) plus a two-way ring diff on `Test-AzLocalApplyUpdatesScheduleCoverage` round out the feature.
-
-### Strawman workflow (the safety gate is the whole point)
-
-```powershell
-# 1. Generate a STRAWMAN from your live fleet's UpdateRing tag values.
-#    Every schedule row is emitted commented-out by design.
-New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
-
-# 2. Open the file. REVIEW each strawman row, then UNCOMMENT the rows
-#    that match your change-control policy.
-
-# 3. Preview the next ~cycle of firings BEFORE committing.
-Get-AzLocalApplyUpdatesScheduleNextFirings `
-  -Schedule (Get-AzLocalApplyUpdatesScheduleConfig -Path .\.github\apply-updates-schedule.yml)
-
-# 4. Refresh the Step.5 pipeline YAMLs so they pick up the v0.7.69 resolver wiring.
-Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
-
-# 5. Audit the fleet against the schedule (two-way ring diff).
-Test-AzLocalApplyUpdatesScheduleCoverage `
-  -PipelineYamlPath .\.github\workflows\Step.5_apply-updates.yml `
-  -SchedulePath     .\.github\apply-updates-schedule.yml `
-  -View Audit
-```
-
-> Without an active (uncommented) row, the apply-updates pipeline **hard-fails** at the reader step with `'schedule:' list is empty - at least one row is required`. This is the v0.7.69 safety gate, not a bug. It guarantees that a fresh strawman cannot accidentally start applying updates fleet-wide.
-
-### Three independent layers - one file per layer
-
-| Layer | File / Setting | Grain | Controls |
-|---|---|---|---|
-| 1 | `Step.5_apply-updates.yml` `schedule:` cron | intra-day | **HOW OFTEN** the pipeline wakes up |
-| 2 | `apply-updates-schedule.yml` (NEW in v0.7.69) | day | **WHICH** `UpdateRing` is eligible on a given UTC date |
-| 3 | Per-cluster `UpdateWindow` tag | minute | **WHEN** during an eligible day the update is allowed to start |
-
-The Step.5 cron firing on a non-matching day exits 0 with the explanatory `Reason` and **does not** start an update. The cron firing on a matching day passes the resolved `UpdateRing` value to `Start-AzLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue <resolved>`.
-
-### Five new cmdlets
-
-| Cmdlet | Role |
-|---|---|
-| `New-AzLocalApplyUpdatesScheduleConfig` | Generates a **strawman** schedule from the live fleet's `UpdateRing` tag values (or from `-Rings` for offline use). Every emitted schedule row is commented out by design. |
-| `Get-AzLocalApplyUpdatesScheduleConfig` | Parses + validates a schedule file. Hard-fails with `'schedule:' list is empty` when no active rows are present (the safety gate). |
-| `Resolve-AzLocalCurrentUpdateRing` | Maps a UTC date to the matching `UpdateRing(s)` using cycle-week math anchored at `cycleAnchorISOWeek` / `cycleAnchorYear`. Union semantics: overlapping rows merge `rings` with `;`. |
-| `Get-AzLocalApplyUpdatesScheduleNextFirings` | Previews the next N days of resolved firings so operators can sanity-check the rotation BEFORE committing. |
-| `Update-AzLocalApplyUpdatesScheduleConfig` | Idempotent schema-version migrator. Renames the original to `<basename>.v<oldVersion>.old.yml` on disk and writes the migrated content to the canonical path. The recipes table is intentionally empty in v0.7.69; the framework is in place for future schema bumps. |
-
-### Two-way ring diff on `Test-AzLocalApplyUpdatesScheduleCoverage`
-
-The existing schedule-audit cmdlet gained an optional `-SchedulePath` parameter. When supplied, the audit emits two new status rows beyond the existing cron-vs-tags audit:
-
-| Status | Meaning |
-|---|---|
-| `RingMissingFromSchedule` | A fleet ring (live `UpdateRing` tag value on a cluster) has **no** matching row in the schedule file - clusters in that ring will never be updated. |
-| `RingOrphanedInSchedule` | A schedule ring (a `rings:` token in the schedule file) has **no** cluster carrying that tag value - the schedule row will never fire. |
-
-Both rows are surfaced in the Step.3 summary table, the JUnit XML failure list, and the Markdown summary at the top of the Step.3 run page.
-
-### Step.5 / Step.3 pipeline wiring
-
-- **Step.5 (apply-updates)** now resolves the `UpdateRing` from the schedule file on every **scheduled** firing. Manual `workflow_dispatch` (GitHub Actions) / non-`Schedule` `Build.Reason` (Azure DevOps) runs still honour the operator-supplied `-UpdateRingValue` input verbatim. A workflow-level `concurrency:` block (GitHub Actions only - Azure DevOps documents the equivalent **Settings -> Triggers -> Limit concurrent runs** option) prevents overlapping cron firings.
-- **Step.3 (schedule audit)** gained a `schedule_path` / `schedulePath` input (defaulted to the standard layout), a `debug` toggle for self-service triage, and surfaces the new `RingMissingFromSchedule` / `RingOrphanedInSchedule` counts.
-
-### What v0.7.69 does NOT touch
-
-- `apply-updates-schedule.example.yml` ships as **documentation only**. `Copy-AzLocalPipelineExample` and `Update-AzLocalPipelineExample` do **not** copy or refresh it. Operators run `New-AzLocalApplyUpdatesScheduleConfig` to generate a strawman starting from their live fleet.
-- The per-cluster `UpdateWindow` tag, the `UpdateSideloaded` workflow, and all existing cron schedules in the bundled pipeline YAMLs are unchanged.
-
-### Breaking
-
-- Schema `schemaVersion: 1` is a hard break vs any pre-v0.7.69 experimental schedule format. There are no v0 -> v1 migration recipes shipped (the recipes table is intentionally empty in `Update-AzLocalApplyUpdatesScheduleConfig`); if you were running an experimental schedule from earlier development builds, regenerate via `New-AzLocalApplyUpdatesScheduleConfig`.
-
-### What's New in v0.7.68
-
-v0.7.68 is the **ARG-first refactor** and **pipeline-rename** release. Seven fleet-scale read cmdlets were collapsed onto a single Azure Resource Graph batch read each (removing the silent `-ThrottleLimit` no-op), all 16 bundled pipeline YAMLs were renamed with a `Step.X_` ordering prefix so an alphabetic listing tells the story end-to-end, and a new `Get-AzLocalUpdateRunFailures` cmdlet exposes the deep-error breadcrumb path from update-run telemetry without per-cluster shell-outs. **Backwards-compatible** for already-deployed consumers: `Read-AzLocalApplyUpdatesYamlCrons` matches both new (`Step.X_*.yml`) and legacy filenames.
-
-### ARG-first refactor
-
-- **Seven cmdlets are now single-batch ARG reads with `-ThrottleLimit` removed.** `-ThrottleLimit` was a meaningless flag against the ARG batched read path; carrying it implied (incorrectly) that the cmdlet was doing a per-cluster fan-out and could be tuned for throttle. The new shape removes the parameter and collapses the call onto one ARG query, which (a) cuts subscription-level ARM call volume 5-10x on the common fleet-status pipelines and (b) lets the helper apply uniform 429/`Retry-After` retry logic in one place. Affected cmdlets: `Get-AzLocalUpdateSummary`, `Get-AzLocalAvailableUpdates`, `Get-AzLocalClusterUpdateReadiness`, `Test-AzLocalClusterHealth`, `Get-AzLocalFleetProgress`, `Get-AzLocalFleetStatusData`, `New-AzLocalFleetStatusHtmlReport`. All bundled pipeline YAMLs were updated to stop passing `-ThrottleLimit`.
-
-- **`Invoke-AzResourceGraphQuery` now retries on HTTP 429 (throttle).** Inspects the `Retry-After` response header when present and otherwise applies bounded exponential backoff (capped at the documented Azure Resource Graph throttling envelope). Large fleet sweeps no longer fall over at the throttling boundary; happy-path latency is unchanged.
-
-- **`Invoke-AzResourceGraphQuery` hardened against `az.cmd` CR/LF stdout truncation.** A latent bug in `az.cmd` (Windows runners) could chop the JSON payload at the first chunked-write boundary when stdout was piped through PowerShell, producing the N-row collapse where a 27-cluster fleet would surface as 24 rows. The helper now decodes the full UTF-8 payload explicitly; existing Pester tests pin the regression.
-
-- **`Get-AzLocalFleetProgress` no longer silently returns stale state when ARG returns zero rows.** The previous code-path treated an empty ARG response as "no change" and returned the last cached state; consumers (including the `Step.6_fleet-update-status.yml` JUnit emitter) therefore reported "everything green" on fleets that had been completely de-tagged or that hit a transient ARG error. The cmdlet now surfaces the empty-fleet condition explicitly so the operator can act on it.
-
-### New: `Get-AzLocalUpdateRunFailures`
-
-- **ARG-only deep-error extraction** (9 levels deep into the `properties.state.progress` tree of `microsoft.azurestackhci/clusters/updates/updateRuns`) returns verbose error information at fleet scale without per-cluster Az SDK or REST shell-outs. Two views: `-View Summary` (one row per failed update run) and `-View Detail` (one row per leaf failure with the full breadcrumb to the failed step). Useful in `Step.5_apply-updates.yml` post-mortem reports and as a follow-up call after `Get-AzLocalFleetProgress` reports failures.
-
-### New: `Update-AzLocalPipelineExample` (marker-aware upgrade tool)
-
-- **Marker-aware merge tool** that refreshes a customer's copy of any bundled pipeline YAML to the version shipped with the current module **while preserving operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs**. Customer-side cron schedules in `schedule-triggers` and ITSM secret bindings in `itsm-secrets` (Step.5 only) survive a module upgrade; everything outside the markers is replaced with the new bundled content. Supports `-WhatIf`, `-DryRun`, multi-file batch mode, and emits a per-file change manifest so the operator can review the merge before committing. This is the operator-friendly upgrade path that `Copy-AzLocalPipelineExample` (clean overwrite) does not provide.
-
-### Pipeline samples - `Step.X_` rename
-
-- **All 16 bundled pipeline YAMLs renamed with a `Step.X_` ordering prefix** so they sort by execution order in a customer's repo (`Step.0_authentication-test.yml`, `Step.1_inventory-clusters.yml`, `Step.2_manage-updatering-tags.yml`, `Step.3_apply-updates-schedule-audit.yml`, `Step.4_assess-update-readiness.yml`, `Step.5_apply-updates.yml`, `Step.6_fleet-update-status.yml`, `Step.7_fleet-health-status.yml`). Both platforms (GitHub Actions + Azure DevOps). The rename matches the documented operator runbook order so an alphabetic listing in the consumer's IDE / repo browser tells the story end-to-end.
-
-- **Backwards compatibility for already-deployed consumers:** `Read-AzLocalApplyUpdatesYamlCrons` (the schedule-audit scanner) glob list expanded to match both new (`Step.5_apply-updates*.yml`) and legacy (`apply-updates*.yml`) names. A customer who upgrades the module but has not yet re-run `Copy-AzLocalPipelineExample` will still see correct schedule-coverage audits.
-
-- **Each YAML's workflow display name now also carries the `Step.N - ` prefix.** GitHub Actions sidebar sorts workflows alphabetically by the YAML's top-level `name:` field, so the 8 workflows now read `Step.0 - Authentication Validation and Subscription Scope Report` ... `Step.7 - Fleet Health Status` and list in execution order. For Azure DevOps the leading title comment in each YAML carries the same prefix so the import wizard prefills the suggested pipeline definition name correctly. See [`Automation-Pipeline-Examples/README.md` section 1.1](./Automation-Pipeline-Examples/README.md#11-why-the-pipelines-are-named-stepn---description) for the full convention.
-
-### Pipeline samples - Layer 1 customisation markers (scaffolding)
-
-- **Seven YAMLs now carry named `AZLOCAL-CUSTOMIZE` marker pairs** (6 main pipelines x `schedule-triggers`, plus `Step.5_apply-updates.yml` x `itsm-secrets`) wrapping the YAML regions operators commonly customise. Markers are pure YAML comments and have no runtime effect; they back the new `Update-AzLocalPipelineExample` cmdlet (also new in v0.7.68) that performs a marker-aware merge so operator edits inside the marker pairs survive a module upgrade. `Copy-AzLocalPipelineExample` remains the clean-overwrite tool for first-time install / forced refresh.
-
-### Pipeline migration
-
-If you have copied any of the bundled workflows into your repo, the recommended upgrade path is the new marker-aware merge:
-
-```powershell
-Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
-Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
-```
-
-(Add `-WhatIf` first to preview the merge before writing files; add `-Force` to skip the per-file confirm prompt for non-interactive runs.)
-
-This brings in the new file names *and* the Layer 1 marker scaffolding **while preserving** operator-customised cron schedules and ITSM secret bindings inside `BEGIN-AZLOCAL-CUSTOMIZE` / `END-AZLOCAL-CUSTOMIZE` marker pairs in your already-deployed YAMLs.
-
-For a clean overwrite (first-time install or forced refresh that discards local edits), keep using `Copy-AzLocalPipelineExample`:
-
-```powershell
-Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
-Copy-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
-```
-
-### Inventory & design doc
-
-- **New `docs/Cmdlet-Inventory-And-Design.md`** documents which cmdlets read vs write, which back-end they use (ARG vs Az SDK vs az CLI), and the design rules that keep read paths ARG-first (no `-ThrottleLimit`, no per-cluster Get-AzResource fan-out). Removes ambiguity about which back-end a new cmdlet should take.
-
-### What's New in v0.7.67
-
-v0.7.67 lands a Phase 3/4 CI/CD-parity refresh, a new maintainer-facing release-process document, and a six-item batch of in-depth-review fixes. **No public surface change** - every pre-existing pipeline and cmdlet keeps the same contract.
-
-#### CI/CD parity + UX
-
-- **GitHub Actions schedule-audit pipeline now emits a passing testcase when the fleet has no tagged clusters.** Previously the GH variant of `Step.3_apply-updates-schedule-audit.yml` wrote an empty `<testsuite>` whenever there were no `(UpdateRing, UpdateWindow)` rows to evaluate; `dorny/test-reporter` then reported "no tests found", indistinguishable from a misconfigured reporter step. The pipeline now writes `<testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />` for the zero-row case, matching the long-standing Azure DevOps behaviour. The Tests tab reads cleanly as "passed (1/1)" regardless of whether the fleet has any tagged clusters yet, removing the daily false-alarm during onboarding and after fleet-wide tag clean-ups.
-
-- **Schedule-audit summary now surfaces the cron recommendation block at the TOP when coverage drift exists.** Both `Step.3_apply-updates-schedule-audit.yml` files (GitHub Actions and Azure DevOps) previously emitted the recommended cron block at the bottom of the run summary, after the audit detail table. When the audit reported any `Uncovered` / `PartiallyCovered` / `MalformedTag` / `UnparseableCron` rows, operators had to scroll past the detail table to find the actionable fix. The pipelines now render an `### Action required - paste these cron entries into Step.5_apply-updates.yml` section immediately below the counts table when issues exist; when the fleet is fully covered, the recommendation block stays at the bottom as a reference. A new Pester guard asserts both YAMLs carry the conditional structure and the ordering.
-
-- **Pipeline README now includes an artifact-handoff data-flow diagram.** Section 6 of [`Automation-Pipeline-Examples/README.md`](Automation-Pipeline-Examples/README.md) already carried a phase-oriented flow diagram (Inventory -> Tag -> Rollout -> Steady-state); the new "Artifact handoffs at a glance" subsection makes the data flow explicit, showing which artifact each pipeline emits and which downstream pipeline consumes it (e.g. `cluster-inventory.csv` -> manual tagging edit + manage-tags pipeline; `cluster-readiness.csv` -> apply-updates; `schedule-coverage-recommend.md` -> manual paste into `Step.5_apply-updates.yml`). Calls out the four artifacts operators most commonly trip on.
-
-- **Pipeline README section 11 (Security model) now documents per-job `permissions:` blocks as an intentional security feature.** Every shipped GitHub Actions workflow declares its own job-level `permissions:` block (`id-token: write`, `contents: read`, `checks: write` only where needed). The new bullet calls out that consumers should not lift these blocks to a top-level `permissions:` block when copying samples, explains how the per-job shape (a) limits token scope to exactly the job that needs the write and (b) lets you keep `id-token: write` off read-only summary jobs, and documents that the samples are compatible with the recommended *Settings -> Actions -> General -> Workflow permissions = Read repository contents and packages permissions* hardening.
-
-- **All Azure DevOps sample pipelines now share the same `azureSubscription:` placeholder.** Four files (`Step.4_assess-update-readiness.yml`, `Step.7_fleet-health-status.yml`, `Step.6_fleet-update-status.yml`, `Step.3_apply-updates-schedule-audit.yml`) previously used `'YOUR-SERVICE-CONNECTION-NAME'` while the other four ADO YAMLs used `'AzureLocal-ServiceConnection'`. All eight ADO pipelines now use `'AzureLocal-ServiceConnection'` plus a `# Update with your service connection name` comment, matching the value documented in section 3.2 of the pipeline README. An operator who follows the auth setup verbatim no longer has to find-and-replace anything in the YAMLs.
-
-#### New maintainer doc: `docs/RELEASE-PROCESS.md`
-
-- **Documents the staged unlisted-release flow** the module uses (publish -> immediately unlist -> validate against a test repo with `REQUIRED_MODULE_VERSION` exact-pinned to the candidate -> list after validation passes), the verification commands for each stage, and the Pester guardrails the release flow relies on. This puts the release rules in the repo rather than in tribal knowledge / chat history. Pipeline consumers do not need this doc; module maintainers do.
-
-#### Fixed (in-depth module review - batch 3)
-
-Six defence-in-depth fixes following the post-PR-#36 module review. **None are user-visible behaviour changes for the happy path** - every fix closes a class of silent-drift or silent-drop bug.
-
-- **`$script:ModuleVersion` constant in `AzLocal.UpdateManagement.psm1` was stuck at `0.7.66` while the manifest moved to `0.7.67`.** The script-scope constant is the value `Start-AzLocalClusterUpdate` writes into its run-log header and the value `Get-AzLocalFleetStatusData` stamps into the `ModuleVersion` field of the exported fleet-state JSON, so every v0.7.67 run-log and every v0.7.67 fleet-state file was misreporting the producing module version - which is the exact field operators use to triage CI vs local-runner discrepancies. Bumped to `0.7.67`; a new Pester guard `Module version constants are in sync between .psm1 and .psd1` compares `(Import-PowerShellDataFile).ModuleVersion` against `InModuleScope { $script:ModuleVersion }` and fails any future drift at build time.
-
-- **cp1252 stderr-warning regression that v0.7.66 fixed in `Invoke-AzResourceGraphQuery` had three remaining ambush sites.** The unsafe `az ... 2>&1 | ConvertFrom-Json` pattern was still live in `Get-AzLocalClusterInventory` resolving subscription display names via `az account show`, `Invoke-AzLocalSideloadedAutoResetForCluster` reading the cluster tags via `az rest`, and `Set-AzLocalClusterTagsMerge` reading the tags-subresource via `az rest`. The two `az rest` callers now route through the existing `Invoke-AzRestJson`. The `az account show` caller goes through a new private helper `Invoke-AzCliJson`, which applies the same stream-split-by-element-type pattern, auto-appends `--only-show-errors`, sets `PYTHONIOENCODING=utf-8` as defence-in-depth (restored in `finally`), and returns `[PSCustomObject]@{ Ok; Data; Error }` so callers no longer have to inspect `$LASTEXITCODE` manually. Seven new Pester tests cover the helper.
-
-- **`ConvertFrom-AzLocalCronExpression` now accepts cron step syntax (`*/N`, `<a>-<b>/N`, `<a>/N`).** The schedule advisor was falsely flagging crons such as `*/15 * * * *` (every 15 min), `0 */6 * * 1` (every 6 hr on Mondays), and `0 9-17/2 * * 1-5` (every 2 hr between 09:00 and 17:00 on weekdays) as `UnparseableCron` - even though both GitHub Actions and Azure DevOps schedule them correctly. The parser now expands `*/N` over the field's full range, `<a>-<b>/N` over the explicit `[a,b]` range, and `<a>/N` over `[a, max]`. Step values must be positive integers; out-of-bounds bases still throw with the existing bounds messages. Four new Pester tests (3 positive + `*/0` negative); the pre-existing test asserting `*/15` was *rejected* has been flipped to assert the 672-fires-per-week expansion is correct.
-
-- **`Reset-AzLocalSideloadedTag` now warns when a `-ClusterResourceIds` entry does not match `/clusters/<name>$`.** The `ByResourceId` resolver previously dropped malformed entries (typos, trailing slash, wrong provider, truncated string) silently - the operator would see "no matching clusters" without any indication that an input had been excluded. The resolver now emits `Write-Log -Level Warning` naming the exact `ResourceId` it skipped. This brings parity with the `ByName` / `ByTag` resolvers, which already warned on lookup failure. New regression test.
-
-- **`Tests/Invoke-Tests.ps1` HTML footer no longer prints `Module Version: System.Object[]`.** When nested modules are loaded (the default for this module - every Private/*.ps1 is a nested module), `Get-Module AzLocal.UpdateManagement` returns one entry per loaded version, and `.Version` on that array surfaces as `Object[]`. The HTML test report footer was therefore intermittently printing `Module Version: System.Object[]`. The test runner now selects the newest loaded version via `Sort-Object Version -Descending | Select-Object -First 1` before reading `.Version`.
-
-- **`Import-AzLocalFleetState` now caps input at 50 MB before reading.** The helper previously called `Get-Content -Raw | ConvertFrom-Json` with no size check; pointing it at a multi-GB file (typo, mis-glob, malicious symlink) would have OOMed the runner. Real fleet-state files (`Export-AzLocalFleetState` output) are tens of KB at most, so a 50 MB ceiling is ~3 orders of magnitude above any plausible legitimate input. The cap message names the actual file size in MB and explains what valid input looks like. Two new Pester tests (mocked-oversize trip + happy path).
-
-#### Pester baseline
-
-**485 passed / 0 failed / 0 skipped** (was 471 at v0.7.66) - the +14 new tests cover the drift guard, `Invoke-AzCliJson` (7), cron `*/N` (4), `Reset-AzLocalSideloadedTag` warning (1), and `Import-AzLocalFleetState` size guard (2).
-
-#### Pipeline migration
-
-If you have copied any of the bundled workflows into your repo, refresh them via:
-
-```powershell
-Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
-Copy-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
-```
-
-> Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
 
 ## Files
 
@@ -2841,6 +2423,422 @@ This code is provided as-is for educational and reference purposes.
 
 ## Release History
 
+
+### What's New in v0.7.74
+
+v0.7.74 is a **bug-fix + UX** release on top of v0.7.73. It addresses **two distinct findings** raised against v0.7.73 against the same live 20-cluster fleet: **(1)** `Get-AzLocalFleetHealthOverview` started failing with a KQL `ParserFailure: token=<EOF>` at character `2757` because the v0.7.73 query growth crossed the `az graph query -q` argument-truncation threshold (~2.8 KB wire-side); **(2)** the `Step.3 - Apply-Updates Schedule Coverage Audit` recommendation block was reported as "very hard to follow and understand what to do" - it was a four-section advisory but lacked an explicit fix-in-this-order checklist, did not explain *why* each finding mattered, did not include a before/after YAML snippet for missing rings, and shipped a commented-out cron block that operators were copy-pasting verbatim including the `# ` prefixes. Both are fixed. Pipeline pin bumps to `'0.7.74'`; refresh existing copies via `Update-AzLocalPipelineExample`.
+
+### Get-AzLocalFleetHealthOverview `ParserFailure: token=<EOF>` at char 2757 - fixed
+
+The v0.7.73 change (HealthStatus normalisation via `case()`) added ~250 chars of KQL projection, and the v0.7.73 commit also added a six-line `//` KQL comment block above the projection (~470 chars). The combined wire query grew from `~2400` chars (v0.7.72 baseline) to `3115` chars. On Windows the Azure CLI's `az graph query -q <query>` argument layer truncates very long single-arg payloads around the 2.8 KB mark; the truncated query lands mid-projection, so ARG returns:
+
+```json
+{
+  "error": {
+    "code": "BadRequest",
+    "details": [
+      { "code": "InvalidQuery", "message": "Query is invalid." },
+      { "code": "ParserFailure",
+        "message": "... characterPositionInLine=2757 token=<EOF> ..." }
+    ]
+  }
+}
+```
+
+Symptom: `Step.7 - Fleet Health Status` failed with exit code 1 the moment the cmdlet was invoked. Step.7's separate, shorter "Detail" ARG query (rendered after Overview) was unaffected, which made the failure look like a HealthStatus-projection bug rather than an arg-length bug.
+
+**Fix:** (1) the six `//` KQL comment lines are removed from the here-string and re-expressed as PowerShell `#` source comments above the `$kql` assignment - documentation for the source reader, no wire-side bytes. (2) The `case()` projection is compacted to one line (semantically identical). The wire query is now `2396` chars, back below the v0.7.72 baseline. A new inline `IMPORTANT` source comment above `$kql` flags the constraint so future contributors do not re-introduce it.
+
+Verified end-to-end against the same live 20-cluster fleet: 20 cluster rows returned; HealthStatus distribution preserved from v0.7.73 (`10 Healthy / 7 Critical / 2 Warning / 1 In progress`); Step.7 `HEALTHY_CLUSTERS` output still writes `10` and the Fleet Health Overview table still renders the intended icons.
+
+### Step.3 recommendation block rewritten as a step-by-step remediation guide
+
+Operators reported the v0.7.73 Step.3 output was "very hard to follow and understand what to do, it needs much more detail and step by step for exactly what the operator needs to do to 'fix' the Apply Updates schedules, across the CRON jump for Step 5 and the Config YML file." v0.7.74 adds:
+
+- **Top-of-block "Fix-in-this-order checklist"** when 2+ action sections are emitted, with N+1 ordered bullets that name the file to edit AND the silent-skip consequence of skipping that step (e.g. `Resolve-AzLocalCurrentUpdateRing` returns nothing for missing rings so Step.5 silently skips them; `Test-AzLocalUpdateScheduleAllowed` never opens the gate for uncovered UpdateWindows). The checklist surfaces the order the advisor uses internally (ring diff -> orphans -> unparseable crons -> cron coverage -> re-run) so the operator does not have to derive it from the section headings.
+- **`**Why this matters.**` paragraph in every section** that names the specific runtime cmdlet that depends on the configuration being fixed (`Resolve-AzLocalCurrentUpdateRing`, `Test-AzLocalUpdateScheduleAllowed`) and the silent-skip failure mode the operator avoids by following the fix.
+- **"How to fix - edit `<file>`" subsection in the missing-rings section** with a full `apply-updates-schedule.yml` skeleton snippet showing the existing `schedule:` block AND a placeholder row PER missing ring (`TODO:` markers on `weeksInCycle`, `daysOfWeek`, `notes`, annotated with the cluster count for the missing ring). The snippet carries an `AzLocal.UpdateManagement v<version> advisor: add row(s) like these <<<` header so it is unambiguous where the operator-edited content begins.
+- **Ready-to-paste (uncommented) cron block** in the cron-coverage section. Replaces the prior `# commented` form (which operators were copy-pasting verbatim including the `# ` prefixes). The snippet is now a real `on:` (GitHub Actions) / `schedules:` (Azure DevOps) block, with one cron line per UpdateWindow plus a trailing yaml-`#` annotation showing the rings and cluster count served by each cron.
+- **Platform-aware file labels.** When `-Platform` is pinned to a single platform, the text names the exact pipeline file (`.github/workflows/Step.5_apply-updates.yml` vs `.azuredevops/Step.5_apply-updates.yml`) and the exact schedule file (`.github/apply-updates-schedule.yml` vs `.azuredevops/apply-updates-schedule.yml`).
+- **Two-choice fix tables for orphaned rings** spell out both options (retag a cluster onto the ring via `Set-AzLocalClusterUpdateRingTag`, OR remove the ring from the schedule file) so operators do not default to deletion when they actually wanted to bring a cluster onto the ring.
+
+### Step.3 pipeline scripts pin `-Platform` so cross-platform noise is gone
+
+`Test-AzLocalApplyUpdatesScheduleCoverage` defaults to `-Platform Both`, which surfaced both the GitHub Actions `schedule:` block AND the Azure DevOps `schedules:` block in every Step.3 run regardless of which CI platform was running it. Both Step.3 yml files now pin `-Platform GitHubActions` (GH) / `-Platform AzureDevOps` (ADO) on both `-View Audit` and `-View Recommend` calls so the Step Summary contains exactly one platform-appropriate snippet.
+
+### Pipeline pin bumps + migration
+
+All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.73'` to `'0.7.74'`. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
+
+```powershell
+Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+### Compatibility
+
+All v0.7.74 changes are backward compatible. `Get-AzLocalFleetHealthOverview` returns the same shape and the same normalised `HealthStatus` vocabulary it returned in v0.7.73 - only the underlying wire query is shorter so it no longer trips the truncation. The v0.7.74 Step.3 yml changes (adding `-Platform GitHubActions` / `-Platform AzureDevOps`) are recommended-but-not-required - the cmdlet still works against the v0.7.73 yml; you just continue to see the cross-platform noise until the yml is refreshed.
+
+### What's New in v0.7.73
+
+v0.7.73 is a **bug-fix** release on top of v0.7.72. `Get-AzLocalFleetHealthOverview` (the cmdlet that powers `Step.7 - Fleet Health Status`) was emitting the raw Azure Resource Graph `properties.healthState` enum values (`Success` / `Failure` / `Warning` / `InProgress` / `NotKnown`) on the `HealthStatus` column, but the cmdlet's own doc comment, the Step.7 pipeline filter `Where-Object { $_.HealthStatus -eq 'Healthy' }`, and the Step.7 Fleet Health Overview rendering `switch ($o.HealthStatus)` all expected the operator-friendly vocabulary `Healthy` / `Critical` / `Warning` / `In progress` / `Unknown`. Symptom: Step.7 reported `Healthy Clusters = 0` against any fleet (live-verified against a 20-cluster fleet: 10 Success / 8 Failure / 2 Warning) and the overview table rendered the `[Success]` / `[Failure]` default-bracket fallback instead of the intended `✅ Healthy` / `❌ Critical` icons. The KQL projection in the cmdlet now normalises in a `case()` clause so the `HealthStatus` column matches the documented contract; no pipeline-sample YAML change is required (the v0.7.72 pin already used the correct vocabulary). Pipeline pin bumps to `'0.7.73'`; refresh existing copies via `Update-AzLocalPipelineExample`.
+
+### Step.7 "Healthy Clusters = 0" against any fleet - fixed
+
+`Get-AzLocalFleetHealthOverview.HealthStatus` is documented (and consumed) as one of `Healthy` / `Critical` / `Warning` / `In progress` / `Unknown`. The KQL projection joining `microsoft.azurestackhci/clusters` with the `updateSummaries` extensibility resource was, however, a one-line passthrough:
+
+```kusto
+HealthStatus = iif(isempty(HealthState), 'Unknown', HealthState),
+```
+
+The upstream ARG field `properties.healthState` emits the raw ARM enum values `Success` / `Failure` / `Warning` / `InProgress` / `NotKnown`, so `Healthy` / `Critical` / `In progress` literally never appeared on any row. The pipeline filter `Where-Object { $_.HealthStatus -eq 'Healthy' }` therefore matched zero rows and the `HEALTHY_CLUSTERS` GitHub Actions output was always `0`; the rendering switch fell through to the default arm and rendered `[Success]` / `[Failure]` instead of `✅ Healthy` / `❌ Critical`. The projection is now:
+
+```kusto
+HealthStatus = case(
+    isempty(HealthState),         'Unknown',
+    HealthState =~ 'Success',     'Healthy',
+    HealthState =~ 'Failure',     'Critical',
+    HealthState =~ 'InProgress',  'In progress',
+    HealthState =~ 'NotKnown',    'Unknown',
+    HealthState
+),
+```
+
+`Warning` is passed through unchanged, and any unrecognised future state also passes through (rather than being silently bucketed as `Unknown`) so a platform addition stays visible. Verified end-to-end against a live 20-cluster fleet (10 Success / 8 Failure / 2 Warning): after the fix, Step.7 reports `Healthy Clusters = 10`, the Fleet Health Overview table renders the intended icons, and the Step.7 numbers are internally consistent with the Step.6 panel for the same fleet (Step.6 reports `Up to Date = 10` and `Critical Health Status: 12 passed / 8 failed`; the 2 Warning clusters surface as `⚠️ Warning` in the overview without being counted as either Healthy or Critical). The cmdlet's doc comment is also corrected to describe the normalised vocabulary and to spell out the raw-to-normalised mapping for future-proof clarity.
+
+### Pipeline pin bumps + migration
+
+All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.72'` to `'0.7.73'`. The Step.0 authentication validation workflow does not pin a module version. **No filter or switch changes required in the pipeline samples** - the v0.7.72 pin already used the correct vocabulary; the v0.7.73 module simply emits values that match. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
+
+```powershell
+Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+### Compatibility
+
+All v0.7.73 changes are backward compatible. The `HealthStatus` column type (`string`) and column position (third column, after `ClusterName` and `ClusterPortalUrl`) are unchanged - only the value set narrows from the raw ARG enum to the documented operator-friendly vocabulary. Operators who built custom downstream automation that explicitly filtered for the **raw** `Success` / `Failure` / `InProgress` / `NotKnown` strings against the v0.7.70 - v0.7.72 builds must update those filters to the new `Healthy` / `Critical` / `In progress` / `Unknown` vocabulary (or pull the raw value back via a separate ARG call on `updateSummaries.properties.healthState` if they specifically need the platform enum).
+
+### What's New in v0.7.72
+
+v0.7.72 is a **pipeline-samples hotfix** release on top of v0.7.71. Two issues observed when operators ran the v0.7.71 GitHub Actions samples in production: (1) the Step.1 / Step.2 / Step.5 GitHub Actions `Summary` panels rendered empty because the workflows used `Write-Host "<markdown>" >> $env:GITHUB_STEP_SUMMARY` - `Write-Host` writes to the PowerShell information/host stream (6), not stdout (1), so the `>>` redirect appended nothing to the summary file; (2) `AZURE_TENANT_ID` was stored as a GitHub Secret on the same rationale as the v0.7.71 `AZURE_SUBSCRIPTION_ID` treatment - a public ARM/AAD identifier, not a credential. Both are fixed. **No PowerShell source files changed** - this release is scoped to pipeline-sample YAMLs and Markdown docs. Refresh existing copies via `Update-AzLocalPipelineExample`.
+
+### Step.1 / Step.2 / Step.5 GitHub Actions `Summary` blocks now render content (was blank)
+
+Across these three workflows, 62 `Write-Host "<markdown>" >> $env:GITHUB_STEP_SUMMARY` lines were silent no-ops because `Write-Host` emits to PowerShell's information stream (stream 6), not stdout (stream 1). The file-redirect operator `>>` only attaches to stdout, so the GitHub Actions Summary file received an empty append on every line. The job log printed the markdown to the runner console (where operators do not normally look) but the GitHub Actions Summary panel - the canonical post-run report surface - rendered blank. All 62 lines now use the bare-string-to-stdout form (`"<markdown>" >> $env:GITHUB_STEP_SUMMARY`), so the totals/tables/actions-required block coded in v0.7.71 finally surface in the GitHub Actions UI. Affected:
+
+- **Step.1**: cluster-inventory totals + UpdateRing distribution.
+- **Step.2**: UpdateRing tag-management settings + dry-run notice.
+- **Step.5**: update-application readiness/results matrix + actions-required block + `no-clusters-ready` job summary.
+
+ADO pipelines were unaffected (they use the `##vso[task.uploadsummary]` mechanism, not stdout redirection).
+
+### GitHub Actions: AZURE_TENANT_ID is now a Variable, not a Secret
+
+All 8 GitHub Actions `Step.*.yml` workflows (including the four commented-out legacy `azure/login@v3` `creds:` JSON examples in Step.1 / Step.2 / Step.5) now read the Entra ID tenant id from `vars.AZURE_TENANT_ID` instead of `secrets.AZURE_TENANT_ID`. Rationale matches the v0.7.71 `AZURE_SUBSCRIPTION_ID` switch: the tenant id is a public ARM/AAD identifier - it is rendered in workflow telemetry on every `azure/login@v3` run, present in the OIDC token issuer URL, and visible to anyone with read access to the App Registration - not a credential. It is consumed in exactly one place: the `tenant-id:` input to `azure/login@v3`, which exchanges the OIDC token for an Azure AD token in the named tenant. It is **NOT** used to scope Azure Resource Graph queries and is **NOT** interpolated into portal deep-link URLs. Treating it as a Variable also means it appears plaintext in workflow logs (matching its non-sensitive nature) and removes the need for an extra Secret rotation in tenants that already track it as a Variable. Steady-state setup is now **one repo-level Secret** (`AZURE_CLIENT_ID`) and **two repo-level Variables** (`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`); see updated docs in `Automation-Pipeline-Examples/README.md`. Azure DevOps pipelines authenticate via a service connection and need no change (the connection itself stores `tenantId`).
+
+### Pipeline pin bumps + migration
+
+All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.71'` to `'0.7.72'`. The Step.0 authentication validation workflow does not pin a module version. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
+
+```powershell
+Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+GitHub Actions operators must also create `AZURE_TENANT_ID` as a **repository Variable** (`gh variable set AZURE_TENANT_ID --body <tenantId>`) and delete the existing `AZURE_TENANT_ID` **Secret** to avoid drift between the two values.
+
+### Compatibility
+
+All v0.7.72 changes are backward compatible. No cmdlet signatures or output shapes change. The Variable migration is a per-tenant setup change (GitHub Actions only).
+
+
+### What's New in v0.7.71
+
+v0.7.71 is a **bug-fix + UX polish** release on top of v0.7.70. Two render-correctness fixes (Step.3 markdown rendering as a code block, Step.4 critical-count under-reporting as 0), one new action-required section in `Test-AzLocalApplyUpdatesScheduleCoverage -View Recommend` for unparseable cron expressions, hyperlinked Cluster Name + collapsible Verbose Error in the Step.6 Update Run History table, and the AZURE_SUBSCRIPTION_ID Secret -> Variable migration for GitHub Actions samples. All changes are additive over v0.7.70; no behaviour change for callers that don't read the new columns.
+
+### What's New in v0.7.70
+
+v0.7.70 is the **Step.0 recurring authentication audit + Step.6 Update Run History section + Step.6 manifest-anchored rolling support window + Step.3 dual-section UX + Step.7 fleet-health hyperlinks** release, plus two new exported cmdlets - `Get-AzLocalFleetHealthOverview` (ARG-first fleet-scale view of cluster health and update status) and `Get-AzLocalLatestSolutionVersion` (unauthenticated probe of the Microsoft Azure Local public solution-update catalog at `aka.ms/AzureEdgeUpdates`, used by Step.6 to anchor the SupportStatus column on the upstream release calendar). All changes are additive over v0.7.69; no behaviour change for callers that don't read the new columns.
+
+
+### Step.0 repositioned as a recurring audit: Authentication Validation and Subscription Scope Report
+
+`Step.0_authentication-test.yml` (GitHub Actions + Azure DevOps twins) is renamed from "Authentication Validation Test" to **"Step.0 - Authentication Validation and Subscription Scope Report"** and repositioned from a one-shot smoke test into a **recurring audit** intended to be re-run monthly (or after any RBAC change in the tenant). The pipeline now emits:
+- A **JUnit XML** report (`auth-report.xml`) with three testsuites - **Authentication**, **Subscription Scope** (one testcase per accessible subscription, plus a count testcase), and **Resource Graph Reachability** (cluster count visible to the pipeline identity). Rendered in the GitHub Checks UI via `dorny/test-reporter@v3` and in the Azure DevOps **Tests** tab via `PublishTestResults@2`.
+- A **markdown summary** at the top of every run with `Count of subscriptions = N` and a per-subscription detail table (Name / SubscriptionId / TenantId / State). Written to `$GITHUB_STEP_SUMMARY` on GitHub Actions and uploaded via `##vso[task.uploadsummary]` on Azure DevOps.
+- A `auth-report` artifact (XML + `subscriptions.json` + `subscriptions.csv`) for ITSM / dashboard ingest.
+
+Drift in the subscription scope visible to the pipeline identity is the earliest signal that downstream fleet reports are about to silently under- or over-count clusters, which is why the cadence is recurring rather than one-shot.
+
+### Step.6 Fleet Update Status pipeline - new "Update Run History and Error Details" section
+
+A new `<testsuite name="Update Run History and Error Details">` testsuite in the Step.6 JUnit XML and a matching `### Update Run History and Error Details` markdown table in the run summary surface up to 25 of the most recent unresolved Failed update runs across the fleet (last 30 days). Each row links to the Azure portal `SingleInstanceHistoryDetails` deep-link and includes Status / CurrentStep / Duration / LastUpdated / DeepestErrMsg for at-a-glance triage. Sourced from `Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved` (ARG-first, fleet-scale).
+
+### Step.6 Fleet Update Status pipeline - new "Overall Fleet Update Status (Version Distribution)" section with manifest-anchored rolling support window
+
+A new `<testsuite name="Fleet Version Distribution">` testsuite is emitted as the **first** child of `<testsuites>` (before `AzureLocalFleetUpdateStatus`) and a matching `### Overall Fleet Update Status (Version Distribution)` markdown section is prepended to the run summary (above `### Critical Health Status`). One row per distinct `CurrentVersion` reported by `Get-AzLocalClusterUpdateReadiness`, sorted by cluster count descending, with columns: Version / YYMM / SupportStatus / Cluster Count / Percentage / Clusters.
+
+`SupportStatus` uses a **rolling 6-month YYMM window anchored on the Microsoft public catalog** when reachable. The Step.6 step calls the new `Get-AzLocalLatestSolutionVersion` cmdlet (see below) to fetch the latest released solution version's YYMM from `https://aka.ms/AzureEdgeUpdates` and seeds a calendar-stepped 6-month window from it (e.g. latest YYMM `2604` -> `2604,2603,2602,2601,2512,2511`). As soon as Microsoft publishes any release with a newer YYMM, the window slides forward and the oldest in-window YYMM falls out automatically - independent of what is installed in the fleet. The JUnit testsuite carries `supportSource` / `latestReleasedYymm` / `latestReleasedVersion` / `manifestUrl` / `manifestFetchedAt` properties; the markdown summary annotates which anchor source was used and (on success) prints the latest released YYMM + version.
+
+When the manifest is unreachable from the runner the pipeline emits a non-fatal warning (`::warning::` on GitHub Actions, `##vso[task.logissue type=warning]` on Azure DevOps) and falls back to a **fleet-observed top-6 YYMM heuristic** so Step.6 still reports (`supportSource='fleet-observed'`). **Supported** = cluster's YYMM is inside the anchor window; **Unsupported** = older parseable YYMM; **Unknown** = empty / malformed `CurrentVersion`. The markdown section includes inline links to the Microsoft Azure Local [lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and [release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) docs as the operator cross-check. No `<failure>` tags - the testsuite is informational and never breaks the build.
+
+### New cmdlet: `Get-AzLocalLatestSolutionVersion`
+
+Unauthenticated probe of the Microsoft Azure Local public solution-update catalog at `https://aka.ms/AzureEdgeUpdates`. Returns the latest released solution version plus the rolling YYMM support window calendar-stepped from it (year-rollover honoured). Used by Step.6 to anchor the SupportStatus column on the upstream catalog instead of fleet-observed values, so older releases drop out of support automatically as soon as Microsoft publishes a newer YYMM.
+
+Output PSCustomObject: `LatestYYMM`, `LatestVersion`, `SupportedYYMMs[]` (length = `-SupportWindowMonths`, default 6, configurable 1-24), `AllReleases[]`, `ManifestUrl`, `ManifestFetchedAt` (UTC), `SupportWindowMonths`, `Source = 'aka.ms/AzureEdgeUpdates'`. Tolerant of both XML shapes the manifest exposes (`ApplicableUpdate/UpdateInfo` and `PackageMetadata/ServicesUpdates/Update/UpdateInfo`).
+
+```powershell
+# Default - latest released YYMM + 6-month rolling window
+Get-AzLocalLatestSolutionVersion | Format-List LatestYYMM, LatestVersion, SupportedYYMMs
+
+# 12-month rolling window (e.g. for slower-moving regulated fleets)
+Get-AzLocalLatestSolutionVersion -SupportWindowMonths 12
+
+# Pin to a private mirror of the manifest (must be http(s))
+Get-AzLocalLatestSolutionVersion -ManifestUrl 'https://internal.example.com/AzureEdgeUpdates.xml' -TimeoutSeconds 60
+```
+
+### New cmdlet: `Get-AzLocalFleetHealthOverview`
+
+ARG-first fleet health summary. One row per cluster, joining `microsoft.azurestackhci/clusters` with the cluster's `updateSummaries` extensibility resource via a single Azure Resource Graph batch read. 12 columns in fixed order: `ClusterName`, `ClusterPortalUrl`, `HealthStatus`, `UpdateStatus`, `CurrentVersion`, `SbeVersion`, `AzureConnection`, `LastChecked`, `HealthResultsAgeDays` (computed as `datetime_diff('day', now(), LastChecked)`), `ResourceGroup`, `NodeCount`, `SubscriptionId`. Sort: `HealthResultsAgeDays desc, ClusterName asc` so the most-stale clusters surface first.
+
+```powershell
+# Whole-fleet rollup
+Get-AzLocalFleetHealthOverview -SubscriptionId <subId> | Format-Table
+
+# Filter to a ring (wildcard '***' = every cluster carrying ANY UpdateRing tag)
+Get-AzLocalFleetHealthOverview -UpdateRingTag '***' -SubscriptionId <subId>
+
+# Export to CSV for ITSM / dashboard ingest
+Get-AzLocalFleetHealthOverview -SubscriptionId <subId> -ExportPath .\fleet-health-overview.csv -PassThru
+```
+
+### Step.3 audit pipeline - dual-section UX
+
+The `Test-AzLocalApplyUpdatesScheduleCoverage` cmdlet's Audit rows now carry a `Section` discriminator that splits the audit into two conceptually distinct concerns:
+
+| `Section` | Status values | Unit of work |
+|---|---|---|
+| `Schedule` | `RingMissingFromSchedule`, `RingOrphanedInSchedule` | The ring (`UpdateWindow` / `RequiredCronUTC` deliberately empty - these are about ring mapping, not window mapping) |
+| `Cron` | `Covered`, `PartiallyCovered`, `Uncovered`, `MalformedTag`, `UnparseableCron` | The `(ring, UpdateWindow)` pair vs the Step.5 cron entries |
+
+Audit rows now sort `Schedule`-first, then `Cron`. `-View Recommend` is now a multi-section markdown report: an "Action required - add these rings to apply-updates-schedule.yml" block when `RingMissingFromSchedule` rows exist (emitted FIRST), followed by an "Action required - cron coverage (paste into Step.5_apply-updates.yml)" block. When `-SchedulePath` is omitted, only the cron section is emitted (back-compat for v0.7.68 callers).
+
+The `Step.3_apply-updates-schedule-audit.yml` pipeline YAMLs (GH + ADO) mirror this in their summary:
+- Two JUnit `<testsuite>` blocks (`ScheduleCoverage` + `CronCoverage`) so the Tests tab shows per-section pass/fail counts.
+- Two Audit Detail markdown tables (one per section) with conditional headings - empty sections still emit a placeholder row so the operator can see the section was evaluated.
+- When `$hasIssues -and $reco`, the `-View Recommend` cmdlet output is prepended above the detail tables so operators see the fix before scrolling.
+- The zero-row JUnit placeholder text is centralised via a new `Write-Suite -EmptyPlaceholderName 'No tagged clusters found - nothing to audit'` helper (GH-vs-ADO parity preserved since v0.7.67).
+
+### Step.7 fleet-health pipeline - cluster portal hyperlinks + 3 new detailed columns + new Fleet Health Overview section
+
+`Get-AzLocalFleetHealthFailures` (the v0.7.65 cmdlet) gains three deep-link / target-resource properties on Detail rows - `TargetResourceName` (the sub-resource that emitted the check failure, e.g. the NIC name), `TargetResourceType` (e.g. `Microsoft.Compute/virtualMachines/networkInterfaces`), and `ClusterPortalUrl` (`https://portal.azure.com/#@/resource{ClusterResourceId}` deep-link). Summary rows gain `AffectedClusterPortalUrls` aligned with `AffectedClusters` (same element count, same order, joined with `'; '`). The Summary now sorts **Critical-first**: Severity (Critical, then Warning, then everything else), then `ClusterCount` desc, then `FailureCount` desc - a Critical failure on 1 cluster ranks above a Warning affecting many clusters.
+
+The `Step.7_fleet-health-status.yml` pipeline YAMLs (GH + ADO) consume these in three places:
+- **Summary and Detailed Results cluster cells** render as `[ClusterName](portalUrl)` markdown links. The Summary caps at the first 10 then renders `... (+N more)`; the Detail tables link every cell.
+- **Three new Detailed Results columns**: Failure Remediation (auto-renders as `[link](url)` when the value starts with `https://`, otherwise plain text), Target Resource Name, Target Resource Type.
+- **New `### Fleet Health Overview (fleet rollup)` section** calls the new `Get-AzLocalFleetHealthOverview` cmdlet and surfaces the per-cluster 9-column rollup alongside the failures table. The mapping `OK` / `Critical` / `Warning` / `In progress` / `Failed` is rendered with bracketed labels (`[OK]`, `[Critical]`, etc.) so the at-a-glance summary is greppable. New report artifacts: `fleet-health-overview.csv` and `fleet-health-overview.json`.
+
+### Pipeline pin bumps + migration
+
+All 14 `Step.*.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.69'` to `'0.7.70'`. The recommended upgrade path is the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
+
+```powershell
+Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+### Compatibility
+
+All v0.7.70 changes are backward compatible. The `Section` column defaults to `Cron` for downstream filters that don't know about the discriminator; new `TargetResource*` / `ClusterPortalUrl` / `AffectedClusterPortalUrls` properties are additive (existing pipeline summaries that read only the v0.7.69 schema keep working).
+
+### Pester baseline
+
+**585 passed / 0 failed / 0 skipped (unit) + 16 passed / 0 failed / 0 skipped (Live-Integration, opt-in)** - the unit suite stays hermetic and now includes a parallel, tag-gated `Tests/Live-Integration.Tests.ps1` durable suite that asserts the three v0.7.70 ARG-first cmdlets (`Get-AzLocalFleetHealthOverview`, `Get-AzLocalFleetHealthFailures`, `Get-AzLocalUpdateRunFailures`) against a real Azure Local fleet. The Live suite is **excluded by default** and safe to leave in the repo: each Describe self-skips when `az` is not installed, not logged in, or pointed at a non-target subscription. Opt in with `.\Tests\Invoke-Tests.ps1 -IncludeLive` or `-LiveOnly`. Validated end-to-end against a 20-cluster fleet (49 unresolved health failures, 9 unresolved Failed update runs) in 1m26s.
+
+### What's New in v0.7.69
+
+v0.7.69 introduces the **ring-aware apply-updates schedule** - a single human-readable YAML file (`apply-updates-schedule.yml`, `schemaVersion: 1`) that controls which `UpdateRing` tag value the apply-updates pipeline targets on any given UTC date. The schedule is decoupled from cron entirely: Step.5's cron only controls **how often** the pipeline wakes up, the per-cluster `UpdateWindow` tag controls **when** during an eligible day the update actually runs, and this new file controls **which ring** is eligible TODAY. Five new cmdlets (one generator + one reader + one resolver + one previewer + one migrator) plus a two-way ring diff on `Test-AzLocalApplyUpdatesScheduleCoverage` round out the feature.
+
+### Strawman workflow (the safety gate is the whole point)
+
+```powershell
+# 1. Generate a STRAWMAN from your live fleet's UpdateRing tag values.
+#    Every schedule row is emitted commented-out by design.
+New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
+
+# 2. Open the file. REVIEW each strawman row, then UNCOMMENT the rows
+#    that match your change-control policy.
+
+# 3. Preview the next ~cycle of firings BEFORE committing.
+Get-AzLocalApplyUpdatesScheduleNextFirings `
+  -Schedule (Get-AzLocalApplyUpdatesScheduleConfig -Path .\.github\apply-updates-schedule.yml)
+
+# 4. Refresh the Step.5 pipeline YAMLs so they pick up the v0.7.69 resolver wiring.
+Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+
+# 5. Audit the fleet against the schedule (two-way ring diff).
+Test-AzLocalApplyUpdatesScheduleCoverage `
+  -PipelineYamlPath .\.github\workflows\Step.5_apply-updates.yml `
+  -SchedulePath     .\.github\apply-updates-schedule.yml `
+  -View Audit
+```
+
+> Without an active (uncommented) row, the apply-updates pipeline **hard-fails** at the reader step with `'schedule:' list is empty - at least one row is required`. This is the v0.7.69 safety gate, not a bug. It guarantees that a fresh strawman cannot accidentally start applying updates fleet-wide.
+
+### Three independent layers - one file per layer
+
+| Layer | File / Setting | Grain | Controls |
+|---|---|---|---|
+| 1 | `Step.5_apply-updates.yml` `schedule:` cron | intra-day | **HOW OFTEN** the pipeline wakes up |
+| 2 | `apply-updates-schedule.yml` (NEW in v0.7.69) | day | **WHICH** `UpdateRing` is eligible on a given UTC date |
+| 3 | Per-cluster `UpdateWindow` tag | minute | **WHEN** during an eligible day the update is allowed to start |
+
+The Step.5 cron firing on a non-matching day exits 0 with the explanatory `Reason` and **does not** start an update. The cron firing on a matching day passes the resolved `UpdateRing` value to `Start-AzLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue <resolved>`.
+
+### Five new cmdlets
+
+| Cmdlet | Role |
+|---|---|
+| `New-AzLocalApplyUpdatesScheduleConfig` | Generates a **strawman** schedule from the live fleet's `UpdateRing` tag values (or from `-Rings` for offline use). Every emitted schedule row is commented out by design. |
+| `Get-AzLocalApplyUpdatesScheduleConfig` | Parses + validates a schedule file. Hard-fails with `'schedule:' list is empty` when no active rows are present (the safety gate). |
+| `Resolve-AzLocalCurrentUpdateRing` | Maps a UTC date to the matching `UpdateRing(s)` using cycle-week math anchored at `cycleAnchorISOWeek` / `cycleAnchorYear`. Union semantics: overlapping rows merge `rings` with `;`. |
+| `Get-AzLocalApplyUpdatesScheduleNextFirings` | Previews the next N days of resolved firings so operators can sanity-check the rotation BEFORE committing. |
+| `Update-AzLocalApplyUpdatesScheduleConfig` | Idempotent schema-version migrator. Renames the original to `<basename>.v<oldVersion>.old.yml` on disk and writes the migrated content to the canonical path. The recipes table is intentionally empty in v0.7.69; the framework is in place for future schema bumps. |
+
+### Two-way ring diff on `Test-AzLocalApplyUpdatesScheduleCoverage`
+
+The existing schedule-audit cmdlet gained an optional `-SchedulePath` parameter. When supplied, the audit emits two new status rows beyond the existing cron-vs-tags audit:
+
+| Status | Meaning |
+|---|---|
+| `RingMissingFromSchedule` | A fleet ring (live `UpdateRing` tag value on a cluster) has **no** matching row in the schedule file - clusters in that ring will never be updated. |
+| `RingOrphanedInSchedule` | A schedule ring (a `rings:` token in the schedule file) has **no** cluster carrying that tag value - the schedule row will never fire. |
+
+Both rows are surfaced in the Step.3 summary table, the JUnit XML failure list, and the Markdown summary at the top of the Step.3 run page.
+
+### Step.5 / Step.3 pipeline wiring
+
+- **Step.5 (apply-updates)** now resolves the `UpdateRing` from the schedule file on every **scheduled** firing. Manual `workflow_dispatch` (GitHub Actions) / non-`Schedule` `Build.Reason` (Azure DevOps) runs still honour the operator-supplied `-UpdateRingValue` input verbatim. A workflow-level `concurrency:` block (GitHub Actions only - Azure DevOps documents the equivalent **Settings -> Triggers -> Limit concurrent runs** option) prevents overlapping cron firings.
+- **Step.3 (schedule audit)** gained a `schedule_path` / `schedulePath` input (defaulted to the standard layout), a `debug` toggle for self-service triage, and surfaces the new `RingMissingFromSchedule` / `RingOrphanedInSchedule` counts.
+
+### What v0.7.69 does NOT touch
+
+- `apply-updates-schedule.example.yml` ships as **documentation only**. `Copy-AzLocalPipelineExample` and `Update-AzLocalPipelineExample` do **not** copy or refresh it. Operators run `New-AzLocalApplyUpdatesScheduleConfig` to generate a strawman starting from their live fleet.
+- The per-cluster `UpdateWindow` tag, the `UpdateSideloaded` workflow, and all existing cron schedules in the bundled pipeline YAMLs are unchanged.
+
+### Breaking
+
+- Schema `schemaVersion: 1` is a hard break vs any pre-v0.7.69 experimental schedule format. There are no v0 -> v1 migration recipes shipped (the recipes table is intentionally empty in `Update-AzLocalApplyUpdatesScheduleConfig`); if you were running an experimental schedule from earlier development builds, regenerate via `New-AzLocalApplyUpdatesScheduleConfig`.
+
+### What's New in v0.7.68
+
+v0.7.68 is the **ARG-first refactor** and **pipeline-rename** release. Seven fleet-scale read cmdlets were collapsed onto a single Azure Resource Graph batch read each (removing the silent `-ThrottleLimit` no-op), all 16 bundled pipeline YAMLs were renamed with a `Step.X_` ordering prefix so an alphabetic listing tells the story end-to-end, and a new `Get-AzLocalUpdateRunFailures` cmdlet exposes the deep-error breadcrumb path from update-run telemetry without per-cluster shell-outs. **Backwards-compatible** for already-deployed consumers: `Read-AzLocalApplyUpdatesYamlCrons` matches both new (`Step.X_*.yml`) and legacy filenames.
+
+### ARG-first refactor
+
+- **Seven cmdlets are now single-batch ARG reads with `-ThrottleLimit` removed.** `-ThrottleLimit` was a meaningless flag against the ARG batched read path; carrying it implied (incorrectly) that the cmdlet was doing a per-cluster fan-out and could be tuned for throttle. The new shape removes the parameter and collapses the call onto one ARG query, which (a) cuts subscription-level ARM call volume 5-10x on the common fleet-status pipelines and (b) lets the helper apply uniform 429/`Retry-After` retry logic in one place. Affected cmdlets: `Get-AzLocalUpdateSummary`, `Get-AzLocalAvailableUpdates`, `Get-AzLocalClusterUpdateReadiness`, `Test-AzLocalClusterHealth`, `Get-AzLocalFleetProgress`, `Get-AzLocalFleetStatusData`, `New-AzLocalFleetStatusHtmlReport`. All bundled pipeline YAMLs were updated to stop passing `-ThrottleLimit`.
+
+- **`Invoke-AzResourceGraphQuery` now retries on HTTP 429 (throttle).** Inspects the `Retry-After` response header when present and otherwise applies bounded exponential backoff (capped at the documented Azure Resource Graph throttling envelope). Large fleet sweeps no longer fall over at the throttling boundary; happy-path latency is unchanged.
+
+- **`Invoke-AzResourceGraphQuery` hardened against `az.cmd` CR/LF stdout truncation.** A latent bug in `az.cmd` (Windows runners) could chop the JSON payload at the first chunked-write boundary when stdout was piped through PowerShell, producing the N-row collapse where a 27-cluster fleet would surface as 24 rows. The helper now decodes the full UTF-8 payload explicitly; existing Pester tests pin the regression.
+
+- **`Get-AzLocalFleetProgress` no longer silently returns stale state when ARG returns zero rows.** The previous code-path treated an empty ARG response as "no change" and returned the last cached state; consumers (including the `Step.6_fleet-update-status.yml` JUnit emitter) therefore reported "everything green" on fleets that had been completely de-tagged or that hit a transient ARG error. The cmdlet now surfaces the empty-fleet condition explicitly so the operator can act on it.
+
+### New: `Get-AzLocalUpdateRunFailures`
+
+- **ARG-only deep-error extraction** (9 levels deep into the `properties.state.progress` tree of `microsoft.azurestackhci/clusters/updates/updateRuns`) returns verbose error information at fleet scale without per-cluster Az SDK or REST shell-outs. Two views: `-View Summary` (one row per failed update run) and `-View Detail` (one row per leaf failure with the full breadcrumb to the failed step). Useful in `Step.5_apply-updates.yml` post-mortem reports and as a follow-up call after `Get-AzLocalFleetProgress` reports failures.
+
+### New: `Update-AzLocalPipelineExample` (marker-aware upgrade tool)
+
+- **Marker-aware merge tool** that refreshes a customer's copy of any bundled pipeline YAML to the version shipped with the current module **while preserving operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs**. Customer-side cron schedules in `schedule-triggers` and ITSM secret bindings in `itsm-secrets` (Step.5 only) survive a module upgrade; everything outside the markers is replaced with the new bundled content. Supports `-WhatIf`, `-DryRun`, multi-file batch mode, and emits a per-file change manifest so the operator can review the merge before committing. This is the operator-friendly upgrade path that `Copy-AzLocalPipelineExample` (clean overwrite) does not provide.
+
+### Pipeline samples - `Step.X_` rename
+
+- **All 16 bundled pipeline YAMLs renamed with a `Step.X_` ordering prefix** so they sort by execution order in a customer's repo (`Step.0_authentication-test.yml`, `Step.1_inventory-clusters.yml`, `Step.2_manage-updatering-tags.yml`, `Step.3_apply-updates-schedule-audit.yml`, `Step.4_assess-update-readiness.yml`, `Step.5_apply-updates.yml`, `Step.6_fleet-update-status.yml`, `Step.7_fleet-health-status.yml`). Both platforms (GitHub Actions + Azure DevOps). The rename matches the documented operator runbook order so an alphabetic listing in the consumer's IDE / repo browser tells the story end-to-end.
+
+- **Backwards compatibility for already-deployed consumers:** `Read-AzLocalApplyUpdatesYamlCrons` (the schedule-audit scanner) glob list expanded to match both new (`Step.5_apply-updates*.yml`) and legacy (`apply-updates*.yml`) names. A customer who upgrades the module but has not yet re-run `Copy-AzLocalPipelineExample` will still see correct schedule-coverage audits.
+
+- **Each YAML's workflow display name now also carries the `Step.N - ` prefix.** GitHub Actions sidebar sorts workflows alphabetically by the YAML's top-level `name:` field, so the 8 workflows now read `Step.0 - Authentication Validation and Subscription Scope Report` ... `Step.7 - Fleet Health Status` and list in execution order. For Azure DevOps the leading title comment in each YAML carries the same prefix so the import wizard prefills the suggested pipeline definition name correctly. See [`Automation-Pipeline-Examples/README.md` section 1.1](./Automation-Pipeline-Examples/README.md#11-why-the-pipelines-are-named-stepn---description) for the full convention.
+
+### Pipeline samples - Layer 1 customisation markers (scaffolding)
+
+- **Seven YAMLs now carry named `AZLOCAL-CUSTOMIZE` marker pairs** (6 main pipelines x `schedule-triggers`, plus `Step.5_apply-updates.yml` x `itsm-secrets`) wrapping the YAML regions operators commonly customise. Markers are pure YAML comments and have no runtime effect; they back the new `Update-AzLocalPipelineExample` cmdlet (also new in v0.7.68) that performs a marker-aware merge so operator edits inside the marker pairs survive a module upgrade. `Copy-AzLocalPipelineExample` remains the clean-overwrite tool for first-time install / forced refresh.
+
+### Pipeline migration
+
+If you have copied any of the bundled workflows into your repo, the recommended upgrade path is the new marker-aware merge:
+
+```powershell
+Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+(Add `-WhatIf` first to preview the merge before writing files; add `-Force` to skip the per-file confirm prompt for non-interactive runs.)
+
+This brings in the new file names *and* the Layer 1 marker scaffolding **while preserving** operator-customised cron schedules and ITSM secret bindings inside `BEGIN-AZLOCAL-CUSTOMIZE` / `END-AZLOCAL-CUSTOMIZE` marker pairs in your already-deployed YAMLs.
+
+For a clean overwrite (first-time install or forced refresh that discards local edits), keep using `Copy-AzLocalPipelineExample`:
+
+```powershell
+Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+Copy-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+```
+
+### Inventory & design doc
+
+- **New `docs/Cmdlet-Inventory-And-Design.md`** documents which cmdlets read vs write, which back-end they use (ARG vs Az SDK vs az CLI), and the design rules that keep read paths ARG-first (no `-ThrottleLimit`, no per-cluster Get-AzResource fan-out). Removes ambiguity about which back-end a new cmdlet should take.
+
+### What's New in v0.7.67
+
+v0.7.67 lands a Phase 3/4 CI/CD-parity refresh, a new maintainer-facing release-process document, and a six-item batch of in-depth-review fixes. **No public surface change** - every pre-existing pipeline and cmdlet keeps the same contract.
+
+#### CI/CD parity + UX
+
+- **GitHub Actions schedule-audit pipeline now emits a passing testcase when the fleet has no tagged clusters.** Previously the GH variant of `Step.3_apply-updates-schedule-audit.yml` wrote an empty `<testsuite>` whenever there were no `(UpdateRing, UpdateWindow)` rows to evaluate; `dorny/test-reporter` then reported "no tests found", indistinguishable from a misconfigured reporter step. The pipeline now writes `<testcase classname="ScheduleCoverage" name="No tagged clusters found - nothing to audit" />` for the zero-row case, matching the long-standing Azure DevOps behaviour. The Tests tab reads cleanly as "passed (1/1)" regardless of whether the fleet has any tagged clusters yet, removing the daily false-alarm during onboarding and after fleet-wide tag clean-ups.
+
+- **Schedule-audit summary now surfaces the cron recommendation block at the TOP when coverage drift exists.** Both `Step.3_apply-updates-schedule-audit.yml` files (GitHub Actions and Azure DevOps) previously emitted the recommended cron block at the bottom of the run summary, after the audit detail table. When the audit reported any `Uncovered` / `PartiallyCovered` / `MalformedTag` / `UnparseableCron` rows, operators had to scroll past the detail table to find the actionable fix. The pipelines now render an `### Action required - paste these cron entries into Step.5_apply-updates.yml` section immediately below the counts table when issues exist; when the fleet is fully covered, the recommendation block stays at the bottom as a reference. A new Pester guard asserts both YAMLs carry the conditional structure and the ordering.
+
+- **Pipeline README now includes an artifact-handoff data-flow diagram.** Section 6 of [`Automation-Pipeline-Examples/README.md`](Automation-Pipeline-Examples/README.md) already carried a phase-oriented flow diagram (Inventory -> Tag -> Rollout -> Steady-state); the new "Artifact handoffs at a glance" subsection makes the data flow explicit, showing which artifact each pipeline emits and which downstream pipeline consumes it (e.g. `cluster-inventory.csv` -> manual tagging edit + manage-tags pipeline; `cluster-readiness.csv` -> apply-updates; `schedule-coverage-recommend.md` -> manual paste into `Step.5_apply-updates.yml`). Calls out the four artifacts operators most commonly trip on.
+
+- **Pipeline README section 11 (Security model) now documents per-job `permissions:` blocks as an intentional security feature.** Every shipped GitHub Actions workflow declares its own job-level `permissions:` block (`id-token: write`, `contents: read`, `checks: write` only where needed). The new bullet calls out that consumers should not lift these blocks to a top-level `permissions:` block when copying samples, explains how the per-job shape (a) limits token scope to exactly the job that needs the write and (b) lets you keep `id-token: write` off read-only summary jobs, and documents that the samples are compatible with the recommended *Settings -> Actions -> General -> Workflow permissions = Read repository contents and packages permissions* hardening.
+
+- **All Azure DevOps sample pipelines now share the same `azureSubscription:` placeholder.** Four files (`Step.4_assess-update-readiness.yml`, `Step.7_fleet-health-status.yml`, `Step.6_fleet-update-status.yml`, `Step.3_apply-updates-schedule-audit.yml`) previously used `'YOUR-SERVICE-CONNECTION-NAME'` while the other four ADO YAMLs used `'AzureLocal-ServiceConnection'`. All eight ADO pipelines now use `'AzureLocal-ServiceConnection'` plus a `# Update with your service connection name` comment, matching the value documented in section 3.2 of the pipeline README. An operator who follows the auth setup verbatim no longer has to find-and-replace anything in the YAMLs.
+
+#### New maintainer doc: `docs/RELEASE-PROCESS.md`
+
+- **Documents the staged unlisted-release flow** the module uses (publish -> immediately unlist -> validate against a test repo with `REQUIRED_MODULE_VERSION` exact-pinned to the candidate -> list after validation passes), the verification commands for each stage, and the Pester guardrails the release flow relies on. This puts the release rules in the repo rather than in tribal knowledge / chat history. Pipeline consumers do not need this doc; module maintainers do.
+
+#### Fixed (in-depth module review - batch 3)
+
+Six defence-in-depth fixes following the post-PR-#36 module review. **None are user-visible behaviour changes for the happy path** - every fix closes a class of silent-drift or silent-drop bug.
+
+- **`$script:ModuleVersion` constant in `AzLocal.UpdateManagement.psm1` was stuck at `0.7.66` while the manifest moved to `0.7.67`.** The script-scope constant is the value `Start-AzLocalClusterUpdate` writes into its run-log header and the value `Get-AzLocalFleetStatusData` stamps into the `ModuleVersion` field of the exported fleet-state JSON, so every v0.7.67 run-log and every v0.7.67 fleet-state file was misreporting the producing module version - which is the exact field operators use to triage CI vs local-runner discrepancies. Bumped to `0.7.67`; a new Pester guard `Module version constants are in sync between .psm1 and .psd1` compares `(Import-PowerShellDataFile).ModuleVersion` against `InModuleScope { $script:ModuleVersion }` and fails any future drift at build time.
+
+- **cp1252 stderr-warning regression that v0.7.66 fixed in `Invoke-AzResourceGraphQuery` had three remaining ambush sites.** The unsafe `az ... 2>&1 | ConvertFrom-Json` pattern was still live in `Get-AzLocalClusterInventory` resolving subscription display names via `az account show`, `Invoke-AzLocalSideloadedAutoResetForCluster` reading the cluster tags via `az rest`, and `Set-AzLocalClusterTagsMerge` reading the tags-subresource via `az rest`. The two `az rest` callers now route through the existing `Invoke-AzRestJson`. The `az account show` caller goes through a new private helper `Invoke-AzCliJson`, which applies the same stream-split-by-element-type pattern, auto-appends `--only-show-errors`, sets `PYTHONIOENCODING=utf-8` as defence-in-depth (restored in `finally`), and returns `[PSCustomObject]@{ Ok; Data; Error }` so callers no longer have to inspect `$LASTEXITCODE` manually. Seven new Pester tests cover the helper.
+
+- **`ConvertFrom-AzLocalCronExpression` now accepts cron step syntax (`*/N`, `<a>-<b>/N`, `<a>/N`).** The schedule advisor was falsely flagging crons such as `*/15 * * * *` (every 15 min), `0 */6 * * 1` (every 6 hr on Mondays), and `0 9-17/2 * * 1-5` (every 2 hr between 09:00 and 17:00 on weekdays) as `UnparseableCron` - even though both GitHub Actions and Azure DevOps schedule them correctly. The parser now expands `*/N` over the field's full range, `<a>-<b>/N` over the explicit `[a,b]` range, and `<a>/N` over `[a, max]`. Step values must be positive integers; out-of-bounds bases still throw with the existing bounds messages. Four new Pester tests (3 positive + `*/0` negative); the pre-existing test asserting `*/15` was *rejected* has been flipped to assert the 672-fires-per-week expansion is correct.
+
+- **`Reset-AzLocalSideloadedTag` now warns when a `-ClusterResourceIds` entry does not match `/clusters/<name>$`.** The `ByResourceId` resolver previously dropped malformed entries (typos, trailing slash, wrong provider, truncated string) silently - the operator would see "no matching clusters" without any indication that an input had been excluded. The resolver now emits `Write-Log -Level Warning` naming the exact `ResourceId` it skipped. This brings parity with the `ByName` / `ByTag` resolvers, which already warned on lookup failure. New regression test.
+
+- **`Tests/Invoke-Tests.ps1` HTML footer no longer prints `Module Version: System.Object[]`.** When nested modules are loaded (the default for this module - every Private/*.ps1 is a nested module), `Get-Module AzLocal.UpdateManagement` returns one entry per loaded version, and `.Version` on that array surfaces as `Object[]`. The HTML test report footer was therefore intermittently printing `Module Version: System.Object[]`. The test runner now selects the newest loaded version via `Sort-Object Version -Descending | Select-Object -First 1` before reading `.Version`.
+
+- **`Import-AzLocalFleetState` now caps input at 50 MB before reading.** The helper previously called `Get-Content -Raw | ConvertFrom-Json` with no size check; pointing it at a multi-GB file (typo, mis-glob, malicious symlink) would have OOMed the runner. Real fleet-state files (`Export-AzLocalFleetState` output) are tens of KB at most, so a 50 MB ceiling is ~3 orders of magnitude above any plausible legitimate input. The cap message names the actual file size in MB and explains what valid input looks like. Two new Pester tests (mocked-oversize trip + happy path).
+
+#### Pester baseline
+
+**485 passed / 0 failed / 0 skipped** (was 471 at v0.7.66) - the +14 new tests cover the drift guard, `Invoke-AzCliJson` (7), cron `*/N` (4), `Reset-AzLocalSideloadedTag` warning (1), and `Import-AzLocalFleetState` size guard (2).
+
+#### Pipeline migration
+
+If you have copied any of the bundled workflows into your repo, refresh them via:
+
+```powershell
+Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+Copy-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+```
 ### What's New in v0.7.66
 
 v0.7.66 is a CI/CD hotfix release. Two errors were observed on production runs of the `fleet-health-status` and `apply-updates-schedule-audit` pipelines on `windows-latest` GitHub Actions runners; both have a clean root cause and a minimal patch. No public surface change.
