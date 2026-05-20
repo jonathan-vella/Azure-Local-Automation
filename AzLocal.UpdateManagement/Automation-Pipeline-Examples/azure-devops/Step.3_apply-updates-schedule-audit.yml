@@ -1,17 +1,17 @@
 # Step.3 - Apply-Updates Schedule Coverage Audit Pipeline
-# This pipeline runs the read-only Test-AzureLocalApplyUpdatesScheduleCoverage advisor
+# This pipeline runs the read-only Test-AzLocalApplyUpdatesScheduleCoverage advisor
 # weekly to detect drift between the cron schedule(s) in your apply-updates pipeline
 # YAML and the UpdateWindow tags that operators have placed on Azure Local clusters.
 #
 # WHY THIS PIPELINE EXISTS
 # ------------------------
-# Step.5_apply-updates.yml ships with NO default schedule (trigger:none) on purpose, so
+# Step.6_apply-updates.yml ships with NO default schedule (trigger:none) on purpose, so
 # customers must consciously choose when updates fire. After you have configured
-# UpdateWindow tags on your clusters and added cron entries to Step.5_apply-updates.yml, this
+# UpdateWindow tags on your clusters and added cron entries to Step.6_apply-updates.yml, this
 # pipeline is the safety net that catches:
-#   - a new ring tagged with UpdateWindow that no cron in Step.5_apply-updates.yml will reach
+#   - a new ring tagged with UpdateWindow that no cron in Step.6_apply-updates.yml will reach
 #   - an UpdateWindow tag value that fails to parse (typo / wrong syntax)
-#   - Step.5_apply-updates.yml cron entries that the advisor cannot reason about
+#   - Step.6_apply-updates.yml cron entries that the advisor cannot reason about
 #     (DayOfMonth restrictions, step values) so you can audit them manually
 #
 # REPORTS GENERATED:
@@ -25,7 +25,7 @@
 # Uses Workload Identity Federation (OIDC) - recommended for secretless authentication.
 
 # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
-# Edits inside this block are preserved across Update-AzureLocalPipelineExample
+# Edits inside this block are preserved across Update-AzLocalPipelineExample
 # module upgrades. Add or modify `schedules:` blocks below.
 trigger: none  # Manual or scheduled only
 
@@ -43,7 +43,7 @@ schedules:
 
 parameters:
   - name: pipelinePath
-    displayName: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Leave empty to audit ONLY the schedulePath (schedule file). Default `.azure-pipelines` matches the standard Azure DevOps consumer layout; for repos that keep Step.5_apply-updates.yml at the repo root pass `.`'
+    displayName: 'Path (file or folder) to Step.6_apply-updates.yml to audit, repo-relative. Leave empty to audit ONLY the schedulePath (schedule file). Default `.azure-pipelines` matches the standard Azure DevOps consumer layout; for repos that keep Step.6_apply-updates.yml at the repo root pass `.`'
     type: string
     default: '.azure-pipelines'
 
@@ -73,7 +73,7 @@ parameters:
     default: false
 
 variables:
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.75'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.76'
   REQUIRED_MODULE_VERSION: '${{ parameters.moduleVersion }}'
   reportsPath: '$(Build.ArtifactStagingDirectory)/reports'
 
@@ -119,10 +119,10 @@ stages:
           Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
           # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
           if ($installed -lt $generated) {
-              Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
+              Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
           }
           if ($installed -gt $generated) {
-              Write-Host "##vso[task.logissue type=warning]Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Refresh via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
+              Write-Host "##vso[task.logissue type=warning]Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Refresh via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
           }
           if ($latest -and ($latest -gt $installed)) {
               Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed."
@@ -182,7 +182,7 @@ stages:
           }
           elseif ($havePipeline -and -not (Test-Path -LiteralPath $pipelinePath)) {
               $candidates = @('.azure-pipelines', 'pipelines', '.github/workflows', '.') | Where-Object { Test-Path -LiteralPath $_ }
-              $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-queue the pipeline and override the 'pipelinePath' parameter." } else { "No common pipeline folders (.azure-pipelines, pipelines, .github/workflows, repo root) were found - commit your Step.5_apply-updates.yml first, or set 'pipelinePath' to wherever you keep it." }
+              $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-queue the pipeline and override the 'pipelinePath' parameter." } else { "No common pipeline folders (.azure-pipelines, pipelines, .github/workflows, repo root) were found - commit your Step.6_apply-updates.yml first, or set 'pipelinePath' to wherever you keep it." }
               throw "PipelineYamlPath '$pipelinePath' does not exist on the agent. $hint"
           }
 
@@ -214,11 +214,11 @@ stages:
           if ($havePipeline) { $auditArgs.PipelineYamlPath = $pipelinePath }
           if ($haveSchedule) { $auditArgs.SchedulePath     = $schedulePath }
           if ($includeUnt)   { $auditArgs.IncludeUntagged  = $true }
-          $auditResult = Test-AzureLocalApplyUpdatesScheduleCoverage @auditArgs
+          $auditResult = Test-AzLocalApplyUpdatesScheduleCoverage @auditArgs
           if (-not $auditResult) { $auditResult = @() }
 
-          Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
-          Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -Platform AzureDevOps -ExportPath $recoMd | Out-Null
+          Test-AzLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
+          Test-AzLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -Platform AzureDevOps -ExportPath $recoMd | Out-Null
 
           $covered     = @($auditResult | Where-Object Status -eq 'Covered')
           $uncovered   = @($auditResult | Where-Object Status -eq 'Uncovered')
@@ -402,7 +402,7 @@ stages:
         # operators who want the canonical list as a reference. When there are issues we
         # already printed it at the top so skip the duplicate.
         if (-not $hasIssues -and $reco) {
-            $md += "`n### Reference - Recommended schedule (copy into Step.5_apply-updates.yml)`n"
+            $md += "`n### Reference - Recommended schedule (copy into Step.6_apply-updates.yml)`n"
             $md += "`n" + $reco + "`n"
         }
 

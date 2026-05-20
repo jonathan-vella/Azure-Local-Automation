@@ -17,7 +17,7 @@ function Get-AzLocalFleetHealthOverview {
         SbeVersion column per cluster regardless of how many package rows
         the cluster reports.
 
-        Where the existing `Get-AzureLocalFleetHealthFailures` cmdlet
+        Where the existing `Get-AzLocalFleetHealthFailures` cmdlet
         focuses on individual failing checks, this cmdlet answers
         "how is the fleet doing overall?" - one row per cluster, sorted
         with the staleest health-check result first (HealthResultsAgeDays
@@ -98,17 +98,27 @@ function Get-AzLocalFleetHealthOverview {
         $ringFilter = ConvertTo-AzLocalUpdateRingKqlFilter -UpdateRingValue $UpdateRingTag -TagAccessor "tostring(tags['UpdateRing'])"
     }
 
-    # KQL: join clusters with their updateSummaries/default child, roll
-    # up SBE from packageVersions[], compute HealthResultsAgeDays. Both
-    # sides of the join lower-case the resource id so the ARM mixed-case
-    # vs the extensibilityresources path (also mixed-case but built from
-    # split segments) match deterministically.
+    # KQL: join clusters with their updateSummaries/default child, project
+    # the raw packageVersions array (rolled up to SbeVersion client-side
+    # below), compute HealthResultsAgeDays. Both sides of the join
+    # lower-case the resource id so the ARM mixed-case vs the
+    # extensibilityresources path (also mixed-case but built from split
+    # segments) match deterministically.
     #
     # v0.7.74: HealthStatus normalises raw ARG `properties.healthState`
     # (Success / Failure / InProgress / Warning / NotKnown) to the documented
     # operator-friendly vocabulary the rest of the module + pipeline samples
     # consume: Healthy / Critical / Warning / In progress / Unknown. Any
     # future-added raw state passes through unchanged so it is still visible.
+    #
+    # v0.7.76: SBE roll-up moved client-side. The previous implementation
+    # used `mv-expand pkg = properties.packageVersions | summarize ... maxif()
+    # by ClusterResourceIdLower` server-side, but ARG silently caps
+    # `mv-expand` at 128 expanded child rows per parent. While
+    # `packageVersions` has historically been small (~4 entries), there is
+    # no schema-level upper bound, so we now project the raw array and
+    # find the SBE entry in PowerShell. This eliminates the entire class
+    # of silent-truncation bugs for this cmdlet.
     #
     # IMPORTANT: keep this wire query lean. The az CLI argument layer truncates
     # very long single-arg payloads (observed regression in v0.7.73 at ~3.1KB
@@ -128,17 +138,16 @@ $ringFilter
     | where type =~ 'microsoft.azurestackhci/clusters/updatesummaries'
     | extend segs = split(id, '/')
     | extend ClusterResourceIdLower = tolower(strcat('/subscriptions/', segs[2], '/resourceGroups/', segs[4], '/providers/Microsoft.AzureStackHCI/clusters/', segs[8]))
-    | extend HealthState_ = tostring(properties.healthState)
-    | extend UpdateState_ = tostring(properties.state)
-    | extend CurrentVersion_ = tostring(properties.currentVersion)
-    | extend LastChecked_ = todatetime(properties.healthCheckDate)
-    | mv-expand pkg = properties.packageVersions
-    | summarize HealthState=any(HealthState_), UpdateState=any(UpdateState_), CurrentVersion=any(CurrentVersion_), LastChecked=max(LastChecked_), SbeVersion=maxif(tostring(pkg.version), tostring(pkg.packageType) =~ 'SBE') by ClusterResourceIdLower
-    | project ClusterResourceIdLower, HealthState, UpdateState, CurrentVersion, LastChecked, SbeVersion
+    | project ClusterResourceIdLower,
+              HealthState     = tostring(properties.healthState),
+              UpdateState     = tostring(properties.state),
+              CurrentVersion  = tostring(properties.currentVersion),
+              LastChecked     = todatetime(properties.healthCheckDate),
+              PackageVersions = properties.packageVersions
 ) on ClusterResourceIdLower
 | extend HealthResultsAgeDays = iif(isnull(LastChecked), -1, datetime_diff('day', now(), LastChecked))
 | extend ClusterPortalUrl = strcat('https://portal.azure.com/#@/resource', ClusterResourceId)
-| project ClusterName, ClusterPortalUrl, HealthStatus = case(isempty(HealthState),'Unknown', HealthState =~ 'Success','Healthy', HealthState =~ 'Failure','Critical', HealthState =~ 'InProgress','In progress', HealthState =~ 'NotKnown','Unknown', HealthState), UpdateStatus = iif(isempty(UpdateState),'Unknown',UpdateState), CurrentVersion = iif(isempty(CurrentVersion),'(unknown)',CurrentVersion), SbeVersion = iif(isempty(SbeVersion),'(none)',SbeVersion), AzureConnection = iif(isempty(AzureConnection),'Unknown',AzureConnection), LastChecked, HealthResultsAgeDays, ResourceGroup, NodeCount, SubscriptionId
+| project ClusterName, ClusterPortalUrl, HealthStatus = case(isempty(HealthState),'Unknown', HealthState =~ 'Success','Healthy', HealthState =~ 'Failure','Critical', HealthState =~ 'InProgress','In progress', HealthState =~ 'NotKnown','Unknown', HealthState), UpdateStatus = iif(isempty(UpdateState),'Unknown',UpdateState), CurrentVersion = iif(isempty(CurrentVersion),'(unknown)',CurrentVersion), SbeVersion = '', PackageVersions, AzureConnection = iif(isempty(AzureConnection),'Unknown',AzureConnection), LastChecked, HealthResultsAgeDays, ResourceGroup, NodeCount, SubscriptionId
 | order by HealthResultsAgeDays desc, ClusterName asc
 "@
 
@@ -158,6 +167,61 @@ $ringFilter
 
     if (-not $output) { $output = @() }
     $output = @($output)
+
+    # v0.7.76: SBE roll-up moved client-side to avoid ARG `mv-expand`
+    # 128-cap. The KQL projects `PackageVersions` as a raw array and
+    # `SbeVersion` as an empty placeholder. We walk the array here to
+    # find the entry with `packageType == 'SBE'` (case-insensitive) and
+    # overwrite SbeVersion with its `version` field. Tests that mock the
+    # already-projected ARG response (no PackageVersions column) are
+    # left alone so backward compatibility is preserved.
+    foreach ($row in $output) {
+        if ($null -eq $row) { continue }
+        $hasPackageVersions = ($row.PSObject -and ($row.PSObject.Properties.Match('PackageVersions').Count -gt 0))
+        if (-not $hasPackageVersions) { continue }
+
+        $pkgs = $row.PackageVersions
+        $sbeVersion = '(none)'
+        if ($null -ne $pkgs) {
+            foreach ($pkg in @($pkgs)) {
+                if ($null -eq $pkg) { continue }
+                $type = $null
+                try { $type = $pkg.packageType } catch { $type = $null }
+                if (-not $type) {
+                    try { $type = $pkg.PackageType } catch { $type = $null }
+                }
+                if ($type -and ([string]$type).Trim() -ieq 'SBE') {
+                    $ver = $null
+                    try { $ver = $pkg.version } catch { $ver = $null }
+                    if (-not $ver) {
+                        try { $ver = $pkg.Version } catch { $ver = $null }
+                    }
+                    if ($ver) {
+                        $sbeVersion = [string]$ver
+                        break
+                    }
+                }
+            }
+        }
+
+        if ($row.PSObject.Properties.Match('SbeVersion').Count -gt 0) {
+            $row.SbeVersion = $sbeVersion
+        } else {
+            $row | Add-Member -NotePropertyName 'SbeVersion' -NotePropertyValue $sbeVersion -Force
+        }
+    }
+
+    # Strip the intermediate PackageVersions column so callers see the
+    # documented schema only.
+    $output = @($output | ForEach-Object {
+        if ($null -eq $_) { return }
+        if ($_.PSObject.Properties.Match('PackageVersions').Count -gt 0) {
+            $_ | Select-Object -Property * -ExcludeProperty PackageVersions
+        } else {
+            $_
+        }
+    })
+
     Write-Log -Message "Fleet Health Overview: $($output.Count) cluster row(s)." -Level Info
 
     # Export if requested.

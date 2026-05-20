@@ -35,9 +35,9 @@ variables:
   # Module version this YAML was generated against. The install step compares this to
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
-    value: '0.7.75'
+    value: '0.7.76'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -99,10 +99,10 @@ stages:
                 Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
                 # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
                 if ($installed -lt $generated) {
-                    Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
+                    Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
                 }
                 if ($installed -gt $generated) {
-                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
                     Write-Host "##vso[task.logissue type=warning]$msg"
                 }
                 if ($latest -and ($latest -gt $installed)) {
@@ -137,10 +137,10 @@ stages:
                 }
                 
                 # Export to CSV (for Excel workflow)
-                Get-AzureLocalClusterInventory @subscriptionParam -ExportPath $csvPath
+                Get-AzLocalClusterInventory @subscriptionParam -ExportPath $csvPath
                 
                 # Export to JSON (for CI/CD integrations and dashboards)
-                $inventory = Get-AzureLocalClusterInventory @subscriptionParam -ExportPath $jsonPath -PassThru
+                $inventory = Get-AzLocalClusterInventory @subscriptionParam -ExportPath $jsonPath -PassThru
                 
                 # Output summary
                 Write-Host ""

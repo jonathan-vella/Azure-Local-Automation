@@ -18,13 +18,20 @@ function Get-HealthCheckFailureSummary {
     }
 
     # Bucket failures by severity so Critical entries are always emitted first.
-    # The readiness gate in Get-AzureLocalClusterUpdateReadiness runs
+    # The readiness gate in Get-AzLocalClusterUpdateReadiness runs
     # -match '\[Critical\]' on the truncated summary; without this ordering,
     # a Critical failure could be hidden behind 5+ Warning failures returned
     # earlier by ARM and the gate would silently miss it.
     $criticals = @()
     $warnings  = @()
     $healthChecks = $UpdateSummary.properties.healthCheckResult
+
+    # Dedup byte-identical duplicates emitted by ARM upstream (v0.7.76 fix
+    # for the same bug as Test-AzLocalClusterHealth: the
+    # updateSummaries.healthCheckResult feed sometimes contains repeated
+    # entries for the same logical check, producing readiness summary
+    # lines like "[Critical] Foo (Bar); [Critical] Foo (Bar)").
+    $seenEntries = New-Object 'System.Collections.Generic.HashSet[string]'
 
     foreach ($check in $healthChecks) {
         if ($check.status -eq "Failed") {
@@ -36,6 +43,12 @@ function Get-HealthCheckFailureSummary {
             $displayName = if ($check.displayName) { $check.displayName } elseif ($check.name) { ($check.name -split '/')[0] } else { "Unknown Check" }
             $targetNode = if ($check.targetResourceName) { " ($($check.targetResourceName))" } else { "" }
             $entry = "[$severity] $displayName$targetNode"
+            if (-not $seenEntries.Add($entry)) {
+                # Already seen this exact entry; skip silently. Verbose
+                # diagnostics live in Test-AzLocalClusterHealth where the
+                # dedup is the primary code path.
+                continue
+            }
             if ($severity -eq "Critical") {
                 $criticals += $entry
             }

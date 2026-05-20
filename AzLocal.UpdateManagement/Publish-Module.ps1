@@ -46,6 +46,14 @@ $RemovePaths = @(
     # One-off refactor helper used during the v0.7.3 monolith split.
     # No runtime value to consumers; keep in the repo only.
     'Tools'
+    # Internal module-review artefacts (action plans, review notes,
+    # combined-review documents). These are repository-only working
+    # files - consumers see them on GitHub if they want, they have
+    # no runtime value, and they must NOT leak into the published
+    # PSGallery package. Added in v0.7.76 after the Finding 8
+    # consolidation that moved review files under this folder
+    # (commit 1230f7b).
+    'Module-reviews'
 )
 
 foreach ($relativePath in $RemovePaths) {

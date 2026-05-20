@@ -6,8 +6,8 @@
 .DESCRIPTION
     These tests run against the real AdaptiveCloudLab subscription
     (fbaf508b-cb61-4383-9cda-a42bfa0c7bc9) via the Azure CLI ARG transport
-    used by Get-AzLocalFleetHealthOverview / Get-AzureLocalFleetHealthFailures /
-    Get-AzureLocalUpdateRunFailures.
+    used by Get-AzLocalFleetHealthOverview / Get-AzLocalFleetHealthFailures /
+    Get-AzLocalUpdateRunFailures.
 
     All Describe blocks are tagged 'Live'. The default Invoke-Tests.ps1 entry
     point excludes this tag so the standard 565-test unit suite stays hermetic.
@@ -34,7 +34,7 @@
     - Every It block calls the cmdlet directly. Pester 5 BeforeAll-scope
       variables do not reliably preserve array-of-PSCustomObject semantics
       inside It blocks (one full ARG round-trip per It is cheap enough).
-    - Get-AzLocalFleetHealthOverview and Get-AzureLocalFleetHealthFailures
+    - Get-AzLocalFleetHealthOverview and Get-AzLocalFleetHealthFailures
       return their result with the `return , $output` idiom to preserve
       array-ness across the cmdlet boundary. The downside is that wrapping
       the call in `@(...)` produces a single-element array containing the
@@ -165,11 +165,14 @@ Describe 'Live-Integration: Get-AzLocalFleetHealthOverview' -Tag 'Live' -Skip:$S
         }
     }
 
-    It 'HealthResultsAgeDays is either null or a non-negative integer' {
+    It 'HealthResultsAgeDays is either null, the -1 sentinel (no LastChecked), or a non-negative integer' {
+        # KQL emits -1 as the documented sentinel for "no LastChecked timestamp"
+        # (see Get-AzLocalFleetHealthOverview.ps1: iif(isnull(LastChecked), -1, ...)).
         $rows = @() + (Get-AzLocalFleetHealthOverview -PassThru -ErrorAction Stop)
         foreach ($row in $rows) {
             if ($null -eq $row.HealthResultsAgeDays) { continue }
-            [int]$row.HealthResultsAgeDays | Should -BeGreaterOrEqual 0
+            $age = [int]$row.HealthResultsAgeDays
+            ($age -eq -1 -or $age -ge 0) | Should -BeTrue -Because "HealthResultsAgeDays on $($row.ClusterName) must be null, the -1 sentinel, or a non-negative integer (got $age)"
         }
     }
 
@@ -182,16 +185,16 @@ Describe 'Live-Integration: Get-AzLocalFleetHealthOverview' -Tag 'Live' -Skip:$S
     }
 }
 
-Describe 'Live-Integration: Get-AzureLocalFleetHealthFailures' -Tag 'Live' -Skip:$SkipLive {
+Describe 'Live-Integration: Get-AzLocalFleetHealthFailures' -Tag 'Live' -Skip:$SkipLive {
 
     It 'Detail view returns rows (fleet has known unresolved failures)' {
-        $detail = @() + (Get-AzureLocalFleetHealthFailures -View Detail -PassThru -ErrorAction Stop)
+        $detail = @() + (Get-AzLocalFleetHealthFailures -View Detail -PassThru -ErrorAction Stop)
         $detail.Count | Should -BeGreaterThan 0
     }
 
     It 'Detail rows expose the documented v0.7.70 columns' {
         $expected = @('ClusterName', 'ClusterPortalUrl', 'Severity', 'FailureReason', 'Description', 'Remediation')
-        $detail = @() + (Get-AzureLocalFleetHealthFailures -View Detail -PassThru -ErrorAction Stop)
+        $detail = @() + (Get-AzLocalFleetHealthFailures -View Detail -PassThru -ErrorAction Stop)
         $sample = if ($detail.Count -gt 5) { 5 } else { $detail.Count }
         for ($i = 0; $i -lt $sample; $i++) {
             $row = $detail[$i]
@@ -202,7 +205,7 @@ Describe 'Live-Integration: Get-AzureLocalFleetHealthFailures' -Tag 'Live' -Skip
     }
 
     It 'Summary view rolls up by FailureReason x Severity' {
-        $summary = @() + (Get-AzureLocalFleetHealthFailures -View Summary -PassThru -ErrorAction Stop)
+        $summary = @() + (Get-AzLocalFleetHealthFailures -View Summary -PassThru -ErrorAction Stop)
         $summary.Count | Should -BeGreaterThan 0
         $first = $summary[0]
         $present = @($first.PSObject.Properties.Name)
@@ -214,17 +217,17 @@ Describe 'Live-Integration: Get-AzureLocalFleetHealthFailures' -Tag 'Live' -Skip
     }
 
     It 'Severity=Critical filter returns only Critical rows' {
-        $critical = @() + (Get-AzureLocalFleetHealthFailures -Severity Critical -View Detail -PassThru -ErrorAction Stop)
+        $critical = @() + (Get-AzLocalFleetHealthFailures -Severity Critical -View Detail -PassThru -ErrorAction Stop)
         foreach ($row in $critical) {
             $row.Severity | Should -Be 'Critical'
         }
     }
 }
 
-Describe 'Live-Integration: Get-AzureLocalUpdateRunFailures' -Tag 'Live' -Skip:$SkipLive {
+Describe 'Live-Integration: Get-AzLocalUpdateRunFailures' -Tag 'Live' -Skip:$SkipLive {
 
     It 'Returns at least one Failed unresolved row (fleet has known unresolved runs)' {
-        $rows = @() + (Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).ToUniversalTime().AddDays(-30) -ErrorAction Stop)
+        $rows = @() + (Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).ToUniversalTime().AddDays(-30) -ErrorAction Stop)
         $rows.Count | Should -BeGreaterThan 0
     }
 
@@ -239,7 +242,7 @@ Describe 'Live-Integration: Get-AzureLocalUpdateRunFailures' -Tag 'Live' -Skip:$
             'DeepestErrMsg'
             'ErrorCategory'
         )
-        $rows = @() + (Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).ToUniversalTime().AddDays(-30) -ErrorAction Stop)
+        $rows = @() + (Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).ToUniversalTime().AddDays(-30) -ErrorAction Stop)
         $sample = if ($rows.Count -gt 5) { 5 } else { $rows.Count }
         for ($i = 0; $i -lt $sample; $i++) {
             $row = $rows[$i]
@@ -250,7 +253,7 @@ Describe 'Live-Integration: Get-AzureLocalUpdateRunFailures' -Tag 'Live' -Skip:$
     }
 
     It 'UpdateRunPortalUrl is a SingleInstanceHistoryDetails portal deep-link with an URL-encoded ClusterResourceId' {
-        $rows = @() + (Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).ToUniversalTime().AddDays(-30) -ErrorAction Stop)
+        $rows = @() + (Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).ToUniversalTime().AddDays(-30) -ErrorAction Stop)
         foreach ($row in $rows) {
             if ([string]::IsNullOrEmpty($row.UpdateRunPortalUrl)) { continue }
             $row.UpdateRunPortalUrl | Should -Match 'SingleInstanceHistoryDetails' -Because "Step.6 testcases rely on this deep-link shape"
@@ -259,7 +262,7 @@ Describe 'Live-Integration: Get-AzureLocalUpdateRunFailures' -Tag 'Live' -Skip:$
     }
 
     It 'OnlyUnresolved limits results to Status != Succeeded' {
-        $rows = @() + (Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).ToUniversalTime().AddDays(-30) -ErrorAction Stop)
+        $rows = @() + (Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).ToUniversalTime().AddDays(-30) -ErrorAction Stop)
         foreach ($row in $rows) {
             $row.Status | Should -Not -Be 'Succeeded' -Because '-OnlyUnresolved must exclude rows where the next attempt succeeded'
         }

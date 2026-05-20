@@ -5,12 +5,12 @@ function Read-AzLocalApplyUpdatesYamlCrons {
         (GitHub Actions and Azure DevOps).
     .DESCRIPTION
         Pure regex pre-scan; deliberately does NOT take a dependency on
-        powershell-yaml. Used by Test-AzureLocalApplyUpdatesScheduleCoverage.
+        powershell-yaml. Used by Test-AzLocalApplyUpdatesScheduleCoverage.
 
         Discovery rules:
           - If Path is a file, scan that file.
           - If Path is a directory, recursively find files matching any of
-            'Step.5_apply-updates*.yml', 'Step.5_apply-updates*.yaml',
+            'Step.6_apply-updates*.yml', 'Step.6_apply-updates*.yaml',
             'apply-updates*.yml', or 'apply-updates*.yaml'.
             (The 'Step.5_' prefix is the v0.7.68+ shipped name; the un-prefixed
              form is the legacy name still supported for backwards compatibility.)
@@ -67,8 +67,8 @@ function Read-AzLocalApplyUpdatesYamlCrons {
         # Use -Filter (which is honoured under -Recurse) one pattern at a time,
         # then dedupe by FullName.
         $patterns = @(
-            'Step.5_apply-updates*.yml',
-            'Step.5_apply-updates*.yaml',
+            'Step.6_apply-updates*.yml',
+            'Step.6_apply-updates*.yaml',
             'apply-updates*.yml',
             'apply-updates*.yaml'
         )
@@ -116,5 +116,11 @@ function Read-AzLocalApplyUpdatesYamlCrons {
         }
     }
 
+    # WARNING: Callers MUST use direct assignment ($x = func ...) and NEVER
+    # wrap with @(func ...). The unary-comma return below preserves Object[N]
+    # shape for any N including 0 and 1, but @() at the call site collapses
+    # to Object[1] containing the inner array, silently producing one-row
+    # output instead of N rows. See `docs/MODULE-REVIEW-AND-RECOMMENDATIONS.md`
+    # Finding 1 for the v0.7.75 incident.
     return , $output.ToArray()
 }

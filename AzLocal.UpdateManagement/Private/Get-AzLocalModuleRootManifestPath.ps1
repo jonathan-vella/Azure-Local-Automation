@@ -46,7 +46,7 @@ function Get-AzLocalModuleRootManifestPath {
         [string] absolute manifest path, or $null if unresolvable.
     .NOTES
         Added in v0.7.41 alongside the Invoke-FleetJobsInParallel and
-        Get-AzureLocalFleetStatusData hotfix. Centralising the resolution
+        Get-AzLocalFleetStatusData hotfix. Centralising the resolution
         in one helper means future Public/ or Private/ additions won't
         re-introduce the same "$PSScriptRoot is module root" assumption.
     #>

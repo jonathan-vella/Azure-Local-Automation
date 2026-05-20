@@ -9,7 +9,7 @@ function New-AzLocalApplyUpdatesScheduleConfig {
 
     .DESCRIPTION
         v0.7.69 onboarding helper. Run this once after tagging your
-        fleet with Set-AzureLocalClusterUpdateRingTag - it discovers
+        fleet with Set-AzLocalClusterUpdateRingTag - it discovers
         every distinct UpdateRing tag value via Azure Resource Graph,
         sorts them into a safe-by-default order (canary-like names
         first, prod-like names last), and writes a strawman schedule
@@ -36,7 +36,7 @@ function New-AzLocalApplyUpdatesScheduleConfig {
 
         Default behaviour:
           * Discovery: Azure Resource Graph query (same shape as
-            Test-AzureLocalApplyUpdatesScheduleCoverage uses) over the
+            Test-AzLocalApplyUpdatesScheduleCoverage uses) over the
             current subscription (or -SubscriptionId).
           * Ordering: rings whose name starts with 'canary', 'dev', or
             'test' (case-insensitive) sort first; rings whose name
@@ -134,7 +134,7 @@ resources
         }
         $Rings = @($rows | ForEach-Object { $_.UpdateRing } | Where-Object { $_ } | Select-Object -Unique)
         if (@($Rings).Count -eq 0) {
-            throw "No clusters with an UpdateRing tag were found. Tag the fleet first via Set-AzureLocalClusterUpdateRingTag, then re-run."
+            throw "No clusters with an UpdateRing tag were found. Tag the fleet first via Set-AzLocalClusterUpdateRingTag, then re-run."
         }
         Write-Log -Message "Discovered $($Rings.Count) distinct UpdateRing value(s): $($Rings -join ', ')." -Level Info
     } else {
@@ -196,7 +196,7 @@ resources
     [void]$sb.AppendLine('# This is the single source of truth for "which UpdateRing(s) is/are')
     [void]$sb.AppendLine('# eligible to apply updates on a given UTC date". It is consumed by:')
     [void]$sb.AppendLine('#')
-    [void]$sb.AppendLine('#   * Step.5_apply-updates.yml    - reads it at every cron firing and')
+    [void]$sb.AppendLine('#   * Step.6_apply-updates.yml    - reads it at every cron firing and')
     [void]$sb.AppendLine('#                                   resolves the UpdateRingValue to use')
     [void]$sb.AppendLine('#                                   for that run.')
     [void]$sb.AppendLine('#   * Step.3_apply-updates-schedule-audit.yml')

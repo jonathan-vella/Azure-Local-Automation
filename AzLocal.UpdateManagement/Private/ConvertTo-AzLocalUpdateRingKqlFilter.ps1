@@ -25,8 +25,8 @@ function ConvertTo-AzLocalUpdateRingKqlFilter {
         SAFETY: the wildcard token is three stars ('***'), not one. A single
         '*' is rejected by the upstream [ValidatePattern] on every public
         cmdlet so operators cannot accidentally scope a fleet-wide write
-        (Start-AzureLocalClusterUpdate, Set-AzureLocalClusterUpdateRingTag,
-        Reset-AzureLocalSideloadedTag, Invoke-AzureLocalFleetOperation) by
+        (Start-AzLocalClusterUpdate, Set-AzLocalClusterUpdateRingTag,
+        Reset-AzLocalSideloadedTag, Invoke-AzLocalFleetOperation) by
         typo. Three keystrokes is a deliberate gesture.
 
         Empty / whitespace segments produced by split are discarded.

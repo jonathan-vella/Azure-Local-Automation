@@ -1,7 +1,7 @@
 # ITSM Connector for AzLocal.UpdateManagement
 
 > Optional feature. Disabled by default. Module: `AzLocal.UpdateManagement` v0.7.4+ (Phase 1 shipped in v0.7.4; current module is v0.7.70).
-> Phase 1 (this release): ServiceNow incident creation + dedupe + connection probe. Phase 2 (Sync close-out via `Sync-AzureLocalIncident`) and Phase 3 (Teams / Slack mirror adapters) are **deferred** to a future release - the design lives in [`ITSM-Connector-Plan.md`](./ITSM-Connector-Plan.md) but the functions are not yet shipped.
+> Phase 1 (this release): ServiceNow incident creation + dedupe + connection probe. Phase 2 (Sync close-out via `Sync-AzLocalIncident`) and Phase 3 (Teams / Slack mirror adapters) are **deferred** to a future release - the design lives in [`ITSM-Connector-Plan.md`](./ITSM-Connector-Plan.md) but the functions are not yet shipped.
 
 This folder is the setup-and-configure landing page for the ITSM Connector. It walks an operator through every step from "nothing wired" to "the apply-updates pipeline opens a deduped ServiceNow incident when a cluster needs human intervention".
 
@@ -19,14 +19,14 @@ A working sample config plus the Mustache ticket-body template live at [`../Auto
 
 ## 1. What this connector does
 
-When any of the three "operator-attention" pipelines finishes - **`Step.5_apply-updates`**, **`Step.6_fleet-update-status`** (unresolved Failed update runs), and **`Step.7_fleet-health-status`** (Critical / Warning fleet-health failures) - the connector reads the JUnit results file the module already emits and, for each cluster row whose `Status` is in your trigger matrix:
+When any of the three "operator-attention" pipelines finishes - **`Step.6_apply-updates`**, **`Step.7_fleet-update-status`** (unresolved Failed update runs), and **`Step.8_fleet-health-status`** (Critical / Warning fleet-health failures) - the connector reads the JUnit results file the module already emits and, for each cluster row whose `Status` is in your trigger matrix:
 
 1. Computes a deterministic dedupe key (SHA256 of `ClusterResourceId | UpdateName | TriggerCategory`).
 2. Asks ServiceNow whether an incident with that key already exists in state New / In Progress / On Hold.
 3. If yes -> returns `Action='DedupedToExisting'` (no new ticket).
 4. If no -> creates a new incident with the trigger's severity, category, and the five `u_azlocal_*` custom fields populated.
 
-> **v0.7.70: Step.6 and Step.7 now raise tickets too (Phase D).** Until v0.7.69 only `Step.5_apply-updates` auto-called `New-AzureLocalIncident`. In v0.7.70 the same opt-in wiring is present in both `Step.6_fleet-update-status` (sources from the `Update Run History and Error Details` testsuite produced by `Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved`) and `Step.7_fleet-health-status` (sources from the `Fleet Health Failures` testsuite produced by `Get-AzureLocalFleetHealthFailures -View Detail`, sorted Critical-first). Both new wirings are **gated** by a `raise_itsm_ticket` workflow input (default `false`) and an `itsm_dry_run` input - so existing runs that do not toggle them on are byte-identical to v0.7.69. The `itsm-secrets` block is wrapped in `BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets` / `END-AZLOCAL-CUSTOMIZE:itsm-secrets` markers so operator-side secret bindings survive a `Update-AzureLocalPipelineExample` upgrade. The JUnit files Step.6/Step.7 emit carry the v0.7.70 hyperlinked deep-link columns (`UpdateRunPortalUrl`, `ClusterPortalUrl`, `CurrentStep`, `Duration`, `DeepestErrMsg`, `Severity`, `TargetResourceName`, `TargetResourceType`, `HealthResultsAgeDays`) so the ticket title + body can deep-link straight into the Azure portal blade for the affected cluster / update run.
+> **v0.7.70: Step.6 and Step.7 now raise tickets too (Phase D).** Until v0.7.69 only `Step.6_apply-updates` auto-called `New-AzLocalIncident`. In v0.7.70 the same opt-in wiring is present in both `Step.7_fleet-update-status` (sources from the `Update Run History and Error Details` testsuite produced by `Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved`) and `Step.8_fleet-health-status` (sources from the `Fleet Health Failures` testsuite produced by `Get-AzLocalFleetHealthFailures -View Detail`, sorted Critical-first). Both new wirings are **gated** by a `raise_itsm_ticket` workflow input (default `false`) and an `itsm_dry_run` input - so existing runs that do not toggle them on are byte-identical to v0.7.69. The `itsm-secrets` block is wrapped in `BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets` / `END-AZLOCAL-CUSTOMIZE:itsm-secrets` markers so operator-side secret bindings survive a `Update-AzLocalPipelineExample` upgrade. The JUnit files Step.6/Step.7 emit carry the v0.7.70 hyperlinked deep-link columns (`UpdateRunPortalUrl`, `ClusterPortalUrl`, `CurrentStep`, `Duration`, `DeepestErrMsg`, `Severity`, `TargetResourceName`, `TargetResourceType`, `HealthResultsAgeDays`) so the ticket title + body can deep-link straight into the Azure portal blade for the affected cluster / update run.
 
 What it deliberately does **not** do in Phase 1: open Jira / ADO Work Items, send Teams / Slack notifications, or close tickets on success. See [ITSM-Connector-Plan.md Sections 2 + 9](./ITSM-Connector-Plan.md) for the phased roadmap.
 
@@ -79,7 +79,7 @@ The connector writes five custom fields to every incident it creates so future r
 | `u_azlocal_cluster_resource_id` | String | 512 | (empty) | No | Full Azure resource ID of the cluster - operators use this to jump to Portal. |
 | `u_azlocal_update_name` | String | 64 | (empty) | No | The HCI update name (e.g. `2511.0.10.0`). |
 | `u_azlocal_run_id` | String | 128 | (empty) | No | Workflow / pipeline run ID - links back to the originating CI run. |
-| `u_azlocal_source` | String | 64 | `AzLocal.UpdateManagement` | No | Discriminator; lets `Sync-AzureLocalIncident` (Phase 2) filter to tickets it owns. |
+| `u_azlocal_source` | String | 64 | `AzLocal.UpdateManagement` | No | Discriminator; lets `Sync-AzLocalIncident` (Phase 2) filter to tickets it owns. |
 
 Procedure:
 
@@ -169,7 +169,7 @@ triggers:
   Skipped:            { raiseTicket: false }
   NotReady:           { raiseTicket: false }
   # --- v0.7.70 Phase D: Step.7 fleet-health-failure statuses ---
-  # Get-AzureLocalFleetHealthFailures emits Severity = Critical / Warning / Information.
+  # Get-AzLocalFleetHealthFailures emits Severity = Critical / Warning / Information.
   # Critical-first sort means the highest-impact rows are processed first.
   Critical:           { raiseTicket: true,  severity: 1, category: 'Cluster health: critical failure' }
   Warning:            { raiseTicket: true,  severity: 3, category: 'Cluster health: warning' }
@@ -186,11 +186,11 @@ Run these two probes from any host that has the module + an Az session pointed a
 
 ```powershell
 Import-Module ./AzLocal.UpdateManagement.psd1 -Force
-$cfg = Get-AzureLocalItsmConfig -Path ./.itsm/azurelocal-itsm.yml
+$cfg = Get-AzLocalItsmConfig -Path ./.itsm/azurelocal-itsm.yml
 $cfg.SchemaVersion              # -> 1
 $cfg.Triggers['Failed']         # -> normalised hashtable
 
-Test-AzureLocalItsmConnection -Config $cfg | Format-Table Step, Pass, Message
+Test-AzLocalItsmConnection -Config $cfg | Format-Table Step, Pass, Message
 # Expected output: 4 rows all Pass=True
 #   Resolve instanceUrl   True   https://yourco.service-now.com
 #   Resolve OAuth secrets True   clientId + clientSecret resolved.
@@ -225,12 +225,12 @@ Other shapes worth recognising:
 
 ## 7. Dry run against a real JUnit file
 
-Once `Test-AzureLocalItsmConnection` is all-green, run `New-AzureLocalIncident` in `-DryRun` mode to see what would be ticketed without making any HTTP writes:
+Once `Test-AzLocalItsmConnection` is all-green, run `New-AzLocalIncident` in `-DryRun` mode to see what would be ticketed without making any HTTP writes:
 
 ```powershell
-$cfg = Get-AzureLocalItsmConfig -Path ./.itsm/azurelocal-itsm.yml
+$cfg = Get-AzLocalItsmConfig -Path ./.itsm/azurelocal-itsm.yml
 
-New-AzureLocalIncident `
+New-AzLocalIncident `
     -InputArtifactPath ./artifacts/update-results.xml `
     -Config            $cfg `
     -RunMetadata       @{ Platform='manual'; RunId='dryrun-001'; RunUrl='n/a' } `
@@ -251,9 +251,9 @@ The example pipelines under [`../Automation-Pipeline-Examples/`](../Automation-P
 
 | Pipeline | Trigger source | JUnit input | Default behaviour |
 |---|---|---|---|
-| `Step.5_apply-updates` | `Get-AzureLocalUpdateRunFailures` (live, from the run that just executed) | `./reports/update-results.xml` | Wired since v0.7.4 |
-| `Step.6_fleet-update-status` | `Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved` (fleet, last 30 days) | `./reports/fleet-update-status.xml` | **v0.7.70 Phase D**, default OFF |
-| `Step.7_fleet-health-status` | `Get-AzureLocalFleetHealthFailures -View Detail` (Critical-first) | `./reports/fleet-health-status.xml` | **v0.7.70 Phase D**, default OFF |
+| `Step.6_apply-updates` | `Get-AzLocalUpdateRunFailures` (live, from the run that just executed) | `./reports/update-results.xml` | Wired since v0.7.4 |
+| `Step.7_fleet-update-status` | `Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved` (fleet, last 30 days) | `./reports/fleet-update-status.xml` | **v0.7.70 Phase D**, default OFF |
+| `Step.8_fleet-health-status` | `Get-AzLocalFleetHealthFailures -View Detail` (Critical-first) | `./reports/fleet-health-status.xml` | **v0.7.70 Phase D**, default OFF |
 
 All three are gated on `raise_itsm_ticket` (a `workflow_dispatch` choice / pipeline parameter, default `false`) and fully opt-in - existing runs that do not toggle it on are byte-identical to before. The Step.6 / Step.7 wirings also expose an `itsm_dry_run` input (and Step.7 an `itsm_force_create`) so operators can preview tickets before flipping the switch.
 
@@ -271,8 +271,8 @@ Key points from the wired step (full YAML in the example files):
     # END-AZLOCAL-CUSTOMIZE:itsm-secrets
   run: |
     Import-Module ${{ env.MODULE_PATH }}/AzLocal.UpdateManagement.psd1 -Force
-    $cfg = Get-AzureLocalItsmConfig -Path "${{ github.event.inputs.itsm_config_path }}"
-    New-AzureLocalIncident `
+    $cfg = Get-AzLocalItsmConfig -Path "${{ github.event.inputs.itsm_config_path }}"
+    New-AzLocalIncident `
         -InputArtifactPath ./reports/fleet-health-status.xml `
         -Config $cfg `
         -RunMetadata @{
@@ -286,7 +286,7 @@ Key points from the wired step (full YAML in the example files):
 ```
 
 - **Secrets are mapped via `env:`** on the step, not passed on the PowerShell command line. The module picks them up via `env://NAME` references in the config file. This keeps secret values off process listings, off the rendered step inputs, and out of CI logs.
-- **`BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets` / `END-AZLOCAL-CUSTOMIZE:itsm-secrets` markers** wrap the secret bindings. `Update-AzureLocalPipelineExample` preserves everything inside those markers across module upgrades, so operator-side secret remapping survives a `Update-AzureLocalPipelineExample` run.
+- **`BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets` / `END-AZLOCAL-CUSTOMIZE:itsm-secrets` markers** wrap the secret bindings. `Update-AzLocalPipelineExample` preserves everything inside those markers across module upgrades, so operator-side secret remapping survives a `Update-AzLocalPipelineExample` run.
 - The step writes **two** artefacts (`itsm-results.csv` for humans, `itsm-results.xml` for `dorny/test-reporter` / `PublishTestResults@2`). Both upload happens unconditionally if the step ran, including in `-DryRun`, so an audit trail exists either way. The ADO Publish task uses `azlocal-fleet-*-itsm-results_$(stamp.artifactStamp)` to match the v0.7.66 timestamped-artifact convention.
 - The Azure DevOps mirror is the same shape with `AzureCLI@2` + a `- group: AzureLocal-ITSM-Secrets` variable group (kept commented out by default so the example file loads cleanly for users who have not yet wired the variable group).
 
@@ -298,7 +298,7 @@ The first production run should keep `raise_itsm_ticket=false` (or set `itsm_dry
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `Test-AzureLocalItsmConnection` step 1 fails with `not a recognised form` | A secret reference is malformed. | Confirm `kv://<vault>/<secret>` / `env://<NAME>` / bare-name format. Bare names need `secrets.source: keyvault` + `keyvaultName`. |
+| `Test-AzLocalItsmConnection` step 1 fails with `not a recognised form` | A secret reference is malformed. | Confirm `kv://<vault>/<secret>` / `env://<NAME>` / bare-name format. Bare names need `secrets.source: keyvault` + `keyvaultName`. |
 | Step 1 succeeds, step 2 fails with `Failed to read Key Vault secret` | Service principal lacks RBAC on the vault. | Grant `Key Vault Secrets User`. See Section 4.1. |
 | Step 3 fails with `ServiceNow OAuth response did not contain an access_token` | Wrong client_id / client_secret, or the OAuth app is restricted to a different grant type. | Re-issue the secret in ServiceNow; ensure `Application Registry -> Auth Scope` allows the API endpoints used. |
 | Step 4 fails with HTTP 403 | The OAuth app role is missing `web_service_admin` (read on the incident table). | Add the role to the OAuth user. |

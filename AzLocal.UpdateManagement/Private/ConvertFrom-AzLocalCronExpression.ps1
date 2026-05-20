@@ -4,8 +4,8 @@ function ConvertFrom-AzLocalCronExpression {
         Parses a 5-field cron expression and enumerates every fire time within a
         reference week (Sunday 00:00 -> Saturday 23:59 UTC).
     .DESCRIPTION
-        Used by Test-AzureLocalApplyUpdatesScheduleCoverage to decide whether a
-        cron entry from Step.5_apply-updates.yml covers any of the maintenance windows
+        Used by Test-AzLocalApplyUpdatesScheduleCoverage to decide whether a
+        cron entry from Step.6_apply-updates.yml covers any of the maintenance windows
         derived from cluster UpdateWindow tags.
 
         Supports the subset of cron syntax that GitHub Actions and Azure DevOps

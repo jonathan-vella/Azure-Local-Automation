@@ -1,0 +1,692 @@
+# Fleet Health Status Monitoring
+# This workflow surfaces 24-hour system health-check failures across every Azure Local
+# cluster the service principal can read - including clusters that are already
+# "up to date" with no available updates. The 24-hour health checks continue to run
+# on the cluster even when no update is in flight, so this pipeline is the dedicated
+# place to triage fleet-wide health issues that exist OUTSIDE the update workflow.
+#
+# USE CASES:
+# - Daily / weekly fleet-wide critical & warning health audit
+# - Executive dashboard: "which failure reason hits the most clusters?"
+# - Compliance tracking for cluster health, independent of update activity
+# - Triage hand-off into ITSM: the JUnit XML and CSV exports are ready-made
+#   incident payloads
+#
+# REPORTS GENERATED:
+# - Markdown step summary: pivoted by FailureReason (top failures by cluster impact),
+#   matching the "Health Check Failures By Reason" view administrators are used to,
+#   and including a per-cluster "Detailed Results" table further down.
+# - JUnit XML: one <testcase> per (cluster, failing health check). dorny test-reporter
+#   renders failed Critical checks as <failure> and Warning checks as <failure
+#   type="Warning"> so reviewers can drill from suite -> cluster -> failure.
+# - CSV (detail):  fleet-health-detail.csv  - one row per (cluster, failing check)
+# - CSV (summary): fleet-health-summary.csv - one row per (FailureReason, Severity)
+# - JSON: same shape, machine-readable for downstream automation
+#
+# AUTHENTICATION:
+# Uses OpenID Connect (OIDC) - recommended for secretless authentication
+# See: https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect
+
+# Workflow name carries the same Step.N - prefix as the filename so the GitHub
+# Actions sidebar (which sorts workflows alphabetically by this `name:` field)
+# lists the eight pipelines in execution order.
+name: Step.8 - Fleet Health Status
+
+on:
+  # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
+  # Edits inside this block are preserved across Update-AzLocalPipelineExample
+  # module upgrades. Add or modify `schedule:` cron blocks below.
+  # Run on schedule (e.g., daily at 7 AM UTC, offset from Fleet Update Status so the two
+  # do not start their CLI shell-outs in the same minute).
+  schedule:
+    - cron: '0 7 * * *'  # Daily at 7:00 AM UTC
+  # END-AZLOCAL-CUSTOMIZE:schedule-triggers
+
+  # Manual trigger with options
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Scope of clusters to check'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - 'all'              # All clusters across all subscriptions
+          - 'by-update-ring'   # Filter by UpdateRing tag
+      update_ring:
+        # accepts a single ring (Wave1), a semicolon-delimited list (Prod;Ring2),
+        # or '***' (three stars - deliberate, not a typo) to match every cluster that HAS the UpdateRing tag set.
+        description: "UpdateRing tag value (only used when scope=by-update-ring). Single ring, 'Prod;Ring2', or '***'."
+        required: false
+        default: ''
+      severity:
+        description: 'Severity filter applied at Resource Graph (default All = Critical + Warning; Informational is always excluded).'
+        required: false
+        default: 'All'
+        type: choice
+        options:
+          - 'All'
+          - 'Critical'
+          - 'Warning'
+      module_version:
+        description: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
+        required: false
+        default: ''
+      # --- ITSM Connector (ServiceNow auto-raise on fleet-health failures) ---
+      # Set raise_itsm_ticket=true to open ServiceNow incidents from each Critical /
+      # Warning health-check failure published by this pipeline. Default is false
+      # so existing schedules stay byte-identical until you opt in. The connector reads
+      # the JUnit file Step.7 already produces (./reports/fleet-health-status.xml) and
+      # the trigger matrix in ./.itsm/azurelocal-itsm.yml. Dedupe granularity is one
+      # ticket per (cluster, failing health check) pair - FailureReason is fed into
+      # the UpdateName slot of the SHA256 dedupe key.
+      raise_itsm_ticket:
+        description: 'Open ITSM tickets (ServiceNow) for fleet-health failures'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_config_path:
+        description: 'Path to ITSM matrix config (YAML or JSON)'
+        required: false
+        default: './.itsm/azurelocal-itsm.yml'
+      itsm_dry_run:
+        description: 'ITSM: build payloads + run read-only dedupe but do NOT create tickets'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      itsm_force_create:
+        description: 'ITSM: bypass dedupe and always create new tickets (use with caution)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  # Module version this workflow YAML was generated against. The install step compares
+  # this to the version actually installed and to the latest on PSGallery, and emits a
+  # ::notice annotation if the YAML appears stale - prompting you to refresh via
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.76'
+  # Resolution order for the module version pin (leave all unset to install the latest,
+  # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
+  # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
+  REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
+
+jobs:
+  fleet-health:
+    name: Collect Fleet Health Status
+    runs-on: windows-latest
+    permissions:
+      id-token: write
+      contents: read
+      checks: write  # Required for test reporter
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v5
+
+    # OIDC Authentication - recommended
+    - name: Azure CLI Login (OIDC)
+      uses: azure/login@v3
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ vars.AZURE_TENANT_ID }}
+        # AZURE_SUBSCRIPTION_ID is a repository *Variable* (vars.*), not a Secret. It
+        # is consumed ONLY here: azure/login@v3 runs `az account set --subscription
+        # <id>` after the OIDC token exchange so the runner has a default
+        # `az account` context. It is NOT used to scope Azure Resource Graph queries
+        # (those run fleet-wide across every subscription the federated identity can
+        # read) and is NOT interpolated into Azure portal deep-link URLs (those use
+        # the per-row `subscriptionId` returned by ARG).
+        # Set it via: gh variable set AZURE_SUBSCRIPTION_ID --body <subId>
+        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Install Azure CLI Resource Graph Extension
+      shell: pwsh
+      run: |
+        az extension add --name resource-graph --yes
+
+    - name: Install AzLocal.UpdateManagement from PSGallery
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
+        if ($env:REQUIRED_MODULE_VERSION) {
+            $installArgs.RequiredVersion = $env:REQUIRED_MODULE_VERSION
+            Write-Host "REQUIRED_MODULE_VERSION is set - pinning install to v$($env:REQUIRED_MODULE_VERSION)."
+        } else {
+            Write-Host "REQUIRED_MODULE_VERSION is empty - installing the latest version from PSGallery (default fix-forward behaviour)."
+        }
+        Install-Module @installArgs
+        Import-Module AzLocal.UpdateManagement -Force
+        $installed = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+        $generated = [version]$env:GENERATED_AGAINST_MODULE_VERSION
+        $latest    = (Find-Module -Name AzLocal.UpdateManagement -Repository PSGallery -ErrorAction SilentlyContinue).Version
+        Write-Host ""
+        Write-Host "Module version summary"
+        Write-Host "  Installed on runner       : $installed"
+        Write-Host "  YAML generated against    : $generated"
+        Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
+        Write-Host ""
+        # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+        if ($installed -lt $generated) {
+            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
+        }
+        if ($installed -gt $generated) {
+            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Refresh via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            Write-Host "::notice title=Workflow YAML may be stale::$msg"
+        }
+        if ($latest -and ($latest -gt $installed)) {
+            $msg = "AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed."
+            Write-Host "::notice title=Newer AzLocal.UpdateManagement version available on PSGallery::$msg"
+        }
+
+    - name: Collect Fleet Health Failures
+      shell: pwsh
+      id: fleet-health
+      env:
+        INPUT_SCOPE: ${{ github.event.inputs.scope || 'all' }}
+        INPUT_UPDATE_RING: ${{ github.event.inputs.update_ring }}
+        INPUT_SEVERITY: ${{ github.event.inputs.severity || 'All' }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Import-Module AzLocal.UpdateManagement -Force
+
+        $outputDir = "./reports"
+        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+
+        $scope    = $env:INPUT_SCOPE
+        $ring     = $env:INPUT_UPDATE_RING
+        $severity = $env:INPUT_SEVERITY
+
+        Write-Host "========================================"
+        Write-Host "Fleet Health Status Collection"
+        Write-Host "========================================"
+        Write-Host "Scope     : $scope"
+        Write-Host "Severity  : $severity"
+        if ($scope -eq 'by-update-ring' -and $ring) { Write-Host "UpdateRing: $ring" }
+        Write-Host ""
+
+        $argSplat = @{ Severity = $severity }
+        if ($scope -eq 'by-update-ring' -and $ring) { $argSplat.UpdateRingTag = $ring }
+
+        # Pull DETAIL view once. Both the JUnit emitter below and the markdown
+        # "Detailed Results" table consume this same in-memory collection. The
+        # SUMMARY view is computed in-process via Group-Object on the same data,
+        # so this entire pipeline issues at most TWO ARG queries (one for
+        # health-check rows; one optional cluster-tag filter inside the module).
+        $detailCsv  = Join-Path $outputDir 'fleet-health-detail.csv'
+        $detailJson = Join-Path $outputDir 'fleet-health-detail.json'
+        $detail     = Get-AzLocalFleetHealthFailures -View Detail @argSplat -ExportPath $detailCsv -PassThru
+        if (-not $detail) { $detail = @() }
+        # Also write the JSON copy directly from the in-memory array (no second ARG call).
+        $detail | ConvertTo-Json -Depth 6 | Out-File -FilePath $detailJson -Encoding utf8
+
+        # SUMMARY view (grouped by FailureReason, Severity). Re-aggregates the
+        # detail rows in PowerShell to avoid a second ARG query.
+        # AffectedClusters uses '; ' separator (matches cmdlet output), and
+        # AffectedClusterPortalUrls is the positionally-paired list of portal
+        # links so the markdown renderer can zip them into hyperlinks.
+        # Severity sorts FIRST (Critical before Warning) regardless of cluster
+        # count - matches the cmdlet ordering.
+        $summary = @()
+        if ($detail.Count -gt 0) {
+            $summary = @(
+                $detail | Group-Object -Property FailureReason, Severity | ForEach-Object {
+                    $first       = $_.Group | Select-Object -First 1
+                    $clusterList = @($_.Group | Select-Object -ExpandProperty ClusterName -Unique | Sort-Object)
+                    $clusterPortalUrls = @(
+                        foreach ($cn in $clusterList) {
+                            $portalRow = $_.Group | Where-Object { $_.ClusterName -eq $cn } | Select-Object -First 1
+                            if ($portalRow -and $portalRow.ClusterPortalUrl) { $portalRow.ClusterPortalUrl } else { '' }
+                        }
+                    )
+                    $latest      = ($_.Group | Measure-Object -Property LastOccurrence -Maximum).Maximum
+                    [PSCustomObject]@{
+                        FailureReason             = $first.FailureReason
+                        Severity                  = $first.Severity
+                        ClusterCount              = $clusterList.Count
+                        FailureCount              = $_.Group.Count
+                        AffectedClusters          = ($clusterList -join '; ')
+                        AffectedClusterPortalUrls = ($clusterPortalUrls -join '; ')
+                        LatestOccurrence          = $latest
+                        Description               = $first.Description
+                        Remediation               = $first.Remediation
+                    }
+                } | Sort-Object @{Expression={ if($_.Severity -eq 'Critical'){1}elseif($_.Severity -eq 'Warning'){2}else{3} };Descending=$false},
+                                @{Expression={$_.ClusterCount};Descending=$true},
+                                @{Expression={$_.FailureCount};Descending=$true}
+            )
+        }
+        $summaryCsv  = Join-Path $outputDir 'fleet-health-summary.csv'
+        $summaryJson = Join-Path $outputDir 'fleet-health-summary.json'
+        $summary | Export-Csv -Path $summaryCsv -NoTypeInformation -Force
+        $summary | ConvertTo-Json -Depth 6 | Out-File -FilePath $summaryJson -Encoding utf8
+
+        # ------------------------------------------------------------------
+        # Emit JUnit XML pivoted by Severity -> FailureReason -> Cluster, so
+        # dorny test-reporter shows a two-level tree (Critical/Warning suite,
+        # each FailureReason as a test, each affected cluster in <system-out>).
+        # ------------------------------------------------------------------
+        $xmlPath = Join-Path $outputDir 'fleet-health-status.xml'
+        $criticalDetail = @($detail | Where-Object { $_.Severity -eq 'Critical' })
+        $warningDetail  = @($detail | Where-Object { $_.Severity -eq 'Warning'  })
+        $totalClusters  = @($detail | Select-Object -ExpandProperty ClusterName -Unique).Count
+        $totalFailures  = $detail.Count
+        $criticalCount  = $criticalDetail.Count
+        $warningCount   = $warningDetail.Count
+
+        function Convert-XmlEscape([string]$s) {
+            if ($null -eq $s) { return '' }
+            ($s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;').Replace("'",'&apos;'))
+        }
+
+        $sb = New-Object System.Text.StringBuilder
+        [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
+        [void]$sb.AppendFormat('<testsuites name="AzureLocalFleetHealthStatus" tests="{0}" failures="{1}">' + "`n", $totalFailures, $totalFailures)
+        foreach ($severityLabel in @('Critical','Warning')) {
+            $rows = if ($severityLabel -eq 'Critical') { $criticalDetail } else { $warningDetail }
+            if (-not $rows -or $rows.Count -eq 0) { continue }
+            $suiteName = "$severityLabel Health Failures"
+            [void]$sb.AppendFormat('  <testsuite name="{0}" tests="{1}" failures="{1}">' + "`n", (Convert-XmlEscape $suiteName), $rows.Count)
+            foreach ($r in $rows) {
+                $caseName = "{0} :: {1}" -f $r.ClusterName, $r.FailureReason
+                [void]$sb.AppendFormat('    <testcase classname="{0}" name="{1}">' + "`n",
+                    (Convert-XmlEscape $r.ClusterName),
+                    (Convert-XmlEscape $caseName))
+                # per-testcase <properties> for the ITSM connector.
+                # The dedupe key is SHA256(ClusterResourceId | UpdateName | Category).
+                # Step.7 is not about updates - so we stuff FailureReason into the
+                # UpdateName slot. That gives one ticket per (cluster, failing health
+                # check) pair, which is the intended granularity for fleet-health.
+                $clusterResId = if ($r.PSObject.Properties.Match('ClusterResourceId').Count -gt 0) { [string]$r.ClusterResourceId } else { '' }
+                $clusterPortalUrl = if ($r.PSObject.Properties.Match('ClusterPortalUrl').Count -gt 0) { [string]$r.ClusterPortalUrl } else { '' }
+                $targetResName    = if ($r.PSObject.Properties.Match('TargetResourceName').Count -gt 0) { [string]$r.TargetResourceName } else { '' }
+                $targetResType    = if ($r.PSObject.Properties.Match('TargetResourceType').Count -gt 0) { [string]$r.TargetResourceType } else { '' }
+                [void]$sb.AppendLine('      <properties>')
+                [void]$sb.AppendFormat('        <property name="ClusterName" value="{0}"/>' + "`n",      (Convert-XmlEscape $r.ClusterName))
+                [void]$sb.AppendFormat('        <property name="ClusterResourceId" value="{0}"/>' + "`n", (Convert-XmlEscape $clusterResId))
+                [void]$sb.AppendFormat('        <property name="UpdateName" value="{0}"/>' + "`n",        (Convert-XmlEscape $r.FailureReason))
+                [void]$sb.AppendFormat('        <property name="Status" value="{0}"/>' + "`n",            (Convert-XmlEscape $r.Severity))
+                [void]$sb.AppendFormat('        <property name="FailureReason" value="{0}"/>' + "`n",     (Convert-XmlEscape $r.FailureReason))
+                [void]$sb.AppendFormat('        <property name="Severity" value="{0}"/>' + "`n",          (Convert-XmlEscape $r.Severity))
+                [void]$sb.AppendFormat('        <property name="ClusterPortalUrl" value="{0}"/>' + "`n",  (Convert-XmlEscape $clusterPortalUrl))
+                [void]$sb.AppendFormat('        <property name="TargetResourceName" value="{0}"/>' + "`n", (Convert-XmlEscape $targetResName))
+                [void]$sb.AppendFormat('        <property name="TargetResourceType" value="{0}"/>' + "`n", (Convert-XmlEscape $targetResType))
+                [void]$sb.AppendLine('      </properties>')
+                $msg = "{0}: {1} (last occurred {2:yyyy-MM-ddTHH:mm:ssZ})" -f $r.Severity, $r.FailureReason, $r.LastOccurrence
+                # failure body adds TargetResourceName, TargetResourceType, and ClusterPortalUrl
+                # so reviewers reading the JUnit XML (or dorny's expansion) can click straight to the
+                # cluster blade in the Azure portal and see which specific resource failed.
+                $bodyLines = @(
+                    $r.Description,
+                    $r.Remediation,
+                    "ResourceGroup: $($r.ResourceGroup)",
+                    "SubscriptionId: $($r.SubscriptionId)"
+                )
+                if ($r.PSObject.Properties.Match('TargetResourceName').Count -gt 0 -and $r.TargetResourceName) {
+                    $bodyLines += "TargetResourceName: $($r.TargetResourceName)"
+                }
+                if ($r.PSObject.Properties.Match('TargetResourceType').Count -gt 0 -and $r.TargetResourceType) {
+                    $bodyLines += "TargetResourceType: $($r.TargetResourceType)"
+                }
+                if ($r.PSObject.Properties.Match('ClusterPortalUrl').Count -gt 0 -and $r.ClusterPortalUrl) {
+                    $bodyLines += "ClusterPortalUrl: $($r.ClusterPortalUrl)"
+                }
+                $body = $bodyLines -join "`n"
+                [void]$sb.AppendFormat('      <failure type="{0}" message="{1}">{2}</failure>' + "`n",
+                    (Convert-XmlEscape $r.Severity),
+                    (Convert-XmlEscape $msg),
+                    (Convert-XmlEscape $body))
+                [void]$sb.AppendLine('    </testcase>')
+            }
+            [void]$sb.AppendLine('  </testsuite>')
+        }
+        # When there are zero failures at all, emit a single passing testcase so
+        # dorny renders "all green" instead of an empty/broken testsuites file.
+        if ($totalFailures -eq 0) {
+            [void]$sb.AppendLine('  <testsuite name="Fleet Health" tests="1" failures="0">')
+            [void]$sb.AppendLine('    <testcase classname="Fleet Health" name="No Critical or Warning health-check failures across the fleet" />')
+            [void]$sb.AppendLine('  </testsuite>')
+        }
+        [void]$sb.AppendLine('</testsuites>')
+        $sb.ToString() | Out-File -FilePath $xmlPath -Encoding utf8
+
+        # Step outputs for the markdown summary step below.
+        "TOTAL_CLUSTERS=$totalClusters"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "TOTAL_FAILURES=$totalFailures"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "CRITICAL_COUNT=$criticalCount"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "WARNING_COUNT=$warningCount"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "DISTINCT_REASONS=$($summary.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+        # ------------------------------------------------------------------
+        # Fleet Health Overview (one row per cluster, ARG-first projection
+        # of cluster + updateSummaries for fleet-scale performance). Separate cmdlet from
+        # the failures view above so a fleet with zero failing checks still
+        # gets an overview-level rollup (last-checked age, current version,
+        # SBE version, Azure connection, node count).
+        # ------------------------------------------------------------------
+        $overviewArgs = @{}
+        if ($scope -eq 'by-update-ring' -and $ring) { $overviewArgs.UpdateRingTag = $ring }
+        $overviewCsv  = Join-Path $outputDir 'fleet-health-overview.csv'
+        $overviewJson = Join-Path $outputDir 'fleet-health-overview.json'
+        $overview     = Get-AzLocalFleetHealthOverview @overviewArgs -ExportPath $overviewCsv -PassThru
+        if (-not $overview) { $overview = @() }
+        $overview | ConvertTo-Json -Depth 6 | Out-File -FilePath $overviewJson -Encoding utf8
+        "OVERVIEW_ROWS=$($overview.Count)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+        # surface fleet-wide totals so the summary table can report
+        # Total / Healthy / Unhealthy (rather than only the affected/unhealthy
+        # subset). 'Affected' in the failures view = clusters with at least one
+        # failing health check = unhealthy. Force [int] so .Count is reliable
+        # whether @() is 0/1/N elements (PowerShell scalar-unwrap guard).
+        $healthyClusters = [int](@($overview | Where-Object { $_.HealthStatus -eq 'Healthy' }).Count)
+        $totalInSub      = [int](@($overview).Count)
+        "HEALTHY_CLUSTERS=$healthyClusters" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "TOTAL_IN_SUB=$totalInSub"          | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+        Write-Host ""
+        Write-Host "Fleet Health Collection complete:"
+        Write-Host "  Total clusters in scope : $totalInSub"
+        Write-Host "  Healthy clusters        : $healthyClusters"
+        Write-Host "  Unhealthy clusters      : $totalClusters"
+        Write-Host "  Total failing checks    : $totalFailures (Critical=$criticalCount, Warning=$warningCount)"
+        Write-Host "  Distinct failure reasons: $($summary.Count)"
+        Write-Host "  Overview rows           : $($overview.Count)"
+
+    - name: Compute Artifact Timestamp
+      if: always()
+      id: artifact-stamp
+      shell: pwsh
+      # every downloadable artifact gets a UTC timestamp suffix so multiple runs on
+      # the same day produce distinct zip names.
+      run: |
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss')
+        "timestamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        Write-Host "Artifact timestamp: $stamp"
+
+    - name: Upload Fleet Health Reports
+      uses: actions/upload-artifact@v6
+      with:
+        name: azlocal-fleet-health-status-report_${{ steps.artifact-stamp.outputs.timestamp }}
+        path: ./reports/
+        retention-days: 90
+
+    # Create the markdown summary FIRST so it appears at the top of the GitHub
+    # Actions run summary view. Publish Test Results (dorny) runs AFTER and is
+    # configured with list-suites/list-tests=failed so the testsuite expansion
+    # stays compact for large fleets (only failing rows are rendered).
+    - name: Create Fleet Health Summary
+      if: always()
+      shell: pwsh
+      run: |
+        $total          = "${{ steps.fleet-health.outputs.TOTAL_CLUSTERS }}"
+        $failures       = "${{ steps.fleet-health.outputs.TOTAL_FAILURES }}"
+        $crit           = "${{ steps.fleet-health.outputs.CRITICAL_COUNT }}"
+        $warn           = "${{ steps.fleet-health.outputs.WARNING_COUNT }}"
+        $reasons        = "${{ steps.fleet-health.outputs.DISTINCT_REASONS }}"
+        # fleet-wide healthy/total counts (Get-AzLocalFleetHealthOverview).
+        $healthy        = "${{ steps.fleet-health.outputs.HEALTHY_CLUSTERS }}"
+        $totalInSub     = "${{ steps.fleet-health.outputs.TOTAL_IN_SUB }}"
+
+        $summaryRows = @()
+        if (Test-Path './reports/fleet-health-summary.csv') {
+            $summaryRows = @(Import-Csv -Path './reports/fleet-health-summary.csv')
+        }
+        $detailRows = @()
+        if (Test-Path './reports/fleet-health-detail.csv') {
+            $detailRows = @(Import-Csv -Path './reports/fleet-health-detail.csv')
+        }
+        $overviewRows = @()
+        if (Test-Path './reports/fleet-health-overview.csv') {
+            $overviewRows = @(Import-Csv -Path './reports/fleet-health-overview.csv')
+        }
+
+        $md = @"
+        ## Fleet Health Status Summary
+
+        | Metric | Count |
+        |--------|-------|
+        | **Total Clusters in Subscription** | $totalInSub |
+        | **Healthy Clusters** | $healthy |
+        | **Unhealthy Clusters** | $total |
+        | **Total Failing Checks** | $failures |
+        | **Critical** | $crit |
+        | **Warning** | $warn |
+        | **Distinct Failure Reasons** | $reasons |
+
+        > _**Healthy** / **Unhealthy** count clusters via ``Get-AzLocalFleetHealthOverview``; **Unhealthy** = at least one Critical or Warning health-check failure. **Total Failing Checks** counts individual failing checks (one cluster can contribute multiple)._
+
+        ### Health Check Failures By Reason (most widespread first)
+        "@
+
+        if ($summaryRows.Count -eq 0) {
+            $md += "`n`n*No Critical or Warning health-check failures across the fleet.*`n"
+        } else {
+            $md += "`n`n| Severity | Failure Reason | Cluster Count | Failure Count | Affected Clusters | Latest |`n"
+            $md += "|----------|----------------|---------------|---------------|--------------------|--------|`n"
+            foreach ($r in ($summaryRows | Select-Object -First 25)) {
+                $sevTag = if ($r.Severity -eq 'Critical') { '[Critical]' } else { '[Warning]' }
+                # zip AffectedClusters (names) with AffectedClusterPortalUrls (positional)
+                # to render markdown hyperlinks. Cap at the first 10 names then '... (+N more)' so
+                # widespread failures stay readable; full list is in the CSV artifact.
+                # keep @() OUTSIDE the 'if' so single-element arrays do not unwrap to a
+                # String (PowerShell scalar-unwrap bug). Without this, a row with one cluster
+                # rendered as the first character of the cluster name only.
+                $names = @(if ($r.AffectedClusters) { $r.AffectedClusters -split '; ' } else { @() })
+                $urls  = @(if ($r.AffectedClusterPortalUrls) { $r.AffectedClusterPortalUrls -split '; ' } else { @() })
+                $linkedParts = for ($i = 0; $i -lt $names.Count; $i++) {
+                    $n = $names[$i]
+                    $u = if ($i -lt $urls.Count) { $urls[$i] } else { '' }
+                    if ($u) { '[{0}]({1})' -f $n, $u } else { $n }
+                }
+                $clList = if ($linkedParts.Count -le 10) {
+                    $linkedParts -join ', '
+                } else {
+                    (($linkedParts | Select-Object -First 10) -join ', ') + (' ... (+{0} more)' -f ($linkedParts.Count - 10))
+                }
+                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $sevTag, $r.FailureReason, $r.ClusterCount, $r.FailureCount, $clList, $r.LatestOccurrence) + "`n"
+            }
+            if ($summaryRows.Count -gt 25) {
+                $md += "`n*Showing top 25 failure reasons of $($summaryRows.Count); see ``fleet-health-summary.csv`` artifact for the full list.*`n"
+            }
+        }
+
+        $md += "`n### Detailed Results (per-cluster, per-failure)`n"
+
+        if ($detailRows.Count -eq 0) {
+            $md += "`n*No detail rows.*`n"
+        } else {
+            # cluster name linkifies to ClusterPortalUrl; +3 columns (Failure Remediation,
+            # Target Resource Name, Target Resource Type). Remediation auto-linkifies when it looks
+            # like a URL ('https://') so docs links are one click away.
+            $md += "`n| Cluster | Severity | Failure Reason | Failure Remediation | Target Resource Name | Target Resource Type | Last Occurrence | Resource Group |`n"
+            $md += "|---------|----------|----------------|---------------------|----------------------|----------------------|------------------|----------------|`n"
+            foreach ($r in ($detailRows | Select-Object -First 100)) {
+                $sevTag      = if ($r.Severity -eq 'Critical') { '[Critical]' } else { '[Warning]' }
+                $clusterCell = if ($r.PSObject.Properties.Match('ClusterPortalUrl').Count -gt 0 -and $r.ClusterPortalUrl) {
+                    '[{0}]({1})' -f $r.ClusterName, $r.ClusterPortalUrl
+                } else {
+                    $r.ClusterName
+                }
+                $rem = if ($r.PSObject.Properties.Match('Remediation').Count -gt 0) { [string]$r.Remediation } else { '' }
+                $remCell = if ($rem -and $rem.StartsWith('https://')) { '[link]({0})' -f $rem } else { $rem }
+                $tName = if ($r.PSObject.Properties.Match('TargetResourceName').Count -gt 0) { [string]$r.TargetResourceName } else { '' }
+                $tType = if ($r.PSObject.Properties.Match('TargetResourceType').Count -gt 0) { [string]$r.TargetResourceType } else { '' }
+                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} |' -f $clusterCell, $sevTag, $r.FailureReason, $remCell, $tName, $tType, $r.LastOccurrence, $r.ResourceGroup) + "`n"
+            }
+            if ($detailRows.Count -gt 100) {
+                $md += "`n*Showing first 100 rows of $($detailRows.Count); see ``fleet-health-detail.csv`` artifact for the full list.*`n"
+            }
+        }
+
+        # NEW section - Fleet Health Overview (fleet rollup, one row per cluster).
+        # Sourced from Get-AzLocalFleetHealthOverview. HealthResultsAgeDays surfaces clusters whose
+        # 24-hour health check has not run in a while (negative = no LastChecked at all).
+        $md += "`n### Fleet Health Overview (fleet rollup)`n"
+        if ($overviewRows.Count -eq 0) {
+            $md += "`n*No clusters returned from Get-AzLocalFleetHealthOverview.*`n"
+        } else {
+            $md += "`n| Cluster | Health | Update Status | Current Version | SBE Version | Azure Connection | Last Checked | Age (days) | Node Count |`n"
+            $md += "|---------|--------|---------------|------------------|--------------|------------------|---------------|------------|------------|`n"
+            foreach ($o in ($overviewRows | Select-Object -First 100)) {
+                $clusterCell = if ($o.ClusterPortalUrl) {
+                    '[{0}]({1})' -f $o.ClusterName, $o.ClusterPortalUrl
+                } else {
+                    $o.ClusterName
+                }
+                # replace bracketed labels with emoji icons (icon + text) so the
+                # at-a-glance Health column is visually scannable. Label is retained for
+                # greppability (CI log searches by 'Healthy' / 'Critical' / etc.). Uses
+                # literal Unicode (not GH ':name:' shortcodes) so the Azure DevOps twin
+                # of this pipeline renders identically.
+                $healthTag = switch ($o.HealthStatus) {
+                    'Healthy'              { "$([char]0x2705) Healthy" }       # white heavy check mark
+                    'Critical'             { "$([char]0x274C) Critical" }      # cross mark
+                    'Warning'              { "$([char]0x26A0)$([char]0xFE0F) Warning" }       # warning sign + VS16
+                    'In progress'          { "$([char]0x23F3) In progress" }   # hourglass with flowing sand
+                    'Health check failed'  { "$([char]0x274C) Failed" }
+                    default                { '[' + $o.HealthStatus + ']' }
+                }
+                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} |' -f $clusterCell, $healthTag, $o.UpdateStatus, $o.CurrentVersion, $o.SbeVersion, $o.AzureConnection, $o.LastChecked, $o.HealthResultsAgeDays, $o.NodeCount) + "`n"
+            }
+            if ($overviewRows.Count -gt 100) {
+                $md += "`n*Showing first 100 clusters of $($overviewRows.Count); see ``fleet-health-overview.csv`` artifact for the full list.*`n"
+            }
+        }
+
+        $md += @"
+
+        ### Reports Available
+        - ``fleet-health-detail.csv`` - one row per (cluster, failing health check)
+        - ``fleet-health-summary.csv`` - one row per (FailureReason, Severity); ordered Critical-first, then by ClusterCount desc
+        - ``fleet-health-overview.csv`` - one row per cluster (ARG-first fleet health summary)
+        - ``fleet-health-detail.json`` / ``fleet-health-summary.json`` / ``fleet-health-overview.json`` - same data, machine-readable
+        - ``fleet-health-status.xml`` - JUnit XML for CI/CD visualisation
+
+        *Generated at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")*
+        "@
+
+        $md | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+    # Publish JUnit test results AFTER the markdown summary so the "Fleet Health
+    # Status Summary" tables are the first thing visible on the run page. dorny
+    # renders its testsuite expansion below; list-suites and list-tests are set
+    # to "failed" so the expansion stays compact even for fleets where many
+    # clusters report the same failure reason.
+    - name: Publish Test Results
+      uses: dorny/test-reporter@v3
+      if: always()
+      with:
+        name: Fleet Health Status Report
+        path: ./reports/fleet-health-status.xml
+        reporter: java-junit
+        fail-on-error: false   # Don't fail the action on health failures
+        list-suites: failed    # collapse passing suites (compact view for large fleets)
+        list-tests: failed     # within failed suites, only render failed tests
+
+    # ----------------------------------------------------------------------
+    # ITSM Connector (ServiceNow auto-raise on fleet-health failures)
+    #
+    # Fully opt-in (gated on inputs.raise_itsm_ticket == 'true'). Runs AFTER
+    # the JUnit file is uploaded + test results published, so a) failing
+    # checks are already surfaced via dorny/test-reporter and the run
+    # summary, and b) the ITSM action is strictly additive - failures here
+    # never affect the fleet-health-status exit code.
+    #
+    # Reads the same fleet-health-status.xml that powers the run summary.
+    # The JUnit emitter writes per-testcase <properties> (ClusterName /
+    # ClusterResourceId / UpdateName=FailureReason / Status=Severity /
+    # FailureReason / Severity / ClusterPortalUrl / TargetResourceName /
+    # TargetResourceType) so New-AzLocalIncident can compute the SHA256
+    # dedupe key (one ticket per cluster + failing check) and the Mustache
+    # body template can deep-link straight into the cluster blade.
+    # ----------------------------------------------------------------------
+    - name: Install powershell-yaml (ITSM config parser)
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      run: |
+        if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
+            Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+        }
+
+    - name: Raise ITSM tickets
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      shell: pwsh
+      id: itsm
+      env:
+        # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
+        # Bind your ITSM connector secrets here. Defaults match the
+        # ServiceNow OAuth client_credentials naming used by azurelocal-itsm.yml.
+        # Preserved by Update-AzLocalPipelineExample across module upgrades.
+        ITSM_SN_INSTANCE_URL: ${{ secrets.ITSM_SN_INSTANCE_URL }}
+        ITSM_SN_CLIENT_ID:    ${{ secrets.ITSM_SN_CLIENT_ID }}
+        ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
+        # END-AZLOCAL-CUSTOMIZE:itsm-secrets
+        INPUT_ITSM_CONFIG_PATH:  ${{ github.event.inputs.itsm_config_path }}
+        INPUT_ITSM_DRY_RUN:      ${{ github.event.inputs.itsm_dry_run }}
+        INPUT_ITSM_FORCE_CREATE: ${{ github.event.inputs.itsm_force_create }}
+      run: |
+        Import-Module AzLocal.UpdateManagement -Force
+
+        $configPath = $env:INPUT_ITSM_CONFIG_PATH
+        $dryRun     = $env:INPUT_ITSM_DRY_RUN -eq 'true'
+        $force      = $env:INPUT_ITSM_FORCE_CREATE -eq 'true'
+
+        if (-not (Test-Path $configPath)) {
+            Write-Host "::warning::ITSM config not found at '$configPath' - skipping ticket creation."
+            exit 0
+        }
+
+        $cfg = Get-AzLocalItsmConfig -Path $configPath
+
+        $junitInput = './reports/fleet-health-status.xml'
+        if (-not (Test-Path $junitInput)) {
+            Write-Host "::warning::No fleet-health-status.xml found at '$junitInput' - skipping ticket creation."
+            exit 0
+        }
+
+        $params = @{
+            InputArtifactPath = $junitInput
+            Config            = $cfg
+            RunMetadata       = @{
+                Platform = 'github'
+                RunId    = $env:GITHUB_RUN_ID
+                RunUrl   = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+                Branch   = $env:GITHUB_REF
+            }
+            DryRun            = $dryRun
+            ForceCreate       = $force
+            ExportPath        = './reports/itsm-results.csv'
+            ExportJUnitPath   = './reports/itsm-results.xml'
+        }
+
+        $results = New-AzLocalIncident @params
+        $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
+
+    - name: Upload ITSM Artefacts
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: actions/upload-artifact@v6
+      with:
+        name: azlocal-fleet-health-status-itsm-results_${{ steps.artifact-stamp.outputs.timestamp }}
+        path: ./reports/itsm-*.*
+        retention-days: 30
+      continue-on-error: true
+
+    - name: Publish ITSM Test Results
+      if: ${{ github.event.inputs.raise_itsm_ticket == 'true' }}
+      uses: dorny/test-reporter@v3
+      with:
+        name: ITSM Tickets (Step.7)
+        path: ./reports/itsm-results.xml
+        reporter: java-junit
+      continue-on-error: true

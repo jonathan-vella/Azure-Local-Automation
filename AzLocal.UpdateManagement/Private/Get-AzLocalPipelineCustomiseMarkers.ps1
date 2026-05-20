@@ -5,7 +5,7 @@ function Get-AzLocalPipelineCustomiseMarkers {
         text blob.
 
     .DESCRIPTION
-        Private helper supporting Update-AzureLocalPipelineExample. The marker
+        Private helper supporting Update-AzLocalPipelineExample. The marker
         convention is:
 
             <indent>#[<more #s>] BEGIN-AZLOCAL-CUSTOMIZE:<section>
@@ -73,7 +73,7 @@ function Get-AzLocalPipelineCustomiseMarkers {
     # Windows-checked-out copies often become after a git autocrlf
     # checkout). Without the \r? the parser silently returned zero markers
     # for every CRLF file - which would have silently broken
-    # Update-AzureLocalPipelineExample's entire marker-preservation feature
+    # Update-AzLocalPipelineExample's entire marker-preservation feature
     # for any operator on a Windows checkout.
     #
     # Group 1 : full BEGIN line (everything from start of line up to and

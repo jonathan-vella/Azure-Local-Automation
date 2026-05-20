@@ -22,8 +22,8 @@ function Set-AzLocalClusterTagsMerge {
         approach demanded, which is what v0.7.62 fixes.
 
         Used by:
-        - Start-AzureLocalClusterUpdate to write UpdateVersionInProgress at update start.
-        - Reset-AzureLocalSideloadedTag (and the auto-reset path in Get-AzureLocalUpdateRuns)
+        - Start-AzLocalClusterUpdate to write UpdateVersionInProgress at update start.
+        - Reset-AzLocalSideloadedTag (and the auto-reset path in Get-AzLocalUpdateRuns)
           to flip UpdateSideloaded=False and clear UpdateVersionInProgress on matched success.
 
         Failures are surfaced as terminating errors so callers can wrap in try/catch and

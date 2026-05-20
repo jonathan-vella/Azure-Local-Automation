@@ -1,4 +1,4 @@
-# Test the existing Get-AzureLocalUpdateRunFailures cmdlet (uses
+# Test the existing Get-AzLocalUpdateRunFailures cmdlet (uses
 # Invoke-AzResourceGraphQuery which handles multi-line KQL via a temp file).
 # Goal: confirm the cmdlet returns Failed rows with ClusterName, UpdateName,
 # State, DeepestStepName, DeepestErrMsg, then identify which extra fleet-scale
@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 Import-Module 'C:\Users\nebird\Repos\Azure-Local\AzLocal.UpdateManagement\AzLocal.UpdateManagement.psd1' -Force
 
 Write-Host "=== Detail view, Failed state, last 60 days ===" -ForegroundColor Cyan
-$rows = Get-AzureLocalUpdateRunFailures -State Failed -Since (Get-Date).AddDays(-60)
+$rows = Get-AzLocalUpdateRunFailures -State Failed -Since (Get-Date).AddDays(-60)
 Write-Host ("Rows: {0}" -f $rows.Count) -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Columns currently emitted:" -ForegroundColor Cyan

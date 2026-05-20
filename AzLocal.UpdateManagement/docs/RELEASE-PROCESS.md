@@ -26,8 +26,8 @@ In the steps below, `<candidate>` is the version being released (for example `1.
         Find-Module    -Name AzLocal.UpdateManagement -RequiredVersion <candidate> -Repository PSGallery
         Install-Module -Name AzLocal.UpdateManagement -RequiredVersion <candidate> -Scope CurrentUser -Force
  9. Copy the bundled pipelines into a separate test repo:
-        Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
-        Copy-AzureLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
+        Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub      -Update
+        Copy-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps -Update
 10. In the test repo, set REQUIRED_MODULE_VERSION (GH workflow_dispatch
     input / ADO parameter) to the exact unlisted candidate version.
     Without this pin, the auto-install step at job start will resolve

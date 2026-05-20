@@ -1,17 +1,17 @@
 # Apply-Updates Schedule Coverage Audit
-# This workflow runs the read-only Test-AzureLocalApplyUpdatesScheduleCoverage advisor
+# This workflow runs the read-only Test-AzLocalApplyUpdatesScheduleCoverage advisor
 # weekly to detect drift between the cron schedule(s) in your apply-updates pipeline
 # YAML and the UpdateWindow tags that operators have placed on Azure Local clusters.
 #
 # WHY THIS PIPELINE EXISTS
 # ------------------------
-# Step.5_apply-updates.yml ships with NO default schedule (workflow_dispatch only) on purpose,
+# Step.6_apply-updates.yml ships with NO default schedule (workflow_dispatch only) on purpose,
 # so customers must consciously choose when updates fire. After you have configured
-# UpdateWindow tags on your clusters and added cron entries to Step.5_apply-updates.yml, this
+# UpdateWindow tags on your clusters and added cron entries to Step.6_apply-updates.yml, this
 # pipeline is the safety net that catches:
-#   - a new ring tagged with UpdateWindow that no cron in Step.5_apply-updates.yml will reach
+#   - a new ring tagged with UpdateWindow that no cron in Step.6_apply-updates.yml will reach
 #   - an UpdateWindow tag value that fails to parse (typo / wrong syntax)
-#   - Step.5_apply-updates.yml cron entries that the advisor cannot reason about
+#   - Step.6_apply-updates.yml cron entries that the advisor cannot reason about
 #     (DayOfMonth restrictions, step values) so you can audit them manually
 #
 # REPORTS GENERATED
@@ -34,7 +34,7 @@ name: Step.3 - Apply-Updates Schedule Coverage Audit
 
 on:
   # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
-  # Edits inside this block are preserved across Update-AzureLocalPipelineExample
+  # Edits inside this block are preserved across Update-AzLocalPipelineExample
   # module upgrades. Add or modify `schedule:` cron blocks below.
   # Weekly on Monday at 05:00 UTC - well before any common Saturday/Sunday or weekday
   # evening update window so a coverage drift report lands in the inbox before the
@@ -46,7 +46,7 @@ on:
   workflow_dispatch:
     inputs:
       pipeline_path:
-        description: 'Path (file or folder) to Step.5_apply-updates.yml to audit, repo-relative. Leave empty to audit ONLY the schedule_path (schedule file). Default `.github/workflows` matches the standard GitHub Actions consumer layout where you paste the bundled `Step.5_apply-updates.yml` sample.'
+        description: 'Path (file or folder) to Step.6_apply-updates.yml to audit, repo-relative. Leave empty to audit ONLY the schedule_path (schedule file). Default `.github/workflows` matches the standard GitHub Actions consumer layout where you paste the bundled `Step.6_apply-updates.yml` sample.'
         required: false
         default: '.github/workflows'
       schedule_path:
@@ -82,8 +82,8 @@ env:
   # Module version this workflow YAML was generated against. The install step compares
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.75'
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.76'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
@@ -142,11 +142,11 @@ jobs:
         Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
         # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
         if ($installed -lt $generated) {
-            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
         }
         if ($installed -gt $generated) {
-            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Refresh via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Refresh via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::notice title=Workflow YAML may be stale::$msg"
         }
         if ($latest -and ($latest -gt $installed)) {
@@ -205,7 +205,7 @@ jobs:
         }
         elseif ($havePipeline -and -not (Test-Path -LiteralPath $pipelinePath)) {
             $candidates = @('.github/workflows', '.azure-pipelines', 'pipelines', '.') | Where-Object { Test-Path -LiteralPath $_ }
-            $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-run via 'Run workflow' on the Actions tab and set the 'pipeline_path' input." } else { "No common pipeline folders (.github/workflows, .azure-pipelines, pipelines, repo root) were found in this repo - commit your Step.5_apply-updates.yml first, or set 'pipeline_path' to wherever you keep it." }
+            $hint = if ($candidates) { "Common locations that DO exist in this repo: $($candidates -join ', '). Re-run via 'Run workflow' on the Actions tab and set the 'pipeline_path' input." } else { "No common pipeline folders (.github/workflows, .azure-pipelines, pipelines, repo root) were found in this repo - commit your Step.6_apply-updates.yml first, or set 'pipeline_path' to wherever you keep it." }
             throw "PipelineYamlPath '$pipelinePath' does not exist on the runner. $hint"
         }
 
@@ -237,14 +237,14 @@ jobs:
         if ($havePipeline) { $auditArgs.PipelineYamlPath = $pipelinePath }
         if ($haveSchedule) { $auditArgs.SchedulePath     = $schedulePath }
         if ($includeUnt)   { $auditArgs.IncludeUntagged  = $true }
-        $audit = Test-AzureLocalApplyUpdatesScheduleCoverage @auditArgs
+        $audit = Test-AzLocalApplyUpdatesScheduleCoverage @auditArgs
         if (-not $audit) { $audit = @() }
 
         # Matrix view (CSV only).
-        Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
+        Test-AzLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
 
         # Recommend view (markdown snippet) - GitHub Actions only.
-        Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -Platform GitHubActions -ExportPath $recoMd | Out-Null
+        Test-AzLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -Platform GitHubActions -ExportPath $recoMd | Out-Null
 
         $covered     = @($audit | Where-Object Status -eq 'Covered')
         $uncovered   = @($audit | Where-Object Status -eq 'Uncovered')
@@ -445,7 +445,7 @@ jobs:
         # operators who want the canonical cron list as a reference. When there are issues
         # we already printed it at the top so skip the duplicate.
         if (-not $hasIssues -and $reco) {
-            $md += "`n### Reference - Recommended schedule (copy into Step.5_apply-updates.yml)`n"
+            $md += "`n### Reference - Recommended schedule (copy into Step.6_apply-updates.yml)`n"
             $md += "`n" + $reco + "`n"
         }
 

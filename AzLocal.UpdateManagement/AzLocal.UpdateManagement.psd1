@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.75'
+    ModuleVersion = '0.7.76'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -57,7 +57,7 @@
         'Private/Get-LastUpdateRunErrorSummary.ps1',
         'Private/Get-LatestUpdateByYYMM.ps1',
         'Private/Get-TagValue.ps1',
-        'Private/Import-AzureLocalFleetState.ps1',
+        'Private/Import-AzLocalFleetState.ps1',
         'Private/Install-AzGraphExtension.ps1',
         'Private/Invoke-AzCliJson.ps1',
         'Private/Invoke-AzLocalSideloadedAutoReset.ps1',
@@ -66,11 +66,12 @@
         'Private/Invoke-AzLocalServiceNowAdapter.ps1',
         'Private/Invoke-AzResourceGraphQuery.ps1',
         'Private/Invoke-AzRestJson.ps1',
-        'Private/Invoke-AzureLocalUpdateApply.ps1',
+        'Private/Invoke-AzLocalUpdateApply.ps1',
         'Private/Invoke-FleetJobsInParallel.ps1',
         'Private/Invoke-FleetOpClusterAction.ps1',
         'Private/Read-AzLocalApplyUpdatesYamlCrons.ps1',
         'Private/Resolve-AzLocalItsmSecret.ps1',
+        'Private/Resolve-AzLocalUpdateRunDeepestError.ps1',
         'Private/Resolve-SafeOutputPath.ps1',
         'Private/Resolve-WildcardDate.ps1',
         'Private/Resolve-WildcardDateRange.ps1',
@@ -86,85 +87,85 @@
         'Private/Write-Utf8NoBomFile.ps1',
 
         # Public exported functions
-        'Public/Connect-AzureLocalServicePrincipal.ps1',
-        'Public/Copy-AzureLocalItsmSample.ps1',
-        'Public/Copy-AzureLocalPipelineExample.ps1',
-        'Public/Export-AzureLocalFleetState.ps1',
+        'Public/Connect-AzLocalServicePrincipal.ps1',
+        'Public/Copy-AzLocalItsmSample.ps1',
+        'Public/Copy-AzLocalPipelineExample.ps1',
+        'Public/Export-AzLocalFleetState.ps1',
         'Public/Get-AzLocalApplyUpdatesScheduleConfig.ps1',
         'Public/Get-AzLocalApplyUpdatesScheduleNextFirings.ps1',
-        'Public/Get-AzureLocalAvailableUpdates.ps1',
-        'Public/Get-AzureLocalClusterInfo.ps1',
-        'Public/Get-AzureLocalClusterInventory.ps1',
-        'Public/Get-AzureLocalClusterUpdateReadiness.ps1',
-        'Public/Get-AzureLocalFleetProgress.ps1',
-        'Public/Get-AzureLocalFleetStatusData.ps1',
-        'Public/Get-AzureLocalFleetHealthFailures.ps1',
+        'Public/Get-AzLocalAvailableUpdates.ps1',
+        'Public/Get-AzLocalClusterInfo.ps1',
+        'Public/Get-AzLocalClusterInventory.ps1',
+        'Public/Get-AzLocalClusterUpdateReadiness.ps1',
+        'Public/Get-AzLocalFleetProgress.ps1',
+        'Public/Get-AzLocalFleetStatusData.ps1',
+        'Public/Get-AzLocalFleetHealthFailures.ps1',
         'Public/Get-AzLocalFleetHealthOverview.ps1',
-        'Public/Get-AzureLocalItsmConfig.ps1',
-        'Public/Get-AzureLocalLatestSolutionVersion.ps1',
-        'Public/Get-AzureLocalUpdateRunFailures.ps1',
-        'Public/Get-AzureLocalUpdateRuns.ps1',
-        'Public/Get-AzureLocalUpdateSummary.ps1',
-        'Public/Invoke-AzureLocalFleetOperation.ps1',
+        'Public/Get-AzLocalItsmConfig.ps1',
+        'Public/Get-AzLocalLatestSolutionVersion.ps1',
+        'Public/Get-AzLocalUpdateRunFailures.ps1',
+        'Public/Get-AzLocalUpdateRuns.ps1',
+        'Public/Get-AzLocalUpdateSummary.ps1',
+        'Public/Invoke-AzLocalFleetOperation.ps1',
         'Public/New-AzLocalApplyUpdatesScheduleConfig.ps1',
-        'Public/New-AzureLocalFleetStatusHtmlReport.ps1',
-        'Public/New-AzureLocalIncident.ps1',
-        'Public/Reset-AzureLocalSideloadedTag.ps1',
+        'Public/New-AzLocalFleetStatusHtmlReport.ps1',
+        'Public/New-AzLocalIncident.ps1',
+        'Public/Reset-AzLocalSideloadedTag.ps1',
         'Public/Resolve-AzLocalCurrentUpdateRing.ps1',
-        'Public/Resume-AzureLocalFleetUpdate.ps1',
-        'Public/Set-AzureLocalClusterUpdateRingTag.ps1',
-        'Public/Start-AzureLocalClusterUpdate.ps1',
-        'Public/Stop-AzureLocalFleetUpdate.ps1',
-        'Public/Test-AzureLocalApplyUpdatesScheduleCoverage.ps1',
-        'Public/Test-AzureLocalClusterHealth.ps1',
-        'Public/Test-AzureLocalFleetHealthGate.ps1',
-        'Public/Test-AzureLocalItsmConnection.ps1',
-        'Public/Test-AzureLocalUpdateScheduleAllowed.ps1',
+        'Public/Resume-AzLocalFleetUpdate.ps1',
+        'Public/Set-AzLocalClusterUpdateRingTag.ps1',
+        'Public/Start-AzLocalClusterUpdate.ps1',
+        'Public/Stop-AzLocalFleetUpdate.ps1',
+        'Public/Test-AzLocalApplyUpdatesScheduleCoverage.ps1',
+        'Public/Test-AzLocalClusterHealth.ps1',
+        'Public/Test-AzLocalFleetHealthGate.ps1',
+        'Public/Test-AzLocalItsmConnection.ps1',
+        'Public/Test-AzLocalUpdateScheduleAllowed.ps1',
         'Public/Update-AzLocalApplyUpdatesScheduleConfig.ps1',
-        'Public/Update-AzureLocalPipelineExample.ps1'
+        'Public/Update-AzLocalPipelineExample.ps1'
     )
 
     FunctionsToExport = @(
-        'Connect-AzureLocalServicePrincipal',
-        'Start-AzureLocalClusterUpdate',
-        'Get-AzureLocalClusterUpdateReadiness',
-        'Get-AzureLocalClusterInventory',
-        'Get-AzureLocalClusterInfo',
-        'Get-AzureLocalUpdateSummary',
-        'Get-AzureLocalAvailableUpdates',
-        'Get-AzureLocalUpdateRuns',
-        'Set-AzureLocalClusterUpdateRingTag',
+        'Connect-AzLocalServicePrincipal',
+        'Start-AzLocalClusterUpdate',
+        'Get-AzLocalClusterUpdateReadiness',
+        'Get-AzLocalClusterInventory',
+        'Get-AzLocalClusterInfo',
+        'Get-AzLocalUpdateSummary',
+        'Get-AzLocalAvailableUpdates',
+        'Get-AzLocalUpdateRuns',
+        'Set-AzLocalClusterUpdateRingTag',
         # Fleet-Scale Operations (v0.5.6)
-        'Invoke-AzureLocalFleetOperation',
-        'Get-AzureLocalFleetProgress',
-        'Test-AzureLocalFleetHealthGate',
-        'Export-AzureLocalFleetState',
-        'Resume-AzureLocalFleetUpdate',
-        'Stop-AzureLocalFleetUpdate',
+        'Invoke-AzLocalFleetOperation',
+        'Get-AzLocalFleetProgress',
+        'Test-AzLocalFleetHealthGate',
+        'Export-AzLocalFleetState',
+        'Resume-AzLocalFleetUpdate',
+        'Stop-AzLocalFleetUpdate',
         # Pre-Update Health Validation (v0.6.1)
-        'Test-AzureLocalClusterHealth',
+        'Test-AzLocalClusterHealth',
         # Fleet Status Data Collection & Reporting (v0.6.4)
-        'Get-AzureLocalFleetStatusData',
-        'New-AzureLocalFleetStatusHtmlReport',
+        'Get-AzLocalFleetStatusData',
+        'New-AzLocalFleetStatusHtmlReport',
         # Update Schedule Tag Helpers (v0.6.4)
-        'Test-AzureLocalUpdateScheduleAllowed',
+        'Test-AzLocalUpdateScheduleAllowed',
         # Sideloaded Payload Workflow (v0.7.1)
-        'Reset-AzureLocalSideloadedTag',
+        'Reset-AzLocalSideloadedTag',
         # ITSM Connector Phase 1 (v0.7.4)
-        'Get-AzureLocalItsmConfig',
-        'Test-AzureLocalItsmConnection',
-        'New-AzureLocalIncident',
+        'Get-AzLocalItsmConfig',
+        'Test-AzLocalItsmConnection',
+        'New-AzLocalIncident',
         # Pipeline-Examples Convenience (v0.7.4 / Update added v0.7.68)
-        'Copy-AzureLocalPipelineExample',
-        'Update-AzureLocalPipelineExample',
+        'Copy-AzLocalPipelineExample',
+        'Update-AzLocalPipelineExample',
         # ITSM Sample Convenience (v0.7.50)
-        'Copy-AzureLocalItsmSample',
+        'Copy-AzLocalItsmSample',
         # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
-        'Get-AzureLocalFleetHealthFailures',
+        'Get-AzLocalFleetHealthFailures',
         # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
-        'Test-AzureLocalApplyUpdatesScheduleCoverage',
+        'Test-AzLocalApplyUpdatesScheduleCoverage',
         # Update Run Failures (v0.7.68) - ARG-only deep-error extraction (9 levels deep) for fleet-scale verbose error information
-        'Get-AzureLocalUpdateRunFailures',
+        'Get-AzLocalUpdateRunFailures',
         # Ring-Aware Apply-Updates Schedule (v0.7.69) - human-readable schedule file + cycle-based resolver
         'Get-AzLocalApplyUpdatesScheduleConfig',
         'Resolve-AzLocalCurrentUpdateRing',
@@ -174,7 +175,7 @@
         # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries (fleet-scale)
         'Get-AzLocalFleetHealthOverview',
         # Latest Released Solution Version (v0.7.70) - public manifest probe (aka.ms/AzureEdgeUpdates) that anchors the rolling YYMM support window
-        'Get-AzureLocalLatestSolutionVersion'
+        'Get-AzLocalLatestSolutionVersion'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -203,16 +204,100 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.75 - Hardening: Test-AzureLocalApplyUpdatesScheduleCoverage auto-detects the CI host platform when -Platform is omitted, so stale consumer yml self-heals against cross-platform output noise
+## Version 0.7.76 - Renamed to -AzLocal* + nine MODULE-REVIEW findings + ARM healthCheckResult dedup
+
+### Breaking (rename) - operator-controlled module, no other consumers
+
+- **All exported cmdlets renamed from `-AzureLocal*` to `-AzLocal*`** to align
+  with the published module name (`AzLocal.UpdateManagement`) and PowerShell
+  module-prefix convention. Internal private helpers were also renamed. The
+  module GUID is preserved; PSGallery installs `AzLocal.UpdateManagement` and
+  the rename is invisible to users who install via `Install-Module`. Callers
+  who had pinned previous versions and used the old `-AzureLocal*` names must
+  re-import. No deprecation aliases were added (module is still pre-1.0 and
+  has no external consumers).
+
+### Fixed (bonus)
+
+- **`Test-AzLocalClusterHealth` and `Get-HealthCheckFailureSummary` (private)
+  now dedup byte-identical ARM `healthCheckResult` rows.** ARM upstream was
+  observed emitting two byte-identical rows for the same logical check (e.g.
+  "Test Network intent on existing cluster nodes" on a 2-node cluster, same
+  CheckName / Severity / Description / Remediation / TargetResourceName /
+  Timestamp), which doubled the displayed failure count and made Step.4
+  readiness reports confusing. Dedup is by the COMPLETE row tuple, so per-
+  node distinct findings (different TargetResourceName e.g.
+  `UserStorage_1-Repair` vs `UserStorage_2-Repair`) stay separate.
+
+### Findings from MODULE-REVIEW-AND-RECOMMENDATIONS (all addressed)
+
+- **Finding 1 P0 (row-collapse bug, v0.7.75):** `Invoke-AzResourceGraphQuery`
+  used `return , $allRows.ToArray()` but `Get-AzureLocalUpdateRuns` (and 23
+  other consumers) wrapped the call with `@(...)`, collapsing 136 rows into
+  a 1-row array containing the inner Object[136]. Property access then
+  silently aggregated values into per-column arrays-of-strings. Fixed by
+  changing all callers to direct assignment (`$x = func`); helper warning
+  comment added.
+- **Finding 2 (test gaps):** Added regression tests for row-collapse,
+  ARM healthCheckResult dedup (3 cases), and KQL arg-length safety.
+- **Finding 3 (SP secret leak):** `Connect-AzLocalServicePrincipal` now
+  writes the secret to a temp file with restricted ACL, passes via
+  `Get-Content` not env var, removes the file in a `finally` block.
+- **Finding 4 (README appendix demote):** Older What's-New entries moved to
+  bottom of README, then extracted entirely to `docs/release-history.md`.
+- **Finding 5 P2 (README split, Section 6.3):** Main README trimmed from
+  3372 to ~600 lines. New docs/ tree: `cmdlet-reference.md`,
+  `concepts.md`, `rbac.md`, `troubleshooting.md`, `release-history.md`.
+  Pipeline README appendices also extracted to
+  `Automation-Pipeline-Examples/docs/`.
+- **Finding 6 (.psm1 housekeeping):** Removed dead-code commented blocks,
+  consolidated import boilerplate.
+- **Finding 8 (review artefact archive):** Moved review files into a
+  gitignored `docs/MODULE-REVIEW-AND-RECOMMENDATIONS.md` so they do not
+  leak into the published module.
+- **Finding 9 (.psm1 rationale):** Added top-of-file comment block
+  explaining the deliberate `Set-StrictMode -Version 1.0` choice (rather
+  than `Latest`) and the dot-source-then-export pattern.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure
+  DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.75'` to
+  `'0.7.76'`. The pin is a runtime drift-detection constant read by
+  `Step.0_authentication-test.yml` (and the other Step.* templates) and
+  compared to the version of `AzLocal.UpdateManagement` it just installed
+  from PSGallery; on mismatch, the Step Summary emits a drift warning
+  telling the operator to refresh the YAML. The pin does NOT control
+  which module is installed (`Install-Module -Force` always pulls
+  PSGallery latest), so existing pre-v0.7.76 consumer YAMLs continue to
+  function - they just emit the warning until refreshed. **New in
+  v0.7.76:** Step.0 itself now carries the pin (previously only
+  `Step.{1..7}` did), per the 'Step.0 module-drift parity' item in the
+  release title - so the drift warning fires from the very first job in
+  the pipeline rather than waiting for Step.1. Refresh consumer YAMLs
+  to silence the warning with:
+  `Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHubActions`
+  and / or `-Destination .\.azure-pipelines -Platform AzureDevOps`.
+
+### Migration
+
+- After `Install-Module AzLocal.UpdateManagement -Force` or
+  `Update-Module`, callers using `-AzureLocal*` cmdlet names will get a
+  "command not found" error. Search-and-replace `-AzureLocal` with
+  `-AzLocal` in your scripts. Module GUID unchanged - downstream consumers
+  of the manifest (CI cache keys, ARM template `requiredModules`) continue
+  to resolve.
+
+## Version 0.7.75 - Hardening: Test-AzLocalApplyUpdatesScheduleCoverage auto-detects the CI host platform when -Platform is omitted, so stale consumer yml self-heals against cross-platform output noise
 
 ### Fixed
 
-- **`Test-AzureLocalApplyUpdatesScheduleCoverage` cross-platform noise
+- **`Test-AzLocalApplyUpdatesScheduleCoverage` cross-platform noise
   is now fixed at the cmdlet layer**, not just the yml layer.
   v0.7.74 patched the symptom by adding `-Platform GitHubActions` /
   `-Platform AzureDevOps` to the bundled Step.3 yml templates, but
   consumers whose Step.3 yml is a verbatim pre-v0.7.74 copy (i.e.
-  they have not yet run `Update-AzureLocalPipelineExample`) still see
+  they have not yet run `Update-AzLocalPipelineExample`) still see
   both snippets in their Step Summary because the yml does not pass
   `-Platform` and the cmdlet defaults to `'Both'`. v0.7.75 closes
   that gap: when the caller does not bind `-Platform`, the cmdlet
@@ -238,7 +323,7 @@
   runs against the v0.7.75 module on PSGallery. Refresh existing yml
   copies (recommended for the version-pin bump and any other v0.7.75
   changes flagged via `GENERATED_AGAINST_MODULE_VERSION`) with:
-  `Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`
+  `Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`
   and / or `-Destination .\.azure-pipelines -Platform AzureDevOps`.
 
 ## Version 0.7.74 - Bug fix: Get-AzLocalFleetHealthOverview KQL regression (ParserFailure at char 2757) + Step.3 recommendation UX rewrite

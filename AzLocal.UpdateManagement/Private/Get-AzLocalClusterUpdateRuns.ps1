@@ -13,7 +13,7 @@ function Get-AzLocalClusterUpdateRuns {
         }
     }
     else {
-        $updates = @(Get-AzureLocalAvailableUpdates -ClusterResourceId $resourceId -ApiVersion $apiVer -Raw)
+        $updates = @(Get-AzLocalAvailableUpdates -ClusterResourceId $resourceId -ApiVersion $apiVer -Raw)
         foreach ($update in $updates) {
             $uri = "https://management.azure.com$resourceId/updates/$($update.name)/updateRuns?api-version=$apiVer"
             $runs = (Invoke-AzRestJson -Uri $uri).Data
