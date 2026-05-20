@@ -29,7 +29,9 @@ Thumbs.db
 _tmp_*
 
 # Agent-generated planning / review docs (kept locally, never committed)
+# Per-module consolidation folder (preferred location for all review artefacts):
+AzLocal.UpdateManagement/Module-reviews/
+# Defensive guards for stray files anywhere in the tree:
 **/COMBINED-REVIEW-ACTION-PLAN.md
 **/MODULE-REVIEW-AND-RECOMMENDATIONS.md
-AzLocal.UpdateManagement/docs/reviews/
 
