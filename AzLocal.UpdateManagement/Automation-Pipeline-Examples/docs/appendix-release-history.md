@@ -6,9 +6,11 @@
 
 ## Appendix B: Release history
 
+> **Latest version:** the `GENERATED_AGAINST_MODULE_VERSION` env / pipeline variable in every bundled `Step.*.yml` template is bumped on each release; check that value (or the [`CHANGELOG.md`](../../CHANGELOG.md)) for the current pin. Releases after **v0.7.70** are mechanical pipeline-pin bumps only (no template-shape changes) and are documented in the module CHANGELOG; the per-release entries below capture the last set of releases that materially changed the bundled YAMLs.
+
 The body of this document tracks **v0.7.70** behaviour. Older versions are preserved below for reference.
 
-### B.1 v0.7.70 (current)
+### B.1 v0.7.70
 
 > **Backward compatible.** All v0.7.70 changes are additive over v0.7.69. The Step.0 validation pipeline (`Step.0_authentication-test.yml`) is repositioned from a one-shot smoke test to a recurring **Authentication Validation and Subscription Scope Report**; the existing inline-script structure is preserved underneath. Pipeline pin bumps to `'0.7.70'`; refresh existing copies with `Update-AzLocalPipelineExample`.
 

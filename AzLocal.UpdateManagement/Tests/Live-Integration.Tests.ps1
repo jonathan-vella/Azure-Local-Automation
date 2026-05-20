@@ -165,11 +165,14 @@ Describe 'Live-Integration: Get-AzLocalFleetHealthOverview' -Tag 'Live' -Skip:$S
         }
     }
 
-    It 'HealthResultsAgeDays is either null or a non-negative integer' {
+    It 'HealthResultsAgeDays is either null, the -1 sentinel (no LastChecked), or a non-negative integer' {
+        # KQL emits -1 as the documented sentinel for "no LastChecked timestamp"
+        # (see Get-AzLocalFleetHealthOverview.ps1: iif(isnull(LastChecked), -1, ...)).
         $rows = @() + (Get-AzLocalFleetHealthOverview -PassThru -ErrorAction Stop)
         foreach ($row in $rows) {
             if ($null -eq $row.HealthResultsAgeDays) { continue }
-            [int]$row.HealthResultsAgeDays | Should -BeGreaterOrEqual 0
+            $age = [int]$row.HealthResultsAgeDays
+            ($age -eq -1 -or $age -ge 0) | Should -BeTrue -Because "HealthResultsAgeDays on $($row.ClusterName) must be null, the -1 sentinel, or a non-negative integer (got $age)"
         }
     }
 

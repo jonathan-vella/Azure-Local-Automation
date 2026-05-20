@@ -42,7 +42,26 @@ name: Step.0 - Authentication Validation and Subscription Scope Report
 
 trigger: none
 
-# No parameters - this pipeline is deliberately fixed: one service connection,
+parameters:
+  - name: moduleVersion
+    displayName: 'Pin AzLocal.UpdateManagement version (empty = latest from PSGallery). See Automation-Pipeline-Examples/README.md section 5 "Optional configuration".'
+    type: string
+    default: ''
+
+variables:
+  # Module version this YAML was generated against. The install step compares this to
+  # the version actually installed and to the latest on PSGallery, and emits a warning
+  # log if the YAML appears stale - prompting you to refresh via
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  - name: GENERATED_AGAINST_MODULE_VERSION
+    value: '0.7.76'
+  # Resolution order for the module version pin (leave all unset to install the latest,
+  # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
+  # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
+  - name: REQUIRED_MODULE_VERSION
+    value: '${{ parameters.moduleVersion }}'
+
+# No further parameters - this pipeline is deliberately fixed: one service connection,
 # one identity, four probes. If the service connection name does not match your
 # environment, update `azureSubscription` below.
 
@@ -57,6 +76,61 @@ stages:
         displayName: 'Run auth, RBAC, and Subscription Scope probes'
 
         steps:
+          - task: PowerShell@2
+            displayName: 'Install AzLocal.UpdateManagement from PSGallery'
+            # Step.0 itself does not call the module (the auth/RBAC/ARG probes
+            # below use raw az CLI), but installing the module here gives operators
+            # an early, consistent drift signal *before* the rest of the seven
+            # pipelines run. If this step warns that the YAML is stale or the
+            # installed module is older than expected, refresh the YAMLs via
+            # Copy-AzLocalPipelineExample -Platform AzureDevOps -Update and re-run -
+            # same pattern as Step.1+.
+            env:
+              REQUIRED_MODULE_VERSION: $(REQUIRED_MODULE_VERSION)
+              GENERATED_AGAINST_MODULE_VERSION: $(GENERATED_AGAINST_MODULE_VERSION)
+            inputs:
+              targetType: 'inline'
+              pwsh: true
+              script: |
+                $ErrorActionPreference = 'Stop'
+                $installArgs = @{ Name = 'AzLocal.UpdateManagement'; Scope = 'CurrentUser'; Force = $true; AllowClobber = $true }
+                if ($env:REQUIRED_MODULE_VERSION) {
+                    $installArgs.RequiredVersion = $env:REQUIRED_MODULE_VERSION
+                    Write-Host "REQUIRED_MODULE_VERSION is set - pinning install to v$($env:REQUIRED_MODULE_VERSION)."
+                } else {
+                    Write-Host "REQUIRED_MODULE_VERSION is empty - installing the latest version from PSGallery (default fix-forward behaviour)."
+                }
+                Install-Module @installArgs
+                Import-Module AzLocal.UpdateManagement -Force
+                # Get-Module can return multiple entries when nested modules are loaded - pick the highest version.
+                $installed = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+                $generated = [version]$env:GENERATED_AGAINST_MODULE_VERSION
+                $latest    = (Find-Module -Name AzLocal.UpdateManagement -Repository PSGallery -ErrorAction SilentlyContinue).Version
+                Write-Host ""
+                Write-Host "Module version summary"
+                Write-Host "  Installed on agent        : $installed"
+                Write-Host "  YAML generated against    : $generated"
+                Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
+                Write-Host ""
+                Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
+                # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
+                if ($installed -lt $generated) {
+                    Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
+                }
+                if ($installed -gt $generated) {
+                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+                    Write-Host "##vso[task.logissue type=warning]$msg"
+                }
+                if ($latest -and ($latest -gt $installed)) {
+                    $msg = "AzLocal.UpdateManagement v$latest is available on PSGallery; this run installed v$installed. Review the module CHANGELOG before bumping REQUIRED_MODULE_VERSION (or clear the pin to install the latest automatically)."
+                    Write-Host "##vso[task.logissue type=warning]$msg"
+                }
+                # Persist the three versions so the report step (below) can include them
+                # in the JUnit XML + markdown summary alongside the auth/RBAC checks.
+                Write-Host "##vso[task.setvariable variable=installedModuleVersion;isOutput=false]$installed"
+                Write-Host "##vso[task.setvariable variable=generatedAgainstVersion;isOutput=false]$generated"
+                Write-Host "##vso[task.setvariable variable=latestOnPsGallery;isOutput=false]$(if ($latest) { $latest } else { '' })"
+
           - task: AzureCLI@2
             displayName: 'Collect Authentication and Subscription Scope Report'
             inputs:
@@ -153,6 +227,16 @@ stages:
                 [void]$xml.AppendLine("    <testcase classname=`"ResourceGraph`" name=`"Clusters visible to pipeline identity = $clusterCount`" />")
                 [void]$xml.AppendLine('  </testsuite>')
 
+                # Suite 4: Module Version Drift (informational - never fails)
+                $installedVersion = "$env:INSTALLEDMODULEVERSION"
+                $generatedVersion = "$env:GENERATEDAGAINSTVERSION"
+                $latestVersion    = "$env:LATESTONPSGALLERY"
+                [void]$xml.AppendLine("  <testsuite name=`"&#x1F4E6; Module Version Drift`" tests=`"3`" failures=`"0`" timestamp=`"$now`">")
+                [void]$xml.AppendLine("    <testcase classname=`"ModuleVersion`" name=`"Installed AzLocal.UpdateManagement = $installedVersion`" />")
+                [void]$xml.AppendLine("    <testcase classname=`"ModuleVersion`" name=`"YAML generated against = $generatedVersion`" />")
+                [void]$xml.AppendLine("    <testcase classname=`"ModuleVersion`" name=`"Latest on PSGallery = $(if ($latestVersion) { $latestVersion } else { '(lookup failed)' })`" />")
+                [void]$xml.AppendLine('  </testsuite>')
+
                 [void]$xml.AppendLine('</testsuites>')
                 $xmlPath = "$reportDir/auth-report.xml"
                 [System.IO.File]::WriteAllText($xmlPath, $xml.ToString(), [System.Text.UTF8Encoding]::new($false))
@@ -171,6 +255,9 @@ stages:
                 [void]$md.AppendLine("| Tenant | ``$($account.tenantId)`` |")
                 [void]$md.AppendLine("| Pipeline identity (appId) | ``$($account.user.name)`` |")
                 [void]$md.AppendLine("| Resource Graph reachability | :white_check_mark: $clusterCount cluster(s) visible |")
+                [void]$md.AppendLine("| AzLocal.UpdateManagement (installed) | ``$installedVersion`` |")
+                [void]$md.AppendLine("| AzLocal.UpdateManagement (YAML generated against) | ``$generatedVersion`` |")
+                [void]$md.AppendLine("| AzLocal.UpdateManagement (latest on PSGallery) | ``$(if ($latestVersion) { $latestVersion } else { '(lookup failed)' })`` |")
                 [void]$md.AppendLine('')
                 [void]$md.AppendLine("### Count of subscriptions accessible = $subCount")
                 [void]$md.AppendLine('')

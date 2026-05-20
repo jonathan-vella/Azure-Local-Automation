@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.75' {
-            $script:ModuleInfo.Version | Should -Be '0.7.75'
+        It 'Should have version 0.7.76' {
+            $script:ModuleInfo.Version | Should -Be '0.7.76'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -1416,16 +1416,12 @@ Describe 'Module Best Practices' {
 
         It 'All exported functions should use consistent noun prefix' {
             $exportedFunctions = (Get-Module AzLocal.UpdateManagement).ExportedFunctions.Keys
-            # Two approved noun prefixes (both shipped from this module):
-            #   AzureLocal* - the original fleet/update cmdlets (v0.5.x .. v0.7.68)
-            #   AzLocal*    - the v0.7.69 ring-aware apply-updates-schedule cmdlets
-            #                 (Get/New/Update-AzLocalApplyUpdatesScheduleConfig,
-            #                  Get-AzLocalApplyUpdatesScheduleNextFirings,
-            #                  Resolve-AzLocalCurrentUpdateRing)
+            # v0.7.76 rename: all exported cmdlets use the AzLocal* noun prefix.
+            # (Pre-v0.7.76 the module also shipped AzureLocal* nouns; those were
+            # renamed to AzLocal* to align with the module name.)
             foreach ($func in $exportedFunctions) {
                 $noun = $func.Split('-')[1]
-                ($noun -like 'AzureLocal*' -or $noun -like 'AzLocal*') |
-                    Should -BeTrue -Because "$func should use AzureLocal* or AzLocal* noun prefix (got '$noun')"
+                $noun | Should -BeLike 'AzLocal*' -Because "$func should use AzLocal* noun prefix (got '$noun')"
             }
         }
     }
@@ -2398,7 +2394,7 @@ Describe 'Function: Stop-AzLocalFleetUpdate' {
 Describe 'Fleet Functions: Naming Conventions' {
     
     Context 'Noun Prefix Consistency' {
-        It 'All fleet functions should use AzureLocal noun prefix' {
+        It 'All fleet functions should use AzLocal noun prefix' {
             $fleetFunctions = @(
                 'Invoke-AzLocalFleetOperation',
                 'Get-AzLocalFleetProgress',
@@ -2410,7 +2406,7 @@ Describe 'Fleet Functions: Naming Conventions' {
             
             foreach ($func in $fleetFunctions) {
                 $noun = $func.Split('-')[1]
-                $noun | Should -BeLike 'AzureLocal*' -Because "$func should use AzureLocal noun prefix"
+                $noun | Should -BeLike 'AzLocal*' -Because "$func should use AzLocal noun prefix"
             }
         }
     }
@@ -2511,9 +2507,9 @@ Describe 'Function: Test-AzLocalClusterHealth' {
     }
 
     Context 'Naming Convention' {
-        It 'Should use AzureLocal noun prefix' {
+        It 'Should use AzLocal noun prefix' {
             $noun = 'Test-AzLocalClusterHealth'.Split('-')[1]
-            $noun | Should -BeLike 'AzureLocal*'
+            $noun | Should -BeLike 'AzLocal*'
         }
     }
 }
@@ -3186,9 +3182,9 @@ Describe 'Function: Get-AzLocalFleetHealthFailures' {
     }
 
     Context 'Naming Convention' {
-        It 'Should use AzureLocal noun prefix' {
+        It 'Should use AzLocal noun prefix' {
             $noun = 'Get-AzLocalFleetHealthFailures'.Split('-')[1]
-            $noun | Should -BeLike 'AzureLocal*'
+            $noun | Should -BeLike 'AzLocal*'
         }
     }
 }
@@ -6143,14 +6139,23 @@ on:
                 # containing the nested array, and downstream coverage matching
                 # would compare a single nested-array string against YAML crons
                 # and always report Uncovered (silent false negative).
-                $hybrid = $result | Where-Object UpdateRing -eq 'HybridRing'
+                #
+                # Audit view ROLLS multi-segment windows into a single row per
+                # (UpdateRing, UpdateWindow) with all required crons reflected
+                # in RequiredCronUTC (semicolon-separated). This test asserts
+                # both segments are PARSED (visible in RequiredCronUTC) and
+                # both contribute to the rolled-up Status.
+                $hybrid = @($result | Where-Object UpdateRing -eq 'HybridRing')
                 $hybrid | Should -Not -BeNullOrEmpty
-                # Multi-segment windows surface as multiple Audit rows (one per
-                # cron) with the same UpdateRing; both should be Covered against
-                # the two-cron YAML.
-                @($hybrid).Count | Should -Be 2
-                $covered = @($hybrid | Where-Object Status -eq 'Covered')
-                $covered.Count | Should -Be 2
+                $hybrid.Count | Should -Be 1 -Because 'multi-segment windows roll into one Audit row per (UpdateRing, UpdateWindow)'
+                # RequiredCronUTC must reflect BOTH segments. If the @() wrap
+                # regression returns the second cron will be missing or the
+                # field will surface as a System.Object[] of array values
+                # (semicolon join would then produce 'System.Object[]; System.Object[]').
+                $hybrid[0].RequiredCronUTC | Should -Match ';' -Because 'two required crons must be semicolon-joined'
+                $hybrid[0].RequiredCronUTC | Should -Not -Match 'System.Object' -Because 'a regressed caller wrap with @() collapses Object[2] into Object[1] of nested arrays'
+                # Both segments covered by the two-cron YAML.
+                $hybrid[0].Status | Should -Be 'Covered'
             }
         }
 
