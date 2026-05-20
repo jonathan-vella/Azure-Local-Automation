@@ -6059,6 +6059,97 @@ on:
         }
     }
 
+    Context 'Regression: multi-segment / multi-cron row-shape (Finding 1, v0.7.76)' {
+        # These tests guard against the silent row-collapse bug where the public
+        # cmdlet wrapped helper return values with @() while the helpers used
+        # `return , $arr` to preserve Object[N] shape. Wrapping a `, $arr`
+        # return with @() collapses it to Object[1] containing the inner array,
+        # so multi-row scenarios silently produced one nested-array row instead
+        # of N rows. See `docs/MODULE-REVIEW-AND-RECOMMENDATIONS.md` Finding 1.
+        BeforeAll {
+            $script:multiYamlDir = Join-Path $env:TEMP "schedule-cov-multicron-$(Get-Random)"
+            New-Item -ItemType Directory -Path (Join-Path $script:multiYamlDir 'github-actions') -Force | Out-Null
+            # Two cron triggers in one YAML: Sat-Sun 01:50 AND Mon-Fri 21:55.
+            # Read-AzLocalApplyUpdatesYamlCrons returns Object[2] via `, $arr`;
+            # a regressed caller wrapping with @() would receive Object[1] and
+            # this test would fail.
+            @"
+on:
+  schedule:
+    - cron: '50 1 * * 6,0'
+    - cron: '55 21 * * 1-5'
+"@ | Set-Content -Path (Join-Path $script:multiYamlDir 'github-actions\Step.5_apply-updates.yml') -Encoding ASCII
+        }
+        AfterAll {
+            Remove-Item -Path $script:multiYamlDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        It 'Audit: multi-cron YAML produces Covered for both Sat-Sun AND Mon-Fri windows' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ multiYamlDir = $script:multiYamlDir } {
+                param($multiYamlDir)
+                Mock Invoke-AzResourceGraphQuery {
+                    @(
+                        [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='Wave1';      UpdateWindow='Sat-Sun_02:00-06:00' },
+                        [PSCustomObject]@{ ClusterName='c2'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c2'; UpdateRing='Production'; UpdateWindow='Mon-Fri_22:00-04:00' }
+                    )
+                }
+                $result = Test-AzLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath $multiYamlDir -PassThru 6>$null
+                # If the @() wrap regression returns - both rows would collapse
+                # to a single nested-array row and one of these assertions would
+                # fail with `Status` being a System.Object[] of array values.
+                ($result | Where-Object UpdateRing -eq 'Wave1').Status      | Should -Be 'Covered'
+                ($result | Where-Object UpdateRing -eq 'Production').Status | Should -Be 'Covered'
+            }
+        }
+
+        It 'Audit: multi-segment UpdateWindow (Mon-Fri_22:00-04:00;Sat-Sun_02:00-10:00) reports both segments parsed' {
+            InModuleScope AzLocal.UpdateManagement -Parameters @{ multiYamlDir = $script:multiYamlDir } {
+                param($multiYamlDir)
+                Mock Invoke-AzResourceGraphQuery {
+                    @(
+                        [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='HybridRing'; UpdateWindow='Mon-Fri_22:00-04:00;Sat-Sun_02:00-10:00' }
+                    )
+                }
+                $result = Test-AzLocalApplyUpdatesScheduleCoverage -View Audit -PipelineYamlPath $multiYamlDir -PassThru 6>$null
+                # The HybridRing row contains TWO required crons (one per segment).
+                # Convert-AzLocalUpdateWindowToCron returns Object[2] via `, $arr`;
+                # a regressed caller wrapping with @() would produce Object[1]
+                # containing the nested array, and downstream coverage matching
+                # would compare a single nested-array string against YAML crons
+                # and always report Uncovered (silent false negative).
+                $hybrid = $result | Where-Object UpdateRing -eq 'HybridRing'
+                $hybrid | Should -Not -BeNullOrEmpty
+                # Multi-segment windows surface as multiple Audit rows (one per
+                # cron) with the same UpdateRing; both should be Covered against
+                # the two-cron YAML.
+                @($hybrid).Count | Should -Be 2
+                $covered = @($hybrid | Where-Object Status -eq 'Covered')
+                $covered.Count | Should -Be 2
+            }
+        }
+
+        It 'Recommend: multi-segment UpdateWindow emits one row per cron with stable dedupe key' {
+            InModuleScope AzLocal.UpdateManagement {
+                Mock Invoke-AzResourceGraphQuery {
+                    @(
+                        [PSCustomObject]@{ ClusterName='c1'; ResourceGroup='r'; SubscriptionId='s'; ClusterResourceId='/s/r/c1'; UpdateRing='HybridRing'; UpdateWindow='Mon-Fri_22:00-04:00;Sat-Sun_02:00-10:00' }
+                    )
+                }
+                $result = Test-AzLocalApplyUpdatesScheduleCoverage -View Recommend -PassThru 6>$null
+                # If RequiredCrons collapsed to one nested-array row, Recommend
+                # would emit a single CronExpression equal to a `System.Object[]`
+                # string and the count would be 1. With the fix it should be 2.
+                @($result).Count | Should -Be 2
+                # Each emitted row should have a real cron string, not a
+                # stringified array.
+                foreach ($r in $result) {
+                    $r.CronExpression | Should -Match '^\d+\s+\d+\s+\*\s+\*\s+'
+                    $r.ClusterCount | Should -Be 1
+                }
+            }
+        }
+    }
+
     Context 'Integration: shipped Automation-Pipeline-Examples bundle (v0.7.69)' {
         # End-to-end smoke against the actual YAMLs published to PSGallery as
         # part of the module. This is the gap that let v0.7.68 ship with the
