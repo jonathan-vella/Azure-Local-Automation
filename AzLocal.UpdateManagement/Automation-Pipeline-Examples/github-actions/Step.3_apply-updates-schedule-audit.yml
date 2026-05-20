@@ -1,4 +1,4 @@
-﻿# Apply-Updates Schedule Coverage Audit
+# Apply-Updates Schedule Coverage Audit
 # This workflow runs the read-only Test-AzLocalApplyUpdatesScheduleCoverage advisor
 # weekly to detect drift between the cron schedule(s) in your apply-updates pipeline
 # YAML and the UpdateWindow tags that operators have placed on Azure Local clusters.
@@ -83,7 +83,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.78'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.79'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
 jobs:
