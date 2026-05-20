@@ -35,10 +35,14 @@ function Connect-AzLocalServicePrincipal {
     .PARAMETER ServicePrincipalSecret
         The client secret for the Service Principal.
         Can also be set via AZURE_CLIENT_SECRET environment variable.
-        For security, prefer a [SecureString] or the AZURE_CLIENT_SECRET environment variable.
+        For security, prefer Managed Identity (-UseManagedIdentity), OIDC/federated
+        credentials in CI/CD, a [SecureString], or the AZURE_CLIENT_SECRET environment variable.
         Accepts both [string] (plaintext, logs a security warning) and [SecureString].
-        Plaintext passing via command line is discouraged because process command-line arguments
-        may be visible to other users/EDR on the host.
+        Plaintext passing via command line is discouraged because the value lives in
+        the caller's process memory; once received, this cmdlet hands the secret to
+        `az login` via a temp file (the CLI's `--password @<file>` argument-file syntax,
+        owner-only ACL, zero-overwrite + delete in finally) so the secret never
+        appears in the child process command line.
         Not used when -UseManagedIdentity is specified.
     
     .PARAMETER TenantId
@@ -182,7 +186,7 @@ function Connect-AzLocalServicePrincipal {
             $clientSecretPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($secretBstr)
         }
         elseif ($ServicePrincipalSecret -is [string] -and $ServicePrincipalSecret) {
-            Write-Log -Message "SECURITY: -ServicePrincipalSecret was supplied as plaintext [string]. Secret may be visible in process command line to other users on this host. Prefer [SecureString] or the AZURE_CLIENT_SECRET environment variable for CI/CD." -Level Warning
+            Write-Log -Message "SECURITY: -ServicePrincipalSecret was supplied as plaintext [string]. The value is now in this process's memory; the secret is passed to 'az' via a temp file (not the command line). For stronger isolation prefer -UseManagedIdentity, OIDC/federated credentials in CI/CD, a [SecureString], or the AZURE_CLIENT_SECRET environment variable." -Level Warning
             $clientSecretPlain = $ServicePrincipalSecret
         }
         elseif ($null -ne $ServicePrincipalSecret) {
@@ -207,36 +211,88 @@ function Connect-AzLocalServicePrincipal {
 
         Write-Log -Message "Authenticating with Service Principal..." -Level Warning
 
+        # Security (v0.7.76, Finding 3): pass the secret to `az` via a temp
+        # file using the CLI's documented `@<file>` argument-file syntax
+        # (https://learn.microsoft.com/cli/azure/use-cli-effectively#use-file-input-for-cli-parameters)
+        # instead of inlining the secret as `--password $plain`. The latter
+        # makes the secret visible to anyone who can enumerate processes on
+        # the host (tasklist /v, ps -ef, EDR command-line capture).
+        # The temp file is created with owner-only ACL where possible,
+        # overwritten with zero bytes, then deleted in finally.
+        $secretFile = $null
         try {
-            # Login using Service Principal
-            $loginResult = az login --service-principal `
-                --username $clientId `
-                --password $clientSecretPlain `
-                --tenant $tenant `
-                --output none 2>&1
+            $secretFile = [IO.Path]::Combine([IO.Path]::GetTempPath(), [IO.Path]::GetRandomFileName())
 
-            if ($LASTEXITCODE -ne 0) {
-                $scrubbed = ConvertTo-ScrubbedCliOutput -Text (($loginResult | Out-String).Trim())
-                Write-Error "Service Principal authentication failed: $scrubbed"
-                return $false
+            # Create empty file first, then tighten ACL before writing the secret.
+            ([IO.File]::Create($secretFile)).Dispose()
+            try {
+                $acl = Get-Acl -LiteralPath $secretFile
+                # Disable inheritance, dropping inherited rules (preserveInheritance = $false).
+                $acl.SetAccessRuleProtection($true, $false)
+                # Strip any non-inherited rules left behind (creator default).
+                foreach ($existing in @($acl.Access)) {
+                    [void]$acl.RemoveAccessRule($existing)
+                }
+                $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+                $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                    $currentUser, 'FullControl', 'Allow')
+                $acl.AddAccessRule($rule)
+                Set-Acl -LiteralPath $secretFile -AclObject $acl
+            }
+            catch {
+                Write-Log -Message "Could not tighten ACL on temp secret file '$secretFile': $($_.Exception.Message). Proceeding (file will still be deleted in finally)." -Level Warning
             }
 
-            # Verify authentication
-            $accountInfo = az account show 2>$null | ConvertFrom-Json
-            if ($LASTEXITCODE -eq 0 -and $accountInfo) {
-                Write-Log -Message "Successfully authenticated as Service Principal: $($accountInfo.user.name)" -Level Success
-                Write-Log -Message "Subscription: $($accountInfo.name) ($($accountInfo.id))" -Level Verbose
-                $script:ServicePrincipalAuthenticated = $true
-                return $true
+            # Write the raw secret bytes (no BOM, no trailing newline).
+            [IO.File]::WriteAllText($secretFile, $clientSecretPlain, [Text.UTF8Encoding]::new($false))
+
+            try {
+                # Login using Service Principal. `--password @<file>` makes az
+                # read the secret from disk instead of taking it on argv.
+                $loginResult = az login --service-principal `
+                    --username $clientId `
+                    --password "@$secretFile" `
+                    --tenant $tenant `
+                    --output none 2>&1
+
+                if ($LASTEXITCODE -ne 0) {
+                    $scrubbed = ConvertTo-ScrubbedCliOutput -Text (($loginResult | Out-String).Trim())
+                    Write-Error "Service Principal authentication failed: $scrubbed"
+                    return $false
+                }
+
+                # Verify authentication
+                $accountInfo = az account show 2>$null | ConvertFrom-Json
+                if ($LASTEXITCODE -eq 0 -and $accountInfo) {
+                    Write-Log -Message "Successfully authenticated as Service Principal: $($accountInfo.user.name)" -Level Success
+                    Write-Log -Message "Subscription: $($accountInfo.name) ($($accountInfo.id))" -Level Verbose
+                    $script:ServicePrincipalAuthenticated = $true
+                    return $true
+                }
+                else {
+                    Write-Error "Authentication succeeded but account verification failed."
+                    return $false
+                }
             }
-            else {
-                Write-Error "Authentication succeeded but account verification failed."
+            catch {
+                Write-Error "Service Principal authentication error: $($_.Exception.Message)"
                 return $false
             }
         }
-        catch {
-            Write-Error "Service Principal authentication error: $($_.Exception.Message)"
-            return $false
+        finally {
+            # Best-effort secure-delete of the temp secret file: overwrite
+            # contents with zero bytes, then remove. Errors are swallowed so
+            # cleanup never masks the original outcome.
+            if ($secretFile -and (Test-Path -LiteralPath $secretFile)) {
+                try {
+                    $len = (Get-Item -LiteralPath $secretFile -ErrorAction SilentlyContinue).Length
+                    if ($len -gt 0) {
+                        [IO.File]::WriteAllBytes($secretFile, [byte[]]::new($len))
+                    }
+                }
+                catch { }
+                Remove-Item -LiteralPath $secretFile -Force -ErrorAction SilentlyContinue
+            }
         }
     }
     finally {
