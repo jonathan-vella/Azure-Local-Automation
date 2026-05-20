@@ -3,6 +3,39 @@
 > **What you will find here:** A chronological record of every released version, in newest-first order. Each entry describes user-visible behaviour changes, bug fixes, and migration steps. The most recent release's full What's-New is also mirrored in the main [README.md](../README.md) under `What's New in v<latest>`.
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
+>
+> **For v0.7.76 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0776) `What's New in v0.7.76` section.
+
+---
+
+### What's New in v0.7.75
+
+v0.7.75 was a **hardening** release on top of v0.7.74. v0.7.74 patched the `Test-AzLocalApplyUpdatesScheduleCoverage` cross-platform-noise bug at the **yml layer** by adding `-Platform GitHubActions` / `-Platform AzureDevOps` arguments to the bundled Step.3 yml templates - but that fix only took effect for consumers who refreshed their yml via `Update-AzLocalPipelineExample`. Consumers whose Step.3 yml was a verbatim pre-v0.7.74 copy still saw both the GitHub Actions snippet AND the Azure DevOps snippet in their Step Summary, because their yml did not pass `-Platform` and the cmdlet's default was `-Platform Both`. v0.7.75 closed that gap by adding the same auto-selection at the **cmdlet layer** so stale yml self-heals at runtime. Pipeline pin bumps to `'0.7.75'`; refresh existing copies via `Update-AzLocalPipelineExample`.
+
+#### Test-AzLocalApplyUpdatesScheduleCoverage auto-detects the CI host platform when -Platform is omitted
+
+When the caller does **not** bind `-Platform`, the cmdlet inspects the well-known CI environment variables and self-selects:
+
+- `$env:GITHUB_ACTIONS -eq 'true'` -> `-Platform GitHubActions` (emit only the GitHub Actions snippet)
+- `$env:TF_BUILD -eq 'True'` OR any non-empty `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` -> `-Platform AzureDevOps` (emit only the Azure DevOps snippet)
+- Neither set (interactive operator-at-workstation) -> existing `-Platform Both` default preserved (emit both side by side)
+
+Detection is gated on `$PSBoundParameters.ContainsKey('Platform')` so an **explicit** caller value (including an explicit `-Platform Both`) always wins over the auto-detect.
+
+#### Test coverage
+
+Four new Pester tests (AS7-AS10) in the existing `Test-AzLocalApplyUpdatesScheduleCoverage` Describe verify all four auto-detect cases: GH-only when `$env:GITHUB_ACTIONS='true'` + no `-Platform`; ADO-only when `$env:TF_BUILD='True'` + no `-Platform`; both-when-explicit `-Platform Both` overrides auto-detect; both-when-no-env-vars preserves the interactive default. `BeforeEach` / `AfterEach` blocks clear the CI env vars so the tests are hermetic.
+
+#### Pipeline pin bumps + migration
+
+All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bumped `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.74'` to `'0.7.75'`. Refresh via:
+
+```powershell
+Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
+Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
+```
+
+All v0.7.75 changes were backward compatible.
 
 ---
 

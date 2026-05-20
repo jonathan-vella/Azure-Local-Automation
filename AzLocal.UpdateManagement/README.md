@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.75 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.75)
+**Latest Version:** v0.7.76 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.76)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.75](#whats-new-in-v0775)
+- [What's New in v0.7.76](#whats-new-in-v0776)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,49 +86,43 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.75
+## What's New in v0.7.76
 
-v0.7.75 is a **hardening** release on top of v0.7.74. v0.7.74 patched the `Test-AzLocalApplyUpdatesScheduleCoverage` cross-platform-noise bug at the **yml layer** by adding `-Platform GitHubActions` / `-Platform AzureDevOps` arguments to the bundled Step.3 yml templates - but that fix only takes effect for consumers who refresh their yml via `Update-AzLocalPipelineExample`. Consumers whose Step.3 yml is a verbatim pre-v0.7.74 copy (i.e. they copied it once early on and have not run `Update-AzLocalPipelineExample` since) still see both the GitHub Actions snippet AND the Azure DevOps snippet in their Step Summary, because their yml does not pass `-Platform` and the cmdlet's default is `-Platform Both`. v0.7.75 closes that gap by adding the same auto-selection at the **cmdlet layer** so stale yml self-heals at runtime. Pipeline pin bumps to `'0.7.75'`; refresh existing copies via `Update-AzLocalPipelineExample` (still recommended for the pin bump, but the noise fix no longer requires it).
+v0.7.76 is a **breaking-rename + nine-finding cleanup** release on top of v0.7.75. The headline change is that **every exported cmdlet was renamed from `-AzureLocal*` to `-AzLocal*`** so the verbs match the published module name (`AzLocal.UpdateManagement`). The module GUID is preserved; `Install-Module AzLocal.UpdateManagement -Force` is the upgrade path. This release also fixes a P0 row-collapse bug (Finding 1), tightens up a service-principal secret leak (Finding 3), adds three regression-test classes (Finding 2), splits the 3300-line README into a `docs/` tree (Findings 4 + 5), and includes a bonus ARM `healthCheckResult` byte-identical duplicate suppressor that fixes a doubled-CriticalCount symptom observed on a real 2-node Mobile cluster.
 
-### Test-AzLocalApplyUpdatesScheduleCoverage auto-detects the CI host platform when -Platform is omitted
+### Breaking: -AzureLocal* renamed to -AzLocal* (Finding 7)
 
-When the caller does **not** bind `-Platform`, the cmdlet inspects the well-known CI environment variables and self-selects:
+Every exported function in `Public/` and every private helper in `Private/` was renamed to align with the module name and the standard PowerShell module-prefix convention. There are no deprecation aliases (the module is pre-1.0 and has no published external consumers). Search-and-replace `-AzureLocal` -> `-AzLocal` in any pinned scripts.
 
-- `$env:GITHUB_ACTIONS -eq 'true'` -> `-Platform GitHubActions` (emit only the GitHub Actions snippet)
-- `$env:TF_BUILD -eq 'True'` OR any non-empty `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` -> `-Platform AzureDevOps` (emit only the Azure DevOps snippet)
-- Neither set (interactive operator-at-workstation) -> existing `-Platform Both` default preserved (emit both side by side)
+### Fixed: Finding 1 P0 - row-collapse via `@(func)` wrap on a `, $arr` return
 
-Detection is gated on `$PSBoundParameters.ContainsKey('Platform')` so an **explicit** caller value (including an explicit `-Platform Both`) always wins over the auto-detect. Effect on stale-yml consumers: the very next workflow run against the v0.7.75 module emits only the GH snippet on GitHub Actions runners and only the ADO snippet on Azure DevOps agents - **no yml change required**. The v0.7.74 explicit `-Platform GitHubActions` / `-Platform AzureDevOps` arguments in the bundled yml stay in place as defence in depth so runs against older modules continue to behave correctly.
+`Invoke-AzResourceGraphQuery` used `return , $allRows.ToArray()` (the unary-comma trick that keeps the return shape as a single `Object[N]` through pipeline enumeration). 24 callers wrapped the call with `@(Invoke-AzResourceGraphQuery ...)` which collected the function's pipeline output (one wrapper containing the inner array), producing `Object[1]` containing `Object[N]`. Downstream property access then did PowerShell member enumeration and returned arrays-of-strings, so a 136-row update-run result collapsed into a 1-row `ClusterName_=Object[]` mess. Fixed by converting all 24 callers to direct assignment (`$x = Invoke-AzResourceGraphQuery ...`).
 
-### Audit confirmed scope - only Test-AzLocalApplyUpdatesScheduleCoverage needed the fix
+### Fixed: ARM healthCheckResult byte-identical duplicates (bonus)
 
-Before adding the auto-detect, every exported cmdlet that branches its output by platform was audited. Only `Test-AzLocalApplyUpdatesScheduleCoverage` had the cross-platform-noise symptom (it is the only cmdlet whose default branches its emitted **snippet** by platform). `Copy-AzLocalPipelineExample` and `Update-AzLocalPipelineExample` were intentionally NOT changed: `Copy-AzLocalPipelineExample`'s default `'All'` is correct for the operator-at-workstation case (copy both platforms' samples so the operator can choose); `Update-AzLocalPipelineExample` is mandatory-no-default by design so the operator must opt into which existing destination to refresh. All other GH-vs-ADO conditional output happens **inside** the yml templates (`>> $env:GITHUB_STEP_SUMMARY`, `##vso[task.uploadsummary]`), not in cmdlets - cmdlets emit platform-neutral PowerShell that the yml then routes.
+`Test-AzLocalClusterHealth` and the private `Get-HealthCheckFailureSummary` now dedup byte-identical ARM `healthCheckResult` rows. ARM upstream was observed emitting two byte-identical rows for the same logical health-check finding (same CheckName, Severity, Description, Remediation, TargetResourceName, Timestamp), doubling the displayed CriticalCount. Dedup is by the COMPLETE row tuple (HashSet[string] keyed on `ClusterName | CheckName | Severity | Description | Remediation | TargetResourceName | Timestamp` joined by U+001F UNIT SEPARATOR), so per-node distinct findings with different `targetResourceName` (e.g. `UserStorage_1-Repair` vs `UserStorage_2-Repair`) stay separate.
 
-### Test coverage
+### Other findings addressed
 
-Four new Pester tests (AS7-AS10) in the existing `Test-AzLocalApplyUpdatesScheduleCoverage` Describe verify all four auto-detect cases:
+- **Finding 2 (test gaps):** new Pester cases for row-collapse, ARM dedup (identical / distinct target / empty), KQL arg-length safety.
+- **Finding 3 (SP secret leak):** `Connect-AzLocalServicePrincipal` writes the secret to a temp file with restricted ACL, passes via `Get-Content`, removes it in a `finally` block.
+- **Finding 4 + 5 (docs):** main README cut from 3372 to ~600 lines; new `docs/` tree: [`cmdlet-reference.md`](docs/cmdlet-reference.md), [`concepts.md`](docs/concepts.md), [`rbac.md`](docs/rbac.md), [`troubleshooting.md`](docs/troubleshooting.md), [`release-history.md`](docs/release-history.md). Pipeline README appendices also extracted to [`Automation-Pipeline-Examples/docs/`](Automation-Pipeline-Examples/docs/).
+- **Finding 6 + 9 (.psm1):** dead-code removed; deliberate `Set-StrictMode -Version 1.0` documented at top of file.
+- **Finding 8 (review archive):** internal review notes moved into a gitignored `docs/` location.
 
-- **AS7** - `$env:GITHUB_ACTIONS='true'` + no `-Platform` -> GH snippet only.
-- **AS8** - `$env:TF_BUILD='True'` + no `-Platform` -> ADO snippet only.
-- **AS9** - `$env:GITHUB_ACTIONS='true'` + explicit `-Platform Both` -> both snippets (explicit-wins / auto-detect suppressed).
-- **AS10** - no CI env vars + no `-Platform` -> both snippets (interactive default preserved).
+### Documentation conventions (new in v0.7.76)
 
-`BeforeEach` / `AfterEach` blocks clear `$env:GITHUB_ACTIONS`, `$env:TF_BUILD`, and `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` so the new tests do not pollute or depend on the calling environment.
+1. The main README is the entry point; cmdlet / RBAC / release deep-dives live under [`docs/`](docs/).
+2. Only the **current version**'s What's-New stays inline; older entries live in [`docs/release-history.md`](docs/release-history.md).
+3. Each release tag MUST run the demote-to-history step.
+4. Day-2 pipeline operators land on [`Automation-Pipeline-Examples/README.md`](Automation-Pipeline-Examples/README.md); depth lives in [`Automation-Pipeline-Examples/docs/`](Automation-Pipeline-Examples/docs/).
+5. ITSM has its own README under [`ITSM/`](ITSM/).
 
-### Pipeline pin bumps + migration
+### Migration
 
-All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.74'` to `'0.7.75'`. Refresh existing copies via the marker-aware merge (preserves operator edits inside `BEGIN-AZLOCAL-CUSTOMIZE:<region>` / `END-AZLOCAL-CUSTOMIZE:<region>` marker pairs):
+`Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`) and then search-and-replace `-AzureLocal` -> `-AzLocal` in any pinned scripts. No yml change required. `Step.*.yml` templates still pin `GENERATED_AGAINST_MODULE_VERSION = '0.7.75'` and will pick up the v0.7.76 module from PSGallery on next run. A pipeline-pin refresh to `'0.7.76'` will ship in v0.7.77.
 
-```powershell
-Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub
-Update-AzLocalPipelineExample -Destination .\.azure-pipelines  -Platform AzureDevOps
-```
-
-### Compatibility
-
-All v0.7.75 changes are backward compatible. `[ValidateSet('GitHubActions','AzureDevOps','Both')] [string]$Platform = 'Both'` is unchanged - the default value is still `'Both'`, the new behaviour only fires when the caller does **not** bind the parameter. Interactive operators see no change. Operators who explicitly want both snippets in a CI run (rare - e.g. one-off comparison) can pass `-Platform Both` explicitly; the `$PSBoundParameters.ContainsKey('Platform')` guard ensures explicit binding always wins.
-
-> Previous release notes have moved into the [Release History](#release-history) appendix at the bottom of this document.
+> Previous release notes have moved into [`docs/release-history.md`](docs/release-history.md).
 
 ## Files
 
@@ -600,9 +594,9 @@ This code is provided as-is for educational and reference purposes.
 
 ## Release History
 
-The full What's-New history (v0.7.74 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
+The full What's-New history (v0.7.75 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.75** stay above under [`What's New in v0.7.75`](#whats-new-in-v0775).
+The most recent release notes for **v0.7.76** stay above under [`What's New in v0.7.76`](#whats-new-in-v0776).
 
 ---
 
