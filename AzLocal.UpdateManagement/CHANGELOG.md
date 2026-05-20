@@ -167,6 +167,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fleet-arb-status.csv`) are unchanged - the merge is a markdown
   presentation concern only. Mirror edit applied to the ADO twin.
 
+- **Step.4 fleet-connectivity-status markdown summary: added "Node +
+  ARB Coverage Reconciliation" cross-scope consistency table.** The
+  KPI summary table's internal sums (Total = Failing + Healthy) are
+  consistent by construction, but the cluster / Arc / ARB totals come
+  from three different KQL queries and can legitimately diverge (Arc
+  onboarding lag, deleted Arc machine, missing `provider=AzSHCI` tag,
+  stale `cluster.reportedProperties.nodes` array, ARB-less cluster,
+  orphan ARB). The new 8-row table sits immediately below the KPI
+  summary and surfaces: clusters-in-scope, cluster-reported node count
+  (sum of `properties.reportedProperties.nodeCount`), Arc-joined
+  physical nodes, the node-coverage delta, ARBs-in-scope, clusters
+  with/without an ARB, and orphan ARB count. Operators can confirm
+  totals tie out at a glance and immediately see which scope a number
+  diverged from. The `ClusterId<->ARB` and orphan-ARB lookups
+  previously built inline at the merged-table and Orphan-ARBs
+  sections were hoisted above the KPI summary so the reconciliation
+  block and the per-cluster table share the same data. Mirror edit
+  applied to the ADO twin.
+
 ### Added
 
 - **Step.4 fleet-connectivity-status: full unfiltered NIC inventory

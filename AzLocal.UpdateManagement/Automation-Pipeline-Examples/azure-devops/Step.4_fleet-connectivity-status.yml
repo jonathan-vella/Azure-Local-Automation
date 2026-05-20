@@ -697,6 +697,42 @@ stages:
         function Get-NicSev([string]$s)     { switch -Regex ($s) { '^(Connected|Up)$'                { 'Pass'; break } '^(Disconnected|Down|Disabled)$'         { 'Critical'; break } default { 'Warning' } } }
         function Get-ArbSev([string]$s)     { switch -Regex ($s) { '^(Running)$'                     { 'Pass'; break } '^(Offline|Failed)$'                    { 'Critical'; break } default { 'Warning' } } }
 
+        # --- Build ClusterId <-> ARB lookups once. The reconciliation block
+        # (immediately below the KPI summary table) and both the merged
+        # Cluster+ARB table and the Orphan ARBs section further down all
+        # reference these. The ARB ClusterId field can be comma-separated
+        # when one RG hosts multiple HCI clusters (multi-cluster-per-RG
+        # case from the summarize/make_set ARB query).
+        $arbByClusterId = @{}
+        foreach ($a in $arbRows) {
+            $ids = if ($a.ClusterId) { @(($a.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
+            foreach ($id in $ids) {
+                $key = $id.Trim().ToLowerInvariant()
+                if ($key -and -not $arbByClusterId.ContainsKey($key)) { $arbByClusterId[$key] = $a }
+            }
+        }
+        $clusterIdsLower = @{}
+        foreach ($c in $clusterRows) {
+            if ($c.ClusterId) { $clusterIdsLower[$c.ClusterId.ToLowerInvariant()] = $true }
+        }
+        $orphanArbs = @($arbRows | Where-Object {
+            $ids = if ($_.ClusterId) { @(($_.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
+            $matched = $false
+            foreach ($id in $ids) { if ($clusterIdsLower.ContainsKey($id.Trim().ToLowerInvariant())) { $matched = $true; break } }
+            -not $matched
+        })
+
+        # Reconciliation counts. Cross-scope numbers come from different
+        # KQL queries (clusters / Arc machines / ARB appliances); the delta
+        # column in the reconciliation table below helps spot Arc-onboarding
+        # lag, missing ARBs, stale cluster reportedProperties data, or scope
+        # mismatches.
+        $clusterNodeSum = ($clusterRows | Measure-Object -Property NodeCount -Sum).Sum
+        if ($null -eq $clusterNodeSum) { $clusterNodeSum = 0 }
+        $clustersWithArb    = @($clusterRows | Where-Object { $_.ClusterId -and $arbByClusterId.ContainsKey($_.ClusterId.ToLowerInvariant()) }).Count
+        $clustersWithoutArb = [math]::Max(0, $clusterRows.Count - $clustersWithArb)
+        $nodeCoverageDelta  = [int]$clusterNodeSum - [int]$arcTotal
+
         $md = @"
         ## Fleet Connectivity Status Summary
 
@@ -709,22 +745,26 @@ stages:
         | **TOTAL FAILURES** | - | **$totalFail** | (Critical=$crit, Warning=$warn) |
 
         > _**Physical NICs** is filtered at the query layer to actionable issues only: NicStatus=Disconnected with a non-APIPA IPv4 address. 'Up' adapters and adapters without a real IP are intentionally NOT reported (noise reduction)._
+
+        ### Node + ARB Coverage Reconciliation
+
+        _Cross-scope consistency check. These numbers come from different KQL queries (clusters / Arc machines / ARB appliances); the delta rows help spot Arc-onboarding lag, missing ARBs, stale cluster.reportedProperties data, or scope mismatches._
+
+        | Source | Count | Notes |
+        |--------|-------|-------|
+        | Clusters in scope | $clusterTotal | One row per ``microsoft.azurestackhci/clusters`` resource |
+        | Cluster-reported node count (sum) | $clusterNodeSum | Sum of ``properties.reportedProperties.nodeCount`` across all clusters |
+        | Arc-joined physical nodes | $arcTotal | Nodes in ``cluster.reportedProperties.nodes`` matched to an Arc machine (provider=AzSHCI, kind!=HCI) |
+        | Node coverage delta | $nodeCoverageDelta | Cluster-reported minus Arc-joined. Non-zero indicates Arc-onboarding lag, deleted Arc resource, missing AzSHCI provider tag, or stale cluster.reportedProperties.nodes array |
+        | ARBs in scope | $arbTotal | One row per ``resourceconnector/appliances`` (multi-cluster-per-RG collapsed via summarize/make_set) |
+        | Clusters with an ARB | $clustersWithArb | Clusters matched to an ARB by ClusterId |
+        | Clusters without an ARB | $clustersWithoutArb | Clusters that show ``_(no ARB)_`` in the per-cluster table below |
+        | Orphan ARBs | $($orphanArbs.Count) | ARBs whose RG contains no in-scope HCI cluster (listed in the Orphan ARBs section below when > 0) |
         "@
 
-        # --- Merged Cluster + ARB per-cluster table ---
-        # Each cluster has at most one ARB. Build a ClusterId -> ARB lookup
-        # by splitting the (potentially comma-separated) ARB ClusterId field
-        # and indexing each ID. Then left-join $arbRows onto $clusterRows.
-        # ARBs whose RG contains no HCI cluster in scope are surfaced
-        # separately below as 'Orphan ARBs'.
-        $arbByClusterId = @{}
-        foreach ($a in $arbRows) {
-            $ids = if ($a.ClusterId) { @(($a.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
-            foreach ($id in $ids) {
-                $key = $id.Trim().ToLowerInvariant()
-                if ($key -and -not $arbByClusterId.ContainsKey($key)) { $arbByClusterId[$key] = $a }
-            }
-        }
+        # --- Merged Cluster + ARB per-cluster table. The $arbByClusterId
+        # lookup was built above (before the KPI summary) so this section
+        # and the reconciliation block share the same data. ---
         $md += "`n`n### Cluster Connectivity (with ARB Status)`n"
         $md += "`n_One row per cluster, left-joined to the cluster's Azure Resource Bridge (ARB) appliance status. Each cluster has at most one ARB. ARBs without a matching cluster in scope are listed separately as 'Orphan ARBs'._`n"
         if ($clusterRows.Count -eq 0) {
@@ -757,19 +797,11 @@ stages:
             if ($clusterRows.Count -gt 100) { $md += "`n*Showing first 100 of $($clusterRows.Count); see ``fleet-cluster-connectivity.csv`` and ``fleet-arb-status.csv`` for the full lists.*`n" }
         }
 
-        # --- Orphan ARBs (ARB appliances whose RG contains no HCI cluster
-        # in scope - may indicate a stale/zombie appliance, or a cluster
-        # outside the configured subscription/RG scope) ---
-        $clusterIdsLower = @{}
-        foreach ($c in $clusterRows) {
-            if ($c.ClusterId) { $clusterIdsLower[$c.ClusterId.ToLowerInvariant()] = $true }
-        }
-        $orphanArbs = @($arbRows | Where-Object {
-            $ids = if ($_.ClusterId) { @(($_.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
-            $matched = $false
-            foreach ($id in $ids) { if ($clusterIdsLower.ContainsKey($id.Trim().ToLowerInvariant())) { $matched = $true; break } }
-            -not $matched
-        })
+        # --- Orphan ARBs ($orphanArbs was computed above so the
+        # reconciliation block could count them. ARB appliances whose RG
+        # contains no HCI cluster in scope - may indicate a stale/zombie
+        # appliance, or a cluster outside the configured subscription/RG
+        # scope.) ---
         if ($orphanArbs.Count -gt 0) {
             $md += "`n### Orphan ARBs (no matching cluster in scope)`n"
             $md += "`n_ARB appliances whose resource group does not contain any HCI cluster visible to this run. May indicate a stale appliance, or a cluster outside the configured scope._`n"
