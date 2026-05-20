@@ -119,5 +119,11 @@ function Convert-AzLocalUpdateWindowToCron {
         })
     }
 
+    # WARNING: Callers MUST use direct assignment ($x = func ...) and NEVER
+    # wrap with @(func ...). The unary-comma return below preserves Object[N]
+    # shape for any N including 0 and 1, but @() at the call site collapses
+    # to Object[1] containing the inner array, silently producing one-row
+    # output instead of N rows. See `docs/MODULE-REVIEW-AND-RECOMMENDATIONS.md`
+    # Finding 1 for the v0.7.75 incident.
     return , $output.ToArray()
 }

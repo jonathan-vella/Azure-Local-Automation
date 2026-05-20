@@ -345,7 +345,11 @@ resources
             ParseError      = $null
         }
         try {
-            $row.RequiredCrons = @(Convert-AzLocalUpdateWindowToCron -UpdateWindow $window -LeadTimeMinutes $LeadTimeMinutes)
+            # Convert-AzLocalUpdateWindowToCron returns via `return , $arr` to
+            # preserve Object[N] shape for any N. Do NOT wrap with @() - that
+            # collapses multi-segment windows to a single nested-array row.
+            # See user memory note: "return , $arr is INCOMPATIBLE with caller-side @(func) wrap".
+            $row.RequiredCrons = Convert-AzLocalUpdateWindowToCron -UpdateWindow $window -LeadTimeMinutes $LeadTimeMinutes
         }
         catch {
             $row.ParseError = $_.Exception.Message
@@ -360,7 +364,11 @@ resources
     $yamlCrons        = @()
     $parsedYamlCrons  = @()
     if ($View -eq 'Audit' -and -not [string]::IsNullOrWhiteSpace($PipelineYamlPath)) {
-        $yamlCrons = @(Read-AzLocalApplyUpdatesYamlCrons -Path $PipelineYamlPath)
+        # Read-AzLocalApplyUpdatesYamlCrons returns via `return , $arr` to
+        # preserve Object[N] shape. Do NOT wrap with @() - that collapses
+        # multi-cron YAML files (or any N != 1 result) to a single nested-array
+        # row. See user memory note: "return , $arr is INCOMPATIBLE with caller-side @(func) wrap".
+        $yamlCrons = Read-AzLocalApplyUpdatesYamlCrons -Path $PipelineYamlPath
         Write-Log -Message "Discovered $($yamlCrons.Count) cron entry(ies) across apply-updates YAML file(s)." -Level Info
         $parsedYamlCrons = @($yamlCrons | ForEach-Object {
             # Defense-in-depth: the reader strips whitespace-only captures and
