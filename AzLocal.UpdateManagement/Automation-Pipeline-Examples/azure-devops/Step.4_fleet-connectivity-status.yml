@@ -195,6 +195,66 @@ stages:
           }
           if (-not $subArgs) { Write-Host "Subscription filter empty - scanning all subscriptions visible to the federated identity." }
 
+          # Post-processor: extracts projected columns from full ARM resource objects.
+          # ARG sometimes ignores `| project` clauses and returns full resources
+          # instead. This function normalizes the response by extracting only the
+          # fields we care about, with fallback logic for missing properties.
+          function Extract-ArgProjectedColumns {
+              param(
+                  [Parameter(Mandatory)][object[]]$Rows,
+                  [Parameter(Mandatory)][hashtable]$Projection  # @{ 'NewName' = 'path.to.property' }
+              )
+              @($Rows | ForEach-Object {
+                  $resource = $_
+                  $obj = [ordered]@{}
+                  foreach ($key in $Projection.Keys) {
+                      $path = $Projection[$key]
+                      $value = $null
+                      # Traverse dot-path: e.g. "properties.connectivityStatus"
+                      $current = $resource
+                      foreach ($part in $path -split '\.') {
+                          if ($null -eq $current) { break }
+                          $current = $current.$part
+                      }
+                      $obj[$key] = $current
+                  }
+                  [PSCustomObject]$obj
+              })
+          }
+
+          # Defensive wrapper: returns rows as-is if they already have the expected
+          # projected columns; otherwise applies Extract-ArgProjectedColumns.
+          function Ensure-ArgProjection {
+              param(
+                  [Parameter(Mandatory)][object[]]$Rows,
+                  [string[]]$ExpectedColumns,
+                  [hashtable]$FallbackProjection
+              )
+              if ($Rows.Count -eq 0) { return $Rows }
+              
+              # Check first row for expected columns
+              $firstRow = $Rows[0]
+              if ($null -eq $firstRow) { return $Rows }
+              
+              $presentColumns = @($firstRow.PSObject.Properties.Name)
+              $hasAllColumns = $ExpectedColumns | ForEach-Object {
+                  $col = $_
+                  [bool]($presentColumns -contains $col)
+              } | Measure-Object -AllStats | Where-Object { $_.Count -eq $ExpectedColumns.Count }
+              
+              if ($hasAllColumns) {
+                  # Projections worked - return as-is
+                  return $Rows
+              }
+              
+              # Projections were ignored - apply fallback
+              if ($null -ne $FallbackProjection) {
+                  return Extract-ArgProjectedColumns -Rows $Rows -Projection $FallbackProjection
+              }
+              
+              return $Rows
+          }
+
           function Invoke-ArgQuery {
               param([Parameter(Mandatory)][string]$Query, [string[]]$ExtraArgs)
               # Capture stderr to a temp file so az CLI warnings (preview-feature
@@ -257,15 +317,37 @@ stages:
           $clusterKql = @"
           resources
           | where type =~ "microsoft.azurestackhci/clusters"
-          | extend ClusterName = coalesce(tostring(name), tostring(split(id, '/')[8]), tostring(resourceGroup))
-          | extend ConnectivityStatus = coalesce(tostring(properties.connectivityStatus), tostring(properties.status), 'Unknown')
-          | extend ClusterStatus = coalesce(tostring(properties.status), 'Unknown')
-          | extend NodeCount = tolong(coalesce(properties.reportedProperties.nodeCount, 0))
-          | project ClusterName, ClusterId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId,
-                    ConnectivityStatus, ClusterStatus, NodeCount, Location=location
-          | order by ConnectivityStatus asc, ClusterName asc
           "@
-          $clusterRows = Invoke-ArgQuery -Query $clusterKql -ExtraArgs $subArgs
+          $clusterRawRows = Invoke-ArgQuery -Query $clusterKql -ExtraArgs $subArgs
+          
+          # Extract projected columns from full ARM resources
+          $clusterRows = Extract-ArgProjectedColumns -Rows $clusterRawRows -Projection @{
+              'ClusterName' = 'name'
+              'ClusterId' = 'id'
+              'ResourceGroup' = 'resourceGroup'
+              'SubscriptionId' = 'subscriptionId'
+              'ConnectivityStatus' = 'properties.connectivityStatus'
+              'ClusterStatus' = 'properties.status'
+              'NodeCount' = 'properties.reportedProperties.nodeCount'
+              'Location' = 'location'
+          } | Sort-Object ConnectivityStatus, ClusterName
+          
+          # Fallback logic for missing/null values
+          $clusterRows | ForEach-Object {
+              if ([string]::IsNullOrWhiteSpace($_.ClusterName)) {
+                  $_.ClusterName = $_.ResourceGroup ?? 'Unknown'
+              }
+              if ([string]::IsNullOrWhiteSpace($_.ConnectivityStatus)) {
+                  $_.ConnectivityStatus = $_.ClusterStatus ?? 'Unknown'
+              }
+              if ([string]::IsNullOrWhiteSpace($_.ClusterStatus)) {
+                  $_.ClusterStatus = 'Unknown'
+              }
+              if ($null -eq $_.NodeCount) {
+                  $_.NodeCount = 0
+              }
+          }
+          
           Write-Host "    -> $($clusterRows.Count) cluster row(s)"
 
           # ------------------------------------------------------------------

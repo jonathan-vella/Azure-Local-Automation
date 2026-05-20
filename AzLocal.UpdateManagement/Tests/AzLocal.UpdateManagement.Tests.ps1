@@ -8702,4 +8702,46 @@ Describe 'Pipeline contract: Step.6 SupportStatus anchor (v0.7.70 Phase E)' {
     }
 }
 
+Describe 'Smoke test: Azure Resource Graph projection columns are preserved' {
+    # v0.7.79: Regression guard for ARG silent projection loss.
+    # Root cause: `az graph query` in some versions/configurations ignores KQL `| project` clauses
+    # and returns full ARM resource objects instead of projected columns.
+    # This caused Step.4/7/8 pipelines to render blank fields (ClusterName, Status, etc. all $null).
+    # This smoke test validates that Step.4/7/8 include defensive post-processing to extract
+    # projected columns from full resources even if ARG doesn't respect the projection.
+
+    BeforeAll {
+        $script:repoRoot = Split-Path -Path $PSScriptRoot -Parent
+        $script:step4Files = @(
+            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/github-actions/Step.4_fleet-connectivity-status.yml'
+            Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/azure-devops/Step.4_fleet-connectivity-status.yml'
+        )
+    }
+
+    It 'Step.4 GH Actions includes Extract-ArgProjectedColumns post-processor' {
+        $content = Get-Content -LiteralPath $script:step4Files[0] -Raw
+        $content | Should -Match 'function Extract-ArgProjectedColumns' -Because 'Step.4 must post-process full ARM resources when ARG ignores projections'
+    }
+
+    It 'Step.4 ADO includes Extract-ArgProjectedColumns post-processor' {
+        $content = Get-Content -LiteralPath $script:step4Files[1] -Raw
+        $content | Should -Match 'function Extract-ArgProjectedColumns' -Because 'Step.4 must post-process full ARM resources when ARG ignores projections'
+    }
+
+    It 'Step.4 GH Actions cluster query applies post-processor to extract Cluster Name fields' {
+        $content = Get-Content -LiteralPath $script:step4Files[0] -Raw
+        $content | Should -Match 'Extract-ArgProjectedColumns.*-Rows \$clusterRawRows' -Because 'Step.4 cluster extraction must use the post-processor'
+    }
+
+    It 'Step.4 ADO cluster query applies post-processor to extract Cluster Name fields' {
+        $content = Get-Content -LiteralPath $script:step4Files[1] -Raw
+        $content | Should -Match 'Extract-ArgProjectedColumns.*-Rows \$clusterRawRows' -Because 'Step.4 cluster extraction must use the post-processor'
+    }
+
+    It 'Step.4 includes Ensure-ArgProjection defensive wrapper function' {
+        $content = Get-Content -LiteralPath $script:step4Files[0] -Raw
+        $content | Should -Match 'function Ensure-ArgProjection' -Because 'Step.4 should include defensive logic to detect projection loss'
+    }
+}
+
 #endregion v0.7.70 Phase E: Get-AzLocalLatestSolutionVersion
