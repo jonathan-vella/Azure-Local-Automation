@@ -18,7 +18,7 @@ function Get-HealthCheckFailureSummary {
     }
 
     # Bucket failures by severity so Critical entries are always emitted first.
-    # The readiness gate in Get-AzureLocalClusterUpdateReadiness runs
+    # The readiness gate in Get-AzLocalClusterUpdateReadiness runs
     # -match '\[Critical\]' on the truncated summary; without this ordering,
     # a Critical failure could be hidden behind 5+ Warning failures returned
     # earlier by ARM and the gate would silently miss it.

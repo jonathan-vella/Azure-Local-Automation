@@ -1,5 +1,5 @@
 # Apply-Updates Schedule Coverage Audit
-# This workflow runs the read-only Test-AzureLocalApplyUpdatesScheduleCoverage advisor
+# This workflow runs the read-only Test-AzLocalApplyUpdatesScheduleCoverage advisor
 # weekly to detect drift between the cron schedule(s) in your apply-updates pipeline
 # YAML and the UpdateWindow tags that operators have placed on Azure Local clusters.
 #
@@ -34,7 +34,7 @@ name: Step.3 - Apply-Updates Schedule Coverage Audit
 
 on:
   # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
-  # Edits inside this block are preserved across Update-AzureLocalPipelineExample
+  # Edits inside this block are preserved across Update-AzLocalPipelineExample
   # module upgrades. Add or modify `schedule:` cron blocks below.
   # Weekly on Monday at 05:00 UTC - well before any common Saturday/Sunday or weekday
   # evening update window so a coverage drift report lands in the inbox before the
@@ -82,7 +82,7 @@ env:
   # Module version this workflow YAML was generated against. The install step compares
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   GENERATED_AGAINST_MODULE_VERSION: '0.7.75'
   REQUIRED_MODULE_VERSION: ${{ github.event.inputs.module_version || vars.REQUIRED_MODULE_VERSION || '' }}
 
@@ -142,11 +142,11 @@ jobs:
         Write-Host "  Latest on PSGallery       : $(if ($latest) { $latest } else { '(lookup failed - check network)' })"
         # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
         if ($installed -lt $generated) {
-            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
         }
         if ($installed -gt $generated) {
-            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Refresh via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Refresh via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::notice title=Workflow YAML may be stale::$msg"
         }
         if ($latest -and ($latest -gt $installed)) {
@@ -237,14 +237,14 @@ jobs:
         if ($havePipeline) { $auditArgs.PipelineYamlPath = $pipelinePath }
         if ($haveSchedule) { $auditArgs.SchedulePath     = $schedulePath }
         if ($includeUnt)   { $auditArgs.IncludeUntagged  = $true }
-        $audit = Test-AzureLocalApplyUpdatesScheduleCoverage @auditArgs
+        $audit = Test-AzLocalApplyUpdatesScheduleCoverage @auditArgs
         if (-not $audit) { $audit = @() }
 
         # Matrix view (CSV only).
-        Test-AzureLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
+        Test-AzLocalApplyUpdatesScheduleCoverage -View Matrix -LeadTimeMinutes $leadTime -ExportPath $matrixCsv | Out-Null
 
         # Recommend view (markdown snippet) - GitHub Actions only.
-        Test-AzureLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -Platform GitHubActions -ExportPath $recoMd | Out-Null
+        Test-AzLocalApplyUpdatesScheduleCoverage -View Recommend -LeadTimeMinutes $leadTime -Platform GitHubActions -ExportPath $recoMd | Out-Null
 
         $covered     = @($audit | Where-Object Status -eq 'Covered')
         $uncovered   = @($audit | Where-Object Status -eq 'Uncovered')

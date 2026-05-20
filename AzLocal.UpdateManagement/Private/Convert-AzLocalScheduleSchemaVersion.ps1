@@ -27,7 +27,7 @@ function Convert-AzLocalScheduleSchemaVersion {
                                        missing from the table, throw.
 
         Backup-on-write is performed by the caller
-        (Update-AzureLocalPipelineExample) - this function only computes
+        (Update-AzLocalPipelineExample) - this function only computes
         the new text and reports what changed.
 
     .PARAMETER Text
@@ -73,7 +73,7 @@ function Convert-AzLocalScheduleSchemaVersion {
     $current = [int]$cfg.SchemaVersion
 
     if ($current -gt $TargetSchemaVersion) {
-        throw "Convert-AzLocalScheduleSchemaVersion: '$SourcePath' is on schemaVersion=$current but this module only supports up to $TargetSchemaVersion. Upgrade the AzLocal.UpdateManagement module, then re-run Update-AzureLocalPipelineExample."
+        throw "Convert-AzLocalScheduleSchemaVersion: '$SourcePath' is on schemaVersion=$current but this module only supports up to $TargetSchemaVersion. Upgrade the AzLocal.UpdateManagement module, then re-run Update-AzLocalPipelineExample."
     }
 
     if ($current -eq $TargetSchemaVersion) {

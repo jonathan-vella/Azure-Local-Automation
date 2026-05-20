@@ -63,15 +63,15 @@ function Invoke-FleetOpClusterAction {
         try {
             switch ($Operation) {
                 'GetStatus' {
-                    $result = Get-AzureLocalUpdateSummary -ClusterResourceId $ClusterState.ResourceId @OperationParameters
+                    $result = Get-AzLocalUpdateSummary -ClusterResourceId $ClusterState.ResourceId @OperationParameters
                 }
                 'CheckReadiness' {
-                    # Note: Get-AzureLocalClusterUpdateReadiness only exposes the plural
+                    # Note: Get-AzLocalClusterUpdateReadiness only exposes the plural
                     # -ClusterResourceIds parameter, so wrap the single ID in an array.
-                    $result = Get-AzureLocalClusterUpdateReadiness -ClusterResourceIds @($ClusterState.ResourceId) @OperationParameters
+                    $result = Get-AzLocalClusterUpdateReadiness -ClusterResourceIds @($ClusterState.ResourceId) @OperationParameters
                 }
                 'ApplyUpdate' {
-                    # Start-AzureLocalClusterUpdate also only exposes -ClusterResourceIds.
+                    # Start-AzLocalClusterUpdate also only exposes -ClusterResourceIds.
                     # It returns PSCustomObject[] (may be single item for one cluster);
                     # treat Status != 'UpdateStarted' as a retryable failure so callers
                     # get consistent 'Succeeded'/'Failed' semantics via this helper.
@@ -84,13 +84,13 @@ function Invoke-FleetOpClusterAction {
                     foreach ($k in $OperationParameters.Keys) {
                         $applyParams[$k] = $OperationParameters[$k]
                     }
-                    $applyResult = Start-AzureLocalClusterUpdate @applyParams
+                    $applyResult = Start-AzLocalClusterUpdate @applyParams
                     # Normalize to the first (and usually only) result for a single cluster
                     $primary = if ($applyResult -is [System.Collections.IEnumerable] -and -not ($applyResult -is [string])) {
                         @($applyResult) | Select-Object -First 1
                     } else { $applyResult }
                     if (-not $primary) {
-                        throw "Start-AzureLocalClusterUpdate returned no result for cluster '$($ClusterState.ResourceId)'"
+                        throw "Start-AzLocalClusterUpdate returned no result for cluster '$($ClusterState.ResourceId)'"
                     }
                     if ($primary.PSObject.Properties['Status'] -and $primary.Status -ne 'UpdateStarted') {
                         $msg = if ($primary.PSObject.Properties['Message']) { $primary.Message } else { 'no details' }

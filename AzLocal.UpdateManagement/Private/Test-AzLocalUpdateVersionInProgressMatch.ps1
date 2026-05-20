@@ -4,7 +4,7 @@ function Test-AzLocalUpdateVersionInProgressMatch {
         Compares an UpdateVersionInProgress tag value to a run's update name.
     .DESCRIPTION
         Case-insensitive exact equality (after trim). Used by the auto-reset path
-        in Get-AzureLocalUpdateRuns and by Reset-AzureLocalSideloadedTag to decide
+        in Get-AzLocalUpdateRuns and by Reset-AzLocalSideloadedTag to decide
         whether a Succeeded run actually corresponds to the staged sideloaded payload.
     .PARAMETER TagValue
         The current value of the UpdateVersionInProgress tag.

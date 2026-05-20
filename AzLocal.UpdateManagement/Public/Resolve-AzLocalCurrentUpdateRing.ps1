@@ -55,7 +55,7 @@ function Resolve-AzLocalCurrentUpdateRing {
             Write-Log "No UpdateRing configured for $($decision.NowUtc.ToString('o')). $($decision.Reason)" -Level Info
             exit 0
         }
-        Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue $decision.UpdateRingValue
+        Start-AzLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue $decision.UpdateRingValue
     #>
     [CmdletBinding()]
     [OutputType([PSCustomObject])]

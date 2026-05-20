@@ -3,8 +3,8 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
     .SYNOPSIS
         Evaluates and (when matched) flips UpdateSideloaded=False + clears UpdateVersionInProgress for one cluster.
     .DESCRIPTION
-        Implements the auto-reset decision matrix used by Get-AzureLocalUpdateRuns
-        (default-on) and Reset-AzureLocalSideloadedTag (explicit). Returns a single
+        Implements the auto-reset decision matrix used by Get-AzLocalUpdateRuns
+        (default-on) and Reset-AzLocalSideloadedTag (explicit). Returns a single
         PSCustomObject describing the action taken or the reason it was skipped.
 
         Decision matrix (LatestRunState=Succeeded only - any other state -> Skipped/RunNotSucceeded):
@@ -171,7 +171,7 @@ function Invoke-AzLocalSideloadedAutoResetForCluster {
     if (-not $Force) {
         if ([string]::IsNullOrWhiteSpace($tagVersion)) {
             $result.Action = 'Skipped'
-            $result.Message = "UpdateSideloaded=True with no UpdateVersionInProgress tag (run started outside this module?). Skipping; use Reset-AzureLocalSideloadedTag -Force to override."
+            $result.Message = "UpdateSideloaded=True with no UpdateVersionInProgress tag (run started outside this module?). Skipping; use Reset-AzLocalSideloadedTag -Force to override."
             return [PSCustomObject]$result
         }
         if (-not (Test-AzLocalUpdateVersionInProgressMatch -TagValue $tagVersion -RunUpdateName $LatestRunUpdateName)) {

@@ -44,34 +44,34 @@ function Test-Cmdlet {
     }
 }
 
-# 1. Get-AzureLocalUpdateRuns (v0.7.70 touched)
+# 1. Get-AzLocalUpdateRuns (v0.7.70 touched)
 # This cmdlet requires either -ClusterName or -ClusterResourceIds. For a true fleet-wide
 # ARG-roundtrip test we hydrate ClusterResourceIds from Get-AzLocalFleetHealthOverview (which
 # itself runs ARG and is validated independently in test #3 below). The cmdlet emits its rows
 # as Write-Host display, NOT to the pipeline (it returns a small summary object), so the
 # validator counts pipeline-returned rows; we accept PASS-EMPTY here because the ARG query
 # itself executed cleanly (any failure would have thrown before returning).
-Test-Cmdlet -Name 'Get-AzureLocalUpdateRuns' `
+Test-Cmdlet -Name 'Get-AzLocalUpdateRuns' `
     -Invoke {
         $clusters = Get-AzLocalFleetHealthOverview
         $ids = @($clusters | ForEach-Object {
             "/subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/Microsoft.AzureStackHCI/clusters/$($_.ClusterName)"
         })
         Write-Host "  Fleet has $($ids.Count) cluster(s); querying update runs (Latest only)..." -ForegroundColor DarkGray
-        Get-AzureLocalUpdateRuns -ClusterResourceIds $ids -Latest
+        Get-AzLocalUpdateRuns -ClusterResourceIds $ids -Latest
     } `
     -RequiredColumns @()
 
-# 2. Get-AzureLocalFleetStatusData (Step.6 driver - the actual fleet-wide status cmdlet)
+# 2. Get-AzLocalFleetStatusData (Step.6 driver - the actual fleet-wide status cmdlet)
 # Returns a single summary/aggregate object (FleetUpdateState + per-cluster array), not
 # per-cluster rows; we only assert the ARG query executes cleanly here.
-Test-Cmdlet -Name 'Get-AzureLocalFleetStatusData' `
-    -Invoke { Get-AzureLocalFleetStatusData } `
+Test-Cmdlet -Name 'Get-AzLocalFleetStatusData' `
+    -Invoke { Get-AzLocalFleetStatusData } `
     -RequiredColumns @()
 
-# 3. Get-AzureLocalFleetHealthFailures (v0.7.70 added ClusterPortalUrl)
-Test-Cmdlet -Name 'Get-AzureLocalFleetHealthFailures' `
-    -Invoke { Get-AzureLocalFleetHealthFailures -View Detail } `
+# 3. Get-AzLocalFleetHealthFailures (v0.7.70 added ClusterPortalUrl)
+Test-Cmdlet -Name 'Get-AzLocalFleetHealthFailures' `
+    -Invoke { Get-AzLocalFleetHealthFailures -View Detail } `
     -RequiredColumns @('ClusterName','ClusterPortalUrl','FailureName','FailureReason','Severity')
 
 # 4. Get-AzLocalFleetHealthOverview (v0.7.70 NEW cmdlet)
@@ -79,17 +79,17 @@ Test-Cmdlet -Name 'Get-AzLocalFleetHealthOverview' `
     -Invoke { Get-AzLocalFleetHealthOverview } `
     -RequiredColumns @('ClusterName','ClusterPortalUrl','HealthStatus','UpdateStatus','CurrentVersion','SbeVersion','AzureConnection','LastChecked','HealthResultsAgeDays')
 
-# 5. Get-AzureLocalUpdateRunFailures (v0.7.70 fleet-scale failure-detail columns)
-Test-Cmdlet -Name 'Get-AzureLocalUpdateRunFailures' `
-    -Invoke { Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-60) } `
+# 5. Get-AzLocalUpdateRunFailures (v0.7.70 fleet-scale failure-detail columns)
+Test-Cmdlet -Name 'Get-AzLocalUpdateRunFailures' `
+    -Invoke { Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-60) } `
     -RequiredColumns @('ClusterName','UpdateName','State','Status','CurrentStep','Duration','LastUpdated','UpdateRunPortalUrl','DeepestErrMsg')
 
-# 6. Test-AzureLocalApplyUpdatesScheduleCoverage (v0.7.69 touched, smoke-tested in v0.7.70 cycle)
-Test-Cmdlet -Name 'Test-AzureLocalApplyUpdatesScheduleCoverage' `
+# 6. Test-AzLocalApplyUpdatesScheduleCoverage (v0.7.69 touched, smoke-tested in v0.7.70 cycle)
+Test-Cmdlet -Name 'Test-AzLocalApplyUpdatesScheduleCoverage' `
     -Invoke {
         $scheduleFile = 'C:\Users\nebird\Repos\Azure-Local\AzLocal.UpdateManagement\Automation-Pipeline-Examples\schedule-coverage-example.json'
         if (Test-Path $scheduleFile) {
-            Test-AzureLocalApplyUpdatesScheduleCoverage -SchedulePath $scheduleFile
+            Test-AzLocalApplyUpdatesScheduleCoverage -SchedulePath $scheduleFile
         } else {
             Write-Host "  (no example schedule file; skipping)" -ForegroundColor DarkYellow
             return @()

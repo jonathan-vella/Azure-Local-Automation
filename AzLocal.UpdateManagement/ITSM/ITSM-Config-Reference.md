@@ -4,7 +4,7 @@
 > See [ITSM-Connector-Plan.md](./ITSM-Connector-Plan.md) for full design.
 
 This file documents every field in the YAML/JSON config consumed by
-`Get-AzureLocalItsmConfig`. The config file is typically checked into the
+`Get-AzLocalItsmConfig`. The config file is typically checked into the
 consumer repo at `./.itsm/azurelocal-itsm.yml`.
 
 ## Top-level shape
@@ -52,8 +52,8 @@ storage:   { ... }   # optional (raiseAfterConsecutiveOccurrences)
 
 ## Triggers
 
-Top-level keys are JUnit `Status` values produced by `Get-AzureLocalUpdateRuns` /
-`Invoke-AzureLocalFleetOperation` (e.g. `Failed`, `Error`, `HealthCheckBlocked`,
+Top-level keys are JUnit `Status` values produced by `Get-AzLocalUpdateRuns` /
+`Invoke-AzLocalFleetOperation` (e.g. `Failed`, `Error`, `HealthCheckBlocked`,
 `SideloadedBlocked`, `ScheduleBlocked`, `Skipped`, `NotReady`).
 
 | Field | Type | Notes |
@@ -91,7 +91,7 @@ is treated as 1 (i.e. always raise on first occurrence).
 
 | Field | Type | Notes |
 |---|---|---|
-| `lifecycle.enabled` | bool | Whether `Sync-AzureLocalIncident` should close tickets when the underlying cluster recovers. |
+| `lifecycle.enabled` | bool | Whether `Sync-AzLocalIncident` should close tickets when the underlying cluster recovers. |
 | `lifecycle.onSuccessAction` | string | `comment`, `resolve`, or `comment-and-resolve`. |
 | `lifecycle.resolveCode` | string | ServiceNow `close_code` (required if action includes `resolve`). |
 | `lifecycle.resolveNotes` | string | Mustache template for the close-out work-note. |
@@ -108,7 +108,7 @@ is treated as 1 (i.e. always raise on first occurrence).
 
 ## Validation behaviour
 
-`Get-AzureLocalItsmConfig` throws on:
+`Get-AzLocalItsmConfig` throws on:
 
 - Missing `schemaVersion`, or `schemaVersion != 1`
 - Missing top-level `secrets`, `defaults`, or `triggers`

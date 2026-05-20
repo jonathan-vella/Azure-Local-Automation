@@ -57,7 +57,7 @@
         'Private/Get-LastUpdateRunErrorSummary.ps1',
         'Private/Get-LatestUpdateByYYMM.ps1',
         'Private/Get-TagValue.ps1',
-        'Private/Import-AzureLocalFleetState.ps1',
+        'Private/Import-AzLocalFleetState.ps1',
         'Private/Install-AzGraphExtension.ps1',
         'Private/Invoke-AzCliJson.ps1',
         'Private/Invoke-AzLocalSideloadedAutoReset.ps1',
@@ -66,7 +66,7 @@
         'Private/Invoke-AzLocalServiceNowAdapter.ps1',
         'Private/Invoke-AzResourceGraphQuery.ps1',
         'Private/Invoke-AzRestJson.ps1',
-        'Private/Invoke-AzureLocalUpdateApply.ps1',
+        'Private/Invoke-AzLocalUpdateApply.ps1',
         'Private/Invoke-FleetJobsInParallel.ps1',
         'Private/Invoke-FleetOpClusterAction.ps1',
         'Private/Read-AzLocalApplyUpdatesYamlCrons.ps1',
@@ -86,85 +86,85 @@
         'Private/Write-Utf8NoBomFile.ps1',
 
         # Public exported functions
-        'Public/Connect-AzureLocalServicePrincipal.ps1',
-        'Public/Copy-AzureLocalItsmSample.ps1',
-        'Public/Copy-AzureLocalPipelineExample.ps1',
-        'Public/Export-AzureLocalFleetState.ps1',
+        'Public/Connect-AzLocalServicePrincipal.ps1',
+        'Public/Copy-AzLocalItsmSample.ps1',
+        'Public/Copy-AzLocalPipelineExample.ps1',
+        'Public/Export-AzLocalFleetState.ps1',
         'Public/Get-AzLocalApplyUpdatesScheduleConfig.ps1',
         'Public/Get-AzLocalApplyUpdatesScheduleNextFirings.ps1',
-        'Public/Get-AzureLocalAvailableUpdates.ps1',
-        'Public/Get-AzureLocalClusterInfo.ps1',
-        'Public/Get-AzureLocalClusterInventory.ps1',
-        'Public/Get-AzureLocalClusterUpdateReadiness.ps1',
-        'Public/Get-AzureLocalFleetProgress.ps1',
-        'Public/Get-AzureLocalFleetStatusData.ps1',
-        'Public/Get-AzureLocalFleetHealthFailures.ps1',
+        'Public/Get-AzLocalAvailableUpdates.ps1',
+        'Public/Get-AzLocalClusterInfo.ps1',
+        'Public/Get-AzLocalClusterInventory.ps1',
+        'Public/Get-AzLocalClusterUpdateReadiness.ps1',
+        'Public/Get-AzLocalFleetProgress.ps1',
+        'Public/Get-AzLocalFleetStatusData.ps1',
+        'Public/Get-AzLocalFleetHealthFailures.ps1',
         'Public/Get-AzLocalFleetHealthOverview.ps1',
-        'Public/Get-AzureLocalItsmConfig.ps1',
-        'Public/Get-AzureLocalLatestSolutionVersion.ps1',
-        'Public/Get-AzureLocalUpdateRunFailures.ps1',
-        'Public/Get-AzureLocalUpdateRuns.ps1',
-        'Public/Get-AzureLocalUpdateSummary.ps1',
-        'Public/Invoke-AzureLocalFleetOperation.ps1',
+        'Public/Get-AzLocalItsmConfig.ps1',
+        'Public/Get-AzLocalLatestSolutionVersion.ps1',
+        'Public/Get-AzLocalUpdateRunFailures.ps1',
+        'Public/Get-AzLocalUpdateRuns.ps1',
+        'Public/Get-AzLocalUpdateSummary.ps1',
+        'Public/Invoke-AzLocalFleetOperation.ps1',
         'Public/New-AzLocalApplyUpdatesScheduleConfig.ps1',
-        'Public/New-AzureLocalFleetStatusHtmlReport.ps1',
-        'Public/New-AzureLocalIncident.ps1',
-        'Public/Reset-AzureLocalSideloadedTag.ps1',
+        'Public/New-AzLocalFleetStatusHtmlReport.ps1',
+        'Public/New-AzLocalIncident.ps1',
+        'Public/Reset-AzLocalSideloadedTag.ps1',
         'Public/Resolve-AzLocalCurrentUpdateRing.ps1',
-        'Public/Resume-AzureLocalFleetUpdate.ps1',
-        'Public/Set-AzureLocalClusterUpdateRingTag.ps1',
-        'Public/Start-AzureLocalClusterUpdate.ps1',
-        'Public/Stop-AzureLocalFleetUpdate.ps1',
-        'Public/Test-AzureLocalApplyUpdatesScheduleCoverage.ps1',
-        'Public/Test-AzureLocalClusterHealth.ps1',
-        'Public/Test-AzureLocalFleetHealthGate.ps1',
-        'Public/Test-AzureLocalItsmConnection.ps1',
-        'Public/Test-AzureLocalUpdateScheduleAllowed.ps1',
+        'Public/Resume-AzLocalFleetUpdate.ps1',
+        'Public/Set-AzLocalClusterUpdateRingTag.ps1',
+        'Public/Start-AzLocalClusterUpdate.ps1',
+        'Public/Stop-AzLocalFleetUpdate.ps1',
+        'Public/Test-AzLocalApplyUpdatesScheduleCoverage.ps1',
+        'Public/Test-AzLocalClusterHealth.ps1',
+        'Public/Test-AzLocalFleetHealthGate.ps1',
+        'Public/Test-AzLocalItsmConnection.ps1',
+        'Public/Test-AzLocalUpdateScheduleAllowed.ps1',
         'Public/Update-AzLocalApplyUpdatesScheduleConfig.ps1',
-        'Public/Update-AzureLocalPipelineExample.ps1'
+        'Public/Update-AzLocalPipelineExample.ps1'
     )
 
     FunctionsToExport = @(
-        'Connect-AzureLocalServicePrincipal',
-        'Start-AzureLocalClusterUpdate',
-        'Get-AzureLocalClusterUpdateReadiness',
-        'Get-AzureLocalClusterInventory',
-        'Get-AzureLocalClusterInfo',
-        'Get-AzureLocalUpdateSummary',
-        'Get-AzureLocalAvailableUpdates',
-        'Get-AzureLocalUpdateRuns',
-        'Set-AzureLocalClusterUpdateRingTag',
+        'Connect-AzLocalServicePrincipal',
+        'Start-AzLocalClusterUpdate',
+        'Get-AzLocalClusterUpdateReadiness',
+        'Get-AzLocalClusterInventory',
+        'Get-AzLocalClusterInfo',
+        'Get-AzLocalUpdateSummary',
+        'Get-AzLocalAvailableUpdates',
+        'Get-AzLocalUpdateRuns',
+        'Set-AzLocalClusterUpdateRingTag',
         # Fleet-Scale Operations (v0.5.6)
-        'Invoke-AzureLocalFleetOperation',
-        'Get-AzureLocalFleetProgress',
-        'Test-AzureLocalFleetHealthGate',
-        'Export-AzureLocalFleetState',
-        'Resume-AzureLocalFleetUpdate',
-        'Stop-AzureLocalFleetUpdate',
+        'Invoke-AzLocalFleetOperation',
+        'Get-AzLocalFleetProgress',
+        'Test-AzLocalFleetHealthGate',
+        'Export-AzLocalFleetState',
+        'Resume-AzLocalFleetUpdate',
+        'Stop-AzLocalFleetUpdate',
         # Pre-Update Health Validation (v0.6.1)
-        'Test-AzureLocalClusterHealth',
+        'Test-AzLocalClusterHealth',
         # Fleet Status Data Collection & Reporting (v0.6.4)
-        'Get-AzureLocalFleetStatusData',
-        'New-AzureLocalFleetStatusHtmlReport',
+        'Get-AzLocalFleetStatusData',
+        'New-AzLocalFleetStatusHtmlReport',
         # Update Schedule Tag Helpers (v0.6.4)
-        'Test-AzureLocalUpdateScheduleAllowed',
+        'Test-AzLocalUpdateScheduleAllowed',
         # Sideloaded Payload Workflow (v0.7.1)
-        'Reset-AzureLocalSideloadedTag',
+        'Reset-AzLocalSideloadedTag',
         # ITSM Connector Phase 1 (v0.7.4)
-        'Get-AzureLocalItsmConfig',
-        'Test-AzureLocalItsmConnection',
-        'New-AzureLocalIncident',
+        'Get-AzLocalItsmConfig',
+        'Test-AzLocalItsmConnection',
+        'New-AzLocalIncident',
         # Pipeline-Examples Convenience (v0.7.4 / Update added v0.7.68)
-        'Copy-AzureLocalPipelineExample',
-        'Update-AzureLocalPipelineExample',
+        'Copy-AzLocalPipelineExample',
+        'Update-AzLocalPipelineExample',
         # ITSM Sample Convenience (v0.7.50)
-        'Copy-AzureLocalItsmSample',
+        'Copy-AzLocalItsmSample',
         # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
-        'Get-AzureLocalFleetHealthFailures',
+        'Get-AzLocalFleetHealthFailures',
         # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
-        'Test-AzureLocalApplyUpdatesScheduleCoverage',
+        'Test-AzLocalApplyUpdatesScheduleCoverage',
         # Update Run Failures (v0.7.68) - ARG-only deep-error extraction (9 levels deep) for fleet-scale verbose error information
-        'Get-AzureLocalUpdateRunFailures',
+        'Get-AzLocalUpdateRunFailures',
         # Ring-Aware Apply-Updates Schedule (v0.7.69) - human-readable schedule file + cycle-based resolver
         'Get-AzLocalApplyUpdatesScheduleConfig',
         'Resolve-AzLocalCurrentUpdateRing',
@@ -174,7 +174,7 @@
         # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries (fleet-scale)
         'Get-AzLocalFleetHealthOverview',
         # Latest Released Solution Version (v0.7.70) - public manifest probe (aka.ms/AzureEdgeUpdates) that anchors the rolling YYMM support window
-        'Get-AzureLocalLatestSolutionVersion'
+        'Get-AzLocalLatestSolutionVersion'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -203,16 +203,16 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.75 - Hardening: Test-AzureLocalApplyUpdatesScheduleCoverage auto-detects the CI host platform when -Platform is omitted, so stale consumer yml self-heals against cross-platform output noise
+## Version 0.7.75 - Hardening: Test-AzLocalApplyUpdatesScheduleCoverage auto-detects the CI host platform when -Platform is omitted, so stale consumer yml self-heals against cross-platform output noise
 
 ### Fixed
 
-- **`Test-AzureLocalApplyUpdatesScheduleCoverage` cross-platform noise
+- **`Test-AzLocalApplyUpdatesScheduleCoverage` cross-platform noise
   is now fixed at the cmdlet layer**, not just the yml layer.
   v0.7.74 patched the symptom by adding `-Platform GitHubActions` /
   `-Platform AzureDevOps` to the bundled Step.3 yml templates, but
   consumers whose Step.3 yml is a verbatim pre-v0.7.74 copy (i.e.
-  they have not yet run `Update-AzureLocalPipelineExample`) still see
+  they have not yet run `Update-AzLocalPipelineExample`) still see
   both snippets in their Step Summary because the yml does not pass
   `-Platform` and the cmdlet defaults to `'Both'`. v0.7.75 closes
   that gap: when the caller does not bind `-Platform`, the cmdlet
@@ -238,7 +238,7 @@
   runs against the v0.7.75 module on PSGallery. Refresh existing yml
   copies (recommended for the version-pin bump and any other v0.7.75
   changes flagged via `GENERATED_AGAINST_MODULE_VERSION`) with:
-  `Update-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`
+  `Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`
   and / or `-Destination .\.azure-pipelines -Platform AzureDevOps`.
 
 ## Version 0.7.74 - Bug fix: Get-AzLocalFleetHealthOverview KQL regression (ParserFailure at char 2757) + Step.3 recommendation UX rewrite

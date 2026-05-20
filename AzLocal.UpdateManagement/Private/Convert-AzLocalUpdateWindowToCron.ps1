@@ -5,7 +5,7 @@ function Convert-AzLocalUpdateWindowToCron {
         pipeline at the opening edge of every maintenance window encoded in an
         UpdateWindow tag value.
     .DESCRIPTION
-        Used by Test-AzureLocalApplyUpdatesScheduleCoverage. Reuses the existing
+        Used by Test-AzLocalApplyUpdatesScheduleCoverage. Reuses the existing
         ConvertFrom-AzLocalUpdateWindow parser, then for each parsed segment:
 
           - computes the fire time = StartTime - LeadTimeMinutes
@@ -16,7 +16,7 @@ function Convert-AzLocalUpdateWindowToCron {
 
         Same-day window:   fire at (start - lead) on each day in the set.
         Overnight window:  the window opens on the listed day(s); fire only on the
-                           opening edge - the runtime gate (Test-AzureLocalUpdateScheduleAllowed)
+                           opening edge - the runtime gate (Test-AzLocalUpdateScheduleAllowed)
                            handles the wrap into the next day.
 
         Multi-segment windows like 'Mon-Fri_22:00-04:00;Sat-Sun_02:00-10:00'

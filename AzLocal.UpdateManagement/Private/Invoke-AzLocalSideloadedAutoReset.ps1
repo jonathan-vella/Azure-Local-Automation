@@ -3,7 +3,7 @@ function Invoke-AzLocalSideloadedAutoReset {
     .SYNOPSIS
         Runs the sideloaded auto-reset evaluation across an array of formatted update-run objects.
     .DESCRIPTION
-        Internal driver used by Get-AzureLocalUpdateRuns. Groups the supplied update-run
+        Internal driver used by Get-AzLocalUpdateRuns. Groups the supplied update-run
         objects by ClusterName, picks the latest run per cluster (by StartTime), and
         invokes Invoke-AzLocalSideloadedAutoResetForCluster for each. Results are logged
         via Write-Log so the operator sees what happened.
@@ -34,7 +34,7 @@ function Invoke-AzLocalSideloadedAutoReset {
         if (-not $latest) { continue }
 
         # If the run-fetch step itself failed for this cluster (e.g. a transient
-        # ARM error during Get-AzureLocalUpdateRuns), there is no reliable run
+        # ARM error during Get-AzLocalUpdateRuns), there is no reliable run
         # state to evaluate against. Skip the auto-reset rather than risk
         # PATCHing tags off the back of incomplete data. This is informational,
         # not a bug.

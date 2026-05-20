@@ -91,15 +91,15 @@
 
 .EXAMPLE
     # Start update on a single cluster with logging
-    Start-AzureLocalClusterUpdate -ClusterNames "MyCluster01" -ResourceGroupName "MyRG" -LogPath "C:\Logs\update.log"
+    Start-AzLocalClusterUpdate -ClusterNames "MyCluster01" -ResourceGroupName "MyRG" -LogPath "C:\Logs\update.log"
 
 .EXAMPLE
     # Start updates on multiple clusters with transcript and JSON export
-    Start-AzureLocalClusterUpdate -ClusterNames @("Cluster01", "Cluster02") -EnableTranscript -ExportResultsPath "C:\Logs\results.json"
+    Start-AzLocalClusterUpdate -ClusterNames @("Cluster01", "Cluster02") -EnableTranscript -ExportResultsPath "C:\Logs\results.json"
 
 .EXAMPLE
     # Start a specific update with full logging
-    Start-AzureLocalClusterUpdate -ClusterNames "MyCluster01" -UpdateName "Solution12.2601.1002.38" -LogPath "C:\Logs\update.log" -EnableTranscript
+    Start-AzLocalClusterUpdate -ClusterNames "MyCluster01" -UpdateName "Solution12.2601.1002.38" -LogPath "C:\Logs\update.log" -EnableTranscript
 
 .EXAMPLE
     # Start updates on clusters in different resource groups using Resource IDs
@@ -107,19 +107,19 @@
         "/subscriptions/xxx/resourceGroups/RG1/providers/Microsoft.AzureStackHCI/clusters/Cluster01",
         "/subscriptions/xxx/resourceGroups/RG2/providers/Microsoft.AzureStackHCI/clusters/Cluster02"
     )
-    Start-AzureLocalClusterUpdate -ClusterResourceIds $resourceIds -Force
+    Start-AzLocalClusterUpdate -ClusterResourceIds $resourceIds -Force
 
 .EXAMPLE
     # Start updates on all clusters tagged with "UpdateRing" = "Ring1" (across all subscriptions)
-    Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force
+    Start-AzLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force
 
 .EXAMPLE
     # Start updates on production ring clusters
-    Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Production" -UpdateName "Solution12.2601.1002.38" -Force
+    Start-AzLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Production" -UpdateName "Solution12.2601.1002.38" -Force
 
 .EXAMPLE
     # Export results to JUnit XML for CI/CD pipeline integration (Azure DevOps, GitHub Actions, Jenkins)
-    Start-AzureLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
+    Start-AzLocalClusterUpdate -ScopeByUpdateRingTag -UpdateRingValue "Ring1" -Force -ExportResultsPath "C:\Logs\update-results.xml"
 
 .NOTES
     Author: Neil Bird, Microsoft. 
@@ -138,8 +138,8 @@ Set-StrictMode -Version 1.0
 # IMPORTANT: $script:ModuleVersion must match ModuleVersion in AzLocal.UpdateManagement.psd1.
 # The Pester guard 'Module version constants are in sync' enforces this every test run so
 # bumps to one but not the other are caught before release. Two consumers:
-#   - Start-AzureLocalClusterUpdate emits this in the run log header.
-#   - Get-AzureLocalFleetStatusData stamps it into exported fleet-state JSON.
+#   - Start-AzLocalClusterUpdate emits this in the run log header.
+#   - Get-AzLocalFleetStatusData stamps it into exported fleet-state JSON.
 $script:ModuleVersion = '0.7.75'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.UpdateManagement'
@@ -197,7 +197,7 @@ $script:UpdateVersionInProgressTagName = 'UpdateVersionInProgress'
 # Current apply-updates-schedule.yml schema version produced + consumed by
 # this module. Incremented when a non-additive change to the schedule file
 # format ships. Customer files on a LOWER version are auto-migrated by
-# Update-AzureLocalPipelineExample via the per-hop recipes registered in
+# Update-AzLocalPipelineExample via the per-hop recipes registered in
 # Private/Convert-AzLocalScheduleSchemaVersion.ps1. Customer files on a
 # HIGHER version cause the migrator to refuse with a remediation message
 # pointing at PSGallery.
@@ -237,46 +237,46 @@ if (Test-Path -LiteralPath $manifestPath) {
     }
 }
 Export-ModuleMember -Function @(
-    'Connect-AzureLocalServicePrincipal',
-    'Start-AzureLocalClusterUpdate',
-    'Get-AzureLocalClusterUpdateReadiness',
-    'Get-AzureLocalClusterInventory',
-    'Get-AzureLocalClusterInfo',
-    'Get-AzureLocalUpdateSummary',
-    'Get-AzureLocalAvailableUpdates',
-    'Get-AzureLocalUpdateRuns',
-    'Set-AzureLocalClusterUpdateRingTag',
+    'Connect-AzLocalServicePrincipal',
+    'Start-AzLocalClusterUpdate',
+    'Get-AzLocalClusterUpdateReadiness',
+    'Get-AzLocalClusterInventory',
+    'Get-AzLocalClusterInfo',
+    'Get-AzLocalUpdateSummary',
+    'Get-AzLocalAvailableUpdates',
+    'Get-AzLocalUpdateRuns',
+    'Set-AzLocalClusterUpdateRingTag',
     # Fleet-Scale Operations (v0.5.6)
-    'Invoke-AzureLocalFleetOperation',
-    'Get-AzureLocalFleetProgress',
-    'Test-AzureLocalFleetHealthGate',
-    'Export-AzureLocalFleetState',
-    'Resume-AzureLocalFleetUpdate',
-    'Stop-AzureLocalFleetUpdate',
+    'Invoke-AzLocalFleetOperation',
+    'Get-AzLocalFleetProgress',
+    'Test-AzLocalFleetHealthGate',
+    'Export-AzLocalFleetState',
+    'Resume-AzLocalFleetUpdate',
+    'Stop-AzLocalFleetUpdate',
     # Pre-Update Health Validation (v0.6.1)
-    'Test-AzureLocalClusterHealth',
+    'Test-AzLocalClusterHealth',
     # Fleet Status Data Collection & Reporting (v0.6.4)
-    'Get-AzureLocalFleetStatusData',
-    'New-AzureLocalFleetStatusHtmlReport',
+    'Get-AzLocalFleetStatusData',
+    'New-AzLocalFleetStatusHtmlReport',
     # Update Schedule Tag Helpers (v0.6.5)
-    'Test-AzureLocalUpdateScheduleAllowed',
+    'Test-AzLocalUpdateScheduleAllowed',
     # Sideloaded Payload Workflow (v0.7.1)
-    'Reset-AzureLocalSideloadedTag',
+    'Reset-AzLocalSideloadedTag',
     # ITSM Connector Phase 1 (v0.7.4)
-    'Get-AzureLocalItsmConfig',
-    'Test-AzureLocalItsmConnection',
-    'New-AzureLocalIncident',
+    'Get-AzLocalItsmConfig',
+    'Test-AzLocalItsmConnection',
+    'New-AzLocalIncident',
     # Pipeline-Examples Convenience (v0.7.4 / Update added v0.7.68)
-    'Copy-AzureLocalPipelineExample',
-    'Update-AzureLocalPipelineExample',
+    'Copy-AzLocalPipelineExample',
+    'Update-AzLocalPipelineExample',
     # ITSM Sample Convenience (v0.7.50)
-    'Copy-AzureLocalItsmSample',
+    'Copy-AzLocalItsmSample',
     # Fleet Health Failures (v0.7.65) - 24-hour system health-check failures across the fleet
-    'Get-AzureLocalFleetHealthFailures',
+    'Get-AzLocalFleetHealthFailures',
     # Apply-Updates Schedule Coverage Advisor (v0.7.65) - compares apply-updates YAML cron(s) to UpdateWindow tags
-    'Test-AzureLocalApplyUpdatesScheduleCoverage',
+    'Test-AzLocalApplyUpdatesScheduleCoverage',
     # Update Run Failures (v0.7.68) - ARG-only deep-error extraction (9 levels deep) for fleet-scale verbose error information
-    'Get-AzureLocalUpdateRunFailures',
+    'Get-AzLocalUpdateRunFailures',
     # Ring-Aware Apply-Updates Schedule (v0.7.69) - human-readable schedule file + cycle-based resolver
     'Get-AzLocalApplyUpdatesScheduleConfig',
     'Resolve-AzLocalCurrentUpdateRing',
@@ -286,5 +286,5 @@ Export-ModuleMember -Function @(
     # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries
     'Get-AzLocalFleetHealthOverview',
     # Latest Released Solution Version (v0.7.70 Phase E) - public manifest probe (aka.ms/AzureEdgeUpdates) that anchors the rolling YYMM support window in Step.6
-    'Get-AzureLocalLatestSolutionVersion'
+    'Get-AzLocalLatestSolutionVersion'
 )

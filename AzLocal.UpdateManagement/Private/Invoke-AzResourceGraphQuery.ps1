@@ -23,7 +23,7 @@ function Invoke-AzResourceGraphQuery {
         argument parser truncates command-line arguments at the first CR/LF -
         so a multi-line PowerShell here-string KQL would silently be reduced
         to just its first line on the runner. The pre-v0.7.68 behaviour caused
-        Test-AzureLocalApplyUpdatesScheduleCoverage to silently return all
+        Test-AzLocalApplyUpdatesScheduleCoverage to silently return all
         resources (default schema, no UpdateRing/UpdateWindow columns) instead
         of the projected cluster rows it asked for; the audit then reported
         zero tagged clusters even when clusters were tagged correctly. The

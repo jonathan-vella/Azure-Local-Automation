@@ -34,7 +34,7 @@ name: Step.7 - Fleet Health Status
 
 on:
   # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
-  # Edits inside this block are preserved across Update-AzureLocalPipelineExample
+  # Edits inside this block are preserved across Update-AzLocalPipelineExample
   # module upgrades. Add or modify `schedule:` cron blocks below.
   # Run on schedule (e.g., daily at 7 AM UTC, offset from Fleet Update Status so the two
   # do not start their CLI shell-outs in the same minute).
@@ -113,7 +113,7 @@ env:
   # Module version this workflow YAML was generated against. The install step compares
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   GENERATED_AGAINST_MODULE_VERSION: '0.7.75'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
@@ -178,11 +178,11 @@ jobs:
         Write-Host ""
         # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
         if ($installed -lt $generated) {
-            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
         }
         if ($installed -gt $generated) {
-            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Refresh via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Refresh via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::notice title=Workflow YAML may be stale::$msg"
         }
         if ($latest -and ($latest -gt $installed)) {
@@ -226,7 +226,7 @@ jobs:
         # health-check rows; one optional cluster-tag filter inside the module).
         $detailCsv  = Join-Path $outputDir 'fleet-health-detail.csv'
         $detailJson = Join-Path $outputDir 'fleet-health-detail.json'
-        $detail     = Get-AzureLocalFleetHealthFailures -View Detail @argSplat -ExportPath $detailCsv -PassThru
+        $detail     = Get-AzLocalFleetHealthFailures -View Detail @argSplat -ExportPath $detailCsv -PassThru
         if (-not $detail) { $detail = @() }
         # Also write the JSON copy directly from the in-memory array (no second ARG call).
         $detail | ConvertTo-Json -Depth 6 | Out-File -FilePath $detailJson -Encoding utf8
@@ -607,7 +607,7 @@ jobs:
     # The JUnit emitter writes per-testcase <properties> (ClusterName /
     # ClusterResourceId / UpdateName=FailureReason / Status=Severity /
     # FailureReason / Severity / ClusterPortalUrl / TargetResourceName /
-    # TargetResourceType) so New-AzureLocalIncident can compute the SHA256
+    # TargetResourceType) so New-AzLocalIncident can compute the SHA256
     # dedupe key (one ticket per cluster + failing check) and the Mustache
     # body template can deep-link straight into the cluster blade.
     # ----------------------------------------------------------------------
@@ -627,7 +627,7 @@ jobs:
         # BEGIN-AZLOCAL-CUSTOMIZE:itsm-secrets
         # Bind your ITSM connector secrets here. Defaults match the
         # ServiceNow OAuth client_credentials naming used by azurelocal-itsm.yml.
-        # Preserved by Update-AzureLocalPipelineExample across module upgrades.
+        # Preserved by Update-AzLocalPipelineExample across module upgrades.
         ITSM_SN_INSTANCE_URL: ${{ secrets.ITSM_SN_INSTANCE_URL }}
         ITSM_SN_CLIENT_ID:    ${{ secrets.ITSM_SN_CLIENT_ID }}
         ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
@@ -647,7 +647,7 @@ jobs:
             exit 0
         }
 
-        $cfg = Get-AzureLocalItsmConfig -Path $configPath
+        $cfg = Get-AzLocalItsmConfig -Path $configPath
 
         $junitInput = './reports/fleet-health-status.xml'
         if (-not (Test-Path $junitInput)) {
@@ -670,7 +670,7 @@ jobs:
             ExportJUnitPath   = './reports/itsm-results.xml'
         }
 
-        $results = New-AzureLocalIncident @params
+        $results = New-AzLocalIncident @params
         $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
 
     - name: Upload ITSM Artefacts

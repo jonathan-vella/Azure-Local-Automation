@@ -9,7 +9,7 @@ function New-AzLocalApplyUpdatesScheduleConfig {
 
     .DESCRIPTION
         v0.7.69 onboarding helper. Run this once after tagging your
-        fleet with Set-AzureLocalClusterUpdateRingTag - it discovers
+        fleet with Set-AzLocalClusterUpdateRingTag - it discovers
         every distinct UpdateRing tag value via Azure Resource Graph,
         sorts them into a safe-by-default order (canary-like names
         first, prod-like names last), and writes a strawman schedule
@@ -36,7 +36,7 @@ function New-AzLocalApplyUpdatesScheduleConfig {
 
         Default behaviour:
           * Discovery: Azure Resource Graph query (same shape as
-            Test-AzureLocalApplyUpdatesScheduleCoverage uses) over the
+            Test-AzLocalApplyUpdatesScheduleCoverage uses) over the
             current subscription (or -SubscriptionId).
           * Ordering: rings whose name starts with 'canary', 'dev', or
             'test' (case-insensitive) sort first; rings whose name
@@ -134,7 +134,7 @@ resources
         }
         $Rings = @($rows | ForEach-Object { $_.UpdateRing } | Where-Object { $_ } | Select-Object -Unique)
         if (@($Rings).Count -eq 0) {
-            throw "No clusters with an UpdateRing tag were found. Tag the fleet first via Set-AzureLocalClusterUpdateRingTag, then re-run."
+            throw "No clusters with an UpdateRing tag were found. Tag the fleet first via Set-AzLocalClusterUpdateRingTag, then re-run."
         }
         Write-Log -Message "Discovered $($Rings.Count) distinct UpdateRing value(s): $($Rings -join ', ')." -Level Info
     } else {

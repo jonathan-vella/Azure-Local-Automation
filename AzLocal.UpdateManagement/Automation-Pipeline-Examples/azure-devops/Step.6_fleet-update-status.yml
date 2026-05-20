@@ -21,7 +21,7 @@
 # See: https://learn.microsoft.com/en-us/azure/devops/pipelines/library/connect-to-azure?view=azure-devops#create-an-azure-resource-manager-service-connection-using-workload-identity-federation
 
 # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
-# Edits inside this block are preserved across Update-AzureLocalPipelineExample
+# Edits inside this block are preserved across Update-AzLocalPipelineExample
 # module upgrades. Add or modify `schedules:` blocks below.
 trigger: none  # Manual or scheduled only
 
@@ -91,7 +91,7 @@ variables:
   # Module version this YAML was generated against. The install step compares this to
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   GENERATED_AGAINST_MODULE_VERSION: '0.7.75'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
@@ -159,10 +159,10 @@ stages:
           Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
           # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
           if ($installed -lt $generated) {
-              Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
+              Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
           }
           if ($installed -gt $generated) {
-              $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+              $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
               Write-Host "##vso[task.logissue type=warning]$msg"
           }
           if ($latest -and ($latest -gt $installed)) {
@@ -205,7 +205,7 @@ stages:
           Write-Host "Step 1: Getting cluster inventory..." -ForegroundColor Yellow
           
           $inventoryCsv = Join-Path $outputDir "cluster-inventory.csv"
-          $inventory = Get-AzureLocalClusterInventory -ExportPath $inventoryCsv -PassThru
+          $inventory = Get-AzLocalClusterInventory -ExportPath $inventoryCsv -PassThru
           
           if (-not $inventory -or $inventory.Count -eq 0) {
               Write-Warning "No clusters found in inventory"
@@ -234,7 +234,7 @@ stages:
           $readinessJson = Join-Path $outputDir "readiness-status.json"
           $readinessXml = Join-Path $outputDir "readiness-status.xml"
           
-          $readiness = Get-AzureLocalClusterUpdateReadiness @readinessParams -ExportPath $readinessCsv -PassThru
+          $readiness = Get-AzLocalClusterUpdateReadiness @readinessParams -ExportPath $readinessCsv -PassThru
           
           # Export to JSON
           $hasPrerequisite = @($readiness | Where-Object { $_.HasPrerequisiteUpdates -ne "" }).Count
@@ -319,7 +319,7 @@ stages:
           # Compute the rolling 6-month YYMM support window used by SupportStatus.
           # Preferred anchor: the latest released Azure Local solution version from the
           # Microsoft public catalog (https://aka.ms/AzureEdgeUpdates), via the
-          # Get-AzureLocalLatestSolutionVersion cmdlet. Fallback: top-6 distinct YYMM
+          # Get-AzLocalLatestSolutionVersion cmdlet. Fallback: top-6 distinct YYMM
           # values observed across the fleet. As soon as Microsoft publishes any release
           # with a newer YYMM (e.g. 2604), the window slides forward and older YYMM
           # values (e.g. 2510) fall out, even if no cluster has installed the new release.
@@ -331,7 +331,7 @@ stages:
           $manifestError         = ''
           try {
               Write-Host "Querying $manifestUrl for the latest released Azure Local solution version..."
-              $manifestProbe = Get-AzureLocalLatestSolutionVersion -ErrorAction Stop
+              $manifestProbe = Get-AzLocalLatestSolutionVersion -ErrorAction Stop
               $supportedYymms        = @($manifestProbe.SupportedYYMMs)
               $supportSource         = 'Microsoft manifest'
               $latestReleasedYymm    = [string]$manifestProbe.LatestYYMM
@@ -383,7 +383,7 @@ stages:
             <testsuite name="Fleet Version Distribution" tests="$distinctVersions" failures="0" errors="0" skipped="0" time="0" timestamp="$timestamp">
               <properties>
                 <property name="testCategory" value="FleetVersionDistribution"/>
-                <property name="description" value="Overall Fleet Update Status - cluster count and percentage per distinct CurrentVersion (StackHCI build presently installed). Source field: Get-AzureLocalClusterUpdateReadiness.CurrentVersion. SupportStatus uses the rolling 6-month YYMM window anchored on the latest released Azure Local solution version published at https://aka.ms/AzureEdgeUpdates (supportSource='Microsoft manifest'); when the manifest is unreachable the pipeline falls back to the top-6 distinct YYMM values observed in the fleet (supportSource='fleet-observed'). Cross-check against the Microsoft Azure Local lifecycle docs before operator action."/>
+                <property name="description" value="Overall Fleet Update Status - cluster count and percentage per distinct CurrentVersion (StackHCI build presently installed). Source field: Get-AzLocalClusterUpdateReadiness.CurrentVersion. SupportStatus uses the rolling 6-month YYMM window anchored on the latest released Azure Local solution version published at https://aka.ms/AzureEdgeUpdates (supportSource='Microsoft manifest'); when the manifest is unreachable the pipeline falls back to the top-6 distinct YYMM values observed in the fleet (supportSource='fleet-observed'). Cross-check against the Microsoft Azure Local lifecycle docs before operator action."/>
                 <property name="totalClusters" value="$totalTests"/>
                 <property name="distinctVersions" value="$distinctVersions"/>
                 <property name="mostCommonVersion" value="$mostCommonVersion"/>
@@ -491,7 +491,7 @@ stages:
               $systemOut = $systemOut -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;'
               
               # per-testcase <properties> for the ITSM connector. The dedupe
-              # key in New-AzureLocalIncident is SHA256(ClusterResourceId|UpdateName|Category);
+              # key in New-AzLocalIncident is SHA256(ClusterResourceId|UpdateName|Category);
               # without these properties the connector reports Action='Skipped'
               # with "Row missing ClusterResourceId or UpdateName". Status is
               # mirrored so the trigger-matrix evaluator can pick the right
@@ -546,10 +546,10 @@ stages:
           Write-Host "Step 3b: Collecting Update Run History + Verbose Error Details (ARG-first, fleet-scale)..." -ForegroundColor Yellow
           $runFailures = @()
           try {
-              $runFailures = @(Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-30))
+              $runFailures = @(Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-30))
           }
           catch {
-              Write-Warning "Get-AzureLocalUpdateRunFailures threw: $($_.Exception.Message). Continuing with empty run-history section."
+              Write-Warning "Get-AzLocalUpdateRunFailures threw: $($_.Exception.Message). Continuing with empty run-history section."
               $runFailures = @()
           }
           $runFailures = @($runFailures | Sort-Object StartTime -Descending)
@@ -570,7 +570,7 @@ stages:
           $xmlContent += "`n  <testsuite name=`"📜 Update Run History and Error Details`" tests=`"$runHistoryCount`" failures=`"$runHistoryCount`" errors=`"0`" skipped=`"0`" time=`"0`" timestamp=`"$timestamp`">`n"
           $xmlContent += "    <properties>`n"
           $xmlContent += "      <property name=`"description`" value=`"Verbose error details for each unresolved Failed update run (ARG-first, fleet-scale).`"/>`n"
-          $xmlContent += "      <property name=`"sourceCmdlet`" value=`"Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-30)`"/>`n"
+          $xmlContent += "      <property name=`"sourceCmdlet`" value=`"Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved -Since (Get-Date).AddDays(-30)`"/>`n"
           $xmlContent += "      <property name=`"failedRunCount`" value=`"$runHistoryCount`"/>`n"
           $xmlContent += "    </properties>`n"
 
@@ -599,7 +599,7 @@ stages:
               # properties for the ITSM connector dedupe key plus extended context
               # (UpdateRunPortalUrl, ClusterPortalUrl, CurrentStep,
               # Duration, ErrorCategory) so the optional incident-body template
-              # rendered by New-AzureLocalIncident can deep-link straight into
+              # rendered by New-AzLocalIncident can deep-link straight into
               # the SingleInstanceHistoryDetails ReactView for this failed run.
               $fClusterResIdEsc = ([string]$f.ClusterResourceId) -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;'
               $fClusterPortalEsc = if ($f.ClusterResourceId) { "https://portal.azure.com/#@/resource$($f.ClusterResourceId)" -replace '&','&amp;' -replace '"','&quot;' } else { '' }
@@ -655,7 +655,7 @@ stages:
           Write-Host "Step 4a: Collecting fleet update summaries..." -ForegroundColor Yellow
           
           $summaryCsv = Join-Path $outputDir "update-summaries.csv"
-          $summaries = Get-AzureLocalUpdateSummary -ClusterResourceIds $fleetResourceIds -ExportPath $summaryCsv -PassThru
+          $summaries = Get-AzLocalUpdateSummary -ClusterResourceIds $fleetResourceIds -ExportPath $summaryCsv -PassThru
           Write-Host "Update summaries collected for $($summaries.Count) cluster(s)" -ForegroundColor Green
           
           # Step 4b: Get available updates across fleet
@@ -663,7 +663,7 @@ stages:
           Write-Host "Step 4b: Collecting available updates..." -ForegroundColor Yellow
           
           $availableCsv = Join-Path $outputDir "available-updates.csv"
-          $available = Get-AzureLocalAvailableUpdates -ClusterResourceIds $fleetResourceIds -ExportPath $availableCsv -PassThru
+          $available = Get-AzLocalAvailableUpdates -ClusterResourceIds $fleetResourceIds -ExportPath $availableCsv -PassThru
           Write-Host "Found $($available.Count) available update(s) across fleet" -ForegroundColor Green
           
           # Step 4c: Optionally collect recent update runs using fleet-wide query
@@ -672,7 +672,7 @@ stages:
               Write-Host "Step 4c: Collecting recent update run history..." -ForegroundColor Yellow
               
               $runsCsv = Join-Path $outputDir "update-runs.csv"
-              $allRuns = Get-AzureLocalUpdateRuns -ClusterResourceIds $fleetResourceIds -Latest -ExportPath $runsCsv -PassThru
+              $allRuns = Get-AzLocalUpdateRuns -ClusterResourceIds $fleetResourceIds -Latest -ExportPath $runsCsv -PassThru
               Write-Host "Update runs collected for $($allRuns.Count) cluster(s)" -ForegroundColor Green
               
               # Display summary
@@ -820,7 +820,7 @@ stages:
             try {
                 $vRows = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($versionDistB64)) | ConvertFrom-Json
                 $versionSection += "### Overall Fleet Update Status (Version Distribution)`n`n"
-                $versionSection += "_One row per distinct ``CurrentVersion`` reported by ``Get-AzureLocalClusterUpdateReadiness``. Sorted by cluster count (descending). Percentage is share of the $total cluster(s) in scope._`n`n"
+                $versionSection += "_One row per distinct ``CurrentVersion`` reported by ``Get-AzLocalClusterUpdateReadiness``. Sorted by cluster count (descending). Percentage is share of the $total cluster(s) in scope._`n`n"
                 if ($supportSource -eq 'Microsoft manifest' -and $latestReleasedYymm) {
                     $versionSection += "_``SupportStatus`` uses the **rolling 6-month YYMM window anchored on the Microsoft public catalog** ([aka.ms/AzureEdgeUpdates](https://aka.ms/AzureEdgeUpdates)). Latest released YYMM = **$latestReleasedYymm** (``$latestReleasedVersion``); supported window = ``$supportedYymmWin``. As soon as Microsoft publishes a release with a newer YYMM, the window slides forward and the oldest in-window YYMM falls out._`n`n"
                     $versionSection += "_**Supported** = cluster's YYMM is inside the manifest-anchored window; **Unsupported** = older YYMM; **Unknown** = ``CurrentVersion`` empty or not in ``<prefix>.YYMM.X.X`` form. Always cross-check against the [Azure Local lifecycle cadence](https://learn.microsoft.com/azure/azure-local/update/about-updates-23h2#lifecycle-cadence) and the [Azure Local release information](https://learn.microsoft.com/azure/azure-local/release-information-23h2#about-azure-local-releases) before taking action._`n`n"
@@ -903,7 +903,7 @@ stages:
             try {
                 $rows = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($runHistoryB64)) | ConvertFrom-Json
                 $summary += "`n`n### 📜 Update Run History and Error Details`n`n"
-                $summary += "_ARG-first, fleet-scale failure-detail view. Shows up to 25 most recent unresolved Failed update runs (last 30 days). Source cmdlet: ``Get-AzureLocalUpdateRunFailures -State Failed -OnlyUnresolved``._`n`n"
+                $summary += "_ARG-first, fleet-scale failure-detail view. Shows up to 25 most recent unresolved Failed update runs (last 30 days). Source cmdlet: ``Get-AzLocalUpdateRunFailures -State Failed -OnlyUnresolved``._`n`n"
                 $summary += "| Cluster Name | Update Name | Update State | Status | Current Step | Verbose Error Details | Duration | Time Started | Last Updated |`n"
                 $summary += "|---|---|---|---|---|---|---|---|---|`n"
                 foreach ($r in @($rows)) {
@@ -971,7 +971,7 @@ stages:
     # Reads the same readiness-status.xml that powers the run summary. The
     # JUnit emitter writes per-testcase <properties> (ClusterName /
     # ClusterResourceId / UpdateName / Status / ErrorCategory / CurrentStep /
-    # Duration / UpdateRunPortalUrl / ClusterPortalUrl) so New-AzureLocalIncident
+    # Duration / UpdateRunPortalUrl / ClusterPortalUrl) so New-AzLocalIncident
     # can compute the SHA256 dedupe key and the Mustache body template can
     # deep-link straight into the SingleInstanceHistoryDetails ReactView for
     # the failed update run.
@@ -997,7 +997,7 @@ stages:
         # Defaults assume the ServiceNow OAuth client_credentials naming used
         # by azurelocal-itsm.yml (env://ITSM_SN_*). If your secret names differ,
         # update them here - this block is preserved by
-        # Update-AzureLocalPipelineExample across module upgrades.
+        # Update-AzLocalPipelineExample across module upgrades.
         ITSM_SN_INSTANCE_URL: $(ITSM_SN_INSTANCE_URL)
         ITSM_SN_CLIENT_ID: $(ITSM_SN_CLIENT_ID)
         ITSM_SN_CLIENT_SECRET: $(ITSM_SN_CLIENT_SECRET)
@@ -1018,7 +1018,7 @@ stages:
               exit 0
           }
 
-          $cfg = Get-AzureLocalItsmConfig -Path $configPath
+          $cfg = Get-AzLocalItsmConfig -Path $configPath
 
           $junitInput = "$(reportsPath)/readiness-status.xml"
           if (-not (Test-Path $junitInput)) {
@@ -1041,7 +1041,7 @@ stages:
               ExportJUnitPath   = "$(reportsPath)/itsm-results.xml"
           }
 
-          $results = New-AzureLocalIncident @params
+          $results = New-AzLocalIncident @params
           $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
 
     - task: PublishBuildArtifacts@1

@@ -5,7 +5,7 @@ function Read-AzLocalApplyUpdatesYamlCrons {
         (GitHub Actions and Azure DevOps).
     .DESCRIPTION
         Pure regex pre-scan; deliberately does NOT take a dependency on
-        powershell-yaml. Used by Test-AzureLocalApplyUpdatesScheduleCoverage.
+        powershell-yaml. Used by Test-AzLocalApplyUpdatesScheduleCoverage.
 
         Discovery rules:
           - If Path is a file, scan that file.

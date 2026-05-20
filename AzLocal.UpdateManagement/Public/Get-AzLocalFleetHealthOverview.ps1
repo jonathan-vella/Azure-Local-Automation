@@ -17,7 +17,7 @@ function Get-AzLocalFleetHealthOverview {
         SbeVersion column per cluster regardless of how many package rows
         the cluster reports.
 
-        Where the existing `Get-AzureLocalFleetHealthFailures` cmdlet
+        Where the existing `Get-AzLocalFleetHealthFailures` cmdlet
         focuses on individual failing checks, this cmdlet answers
         "how is the fleet doing overall?" - one row per cluster, sorted
         with the staleest health-check result first (HealthResultsAgeDays

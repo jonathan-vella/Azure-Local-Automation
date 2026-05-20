@@ -4,8 +4,8 @@ function Test-AzLocalUpdateSideloadedAllowed {
         Evaluates whether an update is allowed by the UpdateSideloaded tag.
     .DESCRIPTION
         Returns a structured result indicating whether the sideloaded gate permits
-        the update to proceed. Mirrors the shape returned by Test-AzureLocalUpdateScheduleAllowed
-        so the calling decision site in Start-AzureLocalClusterUpdate can use a uniform pattern.
+        the update to proceed. Mirrors the shape returned by Test-AzLocalUpdateScheduleAllowed
+        so the calling decision site in Start-AzLocalClusterUpdate can use a uniform pattern.
 
         Decision rules:
         - Tag absent / empty                          -> Allowed=$true (no gate)

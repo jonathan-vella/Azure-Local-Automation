@@ -7,7 +7,7 @@ function Get-AzLocalItsmTriggerDecision {
         Returns a decision object indicating whether a ticket should be
         raised for this Status, plus the resolved Severity, Category,
         and MirrorTargets. The matrix typically comes from
-        Get-AzureLocalItsmConfig (-Config.Triggers / -Config.Defaults).
+        Get-AzLocalItsmConfig (-Config.Triggers / -Config.Defaults).
 
         Decision object properties:
           ShouldTicket    [bool]   - whether to raise a ticket

@@ -1,6 +1,6 @@
 # Assess Update Readiness (Pre-flight go/no-go gate)
 # --------------------------------------------------
-# Runs Get-AzureLocalClusterUpdateReadiness and Test-AzureLocalClusterHealth -BlockingOnly
+# Runs Get-AzLocalClusterUpdateReadiness and Test-AzLocalClusterHealth -BlockingOnly
 # against a target UpdateRing (or the whole fleet) BEFORE Step.5_apply-updates.yml runs.
 #
 # Outputs two JUnit XML artifacts consumed by the Actions test reporter:
@@ -37,7 +37,7 @@ on:
   #   schedule:
   #     - cron: '0 4 * * *'  # Daily at 04:00 UTC, before apply-updates windows
   # Content between BEGIN/END markers is preserved by
-  # Update-AzureLocalPipelineExample across module upgrades.
+  # Update-AzLocalPipelineExample across module upgrades.
   # END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
   workflow_dispatch:
@@ -65,7 +65,7 @@ env:
   # Module version this workflow YAML was generated against. The install step compares
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   GENERATED_AGAINST_MODULE_VERSION: '0.7.75'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
@@ -132,11 +132,11 @@ jobs:
           Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
           # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
           if ($installed -lt $generated) {
-              $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+              $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
               Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
           }
           if ($installed -gt $generated) {
-              $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+              $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
               Write-Host "::notice title=Workflow YAML may be stale::$msg"
           }
           if ($latest -and ($latest -gt $installed)) {
@@ -171,7 +171,7 @@ jobs:
               Write-Host "Scope: UpdateRing = $updateRing"
           } else {
               Write-Host "Scope: all clusters (via inventory)"
-              $inventory = Get-AzureLocalClusterInventory -PassThru
+              $inventory = Get-AzLocalClusterInventory -PassThru
               if (-not $inventory -or $inventory.Count -eq 0) {
                   Write-Warning 'No clusters found in inventory.'
                   "NOT_READY=0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -183,16 +183,16 @@ jobs:
 
           Write-Host ''
           Write-Host '========================================' -ForegroundColor Cyan
-          Write-Host 'Step 1: Readiness (Get-AzureLocalClusterUpdateReadiness)' -ForegroundColor Cyan
+          Write-Host 'Step 1: Readiness (Get-AzLocalClusterUpdateReadiness)' -ForegroundColor Cyan
           Write-Host '========================================' -ForegroundColor Cyan
 
           # CSV for humans
-          $readiness = Get-AzureLocalClusterUpdateReadiness @scopeParams `
+          $readiness = Get-AzLocalClusterUpdateReadiness @scopeParams `
               -ExportPath $readinessCsv `
               -PassThru
 
           # JUnit XML for the test reporter (ExportPath .xml auto-detects JUnitXml)
-          $null = Get-AzureLocalClusterUpdateReadiness @scopeParams `
+          $null = Get-AzLocalClusterUpdateReadiness @scopeParams `
               -ExportPath $readinessXml
 
           $notReady = @($readiness | Where-Object { $_.ReadyForUpdate -ne $true }).Count
@@ -204,22 +204,22 @@ jobs:
 
           Write-Host ''
           Write-Host '========================================' -ForegroundColor Cyan
-          Write-Host 'Step 2: Blocking health (Test-AzureLocalClusterHealth -BlockingOnly)' -ForegroundColor Cyan
+          Write-Host 'Step 2: Blocking health (Test-AzLocalClusterHealth -BlockingOnly)' -ForegroundColor Cyan
           Write-Host '========================================' -ForegroundColor Cyan
 
           # Reuse the same scope. -UpdateSummary skip-fetch is not available here because the
-          # per-cluster summaries are private to Get-AzureLocalClusterUpdateReadiness; a fresh
+          # per-cluster summaries are private to Get-AzLocalClusterUpdateReadiness; a fresh
           # call is cheap and keeps the function self-contained.
-          $health = Test-AzureLocalClusterHealth @scopeParams `
+          $health = Test-AzLocalClusterHealth @scopeParams `
               -BlockingOnly `
               -ExportPath $healthCsv `
               -PassThru
 
-          $null = Test-AzureLocalClusterHealth @scopeParams `
+          $null = Test-AzLocalClusterHealth @scopeParams `
               -BlockingOnly `
               -ExportPath $healthXml
 
-          # Test-AzureLocalClusterHealth -PassThru returns one row per cluster
+          # Test-AzLocalClusterHealth -PassThru returns one row per cluster
           # (shape: ClusterName, HealthState, Passed, CriticalCount, WarningCount, Failures)
           # NOT a flat list of finding rows. Aggregate from CriticalCount / Failures rather
           # than filtering on a non-existent Severity property (which silently returned 0).

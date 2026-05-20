@@ -45,7 +45,7 @@ on:
   # which is rarely what schedule-triggered runs actually want.
   #
   # Content between BEGIN/END markers is preserved by
-  # Update-AzureLocalPipelineExample across module upgrades.
+  # Update-AzLocalPipelineExample across module upgrades.
   # END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
   workflow_dispatch:
@@ -111,7 +111,7 @@ env:
   # Module version this workflow YAML was generated against. The install step compares
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   GENERATED_AGAINST_MODULE_VERSION: '0.7.75'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
@@ -212,12 +212,12 @@ jobs:
         Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
         # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
         if ($installed -lt $generated) {
-            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
         }
         # Drift signal 1: the YAML in this repo is older than the module that was installed.
         if ($installed -gt $generated) {
-            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
             Write-Host "::notice title=Workflow YAML may be stale::$msg"
         }
         # Drift signal 2: the user pinned (or PSGallery shipped a release mid-run) and the install is behind the latest.
@@ -299,7 +299,7 @@ jobs:
         $csvPath = Join-Path $outputDir "readiness-report.csv"
         
         # Run readiness check
-        $results = Get-AzureLocalClusterUpdateReadiness `
+        $results = Get-AzLocalClusterUpdateReadiness `
             -ScopeByUpdateRingTag `
             -UpdateRingValue $updateRing `
             -ExportPath $csvPath `
@@ -441,7 +441,7 @@ jobs:
         
         # Read the readiness CSV from the check-readiness job and extract
         # the ARM resource IDs of clusters marked ReadyForUpdate=True. The
-        # ClusterResourceId column was added to Get-AzureLocalClusterUpdateReadiness
+        # ClusterResourceId column was added to Get-AzLocalClusterUpdateReadiness
         # output in specifically to make this hand-off explicit and
         # exact (no second tag query, no drift between the two jobs' scopes).
         $readinessCsv = Join-Path $outputDir 'readiness-report.csv'
@@ -450,7 +450,7 @@ jobs:
         }
         $readinessRows = @(Import-Csv -Path $readinessCsv)
         if ($readinessRows.Count -gt 0 -and -not ($readinessRows[0].PSObject.Properties.Name -contains 'ClusterResourceId')) {
-            throw "Readiness CSV at '$readinessCsv' is missing the 'ClusterResourceId' column. This column was added in AzLocal.UpdateManagement v0.7.62. Re-run check-readiness with v0.7.62+ or refresh this workflow YAML via Copy-AzureLocalPipelineExample -Update."
+            throw "Readiness CSV at '$readinessCsv' is missing the 'ClusterResourceId' column. This column was added in AzLocal.UpdateManagement v0.7.62. Re-run check-readiness with v0.7.62+ or refresh this workflow YAML via Copy-AzLocalPipelineExample -Update."
         }
         # CSV booleans render as the strings 'True'/'False'.
         $readyResourceIds = @($readinessRows |
@@ -495,7 +495,7 @@ jobs:
         Write-Host "========================================" -ForegroundColor Cyan
         
         # Run updates
-        $results = Start-AzureLocalClusterUpdate @params -PassThru
+        $results = Start-AzLocalClusterUpdate @params -PassThru
         
         Write-Host ""
         Write-Host "Update operation complete"
@@ -572,7 +572,7 @@ jobs:
         # ServiceNow OAuth client_credentials grant naming used by
         # azurelocal-itsm.yml (env://ITSM_SN_*). If your secret names differ,
         # update them here - this block is preserved by
-        # Update-AzureLocalPipelineExample across module upgrades.
+        # Update-AzLocalPipelineExample across module upgrades.
         ITSM_SN_INSTANCE_URL: ${{ secrets.ITSM_SN_INSTANCE_URL }}
         ITSM_SN_CLIENT_ID:    ${{ secrets.ITSM_SN_CLIENT_ID }}
         ITSM_SN_CLIENT_SECRET: ${{ secrets.ITSM_SN_CLIENT_SECRET }}
@@ -592,7 +592,7 @@ jobs:
             exit 0
         }
 
-        $cfg = Get-AzureLocalItsmConfig -Path $configPath
+        $cfg = Get-AzLocalItsmConfig -Path $configPath
 
         $junitInput = './artifacts/update-results.xml'
         if (-not (Test-Path $junitInput)) {
@@ -615,7 +615,7 @@ jobs:
             ExportJUnitPath   = './artifacts/itsm-results.xml'
         }
 
-        $results = New-AzureLocalIncident @params
+        $results = New-AzLocalIncident @params
         $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
 
     - name: Upload ITSM Artefacts
@@ -687,7 +687,7 @@ jobs:
         if ([int]$failed -gt 0) { $actionsNeeded += "- **$failed cluster(s) failed** - Review pipeline logs and cluster health in Azure Portal" }
         if ([int]$healthBlocked -gt 0) { $actionsNeeded += "- **$healthBlocked cluster(s) blocked by health checks** - Resolve critical health failures before retrying" }
         if ([int]$scheduleBlocked -gt 0) { $actionsNeeded += "- **$scheduleBlocked cluster(s) outside maintenance window** - Updates will proceed when the cluster's UpdateWindow schedule allows, or re-run during the maintenance window" }
-        if ([int]$sideloadedBlocked -gt 0) { $actionsNeeded += "- **$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False** - Operator must stage the sideloaded payload and flip the tag to True (or run Reset-AzureLocalSideloadedTag) before updates can proceed" }
+        if ([int]$sideloadedBlocked -gt 0) { $actionsNeeded += "- **$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False** - Operator must stage the sideloaded payload and flip the tag to True (or run Reset-AzLocalSideloadedTag) before updates can proceed" }
         
         if ($actionsNeeded.Count -gt 0) {
             "" >> $env:GITHUB_STEP_SUMMARY

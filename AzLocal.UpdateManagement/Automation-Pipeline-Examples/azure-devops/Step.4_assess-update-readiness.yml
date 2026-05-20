@@ -1,6 +1,6 @@
 # Step.4 - Assess Update Readiness (Pre-flight go/no-go gate)
 # --------------------------------------------------
-# Runs Get-AzureLocalClusterUpdateReadiness and Test-AzureLocalClusterHealth -BlockingOnly
+# Runs Get-AzLocalClusterUpdateReadiness and Test-AzLocalClusterHealth -BlockingOnly
 # against a target UpdateRing (or the whole fleet) BEFORE Step.5_apply-updates.yml runs.
 #
 # Publishes two JUnit XML results to the Azure DevOps Tests tab:
@@ -26,7 +26,7 @@
 
 # BEGIN-AZLOCAL-CUSTOMIZE:schedule-triggers
 # Add or modify `schedules:` blocks here to enable automated readiness checks.
-# Content between BEGIN/END markers is preserved by Update-AzureLocalPipelineExample
+# Content between BEGIN/END markers is preserved by Update-AzLocalPipelineExample
 # across module upgrades.
 trigger: none
 # END-AZLOCAL-CUSTOMIZE:schedule-triggers
@@ -55,7 +55,7 @@ variables:
   # Module version this YAML was generated against. The install step compares this to
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   GENERATED_AGAINST_MODULE_VERSION: '0.7.75'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
@@ -107,10 +107,10 @@ stages:
                 Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
                 # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
                 if ($installed -lt $generated) {
-                    Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
+                    Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
                 }
                 if ($installed -gt $generated) {
-                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
                     Write-Host "##vso[task.logissue type=warning]$msg"
                 }
                 if ($latest -and ($latest -gt $installed)) {
@@ -148,7 +148,7 @@ stages:
                     Write-Host "Scope: UpdateRing = $updateRing"
                 } else {
                     Write-Host "Scope: all clusters (via inventory)"
-                    $inventory = Get-AzureLocalClusterInventory -PassThru
+                    $inventory = Get-AzLocalClusterInventory -PassThru
                     if (-not $inventory -or $inventory.Count -eq 0) {
                         Write-Warning 'No clusters found in inventory.'
                         Write-Host "##vso[task.setvariable variable=NOT_READY;isOutput=true]0"
@@ -160,14 +160,14 @@ stages:
 
                 Write-Host ''
                 Write-Host '========================================' -ForegroundColor Cyan
-                Write-Host 'Step 1: Readiness (Get-AzureLocalClusterUpdateReadiness)' -ForegroundColor Cyan
+                Write-Host 'Step 1: Readiness (Get-AzLocalClusterUpdateReadiness)' -ForegroundColor Cyan
                 Write-Host '========================================' -ForegroundColor Cyan
 
-                $readiness = Get-AzureLocalClusterUpdateReadiness @scopeParams `
+                $readiness = Get-AzLocalClusterUpdateReadiness @scopeParams `
                     -ExportPath $readinessCsv `
                     -PassThru
 
-                $null = Get-AzureLocalClusterUpdateReadiness @scopeParams `
+                $null = Get-AzLocalClusterUpdateReadiness @scopeParams `
                     -ExportPath $readinessXml
 
                 $notReady = @($readiness | Where-Object { $_.ReadyForUpdate -ne $true }).Count
@@ -179,19 +179,19 @@ stages:
 
                 Write-Host ''
                 Write-Host '========================================' -ForegroundColor Cyan
-                Write-Host 'Step 2: Blocking health (Test-AzureLocalClusterHealth -BlockingOnly)' -ForegroundColor Cyan
+                Write-Host 'Step 2: Blocking health (Test-AzLocalClusterHealth -BlockingOnly)' -ForegroundColor Cyan
                 Write-Host '========================================' -ForegroundColor Cyan
 
-                $health = Test-AzureLocalClusterHealth @scopeParams `
+                $health = Test-AzLocalClusterHealth @scopeParams `
                     -BlockingOnly `
                     -ExportPath $healthCsv `
                     -PassThru
 
-                $null = Test-AzureLocalClusterHealth @scopeParams `
+                $null = Test-AzLocalClusterHealth @scopeParams `
                     -BlockingOnly `
                     -ExportPath $healthXml
 
-                # Test-AzureLocalClusterHealth -PassThru returns one row per cluster
+                # Test-AzLocalClusterHealth -PassThru returns one row per cluster
                 # (shape: ClusterName, HealthState, Passed, CriticalCount, WarningCount, Failures)
                 # NOT a flat list of finding rows. Aggregate from CriticalCount / Failures rather
                 # than filtering on a non-existent Severity property (which silently returned 0).

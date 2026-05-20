@@ -29,7 +29,7 @@ on:
   #   schedule:
   #     - cron: '0 6 * * 1'  # Mondays at 06:00 UTC
   # Content between BEGIN/END markers is preserved by
-  # Update-AzureLocalPipelineExample across module upgrades.
+  # Update-AzLocalPipelineExample across module upgrades.
   # END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
   workflow_dispatch:
@@ -63,7 +63,7 @@ env:
   # Module version this workflow YAML was generated against. The install step compares
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   GENERATED_AGAINST_MODULE_VERSION: '0.7.75'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
@@ -229,11 +229,11 @@ jobs:
         Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
         # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
         if ($installed -lt $generated) {
-            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
+            $msg = "AzLocal.UpdateManagement v$installed is OLDER than the version this workflow YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update'."
             Write-Host "::warning title=AzLocal.UpdateManagement is older than workflow YAML expects::$msg"
         }
         if ($installed -gt $generated) {
-            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+            $msg = "Workflow YAML was generated against AzLocal.UpdateManagement v$generated but the runner installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
             Write-Host "::notice title=Workflow YAML may be stale::$msg"
         }
         if ($latest -and ($latest -gt $installed)) {
@@ -280,7 +280,7 @@ jobs:
         Write-Host "========================================" -ForegroundColor Cyan
         
         # Run tag management
-        Set-AzureLocalClusterUpdateRingTag @params
+        Set-AzLocalClusterUpdateRingTag @params
         
         Write-Host ""
         Write-Host "Tag management complete"

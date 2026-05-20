@@ -39,7 +39,7 @@
 #       always: true
 #
 # Content between BEGIN/END markers is preserved by
-# Update-AzureLocalPipelineExample across module upgrades.
+# Update-AzLocalPipelineExample across module upgrades.
 trigger: none
 # END-AZLOCAL-CUSTOMIZE:schedule-triggers
 
@@ -96,7 +96,7 @@ variables:
   # Module version this YAML was generated against. The install step compares this to
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
-  # Copy-AzureLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
+  # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
     value: '0.7.75'
   # Resolution order for the module version pin (leave all unset to install the latest,
@@ -172,10 +172,10 @@ stages:
                 Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
                 # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
                 if ($installed -lt $generated) {
-                    Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
+                    Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
                 }
                 if ($installed -gt $generated) {
-                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
                     Write-Host "##vso[task.logissue type=warning]$msg"
                 }
                 if ($latest -and ($latest -gt $installed)) {
@@ -269,7 +269,7 @@ stages:
                 $csvPath = Join-Path $outputDir "readiness-report.csv"
                 
                 # Run readiness check
-                $results = Get-AzureLocalClusterUpdateReadiness `
+                $results = Get-AzLocalClusterUpdateReadiness `
                     -ScopeByUpdateRingTag `
                     -UpdateRingValue $updateRing `
                     -ExportPath $csvPath `
@@ -400,10 +400,10 @@ stages:
                 Get-Module AzLocal.UpdateManagement | Format-List Name, Version, Path
                 # Drift signal 0: the module installed at runtime is OLDER than the version this YAML was generated against. Cmdlets, parameters, or output schemas referenced by this YAML may not exist in the installed module - emitted as a warning because this is the most likely cause of a hard runtime failure later in the job.
                 if ($installed -lt $generated) {
-                    Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzureLocalPipelineExample -Platform AzureDevOps -Update'."
+                    Write-Host "##vso[task.logissue type=warning]AzLocal.UpdateManagement v$installed is OLDER than the version this pipeline YAML was generated against (v$generated). Cmdlets, parameters, or output schemas referenced by this YAML may not exist in v$installed. Set REQUIRED_MODULE_VERSION to v$generated, or refresh the YAML to match the installed module via 'Copy-AzLocalPipelineExample -Platform AzureDevOps -Update'."
                 }
                 if ($installed -gt $generated) {
-                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzureLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
+                    $msg = "Pipeline YAML was generated against AzLocal.UpdateManagement v$generated but the agent installed v$installed. Pipeline steps may have been improved in later releases - to refresh, re-run 'Copy-AzLocalPipelineExample -Destination .\pipelines -Platform AzureDevOps -Update' (you will be prompted per file; add -Confirm:`$false to bypass). Pipeline YAMLs are under git so 'git diff' shows exactly what changed before commit."
                     Write-Host "##vso[task.logissue type=warning]$msg"
                 }
                 if ($latest -and ($latest -gt $installed)) {
@@ -450,7 +450,7 @@ stages:
                 # Read the readiness CSV from the CheckReadiness stage and
                 # extract the ARM resource IDs of clusters marked ReadyForUpdate=True.
                 # The ClusterResourceId column was added to
-                # Get-AzureLocalClusterUpdateReadiness output in specifically
+                # Get-AzLocalClusterUpdateReadiness output in specifically
                 # to make this hand-off explicit and exact (no second tag query,
                 # no drift between the two stages' scopes).
                 $readinessCsv = Join-Path $outputDir 'readiness-report.csv'
@@ -459,7 +459,7 @@ stages:
                 }
                 $readinessRows = @(Import-Csv -Path $readinessCsv)
                 if ($readinessRows.Count -gt 0 -and -not ($readinessRows[0].PSObject.Properties.Name -contains 'ClusterResourceId')) {
-                    throw "Readiness CSV at '$readinessCsv' is missing the 'ClusterResourceId' column. This column was added in AzLocal.UpdateManagement v0.7.62. Re-run CheckReadiness with v0.7.62+ or refresh this pipeline YAML via Copy-AzureLocalPipelineExample -Update."
+                    throw "Readiness CSV at '$readinessCsv' is missing the 'ClusterResourceId' column. This column was added in AzLocal.UpdateManagement v0.7.62. Re-run CheckReadiness with v0.7.62+ or refresh this pipeline YAML via Copy-AzLocalPipelineExample -Update."
                 }
                 $readyResourceIds = @($readinessRows |
                     Where-Object { $_.ReadyForUpdate -eq 'True' -and $_.ClusterResourceId } |
@@ -503,7 +503,7 @@ stages:
                 Write-Host "========================================" -ForegroundColor Cyan
                 
                 # Run updates
-                $results = Start-AzureLocalClusterUpdate @params -PassThru
+                $results = Start-AzLocalClusterUpdate @params -PassThru
                 
                 Write-Host ""
                 Write-Host "Update operation complete"
@@ -542,7 +542,7 @@ stages:
                     Write-Host "##vso[task.logissue type=warning]$scheduleBlocked cluster(s) blocked by maintenance schedule (outside UpdateWindow or in UpdateExclusions period)"
                 }
                 if ($sideloadedBlocked -gt 0) {
-                    Write-Host "##vso[task.logissue type=warning]$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False - operator must stage the sideloaded payload and flip the tag (or run Reset-AzureLocalSideloadedTag) before updates can proceed"
+                    Write-Host "##vso[task.logissue type=warning]$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False - operator must stage the sideloaded payload and flip the tag (or run Reset-AzLocalSideloadedTag) before updates can proceed"
                 }
           
           # compute a UTC timestamp variable so both update-logs and itsm-results share a unique per-run suffix.
@@ -597,7 +597,7 @@ stages:
               # Defaults assume the ServiceNow OAuth client_credentials naming
               # used by azurelocal-itsm.yml (env://ITSM_SN_*). If your secret
               # names differ, update them here - this block is preserved by
-              # Update-AzureLocalPipelineExample across module upgrades.
+              # Update-AzLocalPipelineExample across module upgrades.
               ITSM_SN_INSTANCE_URL: $(ITSM_SN_INSTANCE_URL)
               ITSM_SN_CLIENT_ID: $(ITSM_SN_CLIENT_ID)
               ITSM_SN_CLIENT_SECRET: $(ITSM_SN_CLIENT_SECRET)
@@ -618,7 +618,7 @@ stages:
                     exit 0
                 }
 
-                $cfg = Get-AzureLocalItsmConfig -Path $configPath
+                $cfg = Get-AzLocalItsmConfig -Path $configPath
 
                 $junitInput = "$(Build.ArtifactStagingDirectory)/update-results.xml"
                 if (-not (Test-Path $junitInput)) {
@@ -641,7 +641,7 @@ stages:
                     ExportJUnitPath   = "$(Build.ArtifactStagingDirectory)/itsm-results.xml"
                 }
 
-                $results = New-AzureLocalIncident @params
+                $results = New-AzLocalIncident @params
                 $results | Format-Table ClusterName, Action, TicketId, Severity -AutoSize
 
           - task: PublishBuildArtifacts@1
@@ -702,7 +702,7 @@ stages:
                     if ([int]$failed -gt 0) { $actionsRequired += "- **$failed cluster(s) failed** - Review pipeline logs and cluster health in Azure Portal" }
                     if ([int]$healthBlocked -gt 0) { $actionsRequired += "- **$healthBlocked cluster(s) blocked by health checks** - Resolve critical health failures before retrying" }
                     if ([int]$scheduleBlocked -gt 0) { $actionsRequired += "- **$scheduleBlocked cluster(s) outside maintenance window** - Updates will proceed when the cluster's UpdateWindow schedule allows, or re-run during the maintenance window" }
-                    if ([int]$sideloadedBlocked -gt 0) { $actionsRequired += "- **$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False** - Operator must stage the sideloaded payload and flip the tag to True (or run Reset-AzureLocalSideloadedTag) before updates can proceed" }
+                    if ([int]$sideloadedBlocked -gt 0) { $actionsRequired += "- **$sideloadedBlocked cluster(s) blocked by UpdateSideloaded=False** - Operator must stage the sideloaded payload and flip the tag to True (or run Reset-AzLocalSideloadedTag) before updates can proceed" }
                     
                     if ($actionsRequired.Count -gt 0) {
                         $summary += "`n`n## Actions Required`n"
