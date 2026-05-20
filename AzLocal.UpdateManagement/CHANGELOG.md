@@ -131,8 +131,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fixed by converting all 24 callers to direct assignment
   (`$x = Invoke-AzResourceGraphQuery ...`), and a warning comment was
   added at the top of the helper.
+- **Step.4 fleet-connectivity-status: ARB <-> Cluster join produced
+  duplicate ARB rows when one resource group hosts multiple Azure Local
+  clusters.** The previous `arbKql` joined ARBs to HCI clusters with a
+  plain `join kind=leftouter ... on resourceGroup`, so an RG that hosts
+  N clusters produced N copies of the same ARB row (and N JUnit
+  testcases for the same ARB). **Fix:** the join now wraps the cluster
+  side with `summarize ... by ArbName, ArbId, ...`, collapsing all
+  cluster matches in the RG into a single ARB row whose `ClusterName`,
+  `ClusterId` and `ClusterStatus` columns are comma-separated lists
+  (e.g. `ClusterName = "cl-a, cl-b"`). The downstream JUnit case
+  builder and markdown row builder split on `, ` so the portal URL
+  links the first cluster and the multi-cluster RG case is annotated
+  (`(multi-cluster RG; N clusters)` in the failure-reason text). Mirror
+  edit applied to the Azure DevOps twin. The smoke-test harness
+  (`Tools/smoke-test-connectivity-status.ps1` - new) asserts the
+  updated column shape against the live subscription.
 
 ### Added
+
+- **Step.4 fleet-connectivity-status: full unfiltered NIC inventory
+  alongside the existing issues-only view.** Added a second NIC ARG
+  query (`nicAllKql`) modelled on the cluster-management dashboard
+  "All Network Adapters" view: every NIC across every Azure Local edge
+  device in scope, including Physical AND Virtual adapters and every
+  `NicStatus` value, joined to the parent Arc machine so the cluster
+  context is derived from `properties.parentClusterResourceId` (which
+  is cluster-precise even when multiple clusters share a resource
+  group). Two new artefacts:
+  - `fleet-physical-nic-all.csv` / `.json` - the full unfiltered NIC
+    inventory with the column set `NodeName, MachineId, ClusterName,
+    ClusterId, MachineConnectivity, NicName, NicType, NicStatus,
+    DriverVersion, InterfaceDescription, Ip4Address, SubnetMask,
+    DefaultGateway, DnsServers, MacAddress, ResourceGroup,
+    SubscriptionId`.
+  - `fleet-physical-nic-stats.csv` / `.json` - a NicType+NicStatus
+    histogram (one row per pair, with a `Count` column) computed
+    client-side from the full inventory.
+
+  The markdown step summary now renders a "Physical NIC Statistics"
+  block (NicType x NicStatus histogram with per-row severity icons)
+  before the existing "Physical NIC Issues" detail table, so reviewers
+  can spot fleet-wide patterns (e.g. dozens of Physical NICs in
+  `Disconnected` state across multiple clusters) at a glance and then
+  drill into the filtered actionable issues.
+
+  The existing `fleet-physical-nics.csv` artefact (Disconnected with
+  non-APIPA IP) is unchanged - the unfiltered file is a new artefact,
+  not a replacement.
+
+- **`Tools/smoke-test-connectivity-status.ps1` - new live-subscription
+  smoke-test harness for the Step.4 ARG queries.** Mirrors the
+  `validate-arg-queries.ps1` reporting shape (PASS / PASS-EMPTY /
+  FAIL-SCHEMA / ERROR rows in a final results table). Runs each of the
+  five KQL queries that the GH / ADO Step.4 YAMLs execute, verifies
+  the query parses + executes cleanly, and asserts the documented
+  required-column set is present on the first returned row. Use this
+  before shipping a Step.4 KQL edit to catch column-rename / schema-
+  drift bugs against a live AdaptiveCloudLab subscription.
 
 - **New `Step.4_fleet-connectivity-status.yml` pipeline (GitHub Actions
   and Azure DevOps).** A daily fleet-wide network connectivity audit
@@ -156,9 +212,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Azure Resource Bridge (ARB)** - per-cluster ARB resource status
     where the resource exists.
 
-  Outputs five CSV/JSON pairs - `fleet-cluster-connectivity`,
+  Outputs seven CSV/JSON pairs - `fleet-cluster-connectivity`,
   `fleet-arc-status-summary`, `fleet-arc-non-connected-machines`,
-  `fleet-physical-nics`, and `fleet-arb-status` - plus a single
+  `fleet-physical-nics` (issues only), `fleet-physical-nic-all` (full
+  unfiltered inventory), `fleet-physical-nic-stats` (NicType+NicStatus
+  histogram), and `fleet-arb-status` - plus a single
   `fleet-connectivity-status-junit.xml` with one suite per scope and
   cluster portal URLs in every test-case property block. Severity
   classifier flags `Disconnected | Expired | Offline | Error` as
