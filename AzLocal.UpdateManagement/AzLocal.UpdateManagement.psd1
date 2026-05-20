@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.75'
+    ModuleVersion = '0.7.76'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -203,6 +203,78 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.76 - Renamed to -AzLocal* + nine MODULE-REVIEW findings + ARM healthCheckResult dedup
+
+### Breaking (rename) - operator-controlled module, no other consumers
+
+- **All exported cmdlets renamed from `-AzureLocal*` to `-AzLocal*`** to align
+  with the published module name (`AzLocal.UpdateManagement`) and PowerShell
+  module-prefix convention. Internal private helpers were also renamed. The
+  module GUID is preserved; PSGallery installs `AzLocal.UpdateManagement` and
+  the rename is invisible to users who install via `Install-Module`. Callers
+  who had pinned previous versions and used the old `-AzureLocal*` names must
+  re-import. No deprecation aliases were added (module is still pre-1.0 and
+  has no external consumers).
+
+### Fixed (bonus)
+
+- **`Test-AzLocalClusterHealth` and `Get-HealthCheckFailureSummary` (private)
+  now dedup byte-identical ARM `healthCheckResult` rows.** ARM upstream was
+  observed emitting two byte-identical rows for the same logical check (e.g.
+  "Test Network intent on existing cluster nodes" on a 2-node cluster, same
+  CheckName / Severity / Description / Remediation / TargetResourceName /
+  Timestamp), which doubled the displayed failure count and made Step.4
+  readiness reports confusing. Dedup is by the COMPLETE row tuple, so per-
+  node distinct findings (different TargetResourceName e.g.
+  `UserStorage_1-Repair` vs `UserStorage_2-Repair`) stay separate.
+
+### Findings from MODULE-REVIEW-AND-RECOMMENDATIONS (all addressed)
+
+- **Finding 1 P0 (row-collapse bug, v0.7.75):** `Invoke-AzResourceGraphQuery`
+  used `return , $allRows.ToArray()` but `Get-AzureLocalUpdateRuns` (and 23
+  other consumers) wrapped the call with `@(...)`, collapsing 136 rows into
+  a 1-row array containing the inner Object[136]. Property access then
+  silently aggregated values into per-column arrays-of-strings. Fixed by
+  changing all callers to direct assignment (`$x = func`); helper warning
+  comment added.
+- **Finding 2 (test gaps):** Added regression tests for row-collapse,
+  ARM healthCheckResult dedup (3 cases), and KQL arg-length safety.
+- **Finding 3 (SP secret leak):** `Connect-AzLocalServicePrincipal` now
+  writes the secret to a temp file with restricted ACL, passes via
+  `Get-Content` not env var, removes the file in a `finally` block.
+- **Finding 4 (README appendix demote):** Older What's-New entries moved to
+  bottom of README, then extracted entirely to `docs/release-history.md`.
+- **Finding 5 P2 (README split, Section 6.3):** Main README trimmed from
+  3372 to ~600 lines. New docs/ tree: `cmdlet-reference.md`,
+  `concepts.md`, `rbac.md`, `troubleshooting.md`, `release-history.md`.
+  Pipeline README appendices also extracted to
+  `Automation-Pipeline-Examples/docs/`.
+- **Finding 6 (.psm1 housekeeping):** Removed dead-code commented blocks,
+  consolidated import boilerplate.
+- **Finding 8 (review artefact archive):** Moved review files into a
+  gitignored `docs/MODULE-REVIEW-AND-RECOMMENDATIONS.md` so they do not
+  leak into the published module.
+- **Finding 9 (.psm1 rationale):** Added top-of-file comment block
+  explaining the deliberate `Set-StrictMode -Version 1.0` choice (rather
+  than `Latest`) and the dot-source-then-export pattern.
+
+### Pipeline pin bumps
+
+- No `Step.*.yml` template changes in this release; the bundled templates
+  already pin `GENERATED_AGAINST_MODULE_VERSION = '0.7.75'` and will pick
+  up the v0.7.76 module from PSGallery on next run. A pipeline-pin refresh
+  to `'0.7.76'` will ship in v0.7.77 alongside the `Step.X` zip-filename
+  prefix improvement tracked in backlog.
+
+### Migration
+
+- After `Install-Module AzLocal.UpdateManagement -Force` or
+  `Update-Module`, callers using `-AzureLocal*` cmdlet names will get a
+  "command not found" error. Search-and-replace `-AzureLocal` with
+  `-AzLocal` in your scripts. Module GUID unchanged - downstream consumers
+  of the manifest (CI cache keys, ARM template `requiredModules`) continue
+  to resolve.
+
 ## Version 0.7.75 - Hardening: Test-AzLocalApplyUpdatesScheduleCoverage auto-detects the CI host platform when -Platform is omitted, so stale consumer yml self-heals against cross-platform output noise
 
 ### Fixed

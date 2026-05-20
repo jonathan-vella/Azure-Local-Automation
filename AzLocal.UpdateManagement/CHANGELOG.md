@@ -5,6 +5,110 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.76] - 2026-05-21
+
+> **Breaking rename + nine MODULE-REVIEW findings + bonus ARM dedup fix.**
+> All exported and private cmdlets renamed from `-AzureLocal*` to `-AzLocal*`
+> to align with the published module name. The module GUID is preserved, so
+> `Install-Module AzLocal.UpdateManagement -Force` is the upgrade path.
+> Pre-1.0 module with no published external consumers, so no deprecation
+> aliases were added; downstream scripts must search-and-replace
+> `-AzureLocal` -> `-AzLocal`.
+
+### Breaking
+
+- **Cmdlet rename: `-AzureLocal*` -> `-AzLocal*`.** Every exported function
+  in `Public/` and every private helper in `Private/` was renamed to align
+  with the module name (`AzLocal.UpdateManagement`) and standard PowerShell
+  module-prefix convention. The module GUID and PSGallery name are
+  unchanged. Callers must update any pinned script that uses the old
+  cmdlet names.
+
+### Fixed
+
+- **ARM `healthCheckResult` byte-identical duplicate suppression** in
+  `Test-AzLocalClusterHealth` and the private `Get-HealthCheckFailureSummary`.
+  ARM upstream was observed emitting two byte-identical rows for the same
+  logical health-check finding on a 2-node Mobile cluster (same CheckName,
+  Severity, Description, Remediation, TargetResourceName, Timestamp). The
+  effect was a doubled CriticalCount and a Step.4 readiness row like
+  `[Critical] Foo (NetworkIntent); [Critical] Foo (NetworkIntent)`. Dedup
+  is by the COMPLETE row tuple (HashSet[string] keyed on
+  ClusterName|CheckName|Severity|Description|Remediation|TargetResourceName|Timestamp
+  joined by U+001F UNIT SEPARATOR), so per-node distinct findings with
+  different `targetResourceName` (e.g. `UserStorage_1-Repair` vs
+  `UserStorage_2-Repair`) stay separate. Three Pester cases cover the
+  three permutations (identical -> 1 row, distinct target -> N rows,
+  empty -> empty).
+- **Finding 1 P0: row-collapse via `@(func)` wrap on a `, $arr` return.**
+  `Invoke-AzResourceGraphQuery` used `return , $allRows.ToArray()` (the
+  unary-comma trick that keeps the return value as a single Object[N]
+  through pipeline enumeration). 24 callers wrapped the call with
+  `@(Invoke-AzResourceGraphQuery ...)` which collected the function's
+  pipeline output (one wrapper containing the inner array), producing
+  `Object[1]` containing `Object[N]`. Downstream property access then
+  did PowerShell member enumeration and returned arrays-of-strings, so
+  a 136-row result collapsed into a 1-row `ClusterName_=Object[]` mess.
+  Fixed by converting all 24 callers to direct assignment
+  (`$x = Invoke-AzResourceGraphQuery ...`), and a warning comment was
+  added at the top of the helper.
+
+### Added
+
+- **Finding 2 (test gaps):** new Pester cases covering the row-collapse
+  regression, the ARM healthCheckResult dedup (identical / distinct
+  target / empty), and KQL `len` arg-truncation safety.
+- **Finding 5 P2 - documentation split (Section 6.3 of the review).** Main
+  README trimmed from 3372 to ~600 lines. New `docs/` tree:
+  - `docs/cmdlet-reference.md` (1474 lines) - all 36 exported cmdlets, with
+    per-group inventory tables and full Synopsis / Description / Parameter
+    / Output / Example blocks for each.
+  - `docs/concepts.md` (84 lines) - cluster-update-summary + per-update
+    state machines, `Using Azure CLI Directly`, the `Az.StackHCI` parity
+    note, and the CI/CD design assumptions.
+  - `docs/rbac.md` (130 lines) - recommended built-in roles, per-cmdlet
+    permissions table, the custom least-privilege "Azure Stack HCI Update
+    Operator" role definition, and `az role assignment create` recipes.
+  - `docs/troubleshooting.md` (107 lines) - symptom-to-fix table for
+    common failure modes (auth scope misses, RBAC gaps, ARG arg-truncation,
+    healthCheckResult duplicates, cp1252 console encoding, stale ARM
+    summaries).
+  - `docs/release-history.md` (995 lines) - the full What's-New history
+    from v0.4.0 through v0.7.74, including the v0.7.71 sub-feature
+    bullets that Finding 4 had previously demoted but mis-placed.
+  - `Automation-Pipeline-Examples/docs/appendix-pipelines.md` (104 lines)
+    and `appendix-release-history.md` (118 lines) - extracted from the
+    1925-line pipeline README, which now is 1719 lines.
+
+### Changed
+
+- **Finding 3 (service-principal secret leak):**
+  `Connect-AzLocalServicePrincipal` no longer writes the SP secret to an
+  environment variable. It is written to a temp file with restricted ACL,
+  passed via `Get-Content` to `ConvertTo-SecureString`, and the temp file
+  is removed in a `finally` block so a script crash mid-call still cleans
+  up.
+- **Finding 4 (README appendix demote):** older What's-New entries
+  demoted from `##` to `###` (already shipped in 3f4b158 against v0.7.75);
+  now fully extracted to `docs/release-history.md` by Finding 5.
+- **Finding 6 (.psm1 housekeeping):** dead-code comments removed, dot-
+  source loop consolidated.
+- **Finding 8 (review artefact archive):** `MODULE-REVIEW-AND-RECOMMENDATIONS.md`
+  moved into a gitignored `docs/` location so PSGallery / git history
+  is not polluted with internal review notes.
+- **Finding 9 (.psm1 rationale):** top-of-file comment block explains the
+  deliberate `Set-StrictMode -Version 1.0` (instead of `Latest`) and the
+  dot-source-then-export pattern.
+
+### Migration
+
+- `Install-Module AzLocal.UpdateManagement -Force` or `Update-Module`.
+- Search-and-replace `-AzureLocal` -> `-AzLocal` in any pinned scripts.
+- No yml change required. `Step.*.yml` templates still pin
+  `GENERATED_AGAINST_MODULE_VERSION = '0.7.75'` and will pick up the
+  v0.7.76 module from PSGallery on next run. A pipeline-pin refresh to
+  `'0.7.76'` will ship in v0.7.77.
+
 ## [0.7.75] - 2026-05-20
 
 > **Backward compatible.** Hardening release on top of v0.7.74. v0.7.74 patched the `Test-AzLocalApplyUpdatesScheduleCoverage` cross-platform-noise bug at the **yml layer** by adding `-Platform GitHubActions` / `-Platform AzureDevOps` arguments to the bundled Step.3 yml templates. That fix only takes effect for consumers who refresh their yml via `Update-AzLocalPipelineExample`; consumers whose Step.3 yml is a verbatim pre-v0.7.74 copy still see both the GitHub Actions snippet AND the Azure DevOps snippet in their Step Summary because their yml does not pass `-Platform` and the cmdlet defaults to `-Platform Both`. v0.7.75 closes that gap by adding the same auto-selection at the **cmdlet layer** so stale yml self-heals at runtime.
