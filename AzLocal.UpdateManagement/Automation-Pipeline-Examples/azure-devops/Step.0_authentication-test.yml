@@ -278,12 +278,12 @@ stages:
                 Write-Host "##vso[task.setvariable variable=clusterCount;isOutput=false]$clusterCount"
 
           - task: PublishTestResults@2
-            displayName: 'Publish Authentication Validation and Subscription Scope Report (JUnit)'
+            displayName: 'Publish Authentication Validation JUnit Diagnostics'
             condition: always()
             inputs:
               testResultsFormat: 'JUnit'
               testResultsFiles: '$(Build.ArtifactStagingDirectory)/auth-report/auth-report.xml'
-              testRunTitle: 'Authentication Validation and Subscription Scope'
+              testRunTitle: '[JUnit Debug] Authentication Validation and Subscription Scope'
               failTaskOnFailedTests: false
               mergeTestResults: false
 

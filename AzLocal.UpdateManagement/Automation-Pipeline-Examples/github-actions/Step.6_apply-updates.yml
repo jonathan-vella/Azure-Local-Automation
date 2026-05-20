@@ -533,13 +533,15 @@ jobs:
         path: ./artifacts/*
         retention-days: 30
     
-    - name: Publish Test Results
+    - name: Publish JUnit Diagnostic Results
       uses: dorny/test-reporter@v3
       if: always()
       with:
-        name: Azure Local Update Results
+        name: '[JUnit Debug] Azure Local Update Results'
         path: ./artifacts/update-results.xml
         reporter: java-junit
+        list-suites: failed
+        list-tests: failed
       continue-on-error: true
     
     # ----------------------------------------------------------------------

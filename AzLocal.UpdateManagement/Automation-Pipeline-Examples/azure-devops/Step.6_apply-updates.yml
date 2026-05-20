@@ -562,12 +562,12 @@ stages:
               publishLocation: 'Container'
           
           - task: PublishTestResults@2
-            displayName: 'Publish Test Results'
+            displayName: 'Publish Update JUnit Diagnostics'
             condition: always()
             inputs:
               testResultsFormat: 'JUnit'
               testResultsFiles: '$(Build.ArtifactStagingDirectory)/update-results.xml'
-              testRunTitle: 'Azure Local Cluster Updates - ${{ parameters.updateRing }}'
+              testRunTitle: '[JUnit Debug] Azure Local Cluster Updates - ${{ parameters.updateRing }}'
           
           # --------------------------------------------------------------
           # ITSM Connector (ServiceNow)

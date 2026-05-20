@@ -342,13 +342,13 @@ jobs:
           path: ./reports/
           retention-days: 30
 
-      - name: Publish Test Results
+      - name: Publish JUnit Diagnostic Results
         if: always()
         uses: dorny/test-reporter@v3
         with:
-          name: Authentication Validation and Subscription Scope Report
+          name: '[JUnit Debug] Authentication Validation and Subscription Scope Report'
           path: ./reports/auth-report.xml
           reporter: java-junit
           fail-on-error: false
-          list-suites: all
-          list-tests: all
+          list-suites: failed
+          list-tests: failed

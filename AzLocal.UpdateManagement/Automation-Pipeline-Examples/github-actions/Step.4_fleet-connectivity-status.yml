@@ -946,6 +946,8 @@ jobs:
         - JSON copies of each, same shape, machine-readable
         - ``fleet-connectivity-status.xml`` - JUnit XML for CI/CD test-reporter visualisation
 
+        _Note: test sections prefixed **[JUnit Debug]** in the Checks view are a diagnostic mirror of the tables above (for CI tooling/ITSM integration). For primary readability, use this summary and the CSV artifacts._
+
         *Generated at $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")*
         "@
 
@@ -954,11 +956,11 @@ jobs:
     # Publish JUnit test results AFTER the markdown summary so the summary
     # tables are the first thing visible. list-suites/list-tests=failed keeps
     # the expansion compact for large fleets.
-    - name: Publish Test Results
+    - name: Publish JUnit Diagnostic Results
       uses: dorny/test-reporter@v3
       if: always()
       with:
-        name: Fleet Connectivity Status Report
+        name: '[JUnit Debug] Fleet Connectivity Status Report'
         path: ./reports/fleet-connectivity-status.xml
         reporter: java-junit
         fail-on-error: false
