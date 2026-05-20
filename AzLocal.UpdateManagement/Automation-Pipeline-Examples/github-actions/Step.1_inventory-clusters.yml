@@ -1,4 +1,4 @@
-# Inventory Azure Local Clusters
+﻿# Inventory Azure Local Clusters
 # This workflow queries all Azure Local clusters and exports inventory with UpdateRing tag status
 #
 # OUTPUT COLUMNS:
@@ -42,7 +42,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.77'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.78'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -329,3 +329,4 @@ jobs:
                 "No UpdateRing tags found." >> $env:GITHUB_STEP_SUMMARY
             }
         }
+

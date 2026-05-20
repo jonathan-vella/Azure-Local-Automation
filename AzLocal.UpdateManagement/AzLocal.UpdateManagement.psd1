@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.77'
+    ModuleVersion = '0.7.78'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -204,6 +204,24 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.78 - Step.4 blank-field regression fix
+
+### Fixed
+
+- Step.4 `fleet-connectivity-status` (GitHub Actions + Azure DevOps)
+  no longer emits blank key fields while still showing non-zero counts.
+  `Invoke-ArgQuery` now normalizes both ARG response shapes
+  (`data: [{...}]` and `columns + data: [[...]]`) into object rows.
+- Step.4 KQL projections now use `coalesce(...)` for key identity/status
+  fields (`ClusterName`, `AgentStatus`, `NicName`, `ArbName`) so markdown
+  and JUnit output stay populated even when upstream payloads are partial.
+- Step.4 JSON artifact export depth increased from `6` to `20`.
+
+### Pipeline pin bumps
+
+- Bundled `Step.{0..8}.yml` templates bump
+  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.77'` to `'0.7.78'`.
+
 ## Version 0.7.77 - Step.4 fleet-connectivity hotfix (ARG JSON parse hardening)
 
 ### Fixed
@@ -226,58 +244,13 @@
   DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.76'` to
   `'0.7.77'`.
 
-## Version 0.7.76 - Renamed to -AzLocal* + nine MODULE-REVIEW findings + ARM healthCheckResult dedup
+## Version 0.7.76 - Renamed to -AzLocal* + quality hardening
 
-### Breaking (rename) - operator-controlled module, no other consumers
-
-- **All exported cmdlets renamed from `-AzureLocal*` to `-AzLocal*`** to align
-  with the published module name (`AzLocal.UpdateManagement`) and PowerShell
-  module-prefix convention. Internal private helpers were also renamed. The
-  module GUID is preserved; PSGallery installs `AzLocal.UpdateManagement` and
-  the rename is invisible to users who install via `Install-Module`. Callers
-  who had pinned previous versions and used the old `-AzureLocal*` names must
-  re-import. No deprecation aliases were added (module is still pre-1.0 and
-  has no external consumers).
-
-### Fixed (bonus)
-
-- **`Test-AzLocalClusterHealth` and `Get-HealthCheckFailureSummary` (private)
-  now dedup byte-identical ARM `healthCheckResult` rows.** ARM upstream was
-  observed emitting two byte-identical rows for the same logical check (e.g.
-  "Test Network intent on existing cluster nodes" on a 2-node cluster, same
-  CheckName / Severity / Description / Remediation / TargetResourceName /
-  Timestamp), which doubled the displayed failure count and made Step.4
-  readiness reports confusing. Dedup is by the COMPLETE row tuple, so per-
-  node distinct findings (different TargetResourceName e.g.
-  `UserStorage_1-Repair` vs `UserStorage_2-Repair`) stay separate.
-
-### Findings from MODULE-REVIEW-AND-RECOMMENDATIONS (all addressed)
-
-- **Finding 1 P0 (row-collapse bug, v0.7.75):** `Invoke-AzResourceGraphQuery`
-  used `return , $allRows.ToArray()` but `Get-AzureLocalUpdateRuns` (and 23
-  other consumers) wrapped the call with `@(...)`, collapsing 136 rows into
-  a 1-row array containing the inner Object[136]. Property access then
-  silently aggregated values into per-column arrays-of-strings. Fixed by
-  changing all callers to direct assignment (`$x = func`); helper warning
-  comment added.
-- **Finding 2 (test gaps):** Added regression tests for row-collapse,
-  ARM healthCheckResult dedup (3 cases), and KQL arg-length safety.
-- **Finding 3 (SP secret leak):** `Connect-AzLocalServicePrincipal` now
-  writes the secret to a temp file with restricted ACL, passes via
-  `Get-Content` not env var, removes the file in a `finally` block.
-- **Finding 4 (README appendix demote):** Older What's-New entries moved to
-  bottom of README, then extracted entirely to `docs/release-history.md`.
-- **Finding 5 P2 (README split, Section 6.3):** Main README trimmed from
-  3372 to ~600 lines. New docs/ tree: `cmdlet-reference.md`,
-  `concepts.md`, `rbac.md`, `troubleshooting.md`, `release-history.md`.
-  Pipeline README appendices also extracted to
-  `Automation-Pipeline-Examples/docs/`.
-- **Finding 6 (.psm1 housekeeping):** Removed dead-code commented blocks,
-  consolidated import boilerplate.
-- **Finding 8 (review artefact archive):** Moved review files into a
-  gitignored `docs/MODULE-REVIEW-AND-RECOMMENDATIONS.md` so they do not
-  leak into the published module.
-- **Finding 9 (.psm1 rationale):** Added top-of-file comment block
+- Exported/public cmdlets and internal helpers were renamed from
+  `-AzureLocal*` to `-AzLocal*` to align with the module name.
+- Included targeted hardening and cleanup from the module review cycle
+  (row-shape safety, health-check dedup, test coverage, docs cleanup,
+  and publish hygiene). See `CHANGELOG.md` for full detail.
   explaining the deliberate `Set-StrictMode -Version 1.0` choice (rather
   than `Latest`) and the dot-source-then-export pattern.
 

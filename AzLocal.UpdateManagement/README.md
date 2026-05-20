@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.77 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.77)
+**Latest Version:** v0.7.78 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.78)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.77](#whats-new-in-v0777)
+- [What's New in v0.7.78](#whats-new-in-v0778)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,9 +86,9 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.77
+## What's New in v0.7.78
 
-v0.7.77 is a **targeted hotfix** release focused on Step.4 fleet-connectivity reliability. The primary fix hardens `Invoke-ArgQuery` in both bundled Step.4 templates (GitHub Actions + Azure DevOps) so az CLI warning text from stderr can no longer contaminate stdout JSON and crash `ConvertFrom-Json` during the Physical NIC query stage.
+v0.7.78 is a **targeted hotfix** release focused on Step.4 fleet-connectivity data-shape resilience. This fixes the regression where totals were populated but key fields rendered blank in markdown and JUnit (`ClusterName`, `AgentStatus`, `NicName`, `ArbName`). `Invoke-ArgQuery` now normalizes both ARG response shapes (object rows and tabular `columns + data` rows), Step.4 projections use `coalesce(...)` for non-empty key fields, and JSON export depth is raised to reduce truncation warnings.
 
 ### Breaking: -AzureLocal* renamed to -AzLocal* (Finding 7)
 
@@ -596,7 +596,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.75 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.77** stay above under [`What's New in v0.7.77`](#whats-new-in-v0777).
+The most recent release notes for **v0.7.78** stay above under [`What's New in v0.7.78`](#whats-new-in-v0778).
 
 ---
 
