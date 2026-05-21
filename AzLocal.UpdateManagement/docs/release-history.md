@@ -4,9 +4,13 @@
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
 >
-> **For v0.7.79 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0779) `What's New in v0.7.79` section.
+> **For v0.7.80 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0780) `What's New in v0.7.80` section.
 
 ---
+
+### What's New in v0.7.79
+
+v0.7.79 enabled the **Step.5 daily readiness check** out of the box. The `schedule:` cron block in `Step.5_assess-update-readiness.yml` (GitHub Actions and Azure DevOps) was previously commented out; it is now active at **07:00 UTC daily**. v0.7.79 also introduced `Get-AzLocalFleetConnectivityStatus`, a module cmdlet that replaces the inline ARG queries previously embedded in Step.4 YAMLs and returns a single `[PSCustomObject]` with the seven fleet-connectivity scopes (ClusterRows, ArcSummary, NonConnectedMachines, NicIssues, NicAll, NicStats, ArbRows). No module code changes for the schedule itself; pipeline pin bumped from `'0.7.78'` to `'0.7.79'`.
 
 ### What's New in v0.7.78
 

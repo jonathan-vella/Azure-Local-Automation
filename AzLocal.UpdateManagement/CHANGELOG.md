@@ -5,6 +5,25 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.80] - 2026-05-21
+
+### Fixed (documentation)
+
+- The documented "Azure Stack HCI Update Operator" custom role in [`docs/rbac.md`](docs/rbac.md) was missing three reads required by `Get-AzLocalFleetConnectivityStatus` (introduced in v0.7.79). Pipelines using a service principal that was granted only the v0.7.79-or-earlier custom role saw 20 clusters returned but 0 Arc agents, 0 NICs, and 0 ARBs because ARG yields an empty `.data` array for resource types the caller cannot read. Added to the role:
+  - `Microsoft.HybridCompute/machines/read`
+  - `Microsoft.AzureStackHCI/edgeDevices/read`
+  - `Microsoft.ResourceConnector/appliances/read`
+- Added an **"Updating an existing custom role (v0.7.79 -> v0.7.80)"** sub-section in `docs/rbac.md` walking through `az role definition update`. Updating the role in place preserves the role GUID and every existing role assignment - recreating the role would invalidate both.
+- Expanded the **Specific Permissions Required** table in `docs/rbac.md` to list the three new actions and call out a `v0.7.80 note` paragraph explaining the silent-zero failure mode operators were hitting.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.79'` to `'0.7.80'`. No code changes in the YAMLs; the pin is drift-detection only.
+
+### Migration
+
+If you created the custom role against the v0.7.79-or-earlier definition in `docs/rbac.md`, refresh the JSON to the v0.7.80 definition (three new actions listed above), then run `az role definition update --role-definition ./azlocal-update-management-custom-role.json`. Permission changes propagate within a few minutes. No re-assignment needed.
+
 ## [0.7.79] - 2026-05-20
 
 ### Changed
