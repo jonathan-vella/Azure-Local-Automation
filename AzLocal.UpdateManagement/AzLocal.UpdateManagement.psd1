@@ -217,6 +217,7 @@
 
 ### Added
 
+- **Cross-call ARG throttle cooldown in `Invoke-AzResourceGraphQuery`.** Complements the v0.7.68 per-page retry loop with cross-call coordination: when one call observes ARG throttling, subsequent calls voluntarily sleep out a short cooldown window on entry. Cooldown duration scales with `-RetryBaseSeconds` (capped at 10s); the consecutive-throttle counter decays by 1 on every clean call. New `$script:LastResourceGraphCrossCallCooldownSeconds` diagnostic and `-DisableCrossCallCooldown` switch. 4 new Pester tests in `Cross-call throttle coordination (v0.7.84)` Context.
 - Pester `Regression v0.7.84` Describe block (10 tests across 3 contexts): static regex guards on the source file detect regression of any of the three fixes; execution tests mock realistic ARG payloads (3-node `Mobile` cluster, Disconnected Arc machine with real ARM-ID `parentClusterResourceId`, Running + Offline ARBs with `systemData.lastModifiedAt` set 5/10 days ago) and assert the row values. Negative-control test re-executes the pre-fix `[string](array)[-1]` shape and proves it still returns `'e'` for cluster `Mobile`.
 - The existing v0.7.79 cluster fixture (`reportedProperties = @{ nodeCount = 2 }`) used the WRONG property name and silently masked Bug A in unit tests for multiple releases. Fixture corrected to use the realistic `nodes = @(...)` array shape so future schema-shape regressions are caught.
 

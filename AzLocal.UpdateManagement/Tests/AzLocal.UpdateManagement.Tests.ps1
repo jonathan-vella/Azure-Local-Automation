@@ -2781,6 +2781,109 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
             }
         }
     }
+
+    Context 'Cross-call throttle coordination (v0.7.84)' {
+        # v0.7.84 added a module-scope cross-call cooldown so that a throttle
+        # event observed in call N causes call N+1 to sleep out a short
+        # voluntary window on entry. This complements the v0.7.68 per-page
+        # retry loop (which only handles bursts WITHIN one call). The cooldown
+        # state lives in $script:ArgCrossCallCooldownUntil and
+        # $script:ArgConsecutiveThrottledCalls; each call exposes how long it
+        # actually slept on entry via $script:LastResourceGraphCrossCallCooldownSeconds.
+        # The -DisableCrossCallCooldown switch opts out (used in tests and by
+        # callers that have their own rate-limiting upstream).
+
+        It 'Sets the cross-call cooldown window after observing throttling' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Reset state so this test doesn't inherit cooldown from a prior test.
+                $script:ArgCrossCallCooldownUntil = [DateTime]::MinValue
+                $script:ArgConsecutiveThrottledCalls = 0
+
+                $script:Phase = 0
+                function az {
+                    $script:Phase++
+                    if ($script:Phase -eq 1) {
+                        Write-Error -ErrorAction Continue 'ERROR: 429 throttled'
+                        $global:LASTEXITCODE = 1
+                        return
+                    }
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                $before = Get-Date
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -RetryBaseSeconds 0.1 -DisableCrossCallCooldown -WarningAction SilentlyContinue)
+                # After a throttle event, the cooldown window must be set to a
+                # future instant relative to the start of the call.
+                $script:ArgCrossCallCooldownUntil | Should -BeGreaterThan $before
+                $script:ArgConsecutiveThrottledCalls | Should -BeGreaterThan 0
+            }
+        }
+
+        It 'Sleeps on entry when a previous call set a cross-call cooldown window' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Manually arm a 300ms cooldown window. A subsequent clean call
+                # must wait it out on entry and report the wait via the
+                # per-call diagnostic flag.
+                $script:ArgCrossCallCooldownUntil = (Get-Date).AddMilliseconds(300)
+                function az {
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                [void](Invoke-AzResourceGraphQuery -Query 'resources')
+                $sw.Stop()
+                # Elapsed must be at least the cooldown (allow generous slack
+                # for slow CI; minimum guarantee is ~250ms).
+                $sw.Elapsed.TotalMilliseconds | Should -BeGreaterThan 250
+                $script:LastResourceGraphCrossCallCooldownSeconds | Should -BeGreaterThan 0
+                # Reset for downstream tests.
+                $script:ArgCrossCallCooldownUntil = [DateTime]::MinValue
+                $script:ArgConsecutiveThrottledCalls = 0
+            }
+        }
+
+        It '-DisableCrossCallCooldown bypasses the cooldown wait on entry' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Arm a 500ms cooldown. With -DisableCrossCallCooldown the
+                # call must NOT sleep and must report 0 cooldown applied.
+                $script:ArgCrossCallCooldownUntil = (Get-Date).AddMilliseconds(500)
+                function az {
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                $sw.Stop()
+                # Must complete fast - well under the 500ms cooldown.
+                $sw.Elapsed.TotalMilliseconds | Should -BeLessThan 250
+                $script:LastResourceGraphCrossCallCooldownSeconds | Should -Be 0
+                # Reset for downstream tests.
+                $script:ArgCrossCallCooldownUntil = [DateTime]::MinValue
+                $script:ArgConsecutiveThrottledCalls = 0
+            }
+        }
+
+        It 'Decays the consecutive-throttle counter on a clean call' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Pretend we are 3 throttled calls deep. A clean call must
+                # decrement the counter to 2 (and not below 0).
+                $script:ArgConsecutiveThrottledCalls = 3
+                $script:ArgCrossCallCooldownUntil = [DateTime]::MinValue
+                function az {
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                $script:ArgConsecutiveThrottledCalls | Should -Be 2
+
+                # Three more clean calls must drive it to 0 and clamp at 0.
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                $script:ArgConsecutiveThrottledCalls | Should -Be 0
+            }
+        }
+    }
 }
 
 #endregion Internal Helper: Invoke-AzResourceGraphQuery
