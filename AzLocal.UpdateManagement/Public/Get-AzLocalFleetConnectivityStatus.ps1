@@ -1,0 +1,391 @@
+########################################
+<#
+.SYNOPSIS
+    Collects fleet-wide connectivity status across four scopes: cluster
+    connectivity, Arc agent status, physical NIC issues, and Azure Resource
+    Bridge appliances.
+
+.DESCRIPTION
+    Replaces the inline PowerShell query block previously embedded in the
+    Step.4_fleet-connectivity-status YAML pipelines. All four data-collection
+    scopes are now handled here using the module's Invoke-AzResourceGraphQuery
+    helper, with ALL field extraction and aggregation done client-side so the
+    function is immune to ARG silently ignoring '| project' and '| summarize'
+    clauses in the az CLI layer.
+
+    The function runs five ARG queries:
+      1. microsoft.azurestackhci/clusters           - cluster connectivity
+      2. microsoft.azurestackhci/clusters/updatesummaries - current versions
+      3. microsoft.hybridcompute/machines           - Arc agent status (per node)
+      4. microsoft.azurestackhci/edgedevices        - physical NIC inventory
+      5. microsoft.resourceconnector/appliances     - ARB appliance status
+
+    From the machine rows it builds:
+      - ArcSummary: grouped count by AgentStatus (no KQL summarize dependency)
+      - NonConnectedMachines: filtered + enriched with cluster version
+
+    From the NIC rows (mv-expanded server-side) it builds:
+      - NicAll:    full inventory (all types, all statuses)
+      - NicIssues: Physical NICs that are Disconnected with a non-APIPA IP
+      - NicStats:  NicType + NicStatus histogram
+
+    ARB-to-cluster mapping is done client-side by matching ARB resource group
+    to cluster resource group (multi-cluster-per-RG safe).
+
+    When -ExportPath is supplied, writes the same seven CSV+JSON files that
+    the previous inline YAML script produced so the 'Create Fleet Connectivity
+    Summary' step (which reads those files) continues to work without change.
+
+.PARAMETER SubscriptionId
+    Optional. Limit all queries to a single Azure subscription ID.
+    Omit to query every subscription the caller can read.
+
+.PARAMETER ExportPath
+    Optional directory path. When provided, seven CSV files and seven JSON
+    files are written there (creating the directory if needed):
+      fleet-cluster-connectivity.{csv,json}
+      fleet-arc-status-summary.{csv,json}
+      fleet-arc-non-connected-machines.{csv,json}
+      fleet-physical-nics.{csv,json}
+      fleet-physical-nic-all.{csv,json}
+      fleet-physical-nic-stats.{csv,json}
+      fleet-arb-status.{csv,json}
+
+.PARAMETER PassThru
+    Return the result object to the pipeline even when -ExportPath is given.
+    Without -ExportPath the object is always returned.
+
+.OUTPUTS
+    [PSCustomObject] with properties:
+      ClusterRows          - one row per HCI cluster (connectivity + status)
+      ArcSummary           - one row per distinct Arc agent status (with Count)
+      NonConnectedMachines - one row per physical machine not in Connected state
+      NicIssues            - Physical NICs Disconnected with a non-APIPA IP
+      NicAll               - full NIC inventory (all types, all statuses)
+      NicStats             - NicType + NicStatus histogram (one row per pair)
+      ArbRows              - one row per ARB appliance with cluster mapping
+
+.EXAMPLE
+    $data = Get-AzLocalFleetConnectivityStatus
+    $data.ClusterRows | Where-Object { $_.ConnectivityStatus -ne 'Connected' }
+
+.EXAMPLE
+    Get-AzLocalFleetConnectivityStatus -ExportPath './reports' -PassThru
+
+.NOTES
+    Author:  Neil Bird, Microsoft.
+    Added:   v0.7.79
+    Module:  AzLocal.UpdateManagement
+#>
+########################################
+function Get-AzLocalFleetConnectivityStatus {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$SubscriptionId,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ExportPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$PassThru
+    )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    # Traverse a dot-separated property path on an object, e.g.
+    # 'properties.connectivityStatus'. Returns $null if any segment is
+    # missing rather than throwing.
+    function Get-NestedProp {
+        param([object]$Obj, [string]$Path)
+        $cur = $Obj
+        foreach ($seg in $Path -split '\.') {
+            if ($null -eq $cur) { return $null }
+            try { $cur = $cur.$seg } catch { return $null }
+        }
+        return $cur
+    }
+
+    # Return $Val coerced to string, or $Default when null/empty.
+    function CoerceStr {
+        param([object]$Val, [string]$Default = '')
+        if ($null -eq $Val) { return $Default }
+        $s = [string]$Val
+        if ([string]::IsNullOrWhiteSpace($s)) { return $Default }
+        return $s
+    }
+
+    $invokeArgs = @{}
+    if ($PSBoundParameters.ContainsKey('SubscriptionId') -and $SubscriptionId) {
+        $invokeArgs['SubscriptionId'] = $SubscriptionId
+    }
+
+    # ------------------------------------------------------------------
+    # 1. Cluster connectivity
+    # ------------------------------------------------------------------
+    Write-Log -Message 'Step.4 [1/5] Querying cluster connectivity...' -Level Info
+
+    $clusterKql = "resources | where type =~ 'microsoft.azurestackhci/clusters'"
+    $clusterRaw = Invoke-AzResourceGraphQuery -Query $clusterKql @invokeArgs
+
+    $clusterRows = @($clusterRaw | ForEach-Object {
+        $r = $_
+        $connStatus = CoerceStr (Get-NestedProp $r 'properties.connectivityStatus')
+        $clsStatus  = CoerceStr (Get-NestedProp $r 'properties.status')
+        $nodeCount  = Get-NestedProp $r 'properties.reportedProperties.nodeCount'
+        [PSCustomObject][ordered]@{
+            ClusterName        = CoerceStr $r.name (CoerceStr $r.resourceGroup 'Unknown')
+            ClusterId          = CoerceStr $r.id
+            ConnectivityStatus = if ([string]::IsNullOrWhiteSpace($connStatus)) { if ([string]::IsNullOrWhiteSpace($clsStatus)) { 'Unknown' } else { $clsStatus } } else { $connStatus }
+            ClusterStatus      = if ([string]::IsNullOrWhiteSpace($clsStatus)) { 'Unknown' } else { $clsStatus }
+            NodeCount          = if ($null -eq $nodeCount) { 0 } else { [int]$nodeCount }
+            Location           = CoerceStr $r.location
+            ResourceGroup      = CoerceStr $r.resourceGroup
+            SubscriptionId     = CoerceStr $r.subscriptionId
+        }
+    } | Sort-Object ConnectivityStatus, ClusterName)
+
+    Write-Log -Message "  Clusters: $($clusterRows.Count) row(s)" -Level Info
+
+    # Cluster ID -> row lookup (lower-case for joins)
+    $clusterById = @{}
+    foreach ($c in $clusterRows) {
+        if ($c.ClusterId) { $clusterById[$c.ClusterId.ToLowerInvariant()] = $c }
+    }
+
+    # Cluster resource group (lower) -> array of cluster rows (multi-cluster RG safe)
+    $clustersByRg = @{}
+    foreach ($c in $clusterRows) {
+        $rg = $c.ResourceGroup.ToLowerInvariant()
+        if (-not $clustersByRg.ContainsKey($rg)) {
+            $clustersByRg[$rg] = [System.Collections.Generic.List[object]]::new()
+        }
+        [void]$clustersByRg[$rg].Add($c)
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Update summaries (current version per cluster)
+    # ------------------------------------------------------------------
+    Write-Log -Message 'Step.4 [2/5] Querying update summaries for cluster versions...' -Level Info
+
+    $versionKql = "extensibilityresources | where type =~ 'microsoft.azurestackhci/clusters/updatesummaries'"
+    $versionRaw = Invoke-AzResourceGraphQuery -Query $versionKql @invokeArgs
+
+    $clusterVersionMap = @{}
+    foreach ($us in $versionRaw) {
+        # Strip the '/updateSummaries/default' suffix to get the parent cluster id
+        $rawId = CoerceStr $us.id
+        if (-not $rawId) { continue }
+        $sepIdx = $rawId.ToLowerInvariant().IndexOf('/updatesummaries/')
+        $cIdLower = if ($sepIdx -gt 0) { $rawId.Substring(0, $sepIdx).ToLowerInvariant() } else { $rawId.ToLowerInvariant() }
+        if (-not $clusterVersionMap.ContainsKey($cIdLower)) {
+            $clusterVersionMap[$cIdLower] = CoerceStr (Get-NestedProp $us 'properties.currentVersion')
+        }
+    }
+
+    # ------------------------------------------------------------------
+    # 3. Arc machines (all physical HCI nodes)
+    #    Query returns full resources; all field extraction is client-side.
+    #    ArcSummary is built via Group-Object so there is no dependency on
+    #    ARG honouring '| summarize'.
+    # ------------------------------------------------------------------
+    Write-Log -Message 'Step.4 [3/5] Querying Arc machine status...' -Level Info
+
+    $machinesKql = "resources | where type =~ 'microsoft.hybridcompute/machines' | where properties.cloudMetadata.provider =~ 'AzSHCI' | where kind !~ 'HCI'"
+    $machinesRaw = Invoke-AzResourceGraphQuery -Query $machinesKql @invokeArgs
+
+    $allMachines = @($machinesRaw | ForEach-Object {
+        $m = $_
+        $clusterId   = CoerceStr (Get-NestedProp $m 'properties.parentClusterResourceId')
+        $clusterName = if ($clusterId) { CoerceStr (([string]($clusterId -split '/'))[-1]) } else { '' }
+        $version     = if ($clusterId) { CoerceStr $clusterVersionMap[$clusterId.ToLowerInvariant()] } else { '' }
+        [PSCustomObject][ordered]@{
+            NodeName         = CoerceStr $m.name
+            MachineId        = CoerceStr $m.id
+            ClusterName      = $clusterName
+            ClusterId        = $clusterId
+            AgentStatus      = CoerceStr (Get-NestedProp $m 'properties.status') 'Unknown'
+            OsSku            = CoerceStr (Get-NestedProp $m 'properties.osSku')
+            OsVersion        = CoerceStr (Get-NestedProp $m 'properties.osVersion')
+            ClusterVersion   = $version
+            AgentVersion     = CoerceStr (Get-NestedProp $m 'properties.agentVersion')
+            LastStatusChange = CoerceStr (Get-NestedProp $m 'properties.lastStatusChange')
+            ResourceGroup    = CoerceStr $m.resourceGroup
+            SubscriptionId   = CoerceStr $m.subscriptionId
+        }
+    })
+
+    # Arc status summary: group by AgentStatus client-side.
+    # This replaces the KQL '| summarize Count = count() by AgentStatus'
+    # which ARG silently drops, returning raw rows instead of grouped counts.
+    $arcSummary = @($allMachines | Group-Object AgentStatus | ForEach-Object {
+        [PSCustomObject][ordered]@{ AgentStatus = $_.Name; Count = $_.Count }
+    } | Sort-Object @{Expression = { [int]$_.Count }; Descending = $true })
+
+    # Non-connected machines: filter client-side, already have full schema.
+    $nonConnectedMachines = @($allMachines |
+        Where-Object { $_.AgentStatus -ine 'Connected' } |
+        Sort-Object LastStatusChange, ClusterName, NodeName)
+
+    Write-Log -Message "  Arc machines: $($allMachines.Count) total; $($nonConnectedMachines.Count) non-Connected" -Level Info
+
+    # Build short-name lookup for NIC join (edge device name == machine short name)
+    $machineByShortName = @{}
+    foreach ($m in $allMachines) {
+        $short = $m.NodeName.ToLowerInvariant()
+        if ($short -and -not $machineByShortName.ContainsKey($short)) {
+            $machineByShortName[$short] = $m
+        }
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Physical NICs via edge devices (mv-expand done server-side by ARG)
+    #    extend'd fields are accessible as top-level properties on returned
+    #    rows even when ARG drops the final '| project'.
+    #    Machine join done client-side using $machineByShortName.
+    # ------------------------------------------------------------------
+    Write-Log -Message 'Step.4 [4/5] Querying NIC inventory...' -Level Info
+
+    $nicKql = @'
+extensibilityresources
+| where type =~ 'microsoft.azurestackhci/edgedevices'
+| extend edgeMachineName = tolower(tostring(split(id, '/')[8]))
+| extend nicDetails = todynamic(properties.reportedProperties.networkProfile.nicDetails)
+| mv-expand nic = nicDetails
+| extend NicName = tostring(nic.adapterName)
+| extend NicStatus = tostring(nic.nicStatus)
+| extend DriverVersion = tostring(nic.driverVersion)
+| extend InterfaceDescription = tostring(nic.interfaceDescription)
+| extend NicType = case(InterfaceDescription contains 'Hyper-V', 'Virtual', InterfaceDescription contains 'Virtual', 'Virtual', 'Physical')
+| extend Ip4Address = tostring(nic.ip4Address)
+| extend SubnetMask = tostring(nic.subnetMask)
+| extend DefaultGateway = tostring(nic.defaultGateway)
+| extend DnsServers = strcat_array(nic.dnsServers, ', ')
+| extend MacAddress = tostring(nic.macAddress)
+'@
+    $nicRaw = Invoke-AzResourceGraphQuery -Query $nicKql @invokeArgs
+
+    $nicAllRows = @($nicRaw | ForEach-Object {
+        $n = $_
+        $edgeName = CoerceStr $n.edgeMachineName
+        $machine  = $machineByShortName[$edgeName]
+        [PSCustomObject][ordered]@{
+            NodeName             = if ($machine) { $machine.NodeName } else { $edgeName }
+            MachineId            = if ($machine) { $machine.MachineId } else { '' }
+            ClusterName          = if ($machine) { $machine.ClusterName } else { '' }
+            ClusterId            = if ($machine) { $machine.ClusterId } else { '' }
+            MachineConnectivity  = if ($machine) { $machine.AgentStatus } else { 'Unknown' }
+            NicName              = CoerceStr $n.NicName '(unknown)'
+            NicType              = CoerceStr $n.NicType 'Physical'
+            NicStatus            = CoerceStr $n.NicStatus 'Unknown'
+            DriverVersion        = CoerceStr $n.DriverVersion
+            InterfaceDescription = CoerceStr $n.InterfaceDescription
+            Ip4Address           = CoerceStr $n.Ip4Address
+            SubnetMask           = CoerceStr $n.SubnetMask
+            DefaultGateway       = CoerceStr $n.DefaultGateway
+            DnsServers           = CoerceStr $n.DnsServers
+            MacAddress           = CoerceStr $n.MacAddress
+            ResourceGroup        = CoerceStr $n.resourceGroup
+            SubscriptionId       = CoerceStr $n.subscriptionId
+        }
+    } | Sort-Object NodeName, NicType, NicName)
+
+    # Issues only: Physical, Disconnected, non-APIPA IP
+    $nicIssues = @($nicAllRows | Where-Object {
+        $_.NicType -eq 'Physical' -and
+        $_.NicStatus -ieq 'Disconnected' -and
+        -not [string]::IsNullOrWhiteSpace($_.Ip4Address) -and
+        -not $_.Ip4Address.StartsWith('169.254.')
+    } | Sort-Object ClusterName, NodeName, NicName)
+
+    # NIC type+status histogram (no KQL summarize dependency)
+    $nicStats = @($nicAllRows | Group-Object NicType, NicStatus | ForEach-Object {
+        $g = $_.Group[0]
+        [PSCustomObject][ordered]@{ NicType = $g.NicType; NicStatus = $g.NicStatus; Count = $_.Count }
+    } | Sort-Object NicType, NicStatus)
+
+    Write-Log -Message "  NICs: $($nicAllRows.Count) total; $($nicIssues.Count) issue(s)" -Level Info
+
+    # ------------------------------------------------------------------
+    # 5. Azure Resource Bridge - client-side join to clusters by RG
+    #    Replaces the KQL summarize/make_set join that ARG silently drops.
+    #    Multi-cluster-per-RG is safe: clustersByRg holds a list per key.
+    # ------------------------------------------------------------------
+    Write-Log -Message 'Step.4 [5/5] Querying Azure Resource Bridge status...' -Level Info
+
+    $arbKql = "resources | where type =~ 'microsoft.resourceconnector/appliances'"
+    $arbRaw  = Invoke-AzResourceGraphQuery -Query $arbKql @invokeArgs
+
+    $arbRows = @($arbRaw | ForEach-Object {
+        $a  = $_
+        $rg = ([string]$a.resourceGroup).ToLowerInvariant()
+        $matched = if ($clustersByRg.ContainsKey($rg)) { @($clustersByRg[$rg]) } else { @() }
+
+        $clusterName   = if ($matched.Count -gt 0) { ($matched | ForEach-Object { $_.ClusterName })   -join ', ' } else { '(no cluster)' }
+        $clusterId     = if ($matched.Count -gt 0) { ($matched | ForEach-Object { $_.ClusterId })     -join ', ' } else { '' }
+        $clusterStatus = if ($matched.Count -gt 0) { ($matched | ForEach-Object { $_.ClusterStatus }) -join ', ' } else { '' }
+
+        $status  = CoerceStr (Get-NestedProp $a 'properties.status') 'Unknown'
+        $lastMod = CoerceStr (Get-NestedProp $a 'systemData.lastModifiedAt')
+        $daysSince = if ($status -ieq 'Running') {
+            [int]-1
+        } elseif ($lastMod) {
+            try { [int]((Get-Date) - [datetime]::Parse($lastMod)).TotalDays } catch { [int]-1 }
+        } else { [int]-1 }
+
+        [PSCustomObject][ordered]@{
+            ArbName               = CoerceStr $a.name
+            ArbId                 = CoerceStr $a.id
+            ArbStatus             = $status
+            ClusterName           = $clusterName
+            ClusterId             = $clusterId
+            ClusterStatus         = $clusterStatus
+            LastModified          = $lastMod
+            DaysSinceLastModified = $daysSince
+            ResourceGroup         = CoerceStr $a.resourceGroup
+            SubscriptionId        = CoerceStr $a.subscriptionId
+        }
+    } | Sort-Object ArbStatus, ClusterName)
+
+    Write-Log -Message "  ARB appliances: $($arbRows.Count)" -Level Info
+
+    # ------------------------------------------------------------------
+    # Export to files when ExportPath is provided
+    # ------------------------------------------------------------------
+    if ($ExportPath) {
+        if (-not (Test-Path $ExportPath)) {
+            New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null
+        }
+        $exports = @(
+            @{ Rows = $clusterRows;          Name = 'fleet-cluster-connectivity' }
+            @{ Rows = $arcSummary;           Name = 'fleet-arc-status-summary' }
+            @{ Rows = $nonConnectedMachines; Name = 'fleet-arc-non-connected-machines' }
+            @{ Rows = $nicIssues;            Name = 'fleet-physical-nics' }
+            @{ Rows = $nicAllRows;           Name = 'fleet-physical-nic-all' }
+            @{ Rows = $nicStats;             Name = 'fleet-physical-nic-stats' }
+            @{ Rows = $arbRows;              Name = 'fleet-arb-status' }
+        )
+        foreach ($export in $exports) {
+            $export.Rows | Export-Csv  -Path (Join-Path $ExportPath "$($export.Name).csv")  -NoTypeInformation -Force
+            $export.Rows | ConvertTo-Json -Depth 20 | Out-File -FilePath (Join-Path $ExportPath "$($export.Name).json") -Encoding utf8
+        }
+        Write-Log -Message "  Exported 7 scopes (CSV + JSON) to: $ExportPath" -Level Info
+    }
+
+    $result = [PSCustomObject]@{
+        ClusterRows          = $clusterRows
+        ArcSummary           = $arcSummary
+        NonConnectedMachines = $nonConnectedMachines
+        NicIssues            = $nicIssues
+        NicAll               = $nicAllRows
+        NicStats             = $nicStats
+        ArbRows              = $arbRows
+    }
+
+    if (-not $ExportPath -or $PassThru) {
+        return $result
+    }
+}

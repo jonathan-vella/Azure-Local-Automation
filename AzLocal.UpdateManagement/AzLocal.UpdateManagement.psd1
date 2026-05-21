@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.78'
+    ModuleVersion = '0.7.79'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -122,7 +122,8 @@
         'Public/Test-AzLocalItsmConnection.ps1',
         'Public/Test-AzLocalUpdateScheduleAllowed.ps1',
         'Public/Update-AzLocalApplyUpdatesScheduleConfig.ps1',
-        'Public/Update-AzLocalPipelineExample.ps1'
+        'Public/Update-AzLocalPipelineExample.ps1',
+        'Public/Get-AzLocalFleetConnectivityStatus.ps1'
     )
 
     FunctionsToExport = @(
@@ -175,7 +176,9 @@
         # Fleet Health Overview (v0.7.70) - one row per cluster, ARG-first projection of cluster + updateSummaries (fleet-scale)
         'Get-AzLocalFleetHealthOverview',
         # Latest Released Solution Version (v0.7.70) - public manifest probe (aka.ms/AzureEdgeUpdates) that anchors the rolling YYMM support window
-        'Get-AzLocalLatestSolutionVersion'
+        'Get-AzLocalLatestSolutionVersion',
+        # Fleet Connectivity Status (v0.7.79) - 4-scope connectivity audit: cluster, Arc agent, physical NIC, ARB
+        'Get-AzLocalFleetConnectivityStatus'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -204,6 +207,19 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.79 - Step.5 default schedule enabled
+
+### Changed
+
+- Step.5 `assess-update-readiness` (GitHub Actions + Azure DevOps) now runs
+  daily at 07:00 UTC by default. Previously the schedule block was commented
+  out, requiring manual enablement after install.
+
+### Pipeline pin bumps
+
+- Bundled `Step.{0..8}.yml` templates bump
+  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.78'` to `'0.7.79'`.
+
 ## Version 0.7.78 - Step.4 blank-field regression fix
 
 ### Fixed

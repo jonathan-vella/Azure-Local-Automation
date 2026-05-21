@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.78 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.78)
+**Latest Version:** v0.7.79 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.79)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.78](#whats-new-in-v0778)
+- [What's New in v0.7.79](#whats-new-in-v0779)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,41 +86,9 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.78
+## What's New in v0.7.79
 
-v0.7.78 is a **targeted hotfix** release focused on Step.4 fleet-connectivity data-shape resilience. This fixes the regression where totals were populated but key fields rendered blank in markdown and JUnit (`ClusterName`, `AgentStatus`, `NicName`, `ArbName`). `Invoke-ArgQuery` now normalizes both ARG response shapes (object rows and tabular `columns + data` rows), Step.4 projections use `coalesce(...)` for non-empty key fields, and JSON export depth is raised to reduce truncation warnings.
-
-### Breaking: -AzureLocal* renamed to -AzLocal* (Finding 7)
-
-Every exported function in `Public/` and every private helper in `Private/` was renamed to align with the module name and the standard PowerShell module-prefix convention. There are no deprecation aliases (the module is pre-1.0 and has no published external consumers). Search-and-replace `-AzureLocal` -> `-AzLocal` in any pinned scripts.
-
-### Fixed: Finding 1 P0 - row-collapse via `@(func)` wrap on a `, $arr` return
-
-`Invoke-AzResourceGraphQuery` used `return , $allRows.ToArray()` (the unary-comma trick that keeps the return shape as a single `Object[N]` through pipeline enumeration). 24 callers wrapped the call with `@(Invoke-AzResourceGraphQuery ...)` which collected the function's pipeline output (one wrapper containing the inner array), producing `Object[1]` containing `Object[N]`. Downstream property access then did PowerShell member enumeration and returned arrays-of-strings, so a 136-row update-run result collapsed into a 1-row `ClusterName_=Object[]` mess. Fixed by converting all 24 callers to direct assignment (`$x = Invoke-AzResourceGraphQuery ...`).
-
-### Fixed: ARM healthCheckResult byte-identical duplicates (bonus)
-
-`Test-AzLocalClusterHealth` and the private `Get-HealthCheckFailureSummary` now dedup byte-identical ARM `healthCheckResult` rows. ARM upstream was observed emitting two byte-identical rows for the same logical health-check finding (same CheckName, Severity, Description, Remediation, TargetResourceName, Timestamp), doubling the displayed CriticalCount. Dedup is by the COMPLETE row tuple (HashSet[string] keyed on `ClusterName | CheckName | Severity | Description | Remediation | TargetResourceName | Timestamp` joined by U+001F UNIT SEPARATOR), so per-node distinct findings with different `targetResourceName` (e.g. `UserStorage_1-Repair` vs `UserStorage_2-Repair`) stay separate.
-
-### Other findings addressed
-
-- **Finding 2 (test gaps):** new Pester cases for row-collapse, ARM dedup (identical / distinct target / empty), KQL arg-length safety.
-- **Finding 3 (SP secret leak):** `Connect-AzLocalServicePrincipal` writes the secret to a temp file with restricted ACL, passes via `Get-Content`, removes it in a `finally` block.
-- **Finding 4 + 5 (docs):** main README cut from 3372 to ~600 lines; new `docs/` tree: [`cmdlet-reference.md`](docs/cmdlet-reference.md), [`concepts.md`](docs/concepts.md), [`rbac.md`](docs/rbac.md), [`troubleshooting.md`](docs/troubleshooting.md), [`release-history.md`](docs/release-history.md). Pipeline README appendices also extracted to [`Automation-Pipeline-Examples/docs/`](Automation-Pipeline-Examples/docs/).
-- **Finding 6 + 9 (.psm1):** dead-code removed; deliberate `Set-StrictMode -Version 1.0` documented at top of file.
-- **Finding 8 (review archive):** internal review notes moved into a gitignored `docs/` location.
-
-### Documentation conventions (new in v0.7.76)
-
-1. The main README is the entry point; cmdlet / RBAC / release deep-dives live under [`docs/`](docs/).
-2. Only the **current version**'s What's-New stays inline; older entries live in [`docs/release-history.md`](docs/release-history.md).
-3. Each release tag MUST run the demote-to-history step.
-4. Day-2 pipeline operators land on [`Automation-Pipeline-Examples/README.md`](Automation-Pipeline-Examples/README.md); depth lives in [`Automation-Pipeline-Examples/docs/`](Automation-Pipeline-Examples/docs/).
-5. ITSM has its own README under [`ITSM/`](ITSM/).
-
-### Migration
-
-`Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`) and refresh any pinned pipeline YAMLs. The bundled `Step.{0..8}.yml` templates (18 files: 9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.76'` to `'0.7.77'`. The pin is drift-detection only; `Install-Module -Force` still installs PSGallery latest at runtime.
+v0.7.79 enables the **Step.5 daily readiness check** out of the box. The `schedule:` cron block in `Step.5_assess-update-readiness.yml` (GitHub Actions and Azure DevOps) was previously commented out; it is now active at **07:00 UTC daily**. No module code changes.
 
 > Previous release notes have moved into [`docs/release-history.md`](docs/release-history.md).
 
@@ -594,9 +562,9 @@ This code is provided as-is for educational and reference purposes.
 
 ## Release History
 
-The full What's-New history (v0.7.75 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
+The full What's-New history (v0.7.78 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.78** stay above under [`What's New in v0.7.78`](#whats-new-in-v0778).
+The most recent release notes for **v0.7.79** stay above under [`What's New in v0.7.79`](#whats-new-in-v0779).
 
 ---
 

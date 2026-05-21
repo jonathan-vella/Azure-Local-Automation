@@ -5,6 +5,16 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.79] - 2026-05-20
+
+### Changed
+
+- **Step.5 `assess-update-readiness`** (GitHub Actions + Azure DevOps) now ships with an active daily schedule at **07:00 UTC**. Previously the `schedule:` / `schedules:` block was commented out, requiring manual enablement after pipeline installation.
+
+### Pipeline pin bumps
+
+- Bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.78'` to `'0.7.79'`.
+
 ## [0.7.78] - 2026-05-20
 
 > **Hotfix: Step.4 fleet-connectivity blank-field regression + ARG tabular-shape hardening**
