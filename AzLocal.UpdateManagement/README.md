@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.80 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.80)
+**Latest Version:** v0.7.81 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.81)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.80](#whats-new-in-v0780)
+- [What's New in v0.7.81](#whats-new-in-v0781)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,9 +86,9 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.80
+## What's New in v0.7.81
 
-v0.7.80 is a **documentation-fix release**. The custom RBAC role definition in [`docs/rbac.md`](docs/rbac.md) (used by Step.4 pipeline service principals) was missing three reads that `Get-AzLocalFleetConnectivityStatus` (added in v0.7.79) needs: `Microsoft.HybridCompute/machines/read`, `Microsoft.AzureStackHCI/edgeDevices/read`, and `Microsoft.ResourceConnector/appliances/read`. Without them, the cmdlet still returns the cluster connectivity section but every other section (Arc agents, physical NICs, Azure Resource Bridges) silently returns zero rows because ARG yields an empty `.data` array for resource types the caller cannot read. The doc also gains an "Updating an existing custom role" sub-section so an `az role definition update` keeps the existing role GUID and assignments. No module code changes.
+v0.7.81 is a **documentation-only release** focused on the CI/CD permission guidance. The previous `Automation-Pipeline-Examples/README.md` presented the least-privilege custom role (`Azure Stack HCI Update Operator`) and the built-in `Azure Stack HCI Administrator` role as roughly equal "Option A / Option B" choices, biasing readers toward the over-permissive built-in role for labs. v0.7.81 pivots every permission code path to **custom-role-first** for every environment (labs, PoCs, production); the built-in role is now framed as a temporary fallback for tenants where the operator cannot create custom roles, hidden behind `<details>` / commented-out alternatives so the primary flow is clean. Sections 3.1 Step 2, 3.2 (ADO), 3.3 (Managed Identity), 3.4 (SP+secret), section 4 intro, section 4.2 and section 11 were all reframed; section 4.1 gained an expanded `Migration tip (built-in -> custom role, no downtime)` block including the `az role assignment delete` cleanup command. All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.80'` to `'0.7.81'` (drift-detection pin only - no code change in the YAMLs).
 
 > Previous release notes have moved into [`docs/release-history.md`](docs/release-history.md).
 
@@ -562,9 +562,9 @@ This code is provided as-is for educational and reference purposes.
 
 ## Release History
 
-The full What's-New history (v0.7.79 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
+The full What's-New history (v0.7.80 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.80** stay above under [`What's New in v0.7.80`](#whats-new-in-v0780).
+The most recent release notes for **v0.7.81** stay above under [`What's New in v0.7.81`](#whats-new-in-v0781).
 
 ---
 

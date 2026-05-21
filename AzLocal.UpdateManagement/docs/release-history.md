@@ -4,9 +4,13 @@
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
 >
-> **For v0.7.80 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0780) `What's New in v0.7.80` section.
+> **For v0.7.81 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0781) `What's New in v0.7.81` section.
 
 ---
+
+### What's New in v0.7.80
+
+v0.7.80 was a documentation-fix release. The custom RBAC role definition in [`docs/rbac.md`](rbac.md) (used by Step.4 pipeline service principals) was missing three reads that `Get-AzLocalFleetConnectivityStatus` (added in v0.7.79) needs: `Microsoft.HybridCompute/machines/read`, `Microsoft.AzureStackHCI/edgeDevices/read`, and `Microsoft.ResourceConnector/appliances/read`. Without them the cmdlet still returns the cluster connectivity section but every other section (Arc agents, physical NICs, Azure Resource Bridges) silently returned zero rows because ARG yields an empty `.data` array for resource types the caller cannot read. The doc also gained an "Updating an existing custom role" sub-section so an `az role definition update` keeps the existing role GUID and assignments. No module code changes; pipeline pin bumped from `'0.7.79'` to `'0.7.80'`.
 
 ### What's New in v0.7.79
 

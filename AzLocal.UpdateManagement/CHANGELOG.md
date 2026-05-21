@@ -5,6 +5,22 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.81] - 2026-05-21
+
+### Changed (documentation)
+
+- **Pivoted CI/CD permission guidance to custom-role-first.** `Automation-Pipeline-Examples/README.md` previously presented the least-privilege `Azure Stack HCI Update Operator` custom role and the built-in `Azure Stack HCI Administrator` role as roughly equal "Option A / Option B" choices, with the built-in role framed as a "quick start" for labs. This biased readers toward over-granting because the built-in role grants broad cluster-management permissions well beyond what the seven pipelines actually exercise. Every permission code path in the CI/CD README now leads with the custom role for every environment (labs, PoCs, production); the built-in role is treated as a temporary fallback for tenants where the operator cannot create custom roles, hidden behind `<details>` / commented-out alternatives so the primary flow is clean.
+- Sections reframed: 3.1 Step 2 (GitHub Actions OIDC SP role assignment - removed the Option A / Option B split), 3.2 (Azure DevOps service connection), 3.3 (Self-hosted runners with Managed Identity), 3.4 (Service Principal + client secret), section 4 intro (Required Azure permissions), section 4.2 (Extending to additional subscriptions), and section 11 (Security model).
+- Section 4.1 migration tip expanded from a one-line `>` blockquote into a full **"Migration tip (built-in -> custom role, no downtime)"** block with a four-step procedure including the `az role assignment delete --assignee <appId> --role "Azure Stack HCI Administrator" --scope "/subscriptions/<id>"` cleanup command. The migration preserves pipeline operation because the custom role is verified working before the built-in assignment is removed.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.80'` to `'0.7.81'`. No code changes in the YAMLs; the pin is drift-detection only.
+
+### Migration
+
+No action required. The custom role definition itself is unchanged from v0.7.80. If you assigned the built-in `Azure Stack HCI Administrator` role following pre-v0.7.81 guidance, follow the expanded `Migration tip` at the end of section 4.1 of `Automation-Pipeline-Examples/README.md` to swap to the least-privilege custom role with no pipeline downtime.
+
 ## [0.7.80] - 2026-05-21
 
 ### Fixed (documentation)

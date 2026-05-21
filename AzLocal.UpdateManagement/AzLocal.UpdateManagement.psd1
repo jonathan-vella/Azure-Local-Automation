@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.80'
+    ModuleVersion = '0.7.81'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -207,6 +207,25 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.81 - Pipeline RBAC guidance: custom role first
+
+### Changed (documentation)
+
+- `Automation-Pipeline-Examples/README.md` permission guidance now leads
+  with the least-privilege `Azure Stack HCI Update Operator` custom role
+  for every environment (labs, PoCs, production). The built-in
+  `Azure Stack HCI Administrator` role is demoted to a fallback for
+  tenants where the operator cannot create custom roles, hidden behind
+  `<details>` / commented-out alternatives. Sections 3.1, 3.2, 3.3, 3.4,
+  4, 4.2 and 11 reframed accordingly; section 4.1 gained an expanded
+  `Migration tip (built-in -> custom role, no downtime)` block.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates bump
+  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.80'` to `'0.7.81'`.
+  No code changes in the YAMLs.
+
 ## Version 0.7.80 - RBAC custom role: fleet-connectivity reads
 
 ### Fixed (documentation)
@@ -383,23 +402,9 @@ https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANG
 For full v0.7.72 release notes see:
 https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
-## Version 0.7.71 - Step.3 markdown render fix + UnparseableCron action-required section, Step.4 critical-count undercount fix, Step.6 cluster portal link + collapsible Verbose Error, AZURE_SUBSCRIPTION_ID secret->variable
-
-For full v0.7.71 release notes see:
-https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
-
----
-
-## Version 0.7.70 - Step.0 recurring auth audit, Step.6 update run history, Step.3/Step.7 UX + new ARG-first fleet health summary cmdlet
-
-For v0.7.70 details and release notes covering v0.7.69 and earlier, see the CHANGELOG:
-https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
-
----
-
 ## Older releases
 
-For release notes covering v0.7.69 and earlier, see the CHANGELOG:
+For release notes covering v0.7.71 and earlier, see the CHANGELOG:
 https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 '@
