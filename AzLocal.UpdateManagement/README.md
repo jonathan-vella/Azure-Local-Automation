@@ -18,7 +18,7 @@ This folder contains the 'AzLocal.UpdateManagement' PowerShell module for managi
 Azure Local REST API specification (includes update management endpoints): https://github.com/Azure/azure-rest-api-specs/blob/main/specification/azurestackhci/resource-manager/Microsoft.AzureStackHCI/StackHCI/stable/2026-02-01/hci.json
 
 <details>
-<summary><strong>ðŸ“‘ Table of Contents</strong> (click to expand)</summary>
+<summary><strong>📑 Table of Contents</strong> (click to expand)</summary>
 
 **This README (overview + most-recent release notes):**
 
