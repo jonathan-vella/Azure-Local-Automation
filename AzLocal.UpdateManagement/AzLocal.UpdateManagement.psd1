@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.82'
+    ModuleVersion = '0.7.83'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -207,6 +207,25 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.83 - HOTFIX: Step.4 ARB [char].Trim() bug on single-cluster ClusterId
+
+### Fixed
+
+- **Step.4 ARB JUnit-XML generation crashed with `[System.Char] does not contain a method named 'Trim'`** whenever an Azure Resource Bridge failure case had a single (non-comma-separated) `ClusterId`. The pattern `$clusterIdList = if (...) { @(... | Where-Object {...}) } else { @() }; $clusterIdList[0].Trim()` looks safe but is NOT: PowerShell's collection-unwrap silently undoes the `@()` wrap when `Where-Object` yields a single scalar, so `$clusterIdList` collapses to a bare `[string]`, indexing returns `[char]`, and `.Trim()` throws. Multi-cluster RG ARBs (comma-separated `ClusterId`) were unaffected, which is why string-match smoke tests missed it.
+- Fixed in both Step.4 YAMLs via `[string[]]$clusterIdList = ...` (forces array shape) + `([string]$clusterIdList[0]).Trim()` (defence-in-depth cast at the indexing site). The same `if-@-else` shape existed twice more per file in the orphan-ARB reconciliation block (currently safe-by-accident due to `foreach` scalar iteration, but brittle); both call sites are now also `[string[]]`-cast.
+
+### Added
+
+- Pester regression block `Regression v0.7.83: Step.4 ARB inline script handles single-cluster ClusterId without [char].Trim() bug` (9 tests). Static checks (regex on YAML content) ensure the casts are present in shipped YAML; dynamic checks re-execute the exact two-line pattern against single-cluster, comma-separated, null, and empty `ClusterId` payloads. Negative-control test proves the pre-fix shape still throws.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.82'` to `'0.7.83'`.
+
+### Migration
+
+No action required. `Install-Module AzLocal.UpdateManagement -Force` picks up the fix; bundled Step.4 YAMLs refreshed via `Copy-AzLocalPipelineExample -Destination <path> -Update`.
+
 ## Version 0.7.82 - Bundled custom-role JSON artifact
 
 ### Added
@@ -348,43 +367,10 @@ https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANG
   of the manifest (CI cache keys, ARM template `requiredModules`) continue
   to resolve.
 
-## Version 0.7.75 - Hardening: Test-AzLocalApplyUpdatesScheduleCoverage auto-detects the CI host platform when -Platform is omitted, so stale consumer yml self-heals against cross-platform output noise
+## Version 0.7.75 - Hardening: Test-AzLocalApplyUpdatesScheduleCoverage auto-detects CI host platform
 
-### Fixed
-
-- **`Test-AzLocalApplyUpdatesScheduleCoverage` cross-platform noise
-  is now fixed at the cmdlet layer**, not just the yml layer.
-  v0.7.74 patched the symptom by adding `-Platform GitHubActions` /
-  `-Platform AzureDevOps` to the bundled Step.3 yml templates, but
-  consumers whose Step.3 yml is a verbatim pre-v0.7.74 copy (i.e.
-  they have not yet run `Update-AzLocalPipelineExample`) still see
-  both snippets in their Step Summary because the yml does not pass
-  `-Platform` and the cmdlet defaults to `'Both'`. v0.7.75 closes
-  that gap: when the caller does not bind `-Platform`, the cmdlet
-  inspects `$env:GITHUB_ACTIONS` (-> `GitHubActions`) and
-  `$env:TF_BUILD` / `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI`
-  (-> `AzureDevOps`) and self-selects. Result: GH workflow runs
-  emit only the GH snippet, ADO pipeline runs emit only the ADO
-  snippet, interactive sessions keep the existing `'Both'` default.
-  Auto-detect is gated on `$PSBoundParameters.ContainsKey('Platform')`
-  so an explicit caller value (including an explicit `-Platform Both`)
-  always wins. The v0.7.74 yml `-Platform` arguments stay in place
-  as defence in depth for runs against older modules.
-
-### Pipeline pin bumps
-
-- All 14 `Step.{1..7}.yml` files (7 GitHub Actions + 7 Azure DevOps)
-  bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.74'` to `'0.7.75'`.
-
-### Migration
-
-- No cmdlet signature change. No yml change required - the v0.7.75
-  cmdlet fix self-heals stale consumer yml the next time the workflow
-  runs against the v0.7.75 module on PSGallery. Refresh existing yml
-  copies (recommended for the version-pin bump and any other v0.7.75
-  changes flagged via `GENERATED_AGAINST_MODULE_VERSION`) with:
-  `Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHub`
-  and / or `-Destination .\.azure-pipelines -Platform AzureDevOps`.
+For full v0.7.75 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.74 - Bug fix: Get-AzLocalFleetHealthOverview KQL regression (ParserFailure at char 2757) + Step.3 recommendation UX rewrite
 

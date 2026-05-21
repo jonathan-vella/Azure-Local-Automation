@@ -4,7 +4,13 @@
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
 >
-> **For v0.7.82 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0782) `What's New in v0.7.82` section.
+> **For v0.7.83 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0783) `What's New in v0.7.83` section.
+
+---
+
+### What's New in v0.7.82
+
+v0.7.82 packaged the custom RBAC role definition as a **bundled JSON file** so operators no longer needed to copy-paste from the README. The new file `Automation-Pipeline-Examples/azlocal-update-management-custom-role.json` contains the canonical `Azure Stack HCI Update Operator` role definition (13 actions: the 12 used by current cmdlets plus `Microsoft.HybridCompute/machines/extensions/read` reserved for future Arc-machine extension reporting). `Automation-Pipeline-Examples/README.md` Section 4.1 was updated to point at the bundled file as the first install path. A new callout in Section 4.1 and `docs/rbac.md` flagged the JSON-shape difference between the **CLI / PowerShell** format (`az role definition create`, `New-AzRoleDefinition`) and the **Azure portal Edit-a-custom-role JSON tab** format (ARM resource representation wrapped in `properties`), so operators do not hit `Malformed JSON: "properties" property not present` when pasting into the portal. The same callout also flagged a **UTF-8 BOM gotcha**: `az`'s Python JSON parser rejects BOM-prefixed files with `Expecting value: line 1 column 1 (char 0)`; the shipped file was BOM-free. All 18 bundled `Step.{0..8}.yml` templates bumped `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.81'` to `'0.7.82'`. **Known issue** (fixed in v0.7.83): the multi-cluster-RG ARB handling added to Step.4 in v0.7.82 introduced a `[System.Char] does not contain a method named 'Trim'` crash on single-cluster ARBs - see v0.7.83 release notes for details.
 
 ---
 

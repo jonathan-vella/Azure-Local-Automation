@@ -109,7 +109,7 @@ env:
   # PSGallery, and emits a ::notice annotation if the YAML appears stale -
   # prompting you to refresh via Copy-AzLocalPipelineExample -Update. See
   # Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.82'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.83'
   # Resolution order for the module version pin (leave all unset to install
   # the latest, the default "fix-forward" behaviour): manual workflow_dispatch
   # input > repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -376,8 +376,12 @@ jobs:
             # ARB's resource group hosts multiple HCI clusters (LENS-style
             # multi-cluster-per-RG collapse). Use the first cluster for the
             # portal URL and keep the full list in the body / properties.
-            $clusterIdList = if ($r.ClusterId) { @(($r.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
-            $primaryClusterId = if ($clusterIdList.Count -gt 0) { $clusterIdList[0].Trim() } else { '' }
+            # NOTE: the [string[]] cast is required - without it, when
+            # Where-Object yields a single scalar, the if-as-expression
+            # collapses $clusterIdList to a bare [string] and indexing it
+            # returns a [char] (no Trim() method).
+            [string[]]$clusterIdList = if ($r.ClusterId) { ($r.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }
+            $primaryClusterId = if ($clusterIdList.Count -gt 0) { ([string]$clusterIdList[0]).Trim() } else { '' }
             $clusterPortal = if ($primaryClusterId) { "https://portal.azure.com/#@/resource$primaryClusterId" } else { '' }
             $multiClusterNote = if ($clusterIdList.Count -gt 1) { " (multi-cluster RG; $($clusterIdList.Count) clusters)" } else { '' }
             return [PSCustomObject]@{
@@ -494,7 +498,11 @@ jobs:
         # case from the summarize/make_set ARB query).
         $arbByClusterId = @{}
         foreach ($a in $arbRows) {
-            $ids = if ($a.ClusterId) { @(($a.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
+            # v0.7.83: [string[]] cast prevents single-cluster ClusterId from
+            # collapsing to a bare [string] (which would then iterate as a
+            # scalar in foreach - currently safe, but brittle). See the
+            # ARB Add-Suite block above for the bug this guards against.
+            [string[]]$ids = if ($a.ClusterId) { ($a.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }
             foreach ($id in $ids) {
                 $key = $id.Trim().ToLowerInvariant()
                 if ($key -and -not $arbByClusterId.ContainsKey($key)) { $arbByClusterId[$key] = $a }
@@ -505,7 +513,8 @@ jobs:
             if ($c.ClusterId) { $clusterIdsLower[$c.ClusterId.ToLowerInvariant()] = $true }
         }
         $orphanArbs = @($arbRows | Where-Object {
-            $ids = if ($_.ClusterId) { @(($_.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
+            # v0.7.83: [string[]] cast - see note on $arbByClusterId loop above.
+            [string[]]$ids = if ($_.ClusterId) { ($_.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }
             $matched = $false
             foreach ($id in $ids) { if ($clusterIdsLower.ContainsKey($id.Trim().ToLowerInvariant())) { $matched = $true; break } }
             -not $matched
