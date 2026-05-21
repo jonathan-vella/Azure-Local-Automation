@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.83 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.83)
+**Latest Version:** v0.7.84 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.84)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.83](#whats-new-in-v0783)
+- [What's New in v0.7.84](#whats-new-in-v0784)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,9 +86,19 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.83
+## What's New in v0.7.84
 
-v0.7.83 is a **HOTFIX** for a runtime crash in the Step.4 fleet-connectivity ARB JUnit-XML generation that shipped in v0.7.82. When an Azure Resource Bridge failure case had a single (non-comma-separated) `ClusterId`, the inline script blew up with `Method invocation failed because [System.Char] does not contain a method named 'Trim'`. The buggy two-line pattern `$clusterIdList = if ($r.ClusterId) { @(($r.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }; $clusterIdList[0].Trim()` hits a PowerShell collection-unwrap gotcha: when `Where-Object` yields a single scalar, the `@()` wrap is silently undone by the `if`-as-expression, `$clusterIdList` collapses to a bare `[string]`, indexing returns `[char]`, and `.Trim()` throws at runtime. Multi-cluster RG ARBs (comma-separated `ClusterId`) were unaffected, which is why this only surfaced in production against a real customer fleet on 2026-05-21. Fixed in both Step.4 YAMLs (`github-actions/` and `azure-devops/`) by adding a `[string[]]` cast on `$clusterIdList` (which forces array shape regardless of element count) plus a defence-in-depth `[string]` cast at the `[0]` indexing site. The same `if-@-else-@()` shape existed twice more per file in the orphan-ARB reconciliation block (safe-by-accident due to `foreach` scalar iteration, but brittle); both call sites are now also `[string[]]`-cast. A new Pester regression block `Regression v0.7.83: Step.4 ARB inline script handles single-cluster ClusterId without [char].Trim() bug` (9 tests) re-executes the exact buggy pattern against single-cluster, multi-cluster, null, and empty `ClusterId` payloads, plus a negative-control test that proves the pre-fix shape still throws. All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.82'` to `'0.7.83'` (no code changes outside Step.4). The bug surfaced a broader test gap: Step.*.yml inline `run: |` PowerShell scripts are tested by string-match only - tracked in the post-v0.7.76 backlog as `Executable-YAML test strategy` for a future release.
+v0.7.84 is a **HOTFIX** for 4 correctness bugs in `Get-AzLocalFleetConnectivityStatus` (the cmdlet that powers the Step.4 fleet-connectivity summary). Reported against a real 20-cluster fleet via the same GitHub Actions Step.4 run on 2026-05-21 that validated the v0.7.83 hotfix. All four are pure read-path correctness fixes; no behavioural changes to writes/state.
+
+**Bug A - `Nodes` column = 0 for every cluster** + `Cluster-reported node count (sum)` = 0 + `Node coverage delta` = -(Arc-joined node count). Root cause: the code read `properties.reportedProperties.nodeCount` which does NOT exist in the Azure Local cluster ARG schema. The correct property is `properties.reportedProperties.nodes` - an ARRAY of node objects. All clusters reported 0 nodes regardless of actual size; the delta math then attributed every Arc-joined node as missing cluster coverage. Fix: `$nodes = Get-NestedProp $r 'properties.reportedProperties.nodes'; $nodeCount = if ($nodes) { @($nodes).Count } else { 0 }`.
+
+**Bug B - `Non-Connected Machines` table `ClusterName` column corrupted to a single character** (cluster `Mobile` -> `e`, `alrs-cc` -> `c`, etc.). Root cause: `CoerceStr (([string]($clusterId -split '/'))[-1])` applied the `[string]` cast to the WHOLE split ARRAY (PowerShell array-to-string coercion joins elements with single spaces), then `[-1]` indexed the resulting joined STRING and returned the last CHARACTER instead of the last array element. **Same bug class as the v0.7.82/v0.7.83 [char].Trim() scalar-collapse.** Fix: drop the `[string]` cast so `[-1]` indexes the split array directly: `$clusterName = if ($clusterId) { CoerceStr (($clusterId -split '/')[-1]) } else { '' }`.
+
+**Bug C - `Azure Resource Bridges` table `DaysSinceLastModified` = -1 for EVERY ARB.** Two root causes: (1) the default ARG `resources` response sometimes omitted/stripped `systemData` so `Get-NestedProp $a 'systemData.lastModifiedAt'` returned `$null` and the code fell through to the `-1` sentinel; (2) Running ARBs were intentionally short-circuited to `-1` as an opaque "N/A" sentinel - confusing because the column header gave no indication that `-1` meant "Running". Fix (1): the ARB KQL now explicitly extends the field with `| extend lastModifiedAt = tostring(systemData.lastModifiedAt)` so the column is guaranteed top-level in the response; the PowerShell read order is `$a.lastModifiedAt` first, fall back to `systemData.lastModifiedAt` if absent (defence in depth). Fix (2): dropped the Running short-circuit so real days is computed for ALL ARBs regardless of status; `-1` is now reserved only for genuinely missing or unparseable timestamps.
+
+A new Pester `Regression v0.7.84` Describe block (10 tests across 3 contexts) backs the fixes with both **static guards** (regex on the source file detecting regression of any individual fix) and **execution tests with realistic mock payloads** (mock `Invoke-AzResourceGraphQuery` with a 3-node `Mobile` cluster, a Disconnected Arc machine with real ARM-ID `parentClusterResourceId`, and Running + Offline ARBs with `systemData.lastModifiedAt` set 5 and 10 days ago - then assert the resulting row values: NodeCount = 3, ClusterName = `'Mobile'`, DaysSinceLastModified approximately 5/10). A negative-control test re-executes the pre-fix `([string]($id -split '/'))[-1]` shape and asserts the result is `'e'` - so if PowerShell ever changes its array-to-string coercion semantics, the regression fires loudly.
+
+The existing v0.7.79 cluster mock fixture used `properties.reportedProperties = @{ nodeCount = 2 }` - the WRONG property name relative to the real ARG schema - which is why unit tests passed for multiple releases despite Bug A being live in production. The fixture has been corrected to use the realistic `nodes = @(...)` array shape so future schema-shape regressions are caught at test time, not production time. This is a textbook case of the recurring "mock fixtures must match real API response schema" lesson; the related `Executable-YAML test strategy` backlog item from the post-v0.7.76 cycle remains open for the broader Step.*.yml inline-script coverage gap. All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.83'` to `'0.7.84'` (no code changes in the YAMLs). **Migration:** no action required for `Install-Module AzLocal.UpdateManagement -Force`; downstream consumers parsing `ArbRows` should treat `-1` exclusively as "timestamp missing / unparseable" (Running ARBs now show real days).
 
 > Previous release notes have moved into [`docs/release-history.md`](docs/release-history.md).
 
@@ -564,7 +574,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.81 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.83** stay above under [`What's New in v0.7.83`](#whats-new-in-v0783).
+The most recent release notes for **v0.7.84** stay above under [`What's New in v0.7.84`](#whats-new-in-v0784).
 
 ---
 

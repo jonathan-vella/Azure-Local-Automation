@@ -5,6 +5,41 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.84] - 2026-05-21
+
+### Fixed
+
+- **HOTFIX: `Get-AzLocalFleetConnectivityStatus` (Step.4 fleet-connectivity summary): 4 correctness bugs surfaced against a real 20-cluster fleet.** Reported via a real GitHub Actions Step.4 run on 2026-05-21 (the same run that surfaced and validated the v0.7.83 hotfix). All four are pure read-path correctness fixes; no behavioural changes to writes/state.
+
+  - **Bug A - `Nodes` column = 0 for every cluster + `Cluster-reported node count (sum)` = 0 + `Node coverage delta` = -(Arc-joined node count).** Root cause: the code read `properties.reportedProperties.nodeCount` which does NOT exist in the Azure Local cluster ARG schema. The correct property is `properties.reportedProperties.nodes` - an ARRAY of node objects. All clusters reported 0 nodes regardless of actual size; the delta math then attributed every Arc-joined node as missing cluster coverage. **Fix:** `$nodes = Get-NestedProp $r 'properties.reportedProperties.nodes'; $nodeCount = if ($nodes) { @($nodes).Count } else { 0 }`.
+
+  - **Bug B - `Non-Connected Machines` table `ClusterName` column corrupted to a single character** (cluster `Mobile` -> `e`, `alrs-cc` -> `c`, etc.). Root cause: `CoerceStr (([string]($clusterId -split '/'))[-1])` applied the `[string]` cast to the WHOLE split ARRAY (PowerShell array-to-string coercion joins elements with single spaces), then `[-1]` indexed the resulting joined STRING and returned the last CHARACTER instead of the last array element. **Same bug class as v0.7.82/v0.7.83 [char].Trim() scalar-collapse.** Fix: drop the `[string]` cast so `[-1]` indexes the split array directly. `$clusterName = if ($clusterId) { CoerceStr (($clusterId -split '/')[-1]) } else { '' }`.
+
+  - **Bug C - `Azure Resource Bridges` table `DaysSinceLastModified` = -1 for EVERY ARB (Running and Offline).** Two root causes:
+    1. The default ARG `resources` response sometimes omitted/stripped `systemData` so `Get-NestedProp $a 'systemData.lastModifiedAt'` returned `$null` -> code fell through to the `-1` sentinel.
+    2. Running ARBs were intentionally short-circuited to `-1` as an opaque "N/A" sentinel - confusing because the column header gave no indication that -1 meant "Running".
+
+    **Fix (1):** the ARB KQL now explicitly extends the field with `| extend lastModifiedAt = tostring(systemData.lastModifiedAt)` so the column is guaranteed top-level. Read order is `$a.lastModifiedAt` first, fall back to `systemData.lastModifiedAt` if absent (defence in depth). **Fix (2):** dropped the Running short-circuit so real days is computed for ALL ARBs regardless of status. `-1` is now reserved only for genuinely missing or unparseable timestamps.
+
+### Added
+
+- Pester `Regression v0.7.84` Describe block (10 tests across 3 contexts) in `Tests/AzLocal.UpdateManagement.Tests.ps1`:
+  - **Static (regex on source) guards** - detect regression of each fix by string-matching the source file: `properties.reportedProperties.nodes` present; `.nodeCount` absent; `($clusterId -split '/')[-1]` present without `[string]` cast on the array; `if ($status -ieq 'Running') { [int]-1 }` short-circuit absent; `extend lastModifiedAt = tostring(systemData.lastModifiedAt)` present in ARB KQL.
+  - **Execution tests with realistic ARG mock payloads** - mock `Invoke-AzResourceGraphQuery` with payloads that mimic the real fleet response (3-node `Mobile` cluster with `reportedProperties.nodes` array, Disconnected Arc machine with real ARM-ID `parentClusterResourceId`, Running + Offline ARBs with `systemData.lastModifiedAt` set 5/10 days ago) and assert: cluster NodeCount = 3 (not 0); NonConnectedMachines[0].ClusterName = `'Mobile'` (not `'e'`); Offline ARB `DaysSinceLastModified` approx 10 (not -1); Running ARB `DaysSinceLastModified` approx 5 (not -1).
+  - **Negative-control** - re-executes the pre-fix `([string]($id -split '/'))[-1]` expression against `/subs/.../clusters/Mobile` and asserts the result is `'e'`. If PowerShell ever changes array-to-string coercion semantics this fires loudly.
+
+### Changed
+
+- **Existing v0.7.79 cluster mock fixture in `Tests/AzLocal.UpdateManagement.Tests.ps1` corrected.** The fixture used `properties.reportedProperties = @{ nodeCount = 2 }` - the WRONG property name relative to the real ARG schema - which is why unit tests passed for multiple releases despite Bug A being live in production. Fixture updated to use the realistic `nodes = @([PSCustomObject]@{ name = 'node1' }, [PSCustomObject]@{ name = 'node2' })` array shape so future schema-shape regressions are caught at test time, not production time. This is a textbook case of the recurring "mock fixtures must match real API response schema" lesson called out in user memory and the post-v0.7.76 backlog.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.83'` to `'0.7.84'`. No code changes in the YAMLs themselves.
+
+### Migration
+
+No action required. `Install-Module AzLocal.UpdateManagement -Force` picks up the fix. Refresh bundled Step.4 and Step.6 YAMLs (which call `Get-AzLocalFleetConnectivityStatus`) with `Copy-AzLocalPipelineExample -Destination <path> -Update` to silence the drift warning. Field semantics changed for one column: `DaysSinceLastModified` for Running ARBs now shows real days instead of `-1`. Downstream consumers parsing the ARB rows should treat `-1` exclusively as "timestamp missing / unparseable".
+
 ## [0.7.83] - 2026-05-21
 
 ### Fixed
