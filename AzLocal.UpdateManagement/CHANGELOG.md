@@ -5,6 +5,31 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.83] - 2026-05-21
+
+### Fixed
+
+- **HOTFIX: Step.4 fleet-connectivity ARB JUnit-XML generation crashed with `Method invocation failed because [System.Char] does not contain a method named 'Trim'`** whenever an Azure Resource Bridge failure case had a single (non-comma-separated) `ClusterId`. The buggy pattern `$clusterIdList = if ($r.ClusterId) { @(($r.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }; $clusterIdList[0].Trim()` (introduced in v0.7.82 with the multi-cluster-RG ARB handling) hits a PowerShell collection-unwrap gotcha: when `Where-Object` yields a single scalar string, the `@()` wrap is silently undone by the if-as-expression, `$clusterIdList` collapses to a bare `[string]`, indexing returns `[char]`, and `.Trim()` throws. Multi-cluster RG ARBs (comma-separated `ClusterId`) work fine, which is why this only surfaced in production against a real customer fleet. Reported via a real GitHub Actions Step.4 run on 2026-05-21.
+- Fix applied to both Step.4 YAMLs (`github-actions/Step.4_fleet-connectivity-status.yml` and `azure-devops/Step.4_fleet-connectivity-status.yml`):
+  - `[string[]]$clusterIdList = if ($r.ClusterId) { ($r.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }` - the cast forces array shape regardless of element count.
+  - `$primaryClusterId = if ($clusterIdList.Count -gt 0) { ([string]$clusterIdList[0]).Trim() } else { '' }` - belt-and-suspenders `[string]` cast at the indexing site so the fix survives future refactors that might drop the variable cast.
+- **Defence in depth:** the same `if-@-else-@()` shape existed twice more per file in the orphan-ARB reconciliation block (the `$arbByClusterId` lookup loop and the `$orphanArbs` filter). Both used `foreach ($id in $ids) { ... $id.Trim() ... }` which is **safe-by-accident** (when `$ids` is a bare `[string]`, `foreach` iterates the whole string once as a scalar, so `$id.Trim()` works). Both call sites are now also `[string[]]`-cast so a future refactor to `$ids[0].Trim()` will not silently regress.
+
+### Added
+
+- Pester regression block `Regression v0.7.83: Step.4 ARB inline script handles single-cluster ClusterId without [char].Trim() bug` in `Tests/AzLocal.UpdateManagement.Tests.ps1`. Nine tests:
+  - **Static (4):** regex on YAML content to confirm both YAMLs ship `[string[]]$clusterIdList`, both YAMLs ship `([string]$clusterIdList[0]).Trim()`, both YAMLs ship two `[string[]]$ids` casts (the orphan-ARB sites), and neither YAML contains the unwrapped `$clusterIdList = if (` or `$ids = if (` pattern (v0.7.82 regression guard).
+  - **Dynamic (5):** re-execute the exact two-line buggy pattern against single-cluster `ClusterId`, comma-separated multi-cluster `ClusterId`, null `ClusterId`, and empty-string `ClusterId`. The single-cluster test is the direct regression guard for the v0.7.82 bug. A fifth **negative-control** dynamic test asserts that the **pre-fix** `if-@-else-@()` shape **still throws** `does not contain a method named 'Trim'` on single-cluster input - so if PowerShell's collection-unwrap semantics ever change, this test fails loudly and forces re-evaluation of the cast strategy.
+- Identifies a broader test gap: Step.4 (and all Step.*.yml) inline `run: |` PowerShell scripts are tested by string-match (`Should -Match`) only, NEVER by parser/execution. The customer hit a runtime exception in YAML script body that NO existing test would have caught. Tracked as backlog item `Executable-YAML test strategy` for a future release (extract `run: |` blocks into sibling `Step.X_*.ps1` files that the YAML dot-sources, then Pester dot-sources the same `.ps1` against a mocked `$data` payload).
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.82'` to `'0.7.83'`. No code changes in any non-Step.4 YAML; the pin is drift-detection only.
+
+### Migration
+
+No action required. The next pipeline run that does `Install-Module AzLocal.UpdateManagement -Force` will pick up v0.7.83 from PSGallery and the fixed inline Step.4 script. Operators with a vendored copy of the pipeline-examples folder should run `Copy-AzLocalPipelineExample -Destination <path> -Update` to refresh both Step.4 YAMLs.
+
 ## [0.7.82] - 2026-05-21
 
 ### Added

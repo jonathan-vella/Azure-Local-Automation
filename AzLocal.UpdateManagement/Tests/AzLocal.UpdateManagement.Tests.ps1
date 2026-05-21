@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.82' {
-            $script:ModuleInfo.Version | Should -Be '0.7.82'
+        It 'Should have version 0.7.83' {
+            $script:ModuleInfo.Version | Should -Be '0.7.83'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -8732,6 +8732,112 @@ Describe 'Smoke test: Step.4 pipeline cmdlet migration (v0.7.79)' {
     It 'Step.4 ADO does not contain inline Invoke-ArgQuery' {
         $content = Get-Content -LiteralPath $script:step4Files[1] -Raw
         $content | Should -Not -Match 'function Invoke-ArgQuery' -Because 'Inline ARG query helper removed in v0.7.79 migration'
+    }
+}
+
+Describe 'Regression v0.7.83: Step.4 ARB inline script handles single-cluster ClusterId without [char].Trim() bug' {
+    # v0.7.82 shipped a Step.4 ARB Add-Suite -GetCase block that called
+    # $clusterIdList[0].Trim() where $clusterIdList was built via
+    # `if ($r.ClusterId) { @(($r.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }`.
+    # When $r.ClusterId is a SINGLE non-empty string (the common single-
+    # cluster-per-RG case), Where-Object collapses to a scalar, the @() wrap
+    # is undone by the if-as-expression, and $clusterIdList becomes a bare
+    # [string]. Indexing then yields [char], whose .Trim() throws:
+    #   "Method invocation failed because [System.Char] does not contain a method named 'Trim'."
+    #
+    # v0.7.83 fix: [string[]] cast on the variable + [string] cast at the
+    # indexing site. The same pattern existed twice more in the file (orphan-
+    # ARB reconciliation block) and was hardened too.
+    #
+    # These tests are BOTH static (regex on the YAML content) and dynamic
+    # (executing the exact two-line pattern against synthetic ClusterId
+    # values that exercise single-cluster, multi-cluster, and null cases).
+
+    BeforeAll {
+        $script:repoRoot = Split-Path -Path $PSScriptRoot -Parent
+        $script:step4Cases = @(
+            @{ Platform = 'github-actions'; Path = (Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/github-actions/Step.4_fleet-connectivity-status.yml') }
+            @{ Platform = 'azure-devops';   Path = (Join-Path -Path $script:repoRoot -ChildPath 'Automation-Pipeline-Examples/azure-devops/Step.4_fleet-connectivity-status.yml') }
+        )
+    }
+
+    It 'Step.4 [<Platform>] casts $clusterIdList to [string[]] in the ARB Add-Suite block' -ForEach $script:step4Cases {
+        $content = Get-Content -LiteralPath $Path -Raw
+        $content | Should -Match '\[string\[\]\]\$clusterIdList = if \(\$r\.ClusterId\)' `
+            -Because "Step.4 $Platform must cast `$clusterIdList to [string[]] to prevent the v0.7.82 [char].Trim() bug on single-cluster ClusterId"
+    }
+
+    It 'Step.4 [<Platform>] casts $clusterIdList[0] to [string] before .Trim() (belt-and-suspenders)' -ForEach $script:step4Cases {
+        $content = Get-Content -LiteralPath $Path -Raw
+        $content | Should -Match '\(\[string\]\$clusterIdList\[0\]\)\.Trim\(\)' `
+            -Because "Step.4 $Platform must cast `$clusterIdList[0] to [string] before .Trim() as defence-in-depth"
+    }
+
+    It 'Step.4 [<Platform>] casts $ids to [string[]] in BOTH orphan-ARB reconciliation sites' -ForEach $script:step4Cases {
+        $content = Get-Content -LiteralPath $Path -Raw
+        # Expect the cast in: (a) arbByClusterId lookup loop, (b) orphanArbs filter
+        $castOccurrences = [regex]::Matches($content, '\[string\[\]\]\$ids = if \(').Count
+        $castOccurrences | Should -BeGreaterOrEqual 2 `
+            -Because "Step.4 $Platform must cast `$ids to [string[]] in both the arbByClusterId loop and orphanArbs filter (currently safe due to foreach scalar-iteration semantics, but brittle to refactor)"
+    }
+
+    It 'Step.4 [<Platform>] does NOT contain the unwrapped v0.7.82 buggy pattern' -ForEach $script:step4Cases {
+        $content = Get-Content -LiteralPath $Path -Raw
+        # The buggy shape is `$x = if (...) { @(... | Where-Object {...}) } else { @() }` without a [string[]] prefix.
+        # Match the bare `$clusterIdList = if (` or `$ids = if (` (no cast).
+        $content | Should -Not -Match '(?m)^\s*\$clusterIdList = if \(' `
+            -Because "Step.4 $Platform must not regress to the unwrapped `$clusterIdList = if-@-else pattern (v0.7.82 bug)"
+        $content | Should -Not -Match '(?m)^\s*\$ids = if \(' `
+            -Because "Step.4 $Platform must not regress to the unwrapped `$ids = if-@-else pattern (v0.7.82 bug)"
+    }
+
+    It 'Execute: single-cluster ClusterId does not throw [char].Trim()' {
+        # Direct re-execution of the exact two lines that v0.7.83 ships.
+        # This is the regression guard: if anyone strips the [string[]] cast
+        # in a future refactor, this test fails immediately rather than waiting
+        # for a customer to run Step.4 against a single-cluster ARB row.
+        $r = [PSCustomObject]@{ ClusterId = '/subscriptions/abc/resourceGroups/rg/providers/Microsoft.AzureStackHCI/clusters/HCI01' }
+        $err = $null
+        try {
+            [string[]]$clusterIdList = if ($r.ClusterId) { ($r.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }
+            $primaryClusterId = if ($clusterIdList.Count -gt 0) { ([string]$clusterIdList[0]).Trim() } else { '' }
+        } catch { $err = $_ }
+        $err | Should -BeNullOrEmpty -Because 'The v0.7.83 fix must not throw on a single-cluster ClusterId'
+        $primaryClusterId | Should -Be $r.ClusterId
+    }
+
+    It 'Execute: comma-separated multi-cluster ClusterId yields both IDs trimmed' {
+        $r = [PSCustomObject]@{ ClusterId = '/subs/x/A, /subs/x/B' }
+        [string[]]$clusterIdList = if ($r.ClusterId) { ($r.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }
+        $clusterIdList.Count | Should -Be 2
+        ([string]$clusterIdList[0]).Trim() | Should -Be '/subs/x/A'
+        ([string]$clusterIdList[1]).Trim() | Should -Be '/subs/x/B'
+    }
+
+    It 'Execute: null ClusterId yields empty primary without throwing' {
+        $r = [PSCustomObject]@{ ClusterId = $null }
+        [string[]]$clusterIdList = if ($r.ClusterId) { ($r.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }
+        $primaryClusterId = if ($clusterIdList.Count -gt 0) { ([string]$clusterIdList[0]).Trim() } else { '' }
+        $primaryClusterId | Should -Be ''
+    }
+
+    It 'Execute: empty-string ClusterId yields empty primary without throwing' {
+        $r = [PSCustomObject]@{ ClusterId = '' }
+        [string[]]$clusterIdList = if ($r.ClusterId) { ($r.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }
+        $primaryClusterId = if ($clusterIdList.Count -gt 0) { ([string]$clusterIdList[0]).Trim() } else { '' }
+        $primaryClusterId | Should -Be ''
+    }
+
+    It 'Execute (REGRESSION): the v0.7.82 unwrapped pattern DOES throw on single-cluster ClusterId' {
+        # Negative-control: prove the bug still exists in the unwrapped pattern.
+        # If this test ever passes without throwing, PowerShell's collection-
+        # unwrap semantics may have changed and the [string[]] cast might no
+        # longer be needed (it remains good defensive style either way).
+        $r = [PSCustomObject]@{ ClusterId = '/subscriptions/abc/clusterA' }
+        $clusterIdList = if ($r.ClusterId) { @(($r.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }
+        # On PS 5.1 and PS 7+, $clusterIdList collapses to [string] here.
+        # $clusterIdList[0] is [char]; .Trim() must throw.
+        { $clusterIdList[0].Trim() } | Should -Throw '*does not contain a method named*'
     }
 }
 

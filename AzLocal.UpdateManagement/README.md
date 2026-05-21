@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.82 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.82)
+**Latest Version:** v0.7.83 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.83)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.82](#whats-new-in-v0782)
+- [What's New in v0.7.83](#whats-new-in-v0783)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,9 +86,9 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.82
+## What's New in v0.7.83
 
-v0.7.82 is a small follow-up to v0.7.81 that packages the custom RBAC role definition as a **bundled JSON file** so operators no longer need to copy-paste the JSON from the README. The new file `Automation-Pipeline-Examples/azlocal-update-management-custom-role.json` contains the canonical `Azure Stack HCI Update Operator` role definition (13 actions: the 12 used by current cmdlets plus `Microsoft.HybridCompute/machines/extensions/read` reserved for future Arc-machine extension reporting so the role does not need updating again when that feature lands), and can be downloaded directly from the repo via `curl` / `Invoke-WebRequest` against the raw.githubusercontent.com URL, or copied into a target repo as part of the pipeline-examples folder via `Copy-AzLocalPipelineExample -Destination ...`. Replace the `<your-subscription-id>` placeholder in `AssignableScopes` before running `az role definition create --role-definition ./azlocal-update-management-custom-role.json`. `Automation-Pipeline-Examples/README.md` Section 4.1 now points at the bundled file as the first install path; the inline JSON copy remains for readers who prefer copy-paste over download, and a new callout in Section 4.1 (and the parallel section in `docs/rbac.md`) explains the difference between the **CLI / PowerShell** JSON shape used by `az role definition create` / `update` and the **Azure portal Edit-a-custom-role JSON tab** shape (ARM resource representation), so operators do not hit `Malformed JSON: "properties" property not present` when pasting into the portal. The same callout also flags a **UTF-8 BOM gotcha**: `az`'s Python JSON parser rejects BOM-prefixed files with `Expecting value: line 1 column 1 (char 0)`; the shipped file is BOM-free, and the callout shows how to verify and strip a BOM if a re-save (e.g. `Out-File`, Notepad `Save As -> UTF-8`) inadvertently added one. All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.81'` to `'0.7.82'` (drift-detection pin only - no code change in the YAMLs).
+v0.7.83 is a **HOTFIX** for a runtime crash in the Step.4 fleet-connectivity ARB JUnit-XML generation that shipped in v0.7.82. When an Azure Resource Bridge failure case had a single (non-comma-separated) `ClusterId`, the inline script blew up with `Method invocation failed because [System.Char] does not contain a method named 'Trim'`. The buggy two-line pattern `$clusterIdList = if ($r.ClusterId) { @(($r.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }; $clusterIdList[0].Trim()` hits a PowerShell collection-unwrap gotcha: when `Where-Object` yields a single scalar, the `@()` wrap is silently undone by the `if`-as-expression, `$clusterIdList` collapses to a bare `[string]`, indexing returns `[char]`, and `.Trim()` throws at runtime. Multi-cluster RG ARBs (comma-separated `ClusterId`) were unaffected, which is why this only surfaced in production against a real customer fleet on 2026-05-21. Fixed in both Step.4 YAMLs (`github-actions/` and `azure-devops/`) by adding a `[string[]]` cast on `$clusterIdList` (which forces array shape regardless of element count) plus a defence-in-depth `[string]` cast at the `[0]` indexing site. The same `if-@-else-@()` shape existed twice more per file in the orphan-ARB reconciliation block (safe-by-accident due to `foreach` scalar iteration, but brittle); both call sites are now also `[string[]]`-cast. A new Pester regression block `Regression v0.7.83: Step.4 ARB inline script handles single-cluster ClusterId without [char].Trim() bug` (9 tests) re-executes the exact buggy pattern against single-cluster, multi-cluster, null, and empty `ClusterId` payloads, plus a negative-control test that proves the pre-fix shape still throws. All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.82'` to `'0.7.83'` (no code changes outside Step.4). The bug surfaced a broader test gap: Step.*.yml inline `run: |` PowerShell scripts are tested by string-match only - tracked in the post-v0.7.76 backlog as `Executable-YAML test strategy` for a future release.
 
 > Previous release notes have moved into [`docs/release-history.md`](docs/release-history.md).
 
@@ -564,7 +564,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.81 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.82** stay above under [`What's New in v0.7.82`](#whats-new-in-v0782).
+The most recent release notes for **v0.7.83** stay above under [`What's New in v0.7.83`](#whats-new-in-v0783).
 
 ---
 
