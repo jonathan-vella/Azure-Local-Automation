@@ -234,6 +234,9 @@
   Azure portal `Edit a custom role` JSON tab (ARM `properties`-wrapped
   shape) - prevents `Malformed JSON: "properties" property not present`
   in the portal.
+- Same callout also flags a UTF-8 BOM gotcha: `az`'s Python JSON parser
+  rejects BOM-prefixed files with `Expecting value: line 1 column 1
+  (char 0)`. The shipped file is BOM-free.
 
 ### Pipeline pin bumps
 
@@ -293,16 +296,8 @@ definition and the bundled YAML pin.
 
 ## Version 0.7.79 - Step.5 default schedule enabled
 
-### Changed
-
-- Step.5 `assess-update-readiness` (GitHub Actions + Azure DevOps) now runs
-  daily at 07:00 UTC by default. Previously the schedule block was commented
-  out, requiring manual enablement after install.
-
-### Pipeline pin bumps
-
-- Bundled `Step.{0..8}.yml` templates bump
-  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.78'` to `'0.7.79'`.
+For full v0.7.79 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.78 - Step.4 blank-field regression fix
 
