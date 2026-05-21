@@ -5,6 +5,24 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.82] - 2026-05-21
+
+### Added
+
+- **Bundled custom-role JSON artifact.** New file `Automation-Pipeline-Examples/azlocal-update-management-custom-role.json` packages the canonical `Azure Stack HCI Update Operator` role definition (13 actions: the 12 used by current cmdlets plus `Microsoft.HybridCompute/machines/extensions/read`, reserved for future Arc-machine extension reporting so the role does not need updating again when that feature lands) so operators no longer need to copy-paste the JSON from the README. Download it directly from the repo with `curl` / `Invoke-WebRequest` against the raw.githubusercontent.com URL, or run `Copy-AzLocalPipelineExample -Destination <path>` to copy the entire pipeline-examples folder (including this file) into a target repo. Replace the `<your-subscription-id>` placeholder in `AssignableScopes` before running `az role definition create --role-definition ./azlocal-update-management-custom-role.json`. Content matches `docs/rbac.md` verbatim, including the long-form Description text covering the Step.4 fleet-connectivity scopes.
+
+### Changed (documentation)
+
+- `Automation-Pipeline-Examples/README.md` Section 4.1 now leads with a paragraph pointing operators at the bundled JSON file as the recommended install path (download or `Copy-AzLocalPipelineExample`), with the inline JSON code block and inline here-string retained for readers who prefer copy-paste over download.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.81'` to `'0.7.82'`. No code changes in the YAMLs; the pin is drift-detection only.
+
+### Migration
+
+No action required. If you already created the custom role from inline JSON in the README, no rework is needed - the bundled file's content is byte-identical to the v0.7.81 inline block. For new installs, prefer the bundled file path: `(Get-Content ./azlocal-update-management-custom-role.json -Raw) -replace '<your-subscription-id>', $subId | Set-Content ./azlocal-update-management-custom-role.json -Encoding UTF8; az role definition create --role-definition ./azlocal-update-management-custom-role.json`.
+
 ## [0.7.81] - 2026-05-21
 
 ### Changed (documentation)

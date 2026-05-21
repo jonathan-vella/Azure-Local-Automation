@@ -31,6 +31,7 @@ The following permissions are required for update + fleet-connectivity operation
 | Query clusters (Resource Graph) | `Microsoft.ResourceGraph/resources/read` |
 | **Read/Write tags** | `Microsoft.Resources/tags/read`, `Microsoft.Resources/tags/write` |
 | Read Arc machine agent status (Step.4) | `Microsoft.HybridCompute/machines/read` |
+| Read Arc machine extensions (reserved for future extension reporting) | `Microsoft.HybridCompute/machines/extensions/read` |
 | Read physical NIC inventory via edge devices (Step.4) | `Microsoft.AzureStackHCI/edgeDevices/read` |
 | Read Azure Resource Bridge appliance status (Step.4) | `Microsoft.ResourceConnector/appliances/read` |
 
@@ -61,6 +62,7 @@ If you need a least-privilege custom role specifically for update operations:
     "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.AzureStackHCI/edgeDevices/read",
     "Microsoft.HybridCompute/machines/read",
+    "Microsoft.HybridCompute/machines/extensions/read",
     "Microsoft.ResourceConnector/appliances/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
@@ -107,6 +109,7 @@ az role definition create --role-definition ./azlocal-update-management-custom-r
     "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.AzureStackHCI/edgeDevices/read",
     "Microsoft.HybridCompute/machines/read",
+    "Microsoft.HybridCompute/machines/extensions/read",
     "Microsoft.ResourceConnector/appliances/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",

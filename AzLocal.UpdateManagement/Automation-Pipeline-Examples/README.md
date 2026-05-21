@@ -582,6 +582,7 @@ The identity created in section 3 needs the following permissions on every subsc
 | `Microsoft.AzureStackHCI/clusters/updates/updateRuns/read` | Apply Updates, Fleet Update Status. |
 | `Microsoft.AzureStackHCI/edgeDevices/read` | Fleet Connectivity Status (Step.4 - physical NIC inventory). |
 | `Microsoft.HybridCompute/machines/read` | Fleet Connectivity Status (Step.4 - Arc agent inventory). |
+| `Microsoft.HybridCompute/machines/extensions/read` | Reserved for future Arc-machine extension reporting (no current cmdlet queries this, but bundled to avoid a follow-up role update). |
 | `Microsoft.ResourceConnector/appliances/read` | Fleet Connectivity Status (Step.4 - Azure Resource Bridges). |
 | `Microsoft.ResourceGraph/resources/read` | All pipelines (Resource Graph lookups). |
 | `Microsoft.Resources/subscriptions/resourceGroups/read` | All pipelines (resolve cluster scopes). |
@@ -595,6 +596,8 @@ If you opt in to the ITSM connector with Key Vault-sourced secrets, the identity
 ### 4.1 Custom role: `Azure Stack HCI Update Operator`
 
 This is the least-privilege role that supports every pipeline in this folder. The same definition is documented in the module-level [`AzLocal.UpdateManagement/README.md`](../README.md#permissions-required-for-update-operations) and is reproduced here so this folder is self-contained.
+
+> **The role definition JSON is bundled with the module** at [`./azlocal-update-management-custom-role.json`](./azlocal-update-management-custom-role.json). Download it directly from the repo with `curl` / `Invoke-WebRequest` against the [raw URL](https://raw.githubusercontent.com/NeilBird/Azure-Local/main/AzLocal.UpdateManagement/Automation-Pipeline-Examples/azlocal-update-management-custom-role.json), or run `Copy-AzLocalPipelineExample -Destination <path>` to copy the entire pipeline-examples folder (including this file) into your target repo. Then jump straight to **Create the role** below to substitute the subscription ID and create. The inline JSON block immediately below is the same content for readers who prefer copy-paste.
 
 **Role definition (`azlocal-update-management-custom-role.json`):**
 
@@ -611,6 +614,7 @@ This is the least-privilege role that supports every pipeline in this folder. Th
     "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.AzureStackHCI/edgeDevices/read",
     "Microsoft.HybridCompute/machines/read",
+    "Microsoft.HybridCompute/machines/extensions/read",
     "Microsoft.ResourceConnector/appliances/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
@@ -675,6 +679,7 @@ az role definition create --role-definition ./azlocal-update-management-custom-r
     "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.AzureStackHCI/edgeDevices/read",
     "Microsoft.HybridCompute/machines/read",
+    "Microsoft.HybridCompute/machines/extensions/read",
     "Microsoft.ResourceConnector/appliances/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
