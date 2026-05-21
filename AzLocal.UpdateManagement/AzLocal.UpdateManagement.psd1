@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.81'
+    ModuleVersion = '0.7.82'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -207,6 +207,43 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.82 - Bundled custom-role JSON artifact
+
+### Added
+
+- New file `Automation-Pipeline-Examples/azlocal-update-management-custom-role.json`
+  bundled with the module. Operators can download it directly from the
+  repo (`curl` / `Invoke-WebRequest` against the raw.githubusercontent.com
+  URL), or run `Copy-AzLocalPipelineExample -Destination ...` which copies
+  the entire pipeline-examples folder including this file into a target
+  repo. Content matches the canonical role definition in `docs/rbac.md`
+  verbatim (13 actions including the three Step.4 reads added in v0.7.80
+  plus `Microsoft.HybridCompute/machines/extensions/read` reserved for
+  future Arc-machine extension reporting). Replace the
+  `<your-subscription-id>` placeholder in `AssignableScopes` before
+  running `az role definition create`.
+
+### Changed (documentation)
+
+- `Automation-Pipeline-Examples/README.md` Section 4.1 now points to the
+  bundled JSON file as the first install path. The inline JSON copy and
+  the inline here-string remain for readers who prefer copy-paste over
+  download.
+- New callout in Section 4.1 and `docs/rbac.md` flagging the JSON-shape
+  difference between the bundled file (CLI/PowerShell format) and the
+  Azure portal `Edit a custom role` JSON tab (ARM `properties`-wrapped
+  shape) - prevents `Malformed JSON: "properties" property not present`
+  in the portal.
+- Same callout also flags a UTF-8 BOM gotcha: `az`'s Python JSON parser
+  rejects BOM-prefixed files with `Expecting value: line 1 column 1
+  (char 0)`. The shipped file is BOM-free.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates bump
+  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.81'` to `'0.7.82'`.
+  No code changes in the YAMLs.
+
 ## Version 0.7.81 - Pipeline RBAC guidance: custom role first
 
 ### Changed (documentation)
@@ -259,56 +296,18 @@ definition and the bundled YAML pin.
 
 ## Version 0.7.79 - Step.5 default schedule enabled
 
-### Changed
-
-- Step.5 `assess-update-readiness` (GitHub Actions + Azure DevOps) now runs
-  daily at 07:00 UTC by default. Previously the schedule block was commented
-  out, requiring manual enablement after install.
-
-### Pipeline pin bumps
-
-- Bundled `Step.{0..8}.yml` templates bump
-  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.78'` to `'0.7.79'`.
+For full v0.7.79 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.78 - Step.4 blank-field regression fix
 
-### Fixed
-
-- Step.4 `fleet-connectivity-status` (GitHub Actions + Azure DevOps)
-  no longer emits blank key fields while still showing non-zero counts.
-  `Invoke-ArgQuery` now normalizes both ARG response shapes
-  (`data: [{...}]` and `columns + data: [[...]]`) into object rows.
-- Step.4 KQL projections now use `coalesce(...)` for key identity/status
-  fields (`ClusterName`, `AgentStatus`, `NicName`, `ArbName`) so markdown
-  and JUnit output stay populated even when upstream payloads are partial.
-- Step.4 JSON artifact export depth increased from `6` to `20`.
-
-### Pipeline pin bumps
-
-- Bundled `Step.{0..8}.yml` templates bump
-  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.77'` to `'0.7.78'`.
+For full v0.7.78 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.77 - Step.4 fleet-connectivity hotfix (ARG JSON parse hardening)
 
-### Fixed
-
-- **Step.4 `fleet-connectivity-status` (GitHub Actions + Azure DevOps):**
-  `Invoke-ArgQuery` no longer merges az CLI stderr into stdout before
-  `ConvertFrom-Json`. Some runs emitted warning text (notably around
-  `extensibilityresources`) that prefixed the JSON payload and caused
-  `ConvertFrom-Json` failures with `Unexpected character encountered while
-  parsing value: W`.
-- Query execution now uses `--only-show-errors` and captures stderr to a
-  temp file (`2> $errFile`) so warning noise cannot corrupt JSON parsing.
-- Parsed stdout is normalized with `($raw -join "`n").Trim()` before
-  `ConvertFrom-Json`, and non-zero az exit paths now surface stderr text
-  directly.
-
-### Pipeline pin bumps
-
-- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure
-  DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.76'` to
-  `'0.7.77'`.
+For full v0.7.77 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.76 - Renamed to -AzLocal* + quality hardening
 

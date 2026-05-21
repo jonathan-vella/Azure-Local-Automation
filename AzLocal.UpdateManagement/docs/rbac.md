@@ -31,6 +31,7 @@ The following permissions are required for update + fleet-connectivity operation
 | Query clusters (Resource Graph) | `Microsoft.ResourceGraph/resources/read` |
 | **Read/Write tags** | `Microsoft.Resources/tags/read`, `Microsoft.Resources/tags/write` |
 | Read Arc machine agent status (Step.4) | `Microsoft.HybridCompute/machines/read` |
+| Read Arc machine extensions (reserved for future extension reporting) | `Microsoft.HybridCompute/machines/extensions/read` |
 | Read physical NIC inventory via edge devices (Step.4) | `Microsoft.AzureStackHCI/edgeDevices/read` |
 | Read Azure Resource Bridge appliance status (Step.4) | `Microsoft.ResourceConnector/appliances/read` |
 
@@ -48,6 +49,10 @@ The following permissions are required for update + fleet-connectivity operation
 
 If you need a least-privilege custom role specifically for update operations:
 
+> **JSON format - CLI/PowerShell vs Portal "JSON tab":** The role definition below is in the **CLI / PowerShell format** (top-level `Name`, `IsCustom`, `Actions`, `AssignableScopes`) - the shape consumed by `az role definition create` / `update` and `New-AzRoleDefinition`. The Azure portal's **Edit a custom role -> JSON tab** uses a different shape (the ARM resource representation, wrapped in `properties` with lowercase camelCase and `actions` nested under `permissions[0]`). Pasting this JSON into the portal JSON tab will fail with `Malformed JSON: "properties" property not present or value is null`. To update an existing role from the portal, use the **Permissions** tab (add or remove the actions there) instead of the JSON tab, or run `az role definition create` / `update --role-definition <file>` from a shell.
+
+> **UTF-8 BOM gotcha (`az` CLI):** `az role definition create` / `update` uses Python's `json` parser, which rejects files that start with a UTF-8 BOM and fails with `Failed to parse string as JSON ... Expecting value: line 1 column 1 (char 0)`. If you copy the JSON below into a file via Windows PowerShell `Out-File` / `Set-Content` / `>` redirection, or Notepad `Save As -> UTF-8`, the file may pick up a BOM. Verify with `'{0:X2}' -f [IO.File]::ReadAllBytes($f)[0]` (expect `7B` for `{`, not `EF`). To strip a BOM in place: `[IO.File]::WriteAllText($f, [IO.File]::ReadAllText($f, [Text.UTF8Encoding]::new($false)), [Text.UTF8Encoding]::new($false))`. The bundled file at [`Automation-Pipeline-Examples/azlocal-update-management-custom-role.json`](../Automation-Pipeline-Examples/azlocal-update-management-custom-role.json) ships BOM-free.
+
 ```json
 {
   "Name": "Azure Stack HCI Update Operator",
@@ -61,6 +66,7 @@ If you need a least-privilege custom role specifically for update operations:
     "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.AzureStackHCI/edgeDevices/read",
     "Microsoft.HybridCompute/machines/read",
+    "Microsoft.HybridCompute/machines/extensions/read",
     "Microsoft.ResourceConnector/appliances/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",
@@ -107,6 +113,7 @@ az role definition create --role-definition ./azlocal-update-management-custom-r
     "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
     "Microsoft.AzureStackHCI/edgeDevices/read",
     "Microsoft.HybridCompute/machines/read",
+    "Microsoft.HybridCompute/machines/extensions/read",
     "Microsoft.ResourceConnector/appliances/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.ResourceGraph/resources/read",

@@ -5,6 +5,26 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.82] - 2026-05-21
+
+### Added
+
+- **Bundled custom-role JSON artifact.** New file `Automation-Pipeline-Examples/azlocal-update-management-custom-role.json` packages the canonical `Azure Stack HCI Update Operator` role definition (13 actions: the 12 used by current cmdlets plus `Microsoft.HybridCompute/machines/extensions/read`, reserved for future Arc-machine extension reporting so the role does not need updating again when that feature lands) so operators no longer need to copy-paste the JSON from the README. Download it directly from the repo with `curl` / `Invoke-WebRequest` against the raw.githubusercontent.com URL, or run `Copy-AzLocalPipelineExample -Destination <path>` to copy the entire pipeline-examples folder (including this file) into a target repo. Replace the `<your-subscription-id>` placeholder in `AssignableScopes` before running `az role definition create --role-definition ./azlocal-update-management-custom-role.json`. Content matches `docs/rbac.md` verbatim, including the long-form Description text covering the Step.4 fleet-connectivity scopes.
+
+### Changed (documentation)
+
+- `Automation-Pipeline-Examples/README.md` Section 4.1 now leads with a paragraph pointing operators at the bundled JSON file as the recommended install path (download or `Copy-AzLocalPipelineExample`), with the inline JSON code block and inline here-string retained for readers who prefer copy-paste over download.
+- New callout in Section 4.1 (and the parallel section in `docs/rbac.md`) explains the difference between the **CLI / PowerShell** JSON shape (top-level `Name`, `IsCustom`, `Actions`) used by `az role definition create` / `update` and `New-AzRoleDefinition`, and the **Azure portal Edit-a-custom-role JSON tab** shape (ARM resource representation, wrapped in `properties` with `actions` nested under `permissions[0]`). Pasting the bundled file into the portal JSON tab fails with `Malformed JSON: "properties" property not present`; the callout steers operators to the Permissions tab or to `az role definition update --role-definition <file>` instead.
+- The same callout also flags a **UTF-8 BOM gotcha**: `az role definition create` / `update` uses Python's `json` parser, which rejects files that start with a UTF-8 BOM and fails with `Failed to parse string as JSON ... Expecting value: line 1 column 1 (char 0)`. The shipped `azlocal-update-management-custom-role.json` is BOM-free, but re-saving it via Windows PowerShell `Out-File` / `Set-Content` / `>` redirection, or Notepad `Save As -> UTF-8`, can add a BOM. The callout shows how to verify (`'{0:X2}' -f [IO.File]::ReadAllBytes($f)[0]` should return `7B`, not `EF`), how to strip a BOM in place with `[IO.File]::WriteAllText($f, [IO.File]::ReadAllText($f, [Text.UTF8Encoding]::new($false)), [Text.UTF8Encoding]::new($false))`, and how to download the raw file without re-encoding via `[IO.File]::WriteAllBytes($dst, (Invoke-WebRequest -Uri $rawUrl -UseBasicParsing).Content)`.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.81'` to `'0.7.82'`. No code changes in the YAMLs; the pin is drift-detection only.
+
+### Migration
+
+No action required. If you already created the custom role from inline JSON in the README, no rework is needed - the bundled file's content is byte-identical to the v0.7.81 inline block. For new installs, prefer the bundled file path: `(Get-Content ./azlocal-update-management-custom-role.json -Raw) -replace '<your-subscription-id>', $subId | Set-Content ./azlocal-update-management-custom-role.json -Encoding UTF8; az role definition create --role-definition ./azlocal-update-management-custom-role.json`.
+
 ## [0.7.81] - 2026-05-21
 
 ### Changed (documentation)

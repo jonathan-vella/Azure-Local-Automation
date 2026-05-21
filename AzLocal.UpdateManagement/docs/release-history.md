@@ -4,9 +4,13 @@
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
 >
-> **For v0.7.81 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0781) `What's New in v0.7.81` section.
+> **For v0.7.82 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0782) `What's New in v0.7.82` section.
 
 ---
+
+### What's New in v0.7.81
+
+v0.7.81 was a documentation-only release focused on the CI/CD permission guidance. The previous `Automation-Pipeline-Examples/README.md` presented the least-privilege custom role (`Azure Stack HCI Update Operator`) and the built-in `Azure Stack HCI Administrator` role as roughly equal "Option A / Option B" choices, biasing readers toward the over-permissive built-in role for labs. v0.7.81 pivoted every permission code path to custom-role-first for every environment; the built-in role was framed as a temporary fallback for tenants where the operator cannot create custom roles, hidden behind `<details>` / commented-out alternatives. Sections 3.1 Step 2, 3.2 (ADO), 3.3 (Managed Identity), 3.4 (SP+secret), section 4 intro, section 4.2 and section 11 were reframed; section 4.1 gained an expanded `Migration tip (built-in -> custom role, no downtime)` block including the `az role assignment delete` cleanup command. All 18 bundled `Step.{0..8}.yml` templates bumped `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.80'` to `'0.7.81'`. No module code changes.
 
 ### What's New in v0.7.80
 

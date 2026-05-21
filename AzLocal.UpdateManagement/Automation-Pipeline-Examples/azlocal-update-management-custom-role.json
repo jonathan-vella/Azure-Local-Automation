@@ -1,0 +1,26 @@
+{
+  "Name": "Azure Stack HCI Update Operator",
+  "IsCustom": true,
+  "Description": "Can view and apply updates on Azure Local clusters, manage UpdateRing tags, and read the fleet-connectivity scopes (Arc machines, edge-device NICs, Azure Resource Bridges) required by Step.4.",
+  "Actions": [
+    "Microsoft.AzureStackHCI/clusters/read",
+    "Microsoft.AzureStackHCI/clusters/updateSummaries/read",
+    "Microsoft.AzureStackHCI/clusters/updates/read",
+    "Microsoft.AzureStackHCI/clusters/updates/apply/action",
+    "Microsoft.AzureStackHCI/clusters/updates/updateRuns/read",
+    "Microsoft.AzureStackHCI/edgeDevices/read",
+    "Microsoft.HybridCompute/machines/read",
+    "Microsoft.HybridCompute/machines/extensions/read",
+    "Microsoft.ResourceConnector/appliances/read",
+    "Microsoft.Resources/subscriptions/resourceGroups/read",
+    "Microsoft.ResourceGraph/resources/read",
+    "Microsoft.Resources/tags/read",
+    "Microsoft.Resources/tags/write"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/<your-subscription-id>"
+  ]
+}
