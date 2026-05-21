@@ -49,6 +49,8 @@ The following permissions are required for update + fleet-connectivity operation
 
 If you need a least-privilege custom role specifically for update operations:
 
+> **JSON format - CLI/PowerShell vs Portal "JSON tab":** The role definition below is in the **CLI / PowerShell format** (top-level `Name`, `IsCustom`, `Actions`, `AssignableScopes`) - the shape consumed by `az role definition create` / `update` and `New-AzRoleDefinition`. The Azure portal's **Edit a custom role -> JSON tab** uses a different shape (the ARM resource representation, wrapped in `properties` with lowercase camelCase and `actions` nested under `permissions[0]`). Pasting this JSON into the portal JSON tab will fail with `Malformed JSON: "properties" property not present or value is null`. To update an existing role from the portal, use the **Permissions** tab (add or remove the actions there) instead of the JSON tab, or run `az role definition create` / `update --role-definition <file>` from a shell.
+
 ```json
 {
   "Name": "Azure Stack HCI Update Operator",

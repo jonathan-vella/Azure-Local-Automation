@@ -229,6 +229,11 @@
   bundled JSON file as the first install path. The inline JSON copy and
   the inline here-string remain for readers who prefer copy-paste over
   download.
+- New callout in Section 4.1 and `docs/rbac.md` flagging the JSON-shape
+  difference between the bundled file (CLI/PowerShell format) and the
+  Azure portal `Edit a custom role` JSON tab (ARM `properties`-wrapped
+  shape) - prevents `Malformed JSON: "properties" property not present`
+  in the portal.
 
 ### Pipeline pin bumps
 

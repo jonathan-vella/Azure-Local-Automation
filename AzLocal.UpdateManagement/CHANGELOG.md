@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (documentation)
 
 - `Automation-Pipeline-Examples/README.md` Section 4.1 now leads with a paragraph pointing operators at the bundled JSON file as the recommended install path (download or `Copy-AzLocalPipelineExample`), with the inline JSON code block and inline here-string retained for readers who prefer copy-paste over download.
+- New callout in Section 4.1 (and the parallel section in `docs/rbac.md`) explains the difference between the **CLI / PowerShell** JSON shape (top-level `Name`, `IsCustom`, `Actions`) used by `az role definition create` / `update` and `New-AzRoleDefinition`, and the **Azure portal Edit-a-custom-role JSON tab** shape (ARM resource representation, wrapped in `properties` with `actions` nested under `permissions[0]`). Pasting the bundled file into the portal JSON tab fails with `Malformed JSON: "properties" property not present`; the callout steers operators to the Permissions tab or to `az role definition update --role-definition <file>` instead.
 
 ### Pipeline pin bumps
 
