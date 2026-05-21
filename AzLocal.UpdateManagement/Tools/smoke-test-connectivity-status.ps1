@@ -1,267 +1,195 @@
-# Smoke test for the Step.4 fleet-connectivity-status pipeline ARG queries.
+# ---------------------------------------------------------------------------
+# Smoke test for the Step.4 fleet-connectivity-status pipeline.
 #
-# Runs each of the 5 KQL queries that the GH / ADO Step.4 YAMLs execute via
-# `az graph query`, verifies the query parses + executes cleanly, and asserts
-# the documented required-column set is present on the first returned row.
+# v0.7.79: Step.4 was migrated from inline `az graph query` blocks to the
+# module cmdlet `Get-AzLocalFleetConnectivityStatus`. This smoke test
+# therefore validates THE CMDLET'S OUTPUT - which is exactly what the
+# Step.4 GH/ADO pipelines now consume to render the per-cluster /
+# per-node / per-NIC / per-ARB markdown tables in the job summary.
 #
-# Mirrors the validate-arg-queries.ps1 reporting shape (PASS / PASS-EMPTY /
-# FAIL-SCHEMA / ERROR rows in a final results table) so the two harnesses can
-# be wired into the same CI matrix later.
+# History: The pre-v0.7.79 version of this script re-executed each KQL
+# query directly via `az graph query -q $here-string`. On Windows PS 5.1
+# the multi-line here-strings were silently truncated by az.cmd's CMD
+# argument parser (everything after the first newline was dropped), so
+# every query degraded to plain `resources | take 100` and the schema
+# check FAILed against a column set that didn't exist in the truncated
+# response. The cmdlet's internal helper (Invoke-AzResourceGraphQuery)
+# normalises CR/LF to single spaces before calling az.cmd, so calling
+# the cmdlet here both fixes the smoke test AND validates the real
+# transport that Step.4 uses end to end.
 #
-# Requires: `az login` already done, `az extension add --name resource-graph`,
-# and the federated identity / signed-in user has Reader on the target
-# subscriptions. Queries are paged ONCE (no $skipToken loop) - matches the
-# pipeline behaviour and its known 1000-row ceiling per query.
+# Sections validated (matches the 7 PSCustomObject properties returned
+# by Get-AzLocalFleetConnectivityStatus -PassThru):
+#   1. ClusterRows          - one row per HCI cluster
+#   2. ArcSummary           - one row per distinct Arc agent status
+#   3. NonConnectedMachines - one row per machine != Connected
+#   4. NicIssues            - Physical NICs Disconnected with a non-APIPA IP
+#   5. NicAll               - full unfiltered NIC inventory
+#   6. NicStats             - NicType + NicStatus histogram
+#   7. ArbRows              - one row per ARB appliance (multi-cluster-safe)
+#
+# Per section we emit PASS / PASS-EMPTY / FAIL-SCHEMA / ERROR and a
+# final results table. Exit code is non-zero if any section FAILs or
+# ERRORs so the script is safe to wire into a CI matrix.
+#
+# Requires: `az login`; signed-in identity has Reader on the target
+# subscription(s). The cmdlet handles ARG pagination + retry/backoff.
+# ---------------------------------------------------------------------------
+
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [string]$SubscriptionId,
+
+    [Parameter()]
+    [string]$ModulePath
+)
+
 $ErrorActionPreference = 'Stop'
 
+# Resolve module path (default: parent of Tools folder).
+if (-not $ModulePath) {
+    $ModulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\AzLocal.UpdateManagement.psd1'
+}
+if (-not (Test-Path $ModulePath)) {
+    throw "Module manifest not found at: $ModulePath"
+}
+
+Write-Host "Importing module: $ModulePath" -ForegroundColor Cyan
+Get-Module AzLocal.UpdateManagement -All | Remove-Module -Force -ErrorAction SilentlyContinue
+Import-Module $ModulePath -Force -ErrorAction Stop
+$moduleVersion = (Get-Module AzLocal.UpdateManagement | Sort-Object Version -Descending | Select-Object -First 1).Version
+Write-Host "Module version: $moduleVersion" -ForegroundColor Cyan
+
+# Verify az is available and logged in (the cmdlet would also fail, but a
+# clearer message here helps operators running the smoke test locally).
+try {
+    $null = Get-Command az -ErrorAction Stop
+} catch {
+    throw 'az CLI is not on PATH. Install Azure CLI and run `az login` before running this smoke test.'
+}
+$accountJson = & az account show -o json 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $accountJson) {
+    throw 'az account show failed. Run `az login` and try again.'
+}
+$account = $accountJson | ConvertFrom-Json
+Write-Host "Signed-in subscription: $($account.name) ($($account.id))" -ForegroundColor Cyan
+
+# ---------------------------------------------------------------------------
+# Section definitions: expected required columns per output property.
+# Pulled from the Get-AzLocalFleetConnectivityStatus cmdlet projections so
+# any schema regression in the cmdlet is caught here (and in the matching
+# Live-Integration.Tests.ps1 Describe block).
+# ---------------------------------------------------------------------------
+$sections = @(
+    @{ Name = 'ClusterRows';          RequiredColumns = @('ClusterName','ClusterId','ConnectivityStatus','ClusterStatus','NodeCount','Location','ResourceGroup','SubscriptionId') }
+    @{ Name = 'ArcSummary';           RequiredColumns = @('AgentStatus','Count') }
+    @{ Name = 'NonConnectedMachines'; RequiredColumns = @('NodeName','MachineId','ClusterName','ClusterId','AgentStatus','OsSku','OsVersion','ClusterVersion','AgentVersion','LastStatusChange','ResourceGroup','SubscriptionId') }
+    @{ Name = 'NicIssues';            RequiredColumns = @('NodeName','ClusterName','NicName','NicStatus','DriverVersion','Ip4Address','InterfaceDescription','MachineId','ResourceGroup','SubscriptionId') }
+    @{ Name = 'NicAll';               RequiredColumns = @('NodeName','MachineId','ClusterName','ClusterId','MachineConnectivity','NicName','NicType','NicStatus','DriverVersion','InterfaceDescription','Ip4Address','SubnetMask','DefaultGateway','DnsServers','MacAddress','ResourceGroup','SubscriptionId') }
+    @{ Name = 'NicStats';             RequiredColumns = @('NicType','NicStatus','Count') }
+    @{ Name = 'ArbRows';              RequiredColumns = @('ArbName','ArbStatus','ClusterName','ClusterId','ClusterStatus','LastModified','DaysSinceLastModified','ArbId','ResourceGroup','SubscriptionId') }
+)
+
+# ---------------------------------------------------------------------------
+# Run the cmdlet ONCE - this is the same call path Step.4 uses.
+# ---------------------------------------------------------------------------
+$invokeParams = @{ PassThru = $true }
+if ($SubscriptionId) { $invokeParams.SubscriptionId = $SubscriptionId }
+
+Write-Host "`nInvoking Get-AzLocalFleetConnectivityStatus ..." -ForegroundColor Cyan
+$cmdletStart = Get-Date
+try {
+    $data = Get-AzLocalFleetConnectivityStatus @invokeParams
+} catch {
+    Write-Host "Cmdlet threw: $($_.Exception.Message)" -ForegroundColor Red
+    throw
+}
+$cmdletDuration = (Get-Date) - $cmdletStart
+Write-Host "Cmdlet completed in $([math]::Round($cmdletDuration.TotalSeconds,2))s" -ForegroundColor Yellow
+
+if ($null -eq $data) {
+    throw 'Get-AzLocalFleetConnectivityStatus returned $null - cannot validate sections.'
+}
+
+# ---------------------------------------------------------------------------
+# Validate each section.
+# ---------------------------------------------------------------------------
 $results = [System.Collections.Generic.List[object]]::new()
 
-function Invoke-ArgQuery {
-    param(
-        [Parameter(Mandatory)][string]$Query,
-        [string[]]$ExtraArgs = @()
-    )
-    $argList = @('graph','query','-q',$Query,'--first','1000','--output','json') + $ExtraArgs
-    $raw = & az @argList 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "az graph query failed (exit=$LASTEXITCODE): $raw" }
-    $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
-    if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Match('data').Count) { return @() }
-    return @($parsed.data)
+foreach ($section in $sections) {
+    $name = $section.Name
+    $required = $section.RequiredColumns
+
+    Write-Host "`n=== $name ===" -ForegroundColor Cyan
+
+    if (-not $data.PSObject.Properties.Name -contains $name) {
+        Write-Host "ERROR: property '$name' is missing from cmdlet output" -ForegroundColor Red
+        $results.Add([PSCustomObject]@{ Section=$name; Status='ERROR'; Rows=0; Missing=''; Error="Property '$name' missing" })
+        continue
+    }
+
+    $rows = @($data.$name)
+    $rowCount = $rows.Count
+    Write-Host "Returned $rowCount row(s)" -ForegroundColor Yellow
+
+    if ($rowCount -eq 0) {
+        Write-Host "PASS-EMPTY (property present, no rows - acceptable for $name)" -ForegroundColor DarkYellow
+        $results.Add([PSCustomObject]@{ Section=$name; Status='PASS-EMPTY'; Rows=0; Missing=''; Error='' })
+        continue
+    }
+
+    $firstRow = $rows[0]
+    $cols = $firstRow.PSObject.Properties.Name
+    $missing = @($required | Where-Object { $cols -notcontains $_ })
+
+    if ($missing.Count -eq 0) {
+        Write-Host "PASS - all required columns present ($($required.Count))" -ForegroundColor Green
+        $results.Add([PSCustomObject]@{ Section=$name; Status='PASS'; Rows=$rowCount; Missing=''; Error='' })
+    } else {
+        Write-Host "FAIL-SCHEMA - missing: $($missing -join ', ')" -ForegroundColor Red
+        Write-Host "  Actual columns: $($cols -join ', ')" -ForegroundColor DarkGray
+        $results.Add([PSCustomObject]@{ Section=$name; Status='FAIL-SCHEMA'; Rows=$rowCount; Missing=($missing -join ','); Error='' })
+    }
 }
 
-function Test-Query {
-    param(
-        [string]$Name,
-        [string]$Query,
-        [string[]]$RequiredColumns
-    )
-    Write-Host "`n=== $Name ===" -ForegroundColor Cyan
-    try {
-        $rows = Invoke-ArgQuery -Query $Query
-        $rowCount = @($rows).Count
-        Write-Host "Returned $rowCount row(s)" -ForegroundColor Yellow
-        if ($rowCount -gt 0) {
-            $cols = $rows[0].PSObject.Properties.Name
-            $missing = @($RequiredColumns | Where-Object { $cols -notcontains $_ })
-            if ($missing.Count -eq 0) {
-                Write-Host "All required columns present" -ForegroundColor Green
-                $results.Add([PSCustomObject]@{ Query=$Name; Status='PASS'; Rows=$rowCount; Missing=''; Error='' })
-            } else {
-                Write-Host "MISSING columns: $($missing -join ', ')" -ForegroundColor Red
-                $results.Add([PSCustomObject]@{ Query=$Name; Status='FAIL-SCHEMA'; Rows=$rowCount; Missing=($missing -join ','); Error='' })
-            }
+# ---------------------------------------------------------------------------
+# Extra invariants: catch the v0.7.79 client-side-grouping regression.
+# If ArcSummary row count == sum of all Count values, that means the cmdlet
+# is emitting raw machine rows instead of grouping by AgentStatus (the bug
+# fixed in v0.7.79 commit 5b76e2f).
+# ---------------------------------------------------------------------------
+if ($data.PSObject.Properties.Name -contains 'ArcSummary') {
+    $arc = @($data.ArcSummary)
+    if ($arc.Count -gt 0) {
+        $totalMachines = ($arc | Measure-Object -Property Count -Sum).Sum
+        Write-Host "`n=== Invariant: ArcSummary grouped client-side ===" -ForegroundColor Cyan
+        Write-Host "ArcSummary distinct AgentStatus values: $($arc.Count)  total machines: $totalMachines" -ForegroundColor Yellow
+        if ($arc.Count -ge $totalMachines) {
+            Write-Host "FAIL - ArcSummary appears NOT grouped (rows >= total machines)" -ForegroundColor Red
+            $results.Add([PSCustomObject]@{ Section='ArcSummary-Grouped'; Status='FAIL-SCHEMA'; Rows=$arc.Count; Missing='grouping-invariant'; Error="rows ($($arc.Count)) >= totalMachines ($totalMachines)" })
         } else {
-            Write-Host "Returned 0 rows (still validates query parse + execution)" -ForegroundColor Yellow
-            $results.Add([PSCustomObject]@{ Query=$Name; Status='PASS-EMPTY'; Rows=0; Missing=''; Error='' })
+            Write-Host "PASS - ArcSummary is grouped (rows < total machines)" -ForegroundColor Green
+            $results.Add([PSCustomObject]@{ Section='ArcSummary-Grouped'; Status='PASS'; Rows=$arc.Count; Missing=''; Error='' })
         }
     }
-    catch {
-        Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
-        $results.Add([PSCustomObject]@{ Query=$Name; Status='ERROR'; Rows=0; Missing=''; Error=$_.Exception.Message })
-    }
 }
 
 # ---------------------------------------------------------------------------
-# 1. Cluster connectivity
-# ---------------------------------------------------------------------------
-$clusterKql = @"
-resources
-| where type =~ "microsoft.azurestackhci/clusters"
-| extend ConnectivityStatus = tostring(properties.connectivityStatus)
-| extend ClusterStatus = tostring(properties.status)
-| extend NodeCount = tolong(properties.reportedProperties.nodeCount)
-| project ClusterName=name, ClusterId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId,
-          ConnectivityStatus, ClusterStatus, NodeCount, Location=location
-| order by ConnectivityStatus asc, ClusterName asc
-"@
-Test-Query -Name 'Cluster Connectivity' -Query $clusterKql -RequiredColumns @(
-    'ClusterName','ClusterId','ResourceGroup','SubscriptionId','ConnectivityStatus','ClusterStatus','NodeCount','Location'
-)
-
-# ---------------------------------------------------------------------------
-# 2a. Arc agent status summary (histogram)
-# ---------------------------------------------------------------------------
-$arcSummaryKql = @"
-resources
-| where type =~ "microsoft.azurestackhci/clusters"
-| extend nodes = todynamic(properties.reportedProperties.nodes)
-| mv-expand node = nodes
-| extend reportedNodeName = tolower(tostring(node.name))
-| where isnotempty(reportedNodeName)
-| project reportedNodeName
-| join kind=inner (
-    resources
-    | where type =~ "microsoft.hybridcompute/machines"
-    | where tostring(properties.cloudMetadata.provider) =~ "AzSHCI"
-    | where tostring(kind) !~ "HCI"
-    | extend nodeNameLower = tolower(name)
-  ) on `$left.reportedNodeName == `$right.nodeNameLower
-| extend AgentStatus = tostring(properties.status)
-| summarize Count = count() by AgentStatus
-| order by Count desc
-"@
-Test-Query -Name 'Arc Agent Status Summary' -Query $arcSummaryKql -RequiredColumns @('AgentStatus','Count')
-
-# ---------------------------------------------------------------------------
-# 2b. Non-connected machines (detail)
-# ---------------------------------------------------------------------------
-$arcKql = @"
-resources
-| where type =~ "microsoft.azurestackhci/clusters"
-| extend nodes = todynamic(properties.reportedProperties.nodes)
-| mv-expand node = nodes
-| extend reportedNodeName = tolower(tostring(node.name))
-| where isnotempty(reportedNodeName)
-| project reportedNodeName, clusterName = name, clusterResourceGroup = resourceGroup, clusterId = id
-| join kind=leftouter (
-    extensibilityresources
-    | where type =~ "microsoft.azurestackhci/clusters/updateSummaries"
-    | extend cId = substring(id, 0, indexof(id, "/updateSummaries/"))
-    | project cId, currentVersion = tostring(properties.currentVersion)
-  ) on `$left.clusterId == `$right.cId
-| join kind=inner (
-    resources
-    | where type =~ "microsoft.hybridcompute/machines"
-    | where tostring(properties.cloudMetadata.provider) =~ "AzSHCI"
-    | where tostring(kind) !~ "HCI"
-    | extend nodeNameLower = tolower(name)
-  ) on `$left.reportedNodeName == `$right.nodeNameLower
-| where tostring(properties.status) != "Connected"
-| extend AgentStatus    = tostring(properties.status)
-| extend AgentVersion   = tostring(properties.agentVersion)
-| extend OsSku          = tostring(properties.osSku)
-| extend OsVersion      = tostring(properties.osVersion)
-| extend LastStatusChange = tostring(properties.lastStatusChange)
-| project NodeName=name, MachineId=id, ClusterName=clusterName, ClusterId=clusterId,
-          AgentStatus, OsSku, OsVersion, ClusterVersion=coalesce(currentVersion, ""),
-          AgentVersion, LastStatusChange,
-          ResourceGroup=resourceGroup, SubscriptionId=subscriptionId
-| order by LastStatusChange asc, ClusterName asc, NodeName asc
-"@
-Test-Query -Name 'Non-Connected Arc Machines' -Query $arcKql -RequiredColumns @(
-    'NodeName','MachineId','ClusterName','ClusterId','AgentStatus','OsSku','OsVersion','ClusterVersion','AgentVersion','LastStatusChange','ResourceGroup','SubscriptionId'
-)
-
-# ---------------------------------------------------------------------------
-# 3a. Physical NIC issues (filtered)
-# ---------------------------------------------------------------------------
-$nicKql = @"
-extensibilityresources
-| where type =~ "microsoft.azurestackhci/edgedevices"
-| extend nicDetails = todynamic(properties.reportedProperties.networkProfile.nicDetails)
-| extend edgeMachineName = tolower(tostring(split(id, '/')[8]))
-| mv-expand nic = nicDetails
-| extend NicName = tostring(nic.adapterName)
-| extend NicStatus = tostring(nic.nicStatus)
-| extend DriverVersion = tostring(nic.driverVersion)
-| extend InterfaceDescription = tostring(nic.interfaceDescription)
-| extend Ip4Address = tostring(nic.ip4Address)
-| extend NicType = case(InterfaceDescription contains "Hyper-V", "Virtual", InterfaceDescription contains "Virtual", "Virtual", "Physical")
-| where NicType == "Physical"
-| where NicStatus =~ "Disconnected"
-| where isnotempty(Ip4Address) and not(Ip4Address startswith "169.254.")
-| join kind=inner (
-    resources
-    | where type =~ "microsoft.hybridcompute/machines"
-    | where tostring(properties.cloudMetadata.provider) =~ "AzSHCI"
-    | where tostring(kind) !~ "HCI"
-    | extend ClusterName = tostring(split(tostring(properties.parentClusterResourceId), '/')[8])
-    | extend nodeNameLower = tolower(name)
-    | project nodeNameLower, ClusterName, MachineId=id, ResourceGroup=resourceGroup, SubscriptionId=subscriptionId
-  ) on `$left.edgeMachineName == `$right.nodeNameLower
-| project NodeName=edgeMachineName, ClusterName, NicName, NicStatus, DriverVersion, Ip4Address,
-          InterfaceDescription, MachineId, ResourceGroup, SubscriptionId
-| order by ClusterName asc, NodeName asc, NicName asc
-"@
-Test-Query -Name 'Physical NIC Issues (filtered)' -Query $nicKql -RequiredColumns @(
-    'NodeName','ClusterName','NicName','NicStatus','DriverVersion','Ip4Address','InterfaceDescription','MachineId','ResourceGroup','SubscriptionId'
-)
-
-# ---------------------------------------------------------------------------
-# 3b. All Network Adapters (full unfiltered NIC inventory)
-# ---------------------------------------------------------------------------
-$nicAllKql = @"
-extensibilityresources
-| where type =~ "microsoft.azurestackhci/edgedevices"
-| extend edgeMachineName = tolower(tostring(split(id, '/')[8]))
-| extend edgeDeviceRG = resourceGroup
-| extend nicDetails = todynamic(properties.reportedProperties.networkProfile.nicDetails)
-| mv-expand nic = nicDetails
-| extend NicName = tostring(nic.adapterName)
-| extend NicStatus = tostring(nic.nicStatus)
-| extend DriverVersion = tostring(nic.driverVersion)
-| extend InterfaceDescription = tostring(nic.interfaceDescription)
-| extend NicType = case(InterfaceDescription contains "Hyper-V", "Virtual", InterfaceDescription contains "Virtual", "Virtual", "Physical")
-| extend Ip4Address = tostring(nic.ip4Address)
-| extend SubnetMask = tostring(nic.subnetMask)
-| extend DefaultGateway = tostring(nic.defaultGateway)
-| extend DnsServers = strcat_array(nic.dnsServers, ', ')
-| extend MacAddress = tostring(nic.macAddress)
-| join kind=inner (
-    resources
-    | where type =~ "microsoft.hybridcompute/machines"
-    | where tostring(properties.cloudMetadata.provider) =~ "AzSHCI"
-    | where tostring(kind) !~ "HCI"
-    | extend parentClusterId = tostring(properties.parentClusterResourceId)
-    | extend ClusterName = tostring(split(parentClusterId, '/')[8])
-    | extend MachineStatus = tostring(properties.status)
-    | extend nodeNameLower = tolower(name)
-    | project machineName=name, nodeNameLower, MachineId=id, ClusterId=parentClusterId, ClusterName, MachineStatus, SubscriptionId=subscriptionId
-  ) on `$left.edgeMachineName == `$right.nodeNameLower
-| project NodeName=machineName, MachineId, ClusterName, ClusterId, MachineConnectivity=MachineStatus,
-          NicName, NicType, NicStatus, DriverVersion, InterfaceDescription,
-          Ip4Address, SubnetMask, DefaultGateway, DnsServers, MacAddress,
-          ResourceGroup=edgeDeviceRG, SubscriptionId
-| order by NodeName asc, NicType asc, NicName asc
-"@
-Test-Query -Name 'All Network Adapters (unfiltered)' -Query $nicAllKql -RequiredColumns @(
-    'NodeName','MachineId','ClusterName','ClusterId','MachineConnectivity','NicName','NicType','NicStatus',
-    'DriverVersion','InterfaceDescription','Ip4Address','SubnetMask','DefaultGateway','DnsServers','MacAddress',
-    'ResourceGroup','SubscriptionId'
-)
-
-# ---------------------------------------------------------------------------
-# 4. ARB status (multi-cluster-per-RG safe via summarize/make_set)
-# ---------------------------------------------------------------------------
-$arbKql = @"
-resources
-| where type =~ "microsoft.resourceconnector/appliances"
-| extend ArbStatus = tostring(properties.status)
-| extend LastModified = tostring(systemData.lastModifiedAt)
-| extend DaysSinceLastModified = iff(ArbStatus =~ "Running", toint(-1), datetime_diff('day', now(), todatetime(systemData.lastModifiedAt)))
-| project ArbName=name, ArbId=id, ArbResourceGroup=resourceGroup, ArbSubscriptionId=subscriptionId,
-          ArbStatus, LastModified, DaysSinceLastModified
-| join kind=leftouter (
-    resources
-    | where type =~ "microsoft.azurestackhci/clusters"
-    | extend ClusterStatus = tostring(properties.status)
-    | project HciName=name, HciId=id, HciResourceGroup=resourceGroup, HciClusterStatus=ClusterStatus
-  ) on `$left.ArbResourceGroup == `$right.HciResourceGroup
-| summarize
-    ClusterName = strcat_array(make_set(coalesce(HciName, '(no cluster)')), ', '),
-    ClusterId = strcat_array(make_set(coalesce(HciId, '')), ', '),
-    ClusterStatus = strcat_array(make_set(coalesce(HciClusterStatus, '')), ', ')
-    by ArbName, ArbId, ArbResourceGroup, ArbSubscriptionId, ArbStatus, LastModified, DaysSinceLastModified
-| project ArbName, ArbStatus, ClusterName, ClusterId, ClusterStatus, LastModified, DaysSinceLastModified,
-          ArbId, ResourceGroup=ArbResourceGroup, SubscriptionId=ArbSubscriptionId
-| order by ArbStatus asc, ClusterName asc
-"@
-Test-Query -Name 'ARB Status (multi-cluster-safe)' -Query $arbKql -RequiredColumns @(
-    'ArbName','ArbStatus','ClusterName','ClusterId','ClusterStatus','LastModified','DaysSinceLastModified','ArbId','ResourceGroup','SubscriptionId'
-)
-
-# ---------------------------------------------------------------------------
-# Final report
+# Final report.
 # ---------------------------------------------------------------------------
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "Smoke Test Results - Step.4 Connectivity ARG Queries" -ForegroundColor Cyan
+Write-Host "Smoke Test Results - Get-AzLocalFleetConnectivityStatus" -ForegroundColor Cyan
+Write-Host "Module version: $moduleVersion" -ForegroundColor Cyan
+Write-Host "Subscription: $($account.name) ($($account.id))" -ForegroundColor Cyan
 Write-Host "========================================`n" -ForegroundColor Cyan
-$results | Format-Table -AutoSize Query, Status, Rows, Missing, Error
+$results | Format-Table -AutoSize Section, Status, Rows, Missing, Error
 
 $fail = @($results | Where-Object { $_.Status -in @('FAIL-SCHEMA','ERROR') })
 if ($fail.Count -gt 0) {
-    Write-Host "FAILED: $($fail.Count) query/queries did not pass." -ForegroundColor Red
+    Write-Host "FAILED: $($fail.Count) section(s) did not pass." -ForegroundColor Red
     exit 1
 } else {
-    Write-Host "All queries passed." -ForegroundColor Green
+    Write-Host "All sections passed." -ForegroundColor Green
+    exit 0
 }
