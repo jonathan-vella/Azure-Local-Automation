@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.79'
+    ModuleVersion = '0.7.80'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -207,6 +207,37 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.80 - RBAC custom role: fleet-connectivity reads
+
+### Fixed (documentation)
+
+- The documented "Azure Stack HCI Update Operator" custom role in
+  [`docs/rbac.md`](https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/docs/rbac.md)
+  was missing three reads required by `Get-AzLocalFleetConnectivityStatus`
+  (introduced in v0.7.79). Pipelines using a SP with the v0.7.79-or-earlier
+  role saw 20 clusters but 0 Arc agents, 0 NICs, and 0 ARBs because ARG
+  returns an empty `.data` array for resource types the caller cannot read.
+  Added to the role:
+    - `Microsoft.HybridCompute/machines/read`
+    - `Microsoft.AzureStackHCI/edgeDevices/read`
+    - `Microsoft.ResourceConnector/appliances/read`
+- Added an "Updating an existing custom role" sub-section walking through
+  `az role definition update` so existing assignments are preserved (role
+  GUID stays stable - no re-assignment required).
+
+### Pipeline pin bumps
+
+- Bundled `Step.{0..8}.yml` templates bump
+  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.79'` to `'0.7.80'`.
+
+### Migration
+
+If you created the custom role against the v0.7.79-or-earlier definition,
+refresh the JSON to the v0.7.80 definition in `docs/rbac.md` and run
+`az role definition update --role-definition ./azlocal-update-management-custom-role.json`.
+Permission changes propagate within minutes. No code changes - just the role
+definition and the bundled YAML pin.
+
 ## Version 0.7.79 - Step.5 default schedule enabled
 
 ### Changed
