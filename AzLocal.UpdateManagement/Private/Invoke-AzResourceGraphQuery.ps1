@@ -53,6 +53,16 @@ function Invoke-AzResourceGraphQuery {
         Defaults to 1 second; attempt N sleeps `RetryBaseSeconds * 2^(N-1)`
         seconds (1, 2, 4, 8, 16, ...) with +/-20% random jitter. The minimum
         effective sleep is 0.5s.
+    .PARAMETER DisableCrossCallCooldown
+        v0.7.84: opt out of the cross-call ARG cooldown wait at the start of
+        this call. The cooldown is a small voluntary pause that this helper
+        applies on entry if a PREVIOUS call to this helper observed ARG
+        throttling. It is the cross-call companion to the per-page retry
+        loop: the retry loop protects against bursts WITHIN one call; the
+        cooldown protects against bursts ACROSS sequential calls (typical
+        of fan-out fleet queries that issue many ARG requests back-to-back).
+        Use this switch only in unit tests or when the caller has its own
+        rate-limiting upstream.
     .NOTES
         v0.7.68 throttle handling exposes two module-scope diagnostic flags
         reset at the start of every call and readable by callers/tests:
@@ -63,6 +73,20 @@ function Invoke-AzResourceGraphQuery {
         Once a throttle event is observed during a call, an inter-page pause
         of 1 second is inserted between subsequent pages to avoid immediately
         re-triggering the limiter.
+        v0.7.84 cross-call coordination adds two more module-scope items:
+          $script:ArgCrossCallCooldownUntil               - [DateTime]; until this
+                                                            instant the NEXT call
+                                                            voluntarily sleeps on
+                                                            entry. Set on throttle.
+          $script:ArgConsecutiveThrottledCalls            - int counter for
+                                                            adaptive cooldown
+                                                            duration (capped 5).
+          $script:LastResourceGraphCrossCallCooldownSeconds - per-call diagnostic;
+                                                            how long THIS call
+                                                            slept on entry due
+                                                            to the cooldown.
+        The cross-call counter decays by 1 on every clean (un-throttled)
+        call so the cooldown does not accumulate forever.
     .OUTPUTS
         [object[]] of rows merged across all pages. Empty array if no rows.
         Throws if the CLI returns a non-zero exit code or the response cannot
@@ -92,7 +116,10 @@ function Invoke-AzResourceGraphQuery {
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(0.1, 60)]
-        [double]$RetryBaseSeconds = 1
+        [double]$RetryBaseSeconds = 1,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DisableCrossCallCooldown
     )
 
     # v0.7.68: collapse CR/LF and runs of whitespace into single spaces so the
@@ -120,6 +147,30 @@ function Invoke-AzResourceGraphQuery {
     # callers can read these flags to detect/report transient ARG throttling.
     $script:LastResourceGraphThrottled = $false
     $script:LastResourceGraphRetryCount = 0
+
+    # v0.7.84: cross-call ARG cooldown coordination. The per-page retry loop
+    # handles bursts WITHIN one call; this block adds coordination ACROSS
+    # sequential calls. State is module-scope and initialised lazily on
+    # first use. If a previous call set a cooldown window that is still
+    # active, sleep out the remainder before issuing the first page request
+    # of THIS call. The $DisableCrossCallCooldown switch is provided for
+    # unit tests and for callers that have their own rate-limiting upstream.
+    if (-not (Test-Path Variable:script:ArgCrossCallCooldownUntil)) {
+        $script:ArgCrossCallCooldownUntil = [DateTime]::MinValue
+        $script:ArgConsecutiveThrottledCalls = 0
+    }
+    $script:LastResourceGraphCrossCallCooldownSeconds = 0
+    if (-not $DisableCrossCallCooldown.IsPresent) {
+        $now = Get-Date
+        if ($script:ArgCrossCallCooldownUntil -gt $now) {
+            $waitSecs = ($script:ArgCrossCallCooldownUntil - $now).TotalSeconds
+            if ($waitSecs -gt 0) {
+                Write-Verbose ("Invoke-AzResourceGraphQuery: applying cross-call ARG cooldown ({0:N2}s) due to recent throttling." -f $waitSecs)
+                Start-Sleep -Milliseconds ([int]($waitSecs * 1000))
+                $script:LastResourceGraphCrossCallCooldownSeconds = $waitSecs
+            }
+        }
+    }
 
     # Inter-page pause (milliseconds). Starts at 0; ratchets to 1000ms after
     # the first throttle event in this call so subsequent pages don't
@@ -192,6 +243,16 @@ function Invoke-AzResourceGraphQuery {
                     $retryAttempt++
                     $script:LastResourceGraphThrottled = $true
                     $script:LastResourceGraphRetryCount++
+
+                    # v0.7.84: update cross-call cooldown so the NEXT call to
+                    # this helper (whatever the caller) waits this out before
+                    # its first page. Adaptive: more consecutive throttled
+                    # calls -> longer cooldown, capped at 10s and counter
+                    # capped at 5 so cooldown never exceeds the cap.
+                    $script:ArgConsecutiveThrottledCalls = [Math]::Min(5, $script:ArgConsecutiveThrottledCalls + 1)
+                    $cooldownSecs = [Math]::Min(10.0, $RetryBaseSeconds * [Math]::Pow(2, $script:ArgConsecutiveThrottledCalls - 1))
+                    $script:ArgCrossCallCooldownUntil = (Get-Date).AddSeconds($cooldownSecs)
+
                     $baseDelay = $RetryBaseSeconds * [Math]::Pow(2, $retryAttempt - 1)
                     # +/-20% jitter, floor 0.5s
                     $jitterFactor = 1 + (Get-Random -Minimum -0.2 -Maximum 0.2)
@@ -253,6 +314,15 @@ function Invoke-AzResourceGraphQuery {
     }
     finally {
         $env:PYTHONIOENCODING = $prevPyEncoding
+    }
+
+    # v0.7.84: decay the cross-call consecutive-throttle counter on a clean
+    # call (no throttle observed during THIS call) so the cooldown window
+    # does not accumulate forever in long-running scripts. One clean call
+    # decreases the counter by 1; persistent throttling keeps it pinned
+    # near the cap of 5 (-> 10s cooldown).
+    if (-not $script:LastResourceGraphThrottled -and $script:ArgConsecutiveThrottledCalls -gt 0) {
+        $script:ArgConsecutiveThrottledCalls = [Math]::Max(0, $script:ArgConsecutiveThrottledCalls - 1)
     }
 
     # IMPORTANT: the leading comma is required to preserve array shape so that

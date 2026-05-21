@@ -135,13 +135,18 @@ function Get-AzLocalFleetConnectivityStatus {
         $r = $_
         $connStatus = CoerceStr (Get-NestedProp $r 'properties.connectivityStatus')
         $clsStatus  = CoerceStr (Get-NestedProp $r 'properties.status')
-        $nodeCount  = Get-NestedProp $r 'properties.reportedProperties.nodeCount'
+        # v0.7.84 fix: cluster ARG records expose 'properties.reportedProperties.nodes' (array),
+        # NOT a 'nodeCount' scalar. Previously reading 'nodeCount' returned $null for every
+        # cluster which surfaced as Nodes=0 in the Step.4 summary and a misleading
+        # 'Node coverage delta' of -(Arc-joined nodes).
+        $nodes      = Get-NestedProp $r 'properties.reportedProperties.nodes'
+        $nodeCount  = if ($nodes) { @($nodes).Count } else { 0 }
         [PSCustomObject][ordered]@{
             ClusterName        = CoerceStr $r.name (CoerceStr $r.resourceGroup 'Unknown')
             ClusterId          = CoerceStr $r.id
             ConnectivityStatus = if ([string]::IsNullOrWhiteSpace($connStatus)) { if ([string]::IsNullOrWhiteSpace($clsStatus)) { 'Unknown' } else { $clsStatus } } else { $connStatus }
             ClusterStatus      = if ([string]::IsNullOrWhiteSpace($clsStatus)) { 'Unknown' } else { $clsStatus }
-            NodeCount          = if ($null -eq $nodeCount) { 0 } else { [int]$nodeCount }
+            NodeCount          = [int]$nodeCount
             Location           = CoerceStr $r.location
             ResourceGroup      = CoerceStr $r.resourceGroup
             SubscriptionId     = CoerceStr $r.subscriptionId
@@ -200,7 +205,15 @@ function Get-AzLocalFleetConnectivityStatus {
     $allMachines = @($machinesRaw | ForEach-Object {
         $m = $_
         $clusterId   = CoerceStr (Get-NestedProp $m 'properties.parentClusterResourceId')
-        $clusterName = if ($clusterId) { CoerceStr (([string]($clusterId -split '/'))[-1]) } else { '' }
+        # v0.7.84 fix: extract the cluster name (last segment of the ARM ID).
+        # Pre-fix code cast the WHOLE split array to a string (joining the
+        # elements with spaces) before indexing with -1, which then returned
+        # the last CHARACTER of the joined string rather than the last array
+        # element (e.g. cluster 'Mobile' became 'e', 'alrs-cc' became 'c').
+        # This surfaced as a corrupted ClusterName column in the
+        # 'Non-Connected Machines' table. The fix indexes the split array
+        # directly with [-1], no string cast.
+        $clusterName = if ($clusterId) { CoerceStr (($clusterId -split '/')[-1]) } else { '' }
         $version     = if ($clusterId) { CoerceStr $clusterVersionMap[$clusterId.ToLowerInvariant()] } else { '' }
         [PSCustomObject][ordered]@{
             NodeName         = CoerceStr $m.name
@@ -316,7 +329,12 @@ extensibilityresources
     # ------------------------------------------------------------------
     Write-Log -Message 'Step.4 [5/5] Querying Azure Resource Bridge status...' -Level Info
 
-    $arbKql = "resources | where type =~ 'microsoft.resourceconnector/appliances'"
+    # v0.7.84 fix: explicitly `extend lastModifiedAt = tostring(systemData.lastModifiedAt)`.
+    # The default `resources` ARG response sometimes omits/strips `systemData`,
+    # which caused DaysSinceLastModified to fall through to the -1 sentinel for
+    # every ARB regardless of status. The extend guarantees the column is present
+    # in the row dictionary (empty string if truly missing).
+    $arbKql = "resources | where type =~ 'microsoft.resourceconnector/appliances' | extend lastModifiedAt = tostring(systemData.lastModifiedAt)"
     $arbRaw  = Invoke-AzResourceGraphQuery -Query $arbKql @invokeArgs
 
     $arbRows = @($arbRaw | ForEach-Object {
@@ -328,11 +346,17 @@ extensibilityresources
         $clusterId     = if ($matched.Count -gt 0) { ($matched | ForEach-Object { $_.ClusterId })     -join ', ' } else { '' }
         $clusterStatus = if ($matched.Count -gt 0) { ($matched | ForEach-Object { $_.ClusterStatus }) -join ', ' } else { '' }
 
-        $status  = CoerceStr (Get-NestedProp $a 'properties.status') 'Unknown'
-        $lastMod = CoerceStr (Get-NestedProp $a 'systemData.lastModifiedAt')
-        $daysSince = if ($status -ieq 'Running') {
-            [int]-1
-        } elseif ($lastMod) {
+        $status = CoerceStr (Get-NestedProp $a 'properties.status') 'Unknown'
+        # Read the extended top-level column first, fall back to systemData.lastModifiedAt
+        # in case the ARG CLI strips the extend column too (defence in depth).
+        $lastMod = CoerceStr $a.lastModifiedAt
+        if (-not $lastMod) { $lastMod = CoerceStr (Get-NestedProp $a 'systemData.lastModifiedAt') }
+
+        # v0.7.84 UX fix: compute real days for ALL ARBs (previously short-
+        # circuited to -1 for Running). Real days is useful information even
+        # for healthy ARBs (e.g. last upgrade activity). -1 is now reserved
+        # solely for "unknown/can't compute" (missing or unparseable timestamp).
+        $daysSince = if ($lastMod) {
             try { [int]((Get-Date) - [datetime]::Parse($lastMod)).TotalDays } catch { [int]-1 }
         } else { [int]-1 }
 

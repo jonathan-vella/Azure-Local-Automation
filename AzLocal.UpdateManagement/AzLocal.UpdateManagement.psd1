@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.83'
+    ModuleVersion = '0.7.84'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -207,6 +207,28 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
+## Version 0.7.84 - HOTFIX: Get-AzLocalFleetConnectivityStatus correctness (4 bugs in Step.4 summary)
+
+### Fixed
+
+- **Cluster `Nodes` column = 0 for every cluster (and `Node coverage delta` = -(Arc-joined nodes)).** Root cause: the code read `properties.reportedProperties.nodeCount` which does NOT exist in the Azure Local cluster ARG schema. The correct property is `properties.reportedProperties.nodes` (an array of node objects). All clusters reported 0 nodes regardless of actual size; the delta math then attributed every Arc-joined node as missing cluster coverage. Fix: count `@($nodes).Count` from the array.
+- **`Non-Connected Machines` table `ClusterName` column corrupted to a single character** (cluster `Mobile` -> `e`, `alrs-cc` -> `c`). Root cause: `CoerceStr (([string]($clusterId -split '/'))[-1])` applied the `[string]` cast to the WHOLE split ARRAY (joining the elements with spaces), then `[-1]` returned the last CHARACTER of the joined string instead of the last array element. This is the SAME bug class as the v0.7.82/v0.7.83 `[char].Trim()` scalar-collapse bug. Fix: drop the `[string]` cast so `[-1]` indexes the array directly.
+- **`Azure Resource Bridges` table `DaysSinceLastModified` = -1 for EVERY ARB (both Running and Offline).** Root cause: (1) the default ARG `resources` response often omitted/stripped `systemData` so `Get-NestedProp $a 'systemData.lastModifiedAt'` returned `$null`, and (2) Running ARBs were short-circuited to `-1` as an opaque sentinel. Fix: ARB KQL now explicitly extends the column with `| extend lastModifiedAt = tostring(systemData.lastModifiedAt)`, and the Running short-circuit is dropped so real days is shown for ALL ARBs. `-1` is now reserved only for genuinely missing/unparseable timestamps.
+
+### Added
+
+- **Cross-call ARG throttle cooldown in `Invoke-AzResourceGraphQuery`.** Complements the v0.7.68 per-page retry loop with cross-call coordination: when one call observes ARG throttling, subsequent calls voluntarily sleep out a short cooldown window on entry. Cooldown duration scales with `-RetryBaseSeconds` (capped at 10s); the consecutive-throttle counter decays by 1 on every clean call. New `$script:LastResourceGraphCrossCallCooldownSeconds` diagnostic and `-DisableCrossCallCooldown` switch. 4 new Pester tests in `Cross-call throttle coordination (v0.7.84)` Context.
+- Pester `Regression v0.7.84` Describe block (10 tests across 3 contexts): static regex guards on the source file detect regression of any of the three fixes; execution tests mock realistic ARG payloads (3-node `Mobile` cluster, Disconnected Arc machine with real ARM-ID `parentClusterResourceId`, Running + Offline ARBs with `systemData.lastModifiedAt` set 5/10 days ago) and assert the row values. Negative-control test re-executes the pre-fix `[string](array)[-1]` shape and proves it still returns `'e'` for cluster `Mobile`.
+- The existing v0.7.79 cluster fixture (`reportedProperties = @{ nodeCount = 2 }`) used the WRONG property name and silently masked Bug A in unit tests for multiple releases. Fixture corrected to use the realistic `nodes = @(...)` array shape so future schema-shape regressions are caught.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.83'` to `'0.7.84'`.
+
+### Migration
+
+No action required. `Install-Module AzLocal.UpdateManagement -Force` picks up the fix. Refresh bundled Step.4 / Step.6 YAMLs (which call `Get-AzLocalFleetConnectivityStatus`) with `Copy-AzLocalPipelineExample -Destination <path> -Update` to silence the pipeline drift warning.
+
 ## Version 0.7.83 - HOTFIX: Step.4 ARB [char].Trim() bug on single-cluster ClusterId
 
 ### Fixed
@@ -228,90 +250,36 @@ No action required. `Install-Module AzLocal.UpdateManagement -Force` picks up th
 
 ## Version 0.7.82 - Bundled custom-role JSON artifact
 
-### Added
-
 - New file `Automation-Pipeline-Examples/azlocal-update-management-custom-role.json`
-  bundled with the module. Operators can download it directly from the
-  repo (`curl` / `Invoke-WebRequest` against the raw.githubusercontent.com
-  URL), or run `Copy-AzLocalPipelineExample -Destination ...` which copies
-  the entire pipeline-examples folder including this file into a target
-  repo. Content matches the canonical role definition in `docs/rbac.md`
-  verbatim (13 actions including the three Step.4 reads added in v0.7.80
-  plus `Microsoft.HybridCompute/machines/extensions/read` reserved for
-  future Arc-machine extension reporting). Replace the
+  bundled with the module. Content matches the canonical role definition
+  in `docs/rbac.md` verbatim (13 actions). Replace the
   `<your-subscription-id>` placeholder in `AssignableScopes` before
-  running `az role definition create`.
-
-### Changed (documentation)
-
-- `Automation-Pipeline-Examples/README.md` Section 4.1 now points to the
-  bundled JSON file as the first install path. The inline JSON copy and
-  the inline here-string remain for readers who prefer copy-paste over
-  download.
-- New callout in Section 4.1 and `docs/rbac.md` flagging the JSON-shape
-  difference between the bundled file (CLI/PowerShell format) and the
-  Azure portal `Edit a custom role` JSON tab (ARM `properties`-wrapped
-  shape) - prevents `Malformed JSON: "properties" property not present`
-  in the portal.
-- Same callout also flags a UTF-8 BOM gotcha: `az`'s Python JSON parser
-  rejects BOM-prefixed files with `Expecting value: line 1 column 1
-  (char 0)`. The shipped file is BOM-free.
-
-### Pipeline pin bumps
-
-- All 18 bundled `Step.{0..8}.yml` templates bump
-  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.81'` to `'0.7.82'`.
-  No code changes in the YAMLs.
+  `az role definition create`.
+- New callout in `Automation-Pipeline-Examples/README.md` Section 4.1
+  and `docs/rbac.md` flagging (a) the CLI/PowerShell vs Azure-portal
+  ARM-`properties`-wrapped JSON shape difference and (b) the UTF-8 BOM
+  gotcha that breaks `az`'s Python JSON parser. The shipped file is
+  BOM-free. YAML pin bumps `0.7.81` -> `0.7.82`.
 
 ## Version 0.7.81 - Pipeline RBAC guidance: custom role first
 
-### Changed (documentation)
-
 - `Automation-Pipeline-Examples/README.md` permission guidance now leads
   with the least-privilege `Azure Stack HCI Update Operator` custom role
-  for every environment (labs, PoCs, production). The built-in
-  `Azure Stack HCI Administrator` role is demoted to a fallback for
-  tenants where the operator cannot create custom roles, hidden behind
-  `<details>` / commented-out alternatives. Sections 3.1, 3.2, 3.3, 3.4,
-  4, 4.2 and 11 reframed accordingly; section 4.1 gained an expanded
-  `Migration tip (built-in -> custom role, no downtime)` block.
-
-### Pipeline pin bumps
-
-- All 18 bundled `Step.{0..8}.yml` templates bump
-  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.80'` to `'0.7.81'`.
-  No code changes in the YAMLs.
+  for every environment; the built-in `Azure Stack HCI Administrator`
+  role is demoted to a fallback. YAML pin bump only (`0.7.80` -> `0.7.81`).
 
 ## Version 0.7.80 - RBAC custom role: fleet-connectivity reads
 
-### Fixed (documentation)
-
-- The documented "Azure Stack HCI Update Operator" custom role in
-  [`docs/rbac.md`](https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/docs/rbac.md)
-  was missing three reads required by `Get-AzLocalFleetConnectivityStatus`
-  (introduced in v0.7.79). Pipelines using a SP with the v0.7.79-or-earlier
-  role saw 20 clusters but 0 Arc agents, 0 NICs, and 0 ARBs because ARG
-  returns an empty `.data` array for resource types the caller cannot read.
-  Added to the role:
-    - `Microsoft.HybridCompute/machines/read`
-    - `Microsoft.AzureStackHCI/edgeDevices/read`
-    - `Microsoft.ResourceConnector/appliances/read`
-- Added an "Updating an existing custom role" sub-section walking through
-  `az role definition update` so existing assignments are preserved (role
-  GUID stays stable - no re-assignment required).
-
-### Pipeline pin bumps
-
-- Bundled `Step.{0..8}.yml` templates bump
-  `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.79'` to `'0.7.80'`.
-
-### Migration
-
-If you created the custom role against the v0.7.79-or-earlier definition,
-refresh the JSON to the v0.7.80 definition in `docs/rbac.md` and run
-`az role definition update --role-definition ./azlocal-update-management-custom-role.json`.
-Permission changes propagate within minutes. No code changes - just the role
-definition and the bundled YAML pin.
+- The documented custom role in `docs/rbac.md` was missing three reads
+  required by `Get-AzLocalFleetConnectivityStatus` (introduced in v0.7.79):
+  `Microsoft.HybridCompute/machines/read`,
+  `Microsoft.AzureStackHCI/edgeDevices/read`,
+  `Microsoft.ResourceConnector/appliances/read`. Pipelines using the
+  pre-v0.7.80 role saw 0 Arc agents/NICs/ARBs (ARG returns empty `.data`
+  for resource types the caller cannot read).
+- **Migration:** refresh the role JSON and run
+  `az role definition update --role-definition <file>`. GUID stays stable -
+  no re-assignment. Bundled YAML pin bumps `0.7.79` -> `0.7.80`.
 
 ## Version 0.7.79 - Step.5 default schedule enabled
 
@@ -330,42 +298,16 @@ https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANG
 
 ## Version 0.7.76 - Renamed to -AzLocal* + quality hardening
 
-- Exported/public cmdlets and internal helpers were renamed from
-  `-AzureLocal*` to `-AzLocal*` to align with the module name.
-- Included targeted hardening and cleanup from the module review cycle
-  (row-shape safety, health-check dedup, test coverage, docs cleanup,
-  and publish hygiene). See `CHANGELOG.md` for full detail.
-  explaining the deliberate `Set-StrictMode -Version 1.0` choice (rather
-  than `Latest`) and the dot-source-then-export pattern.
-
-### Pipeline pin bumps
-
-- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure
-  DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.75'` to
-  `'0.7.76'`. The pin is a runtime drift-detection constant read by
-  `Step.0_authentication-test.yml` (and the other Step.* templates) and
-  compared to the version of `AzLocal.UpdateManagement` it just installed
-  from PSGallery; on mismatch, the Step Summary emits a drift warning
-  telling the operator to refresh the YAML. The pin does NOT control
-  which module is installed (`Install-Module -Force` always pulls
-  PSGallery latest), so existing pre-v0.7.76 consumer YAMLs continue to
-  function - they just emit the warning until refreshed. **New in
-  v0.7.76:** Step.0 itself now carries the pin (previously only
-  `Step.{1..7}` did), per the 'Step.0 module-drift parity' item in the
-  release title - so the drift warning fires from the very first job in
-  the pipeline rather than waiting for Step.1. Refresh consumer YAMLs
-  to silence the warning with:
-  `Update-AzLocalPipelineExample -Destination .\.github\workflows -Platform GitHubActions`
-  and / or `-Destination .\.azure-pipelines -Platform AzureDevOps`.
-
-### Migration
-
-- After `Install-Module AzLocal.UpdateManagement -Force` or
-  `Update-Module`, callers using `-AzureLocal*` cmdlet names will get a
-  "command not found" error. Search-and-replace `-AzureLocal` with
-  `-AzLocal` in your scripts. Module GUID unchanged - downstream consumers
-  of the manifest (CI cache keys, ARM template `requiredModules`) continue
-  to resolve.
+- Exported/public cmdlets and internal helpers renamed from `-AzureLocal*`
+  to `-AzLocal*` to align with the module name. **Migration:** search-
+  and-replace `-AzureLocal` with `-AzLocal` in your scripts after
+  `Install-Module AzLocal.UpdateManagement -Force`. Module GUID unchanged.
+- Includes targeted hardening from the module review cycle (row-shape
+  safety, health-check dedup, test coverage, docs cleanup, publish
+  hygiene) plus Step.0 pipeline pin parity (drift warning now fires from
+  the first job rather than Step.1). All 18 `Step.{0..8}.yml` templates
+  bump `GENERATED_AGAINST_MODULE_VERSION` `0.7.75` -> `0.7.76`.
+- See `CHANGELOG.md` for the full per-cmdlet rename map and detailed notes.
 
 ## Version 0.7.75 - Hardening: Test-AzLocalApplyUpdatesScheduleCoverage auto-detects CI host platform
 

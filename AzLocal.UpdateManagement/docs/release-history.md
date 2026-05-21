@@ -4,7 +4,13 @@
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
 >
-> **For v0.7.83 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0783) `What's New in v0.7.83` section.
+> **For v0.7.84 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0784) `What's New in v0.7.84` section.
+
+---
+
+### What's New in v0.7.83
+
+v0.7.83 was a **HOTFIX** for a runtime crash in the Step.4 fleet-connectivity ARB JUnit-XML generation that shipped in v0.7.82. When an Azure Resource Bridge failure case had a single (non-comma-separated) `ClusterId`, the inline script blew up with `Method invocation failed because [System.Char] does not contain a method named 'Trim'`. The buggy two-line pattern `$clusterIdList = if ($r.ClusterId) { @(($r.ClusterId -split ',\s*') | Where-Object { $_ }) } else { @() }; $clusterIdList[0].Trim()` hit a PowerShell collection-unwrap gotcha: when `Where-Object` yielded a single scalar, the `@()` wrap was silently undone by the `if`-as-expression, `$clusterIdList` collapsed to a bare `[string]`, indexing returned `[char]`, and `.Trim()` threw at runtime. Multi-cluster RG ARBs (comma-separated `ClusterId`) were unaffected, which is why this only surfaced in production against a real customer fleet. Fixed in both Step.4 YAMLs by adding a `[string[]]` cast on `$clusterIdList` (which forces array shape regardless of element count) plus a defence-in-depth `[string]` cast at the `[0]` indexing site. The same `if-@-else-@()` shape existed twice more per file in the orphan-ARB reconciliation block; both call sites were also `[string[]]`-cast. A new Pester regression block `Regression v0.7.83: Step.4 ARB inline script handles single-cluster ClusterId without [char].Trim() bug` (9 tests) re-executed the exact buggy pattern against single-cluster, multi-cluster, null, and empty `ClusterId` payloads, plus a negative-control test that proved the pre-fix shape still threw. All 18 bundled `Step.{0..8}.yml` templates bumped `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.82'` to `'0.7.83'` (no code changes outside Step.4). **Known issue** (fixed in v0.7.84): production validation of the v0.7.83 hotfix surfaced 4 additional read-path correctness bugs in `Get-AzLocalFleetConnectivityStatus` - see v0.7.84 release notes for details.
 
 ---
 

@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.83' {
-            $script:ModuleInfo.Version | Should -Be '0.7.83'
+        It 'Should have version 0.7.84' {
+            $script:ModuleInfo.Version | Should -Be '0.7.84'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -2778,6 +2778,109 @@ Describe 'Internal Helper: Invoke-AzResourceGraphQuery' {
                 [void](Invoke-AzResourceGraphQuery -Query 'resources')
                 $script:LastResourceGraphThrottled | Should -BeFalse
                 $script:LastResourceGraphRetryCount | Should -Be 0
+            }
+        }
+    }
+
+    Context 'Cross-call throttle coordination (v0.7.84)' {
+        # v0.7.84 added a module-scope cross-call cooldown so that a throttle
+        # event observed in call N causes call N+1 to sleep out a short
+        # voluntary window on entry. This complements the v0.7.68 per-page
+        # retry loop (which only handles bursts WITHIN one call). The cooldown
+        # state lives in $script:ArgCrossCallCooldownUntil and
+        # $script:ArgConsecutiveThrottledCalls; each call exposes how long it
+        # actually slept on entry via $script:LastResourceGraphCrossCallCooldownSeconds.
+        # The -DisableCrossCallCooldown switch opts out (used in tests and by
+        # callers that have their own rate-limiting upstream).
+
+        It 'Sets the cross-call cooldown window after observing throttling' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Reset state so this test doesn't inherit cooldown from a prior test.
+                $script:ArgCrossCallCooldownUntil = [DateTime]::MinValue
+                $script:ArgConsecutiveThrottledCalls = 0
+
+                $script:Phase = 0
+                function az {
+                    $script:Phase++
+                    if ($script:Phase -eq 1) {
+                        Write-Error -ErrorAction Continue 'ERROR: 429 throttled'
+                        $global:LASTEXITCODE = 1
+                        return
+                    }
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                $before = Get-Date
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -RetryBaseSeconds 0.1 -DisableCrossCallCooldown -WarningAction SilentlyContinue)
+                # After a throttle event, the cooldown window must be set to a
+                # future instant relative to the start of the call.
+                $script:ArgCrossCallCooldownUntil | Should -BeGreaterThan $before
+                $script:ArgConsecutiveThrottledCalls | Should -BeGreaterThan 0
+            }
+        }
+
+        It 'Sleeps on entry when a previous call set a cross-call cooldown window' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Manually arm a 300ms cooldown window. A subsequent clean call
+                # must wait it out on entry and report the wait via the
+                # per-call diagnostic flag.
+                $script:ArgCrossCallCooldownUntil = (Get-Date).AddMilliseconds(300)
+                function az {
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                [void](Invoke-AzResourceGraphQuery -Query 'resources')
+                $sw.Stop()
+                # Elapsed must be at least the cooldown (allow generous slack
+                # for slow CI; minimum guarantee is ~250ms).
+                $sw.Elapsed.TotalMilliseconds | Should -BeGreaterThan 250
+                $script:LastResourceGraphCrossCallCooldownSeconds | Should -BeGreaterThan 0
+                # Reset for downstream tests.
+                $script:ArgCrossCallCooldownUntil = [DateTime]::MinValue
+                $script:ArgConsecutiveThrottledCalls = 0
+            }
+        }
+
+        It '-DisableCrossCallCooldown bypasses the cooldown wait on entry' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Arm a 500ms cooldown. With -DisableCrossCallCooldown the
+                # call must NOT sleep and must report 0 cooldown applied.
+                $script:ArgCrossCallCooldownUntil = (Get-Date).AddMilliseconds(500)
+                function az {
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                $sw.Stop()
+                # Must complete fast - well under the 500ms cooldown.
+                $sw.Elapsed.TotalMilliseconds | Should -BeLessThan 250
+                $script:LastResourceGraphCrossCallCooldownSeconds | Should -Be 0
+                # Reset for downstream tests.
+                $script:ArgCrossCallCooldownUntil = [DateTime]::MinValue
+                $script:ArgConsecutiveThrottledCalls = 0
+            }
+        }
+
+        It 'Decays the consecutive-throttle counter on a clean call' {
+            InModuleScope AzLocal.UpdateManagement {
+                # Pretend we are 3 throttled calls deep. A clean call must
+                # decrement the counter to 2 (and not below 0).
+                $script:ArgConsecutiveThrottledCalls = 3
+                $script:ArgCrossCallCooldownUntil = [DateTime]::MinValue
+                function az {
+                    $global:LASTEXITCODE = 0
+                    return '{"count":0,"data":[],"total_records":0}'
+                }
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                $script:ArgConsecutiveThrottledCalls | Should -Be 2
+
+                # Three more clean calls must drive it to 0 and clamp at 0.
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                [void](Invoke-AzResourceGraphQuery -Query 'resources' -DisableCrossCallCooldown)
+                $script:ArgConsecutiveThrottledCalls | Should -Be 0
             }
         }
     }
@@ -8882,7 +8985,14 @@ Describe 'Function: Get-AzLocalFleetConnectivityStatus (v0.7.79)' {
                                 properties     = [PSCustomObject]@{
                                     connectivityStatus = 'Connected'
                                     status             = 'Succeeded'
-                                    reportedProperties = [PSCustomObject]@{ nodeCount = 2 }
+                                    # v0.7.84: realistic HCI cluster schema - reportedProperties.nodes is
+                                    # an array of node objects; there is no 'nodeCount' scalar property.
+                                    reportedProperties = [PSCustomObject]@{
+                                        nodes = @(
+                                            [PSCustomObject]@{ name = 'node1' },
+                                            [PSCustomObject]@{ name = 'node2' }
+                                        )
+                                    }
                                 }
                             }
                         )
@@ -9143,3 +9253,224 @@ Describe 'Function: Get-AzLocalFleetConnectivityStatus (v0.7.79)' {
 }
 
 #endregion v0.7.79: Get-AzLocalFleetConnectivityStatus
+
+#region v0.7.84: Get-AzLocalFleetConnectivityStatus correctness fixes
+
+Describe 'Regression v0.7.84: Get-AzLocalFleetConnectivityStatus correctness fixes (Step.4 summary)' {
+    # Three bugs surfaced in real Step.4 GitHub Actions output (run #9 on 2026-05-21)
+    # against a 20-cluster fleet running module v0.7.83:
+    #
+    # Bug A: 'Nodes' column = 0 for ALL clusters + 'Cluster-reported node count (sum)' = 0
+    #        + 'Node coverage delta' = -(Arc-joined nodes).
+    #        Root cause: code read 'properties.reportedProperties.nodeCount' which
+    #        does NOT exist in the HCI cluster ARG schema. The real property is
+    #        'properties.reportedProperties.nodes' (an array of node objects).
+    #
+    # Bug B: 'Non-Connected Machines' table ClusterName column corrupted to a
+    #        single character (cluster 'Mobile' -> 'e', 'alrs-cc' -> 'c', etc.).
+    #        Root cause: `CoerceStr (([string]($clusterId -split '/'))[-1])` applied
+    #        the [string] cast to the WHOLE ARRAY (joining with spaces), then [-1]
+    #        returned the last CHARACTER of the joined string instead of the last
+    #        array element. Same bug CLASS as the v0.7.82/v0.7.83 [char].Trim() bug.
+    #
+    # Bug C: ARB DaysSinceLastModified = -1 for EVERY ARB (Running and Offline).
+    #        Root cause: (1) the ARG `resources` query did not explicitly project
+    #        systemData.lastModifiedAt so it was often $null in the response, and
+    #        (2) the code short-circuited Running ARBs to -1 as an opaque sentinel.
+    #        Fix: `| extend lastModifiedAt = tostring(systemData.lastModifiedAt)`
+    #        in the KQL, and drop the Running short-circuit so real days is
+    #        computed for ALL ARBs regardless of status.
+    #
+    # The tests below are BOTH static (regex on the source file to detect
+    # regression of any of the three fixes) and dynamic (re-execute the cmdlet
+    # against synthetic ARG payloads that mimic the real fleet response and
+    # assert the resulting row values).
+
+    BeforeAll {
+        $script:repoRoot   = Split-Path -Path $PSScriptRoot -Parent
+        $script:sourcePath = Join-Path -Path $script:repoRoot -ChildPath 'Public/Get-AzLocalFleetConnectivityStatus.ps1'
+        $script:sourceText = Get-Content -LiteralPath $script:sourcePath -Raw
+    }
+
+    Context 'Static (source-code) regression guards' {
+
+        It 'Bug A: source reads properties.reportedProperties.nodes (NOT .nodeCount)' {
+            $script:sourceText | Should -Match "'properties\.reportedProperties\.nodes'" `
+                -Because 'v0.7.84 fix must read the nodes array - .nodeCount does not exist in the HCI cluster ARG schema'
+            $script:sourceText | Should -Not -Match "'properties\.reportedProperties\.nodeCount'" `
+                -Because 'v0.7.84 fix removed the nodeCount path which always returned `$null and produced NodeCount=0 for every cluster'
+        }
+
+        It 'Bug B: source extracts cluster name without [string] cast on the split array' {
+            $script:sourceText | Should -Match '\(\(\$clusterId -split ''/''\)\[-1\]\)' `
+                -Because 'v0.7.84 fix indexes the split ARRAY directly with [-1] - no [string] cast on the array'
+            $script:sourceText | Should -Not -Match '\[string\]\(\$clusterId -split ''/''\)' `
+                -Because 'v0.7.84 fix removed the bug pattern [string]($clusterId -split ''/'') which joined the array into a space-separated string then took its last CHARACTER'
+        }
+
+        It 'Bug C: ARB KQL explicitly extends lastModifiedAt from systemData' {
+            $script:sourceText | Should -Match 'extend lastModifiedAt = tostring\(systemData\.lastModifiedAt\)' `
+                -Because 'v0.7.84 fix guarantees lastModifiedAt is present as a top-level column even when ARG strips systemData from the default response'
+        }
+
+        It 'Bug C: ARB DaysSinceLastModified no longer short-circuits Running ARBs to -1' {
+            $script:sourceText | Should -Not -Match "if \(\`$status -ieq 'Running'\) \{\s*\[int\]-1" `
+                -Because 'v0.7.84 UX fix shows real days for ALL ARBs (Running and non-Running); -1 is reserved only for missing/unparseable timestamps'
+        }
+    }
+
+    Context 'Execution (mock ARG payload) regression guards' {
+
+        BeforeAll {
+            # Realistic ARG payloads that mimic the real fleet response.
+            # Crucially:
+            #   - cluster.properties.reportedProperties.nodes is an ARRAY (Bug A repro)
+            #   - Arc machine.parentClusterResourceId is a real ARM ID ending in cluster name (Bug B repro)
+            #   - ARB.systemData.lastModifiedAt is present (Bug C repro - 5/10 days ago)
+
+            $script:daysAgoRunningArb = 5
+            $script:daysAgoOfflineArb = 10
+            $script:runningArbStamp   = (Get-Date).AddDays(-$script:daysAgoRunningArb).ToString('o')
+            $script:offlineArbStamp   = (Get-Date).AddDays(-$script:daysAgoOfflineArb).ToString('o')
+
+            Mock Invoke-AzResourceGraphQuery -ModuleName AzLocal.UpdateManagement {
+                param([string]$Query)
+                if ($Query -match 'microsoft\.azurestackhci/clusters' -and $Query -notmatch 'updateSummaries' -and $Query -notmatch 'extensibilityresources') {
+                    return @(
+                        [PSCustomObject]@{
+                            name = 'Mobile'
+                            id   = '/subscriptions/sub1/resourceGroups/acx-mobile-azl/providers/Microsoft.AzureStackHCI/clusters/Mobile'
+                            resourceGroup  = 'acx-mobile-azl'
+                            subscriptionId = 'sub1'
+                            location       = 'eastus'
+                            properties     = [PSCustomObject]@{
+                                connectivityStatus = 'PartiallyConnected'
+                                status             = 'NotConnectedRecently'
+                                # Realistic 3-node Azure Local cluster (Bug A repro)
+                                reportedProperties = [PSCustomObject]@{
+                                    nodes = @(
+                                        [PSCustomObject]@{ name = 'Mobile-A' },
+                                        [PSCustomObject]@{ name = 'Mobile-B' },
+                                        [PSCustomObject]@{ name = 'Mobile-C' }
+                                    )
+                                }
+                            }
+                        }
+                    )
+                }
+                if ($Query -match 'updateSummaries') { return @() }
+                if ($Query -match 'hybridcompute/machines') {
+                    return @(
+                        [PSCustomObject]@{
+                            name = 'Mobile-A'
+                            id   = '/subscriptions/sub1/resourceGroups/acx-mobile-azl/providers/Microsoft.HybridCompute/machines/Mobile-A'
+                            resourceGroup  = 'acx-mobile-azl'
+                            subscriptionId = 'sub1'
+                            properties     = [PSCustomObject]@{
+                                status                  = 'Disconnected'
+                                cloudMetadata           = [PSCustomObject]@{ provider = 'AzSHCI' }
+                                # Bug B repro: real ARM ID with cluster name 'Mobile' as last segment.
+                                # Pre-fix code would have returned 'e' (last char of 'Mobile').
+                                parentClusterResourceId = '/subscriptions/sub1/resourceGroups/acx-mobile-azl/providers/Microsoft.AzureStackHCI/clusters/Mobile'
+                                agentVersion            = '1.40.0'
+                                osSku                   = 'Azure Stack HCI'
+                                osVersion               = '10.0.26100.32522'
+                                lastStatusChange        = '2026-04-28T20:58:26Z'
+                            }
+                        }
+                    )
+                }
+                if ($Query -match 'edgedevices') { return @() }
+                if ($Query -match 'resourceconnector/appliances') {
+                    # Two ARBs: one Running, one Offline. Both have real systemData.lastModifiedAt.
+                    # The KQL `extend lastModifiedAt = tostring(systemData.lastModifiedAt)` makes
+                    # the field available top-level - we mirror that here so the mock matches the
+                    # post-fix shape.
+                    return @(
+                        [PSCustomObject]@{
+                            name           = 'Mobile-arcbridge'
+                            id             = '/subscriptions/sub1/resourceGroups/acx-mobile-azl/providers/Microsoft.ResourceConnector/appliances/Mobile-arcbridge'
+                            resourceGroup  = 'acx-mobile-azl'
+                            subscriptionId = 'sub1'
+                            properties     = [PSCustomObject]@{ status = 'Offline' }
+                            systemData     = [PSCustomObject]@{ lastModifiedAt = $script:offlineArbStamp }
+                            lastModifiedAt = $script:offlineArbStamp
+                        },
+                        [PSCustomObject]@{
+                            name           = 'Healthy-arcbridge'
+                            id             = '/subscriptions/sub1/resourceGroups/other-rg/providers/Microsoft.ResourceConnector/appliances/Healthy-arcbridge'
+                            resourceGroup  = 'other-rg'
+                            subscriptionId = 'sub1'
+                            properties     = [PSCustomObject]@{ status = 'Running' }
+                            systemData     = [PSCustomObject]@{ lastModifiedAt = $script:runningArbStamp }
+                            lastModifiedAt = $script:runningArbStamp
+                        }
+                    )
+                }
+                return @()
+            }
+
+            Mock Write-Log -ModuleName AzLocal.UpdateManagement { }
+            $script:bugRepro = Get-AzLocalFleetConnectivityStatus -PassThru
+        }
+
+        It 'Bug A: cluster NodeCount reflects the length of the nodes array (3, not 0)' {
+            $cluster = $script:bugRepro.ClusterRows | Where-Object { $_.ClusterName -eq 'Mobile' }
+            $cluster | Should -Not -BeNullOrEmpty
+            $cluster.NodeCount | Should -Be 3 `
+                -Because 'v0.7.84 fix must count properties.reportedProperties.nodes elements (Mobile cluster has 3 nodes); pre-fix code returned 0 because it read the non-existent .nodeCount scalar'
+        }
+
+        It 'Bug B: NonConnectedMachines ClusterName is the FULL last segment of the ARM ID (not last character)' {
+            $machine = $script:bugRepro.NonConnectedMachines | Where-Object { $_.NodeName -eq 'Mobile-A' }
+            $machine | Should -Not -BeNullOrEmpty
+            $machine.ClusterName | Should -Be 'Mobile' `
+                -Because 'v0.7.84 fix must return the full last segment of parentClusterResourceId (cluster ''Mobile''); pre-fix bug returned ''e'' (last character of the joined string)'
+            # Belt-and-suspenders: assert NOT a single character.
+            $machine.ClusterName.Length | Should -BeGreaterThan 1 `
+                -Because 'a single-character ClusterName is the diagnostic signature of the v0.7.83 scalar-collapse bug'
+        }
+
+        It 'Bug C: Running ARB DaysSinceLastModified computes real days (not -1 sentinel)' {
+            $arb = $script:bugRepro.ArbRows | Where-Object { $_.ArbName -eq 'Healthy-arcbridge' }
+            $arb | Should -Not -BeNullOrEmpty
+            $arb.ArbStatus | Should -Be 'Running'
+            # Allow +/- 1 day tolerance for clock drift / int truncation.
+            $arb.DaysSinceLastModified | Should -BeGreaterOrEqual ($script:daysAgoRunningArb - 1) `
+                -Because 'v0.7.84 UX fix removes the Running -> -1 short-circuit; real days is computed for healthy ARBs too'
+            $arb.DaysSinceLastModified | Should -BeLessOrEqual ($script:daysAgoRunningArb + 1)
+        }
+
+        It 'Bug C: Offline ARB DaysSinceLastModified computes real days (not -1 because systemData is now extended)' {
+            $arb = $script:bugRepro.ArbRows | Where-Object { $_.ArbName -eq 'Mobile-arcbridge' }
+            $arb | Should -Not -BeNullOrEmpty
+            $arb.ArbStatus | Should -Be 'Offline'
+            $arb.DaysSinceLastModified | Should -BeGreaterOrEqual ($script:daysAgoOfflineArb - 1) `
+                -Because 'v0.7.84 KQL extend makes lastModifiedAt available; pre-fix would have returned -1 because systemData was often missing from the ARG response'
+            $arb.DaysSinceLastModified | Should -BeLessOrEqual ($script:daysAgoOfflineArb + 1)
+        }
+    }
+
+    Context 'Negative-control: pre-fix bug shapes still produce wrong output' {
+
+        It 'Bug B negative-control: [string](array)[-1] still returns the last CHARACTER of the joined string' {
+            # Direct re-execution of the pre-v0.7.84 buggy expression.
+            # If PowerShell's array-to-string coercion semantics ever change, this
+            # test fails loudly and forces re-evaluation of whether the [string]
+            # cast wrapping is even needed any more.
+            $clusterId = '/subscriptions/abc/resourceGroups/rg/providers/Microsoft.AzureStackHCI/clusters/Mobile'
+            $buggyResult = ([string]($clusterId -split '/'))[-1]
+            $buggyResult | Should -Be 'e' `
+                -Because 'pre-fix code returned the last char of the space-joined array, not the last array element - this is the diagnostic signature of the v0.7.84 Bug B'
+        }
+
+        It 'Bug B positive-control: ($arr)[-1] without the [string] cast returns the full last element' {
+            $clusterId = '/subscriptions/abc/resourceGroups/rg/providers/Microsoft.AzureStackHCI/clusters/Mobile'
+            $fixedResult = ($clusterId -split '/')[-1]
+            $fixedResult | Should -Be 'Mobile' `
+                -Because 'the v0.7.84 fix removes the [string] cast on the array so [-1] indexes the array directly and returns the cluster name in full'
+        }
+    }
+}
+
+#endregion v0.7.84: Get-AzLocalFleetConnectivityStatus correctness fixes
