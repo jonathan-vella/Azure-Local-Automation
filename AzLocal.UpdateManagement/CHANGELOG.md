@@ -5,6 +5,32 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.87] - 2026-05-23
+
+### Added
+
+- **New public function `New-AzLocalFleetConnectivityStatusSummary`** in `Public/`. A pure markdown renderer that builds the Step.4 fleet-connectivity step-summary previously inlined as a ~22 KB `pwsh` body in both pipelines. The function consumes the seven CSV reports produced earlier in the pipeline by `Get-AzLocalFleetConnectivityStatus` (or the equivalent in-memory object arrays via the `FromObjects` parameter set) plus an explicit `-Counts` hashtable of KPI totals. It is a pure renderer over already-collected data - no Azure CLI, no Resource Graph extension, no `Az.*` modules required, no re-querying Azure. Returns markdown string by default; supports `-OutputPath` (UTF-8 no-BOM) and `-PassThru` to combine both. ASCII source with Unicode emoji icons emitted via `[char]0xNNNN`.
+- **Pester regression guard for the GitHub Actions 21,000-char expression-length cap.** The new `Regression v0.7.87: bundled GitHub Actions YAML run: blocks stay under GitHub 21,000-char expression cap` Describe block enumerates every `run:` (and `script:`) literal block scalar in every bundled `github-actions/Step.{0..8}.yml` template and asserts each is below 18,000 chars. The 3K headroom under the 21K cap covers future feature growth and possible future re-introduction of `${{ }}` substitutions (the cap applies to the post-substitution length of any `run:` body that contains at least one `${{ }}`). Two additional asserts verify both the GH and ADO Step.4 YAMLs CALL the new renderer function (no inline 22 KB markdown).
+- **Comprehensive Pester unit-test coverage for the new renderer**: parameter-set validation, `Counts` hashtable required-key validation (and string-value coercion), markdown structure (KPI table, reconciliation table, How-to-interpret subsection, cluster+ARB table, orphan ARBs, Arc summary, non-connected machines, NIC stats, NIC issues, reports list, generated-at footer), empty-input placeholders ("No clusters returned.", "All machines are Connected.", "No physical NIC issues."), orphan-ARB section conditionality, multi-cluster-per-RG ARB matching (comma-separated `ClusterId`), `-OutputPath` writes UTF-8 no-BOM and creates parent directories, `-PassThru` semantics, CSV-based `FromCsvReports` parameter set with graceful missing-CSV handling.
+
+### Changed
+
+- **`github-actions/Step.4_fleet-connectivity-status.yml`**: the 283-line, 20,460-char inline pwsh markdown renderer has been replaced with a 23-line body that calls `New-AzLocalFleetConnectivityStatusSummary`. File shrunk from 863 to 603 lines. The renderer step's `run:` body is now ~1,083 chars - a 95% reduction. The renderer step continues to use the step-level `env:` pattern introduced in v0.7.86 (zero `${{ }}` substitutions in the body, so the 21K cap does not apply at all).
+- **`azure-devops/Step.4_fleet-connectivity-status.yml`**: equivalent refactor against the ADO twin so both pipelines call the same module function (single source of truth). As a side-effect this fixes a pre-existing structural anomaly: the Display Summary step's pwsh literal block scalar had silently absorbed the `displayName:` + `condition:` + `env:` indented entries and the subsequent `PublishTestResults@2` task (because L713-L727 sat at indent 12-16 while the block scalar base was indent 8), so the parsed ADO pipeline used to have only 10 steps. After v0.7.87 the parsed pipeline has 11 steps, with `Display Fleet Connectivity Summary` and `Publish Fleet Connectivity JUnit Diagnostics` now real, distinct ADO tasks that actually run.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.86'` to `'0.7.87'`.
+
+### Migration
+
+- **Module:** run `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`). The new public function is exported automatically. No call-site changes are needed for any existing function.
+- **Pipelines:** the Step.4 GH + ADO YAML refactors require the v0.7.87 module to be installed on the pipeline runner (the new `New-AzLocalFleetConnectivityStatusSummary` cmdlet must be on `Get-Command`). Re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update` to pick up both the Step.4 refactor and the pin bump. If you stay on the v0.7.86-pinned YAMLs they will continue to work (they call into the v0.7.86 module which does not yet have the new function).
+
+### Background
+
+v0.7.85 added a long-form `How to interpret + act on a non-zero reconciliation` subsection to the Step.4 markdown summary. The combined `run:` body in `github-actions/Step.4_fleet-connectivity-status.yml` grew from <21K to ~23.9K chars. Because the body contained 11 `${{ steps.fleet-connectivity.outputs.X }}` substitutions, GitHub Actions parsed the whole `run:` value as a single expression and hit its 21,000-char expression-length cap at workflow-parse time (`Exceeded max expression length 21000`). v0.7.86 mitigated by moving the 11 step-output substitutions to a step-level `env:` block (the `run:` body then has zero `${{ }}` substitutions, so the cap stops applying). v0.7.87 ships the durable fix: extract the renderer into a public module function so both pipelines call one place, the renderer becomes unit-testable, and a Pester regression guard catches any future regression before it hits production parsing. The ADO structural anomaly is fixed as a side-effect of the same refactor.
+
 ## [0.7.86] - 2026-05-22
 
 ### Changed
