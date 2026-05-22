@@ -4,7 +4,19 @@
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
 >
-> **For v0.7.85 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0785) `What's New in v0.7.85` section.
+> **For v0.7.86 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0786) `What's New in v0.7.86` section.
+
+---
+
+### What's New in v0.7.85
+
+v0.7.85 was a **documentation enhancement** for the Step.4 fleet-connectivity step-summary - no code changes in `Get-AzLocalFleetConnectivityStatus` itself. After v0.7.84 fixed the underlying correctness bugs, a production operator running Step.4 against a 20-cluster fleet saw `Node coverage delta = -6` (cluster-reported = 38, Arc-tagged = 44) and asked what it meant. The previous label `Arc-joined physical nodes` (implying a join was computed) plus a one-directional caption (which only described positive-delta causes) made it harder than necessary to interpret. v0.7.85 made the table self-explanatory and actionable so operators could act on non-zero numbers without external context.
+
+**Column rename + Notes column rewrites in the `Node + ARB Coverage Reconciliation` table.** `Arc-joined physical nodes` -> `Arc-tagged physical nodes`. The previous label was a misnomer: this value has never been a join against `cluster.reportedProperties.nodes` - it is the raw count of `microsoft.hybridcompute/machines` carrying `properties.detectedProperties.cloudprovider=AzSHCI` and `kind!=HCI`. The Notes column now explicitly calls out that the two counts come from independent KQL queries and can legitimately disagree in EITHER direction. Stale wording on `Cluster-reported node count (sum)` that still referenced the pre-v0.7.84 non-existent `nodeCount` scalar has been replaced with the correct `Sum of array_length(properties.reportedProperties.nodes) across all clusters`. The `Node coverage delta` Notes are now BIDIRECTIONAL: POSITIVE = clusters claim more nodes than Arc has (Arc-onboarding lag / deleted Arc resource / missing `AzSHCI` provider tag / stale `cluster.reportedProperties.nodes` array); NEGATIVE = Arc has more `AzSHCI`-tagged machines than clusters claim (orphan/decommissioned Arc resource / pre-staged-but-not-yet-joined node / mis-tagged non-cluster machine).
+
+**New `### How to interpret + act on a non-zero reconciliation` subsection appended after the table.** Per-direction remediation lists for `Node coverage delta` POSITIVE (Arc-onboarding lag -> wait + re-run; Arc resource deleted -> `azcmagent connect`; missing `AzSHCI` tag -> re-run onboarding extension; stale `cluster.reportedProperties.nodes` -> compare against `Get-ClusterNode`) and NEGATIVE (orphan/decommissioned Arc resource -> delete or re-attach; pre-staged node -> wait for commissioning; mis-tagged machine -> clear the tag). Includes an inline Resource Graph query template to enumerate the specific Arc machines causing a NEGATIVE node coverage delta. Also documents `Clusters without an ARB > 0` causes (ARB never deployed / ARB deleted but cluster present / RP not registered) and `Orphan ARBs > 0` causes (cluster deleted but ARB not cleaned up / scope-list drift / ARB for an excluded cluster).
+
+Applied identically to both bundled Step.4 YAMLs (`Automation-Pipeline-Examples/github-actions/Step.4_fleet-connectivity-status.yml` and `Automation-Pipeline-Examples/azure-devops/Step.4_fleet-connectivity-status.yml`); all 18 bundled `Step.{0..8}.yml` templates bumped `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.84'` to `'0.7.85'`. Only Step.4 had inline-script content changes; the other 17 were pin-only bumps.
 
 ---
 

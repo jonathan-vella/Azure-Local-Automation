@@ -1744,6 +1744,9 @@ Moved to [docs/appendix-release-history.md](docs/appendix-release-history.md) to
 ## 16. Related documentation
 
 - [Azure Local Update Management module README](../README.md)
+- [Concepts and terminology (`docs/concepts.md`)](../docs/concepts.md) - one-page glossary covering update states, deep-link columns, and the JUnit testsuites the pipelines emit.
+- [RBAC reference (`docs/rbac.md`)](../docs/rbac.md) - full action / NotAction list for the custom role, plus the read-only delegations the fleet health / connectivity / update-status pipelines need.
+- [Troubleshooting reference (`docs/troubleshooting.md`)](../docs/troubleshooting.md) - module-level error patterns (auth, Resource Graph paging, JUnit emission, ITSM probe failures) keyed by the messages the pipelines surface.
 - [ITSM Connector setup guide (`ITSM/README.md`)](../ITSM/README.md) - optional, opt-in ServiceNow integration.
 - [ITSM Connector design + decisions log (`ITSM/ITSM-Connector-Plan.md`)](../ITSM/ITSM-Connector-Plan.md)
 - [Azure Stack HCI documentation](https://learn.microsoft.com/azure-stack/hci/)

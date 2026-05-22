@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.85 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.85)
+**Latest Version:** v0.7.86 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.86)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.85](#whats-new-in-v0785)
+- [What's New in v0.7.86](#whats-new-in-v0786)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,17 +86,19 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.85
+## What's New in v0.7.86
 
-v0.7.85 is a **documentation enhancement** for the Step.4 fleet-connectivity step-summary - no code changes in `Get-AzLocalFleetConnectivityStatus` itself. After v0.7.84 fixed the underlying correctness bugs, a production operator running Step.4 against a 20-cluster fleet saw `Node coverage delta = -6` (cluster-reported = 38, Arc-tagged = 44) and asked what it meant. The previous label `Arc-joined physical nodes` (implying a join was computed) plus a one-directional caption (which only described positive-delta causes) made it harder than necessary to interpret. v0.7.85 makes the table self-explanatory and actionable so operators can act on non-zero numbers without external context.
+v0.7.86 is a **documentation follow-up** to v0.7.85 - no code changes anywhere in the module, no YAML inline-script changes. While reviewing PR #56 before merging v0.7.85, the `Automation-Pipeline-Examples` README + appendix were found to still describe the seven-pipeline layout from before `Step.4 Fleet Connectivity Status` was inserted in v0.7.79 (and before `Step.0 Authentication Test` was added in v0.7.70). The follow-up audit also caught two related cross-doc gaps: the `ITSM/README.md` setup guide had never been updated when Step.4 shipped opt-in ServiceNow ticketing in v0.7.76, and the CI/CD `Automation-Pipeline-Examples/README.md` had no direct cross-link to the top-level `docs/concepts.md` / `docs/rbac.md` / `docs/troubleshooting.md` references. The bundled YAMLs themselves were correct; only the human-facing setup runbooks were stale. v0.7.86 republishes the module with the corrected docs.
 
-**Column rename + Notes column rewrites in the `Node + ARB Coverage Reconciliation` table.** `Arc-joined physical nodes` -> `Arc-tagged physical nodes`. The previous label was a misnomer: this value has never been a join against `cluster.reportedProperties.nodes` - it is the raw count of `microsoft.hybridcompute/machines` carrying `properties.detectedProperties.cloudprovider=AzSHCI` and `kind!=HCI`. The Notes column now explicitly calls out that the two counts come from independent KQL queries and can legitimately disagree in EITHER direction. Stale wording on `Cluster-reported node count (sum)` that still referenced the pre-v0.7.84 non-existent `nodeCount` scalar has been replaced with the correct `Sum of array_length(properties.reportedProperties.nodes) across all clusters`. The `Node coverage delta` Notes are now BIDIRECTIONAL: POSITIVE = clusters claim more nodes than Arc has (Arc-onboarding lag / deleted Arc resource / missing `AzSHCI` provider tag / stale `cluster.reportedProperties.nodes` array); NEGATIVE = Arc has more `AzSHCI`-tagged machines than clusters claim (orphan/decommissioned Arc resource / pre-staged-but-not-yet-joined node / mis-tagged non-cluster machine).
+**`Automation-Pipeline-Examples/README.md` refreshed end-to-end.** Brought in lock-step with the actual 9-step pipeline lineup (`Step.0` Authentication Test through `Step.8` Fleet Health Status). Stale counts (`seven`/`eight pipelines`, `Step.7 last`) corrected to `nine`/`Step.8 last`; section 1.1 mapping table re-rendered so `Step.4 = Fleet Connectivity Status` (the table had silently shifted off-by-one from when Step.4 was inserted, mis-labelling Step.5..Step.8); section 6.6 fleet-monitoring narrative now covers all three daily steady-state pipelines (Step.4 + Step.7 + Step.8) including the v0.7.85 reconciliation enhancements and the four ARM/ARG scopes Step.4 reads (`Microsoft.ResourceGraph/resources/read`, `Microsoft.AzureStackHCI/edgeDevices/read`, `Microsoft.HybridCompute/machines/read`, `Microsoft.ResourceConnector/appliances/read`); section 13 file layout re-listed in `Step.0..Step.8` numeric order with descriptive comments + cron schedules. Section 16 "Related documentation" now cross-links the three top-level reference docs (`docs/concepts.md`, `docs/rbac.md`, `docs/troubleshooting.md`) directly from the CI/CD runbook.
 
-**New `### How to interpret + act on a non-zero reconciliation` subsection appended after the table.** Per-direction remediation lists for `Node coverage delta` POSITIVE (Arc-onboarding lag -> wait + re-run; Arc resource deleted -> `azcmagent connect`; missing `AzSHCI` tag -> re-run onboarding extension; stale `cluster.reportedProperties.nodes` -> compare against `Get-ClusterNode`) and NEGATIVE (orphan/decommissioned Arc resource -> delete or re-attach; pre-staged node -> wait for commissioning; mis-tagged machine -> clear the tag). Includes an inline Resource Graph query template to enumerate the specific Arc machines causing a NEGATIVE node coverage delta. Also documents `Clusters without an ARB > 0` causes (ARB never deployed / ARB deleted but cluster present / RP not registered) and `Orphan ARBs > 0` causes (cluster deleted but ARB not cleaned up / scope-list drift / ARB for an excluded cluster).
+**`Automation-Pipeline-Examples/docs/appendix-pipelines.md` renumbered + extended.** Sections renumbered from `A.1..A.7` (which had silently drifted off-by-one) to `A.0..A.8` so the appendix section number always matches its `Step.N_*.yml` filename. Two new sections added: `A.0 Authentication Validation and Subscription Scope Report` (v0.7.70) and `A.4 Fleet Connectivity Status` (v0.7.79+; reconciliation enhanced in v0.7.85). The default-triggers at-a-glance table at the top now lists all 9 pipelines. A new "Numbering convention" callout clarifies that `A.N` mirrors `Step.N` (not execution order). Stale in-file anchor links repaired.
 
-Applied identically to both bundled Step.4 YAMLs (`Automation-Pipeline-Examples/github-actions/Step.4_fleet-connectivity-status.yml` and `Automation-Pipeline-Examples/azure-devops/Step.4_fleet-connectivity-status.yml`); all 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.84'` to `'0.7.85'`. Only Step.4 has inline-script content changes; the other 17 are pin-only bumps. **Migration:** no module-side action required - `Install-Module AzLocal.UpdateManagement -Force` is enough. To pick up the enhanced Step.4 step-summary in your pipelines, run `Copy-AzLocalPipelineExample -Destination <path> -Update`.
+**`ITSM/README.md` updated to list four ITSM-wired pipelines instead of three.** Step.4 `fleet-connectivity-status` has shipped with opt-in ServiceNow ticketing since v0.7.76 (gated on `raise_itsm_ticket=true`, sourcing `./reports/fleet-connectivity-status.xml`, using the existing `Critical`/`Warning` rows in the trigger matrix), but the ITSM README was never updated when that wiring shipped - it still described Step.6 / Step.7 / Step.8 only. Section 1 "What this connector does" now lists Step.4 alongside the other three; a new v0.7.76 callout documents the Step.4 wiring (including the per-resource `UpdateName` patterns Step.4 emits: `ClusterConnectivity=...`, `ArcAgent=... [<NodeName>]`, `PhysicalNic=... [<NodeName>/<NicName>]`, `ARB=... [<ArbName>]` - so the SHA256 dedupe key naturally separates a cluster-level disconnect from an individual NIC / Arc-agent / ARB failure); the section 8 wiring table includes a Step.4 row; and the header version pin bumped from v0.7.70 to v0.7.86.
 
-> Previous release notes (including the full v0.7.84 hotfix entry) have moved into [`docs/release-history.md`](docs/release-history.md).
+**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.85'` to `'0.7.86'`. **No inline-script changes** in any YAML. **Migration:** no module-side action required - `Install-Module AzLocal.UpdateManagement -Force` is enough. Re-copy the bundled YAMLs only if you want to refresh the pin (`Copy-AzLocalPipelineExample -Destination <path> -Update`).
+
+> Previous release notes (including the full v0.7.85 enhancement entry) have moved into [`docs/release-history.md`](docs/release-history.md).
 
 ## Files
 
@@ -191,24 +193,15 @@ Import-Module .\AzLocal.UpdateManagement.psd1
 Connect-AzLocalServicePrincipal
 ```
 
-### 2. Install or Import the Module
+### 2. Install and Import the Module
 
-**Option A: Install from PowerShell Gallery (Recommended)**
+**Install from PowerShell Gallery**
 ```powershell
 # Install from PowerShell Gallery
 Install-Module -Name AzLocal.UpdateManagement -Scope CurrentUser
 
 # Import the module
 Import-Module AzLocal.UpdateManagement
-```
-
-**Option B: Import from Local Clone**
-```powershell
-# Import the module from the current directory
-Import-Module .\AzLocal.UpdateManagement.psd1
-
-# Or import using the full path
-Import-Module "C:\Path\To\AzLocal.UpdateManagement\AzLocal.UpdateManagement.psd1"
 ```
 
 **Optional: copy the CI/CD pipeline samples out of the module install folder**
@@ -570,7 +563,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.81 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.85** stay above under [`What's New in v0.7.85`](#whats-new-in-v0785).
+The most recent release notes for **v0.7.86** stay above under [`What's New in v0.7.86`](#whats-new-in-v0786).
 
 ---
 

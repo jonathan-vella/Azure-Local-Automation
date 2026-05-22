@@ -5,6 +5,28 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.86] - 2026-05-22
+
+### Changed
+
+- **`Automation-Pipeline-Examples/README.md` refreshed end-to-end** to bring the runbook in lock-step with the actual 9-step pipeline lineup (`Step.0` Authentication Test through `Step.8` Fleet Health Status). Stale counts (`seven`/`eight pipelines`, `Step.7 last`) corrected to `nine`/`Step.8 last`; section 1.1 mapping table re-rendered so `Step.4 = Fleet Connectivity Status` (the table had silently shifted off-by-one from when Step.4 was inserted in v0.7.79, mis-labelling Step.5..Step.8); section 6.6 fleet-monitoring narrative now covers all three daily steady-state pipelines (Step.4 + Step.7 + Step.8) including the v0.7.85 reconciliation enhancements and the four ARM/ARG scopes Step.4 reads (`Microsoft.ResourceGraph/resources/read`, `Microsoft.AzureStackHCI/edgeDevices/read`, `Microsoft.HybridCompute/machines/read`, `Microsoft.ResourceConnector/appliances/read`); section 13 file layout re-listed in `Step.0..Step.8` numeric order with descriptive comments + cron schedules.
+- **`Automation-Pipeline-Examples/docs/appendix-pipelines.md` renumbered + extended.** Sections renumbered from `A.1..A.7` (which had silently drifted off-by-one) to `A.0..A.8` so the appendix section number always matches its `Step.N_*.yml` filename. Two new sections added: `A.0 Authentication Validation and Subscription Scope Report` (v0.7.70) and `A.4 Fleet Connectivity Status` (v0.7.79+; reconciliation enhanced in v0.7.85). The default-triggers at-a-glance table at the top now lists all 9 pipelines (added rows for `authentication-test` and `fleet-connectivity-status`). A new "Numbering convention" callout clarifies that `A.N` mirrors `Step.N` (not execution order). Stale in-file anchor links repaired (`#a4-apply-updates` -> `docs/appendix-pipelines.md#a6-apply-updates`; `#83-end-to-end-runbook-...` -> `../README.md#83-...`; `#8-scheduling-...` -> `../README.md#8-scheduling-...`).
+- **`ITSM/README.md` updated to list four ITSM-wired pipelines instead of three.** Step.4 `fleet-connectivity-status` has shipped with opt-in ServiceNow ticketing since v0.7.76 (gated on `raise_itsm_ticket=true`, sourcing `./reports/fleet-connectivity-status.xml`, using the existing `Critical`/`Warning` rows in the trigger matrix), but the ITSM README was never updated when that wiring shipped - it still described Step.6 / Step.7 / Step.8 only. Section 1 "What this connector does" now lists Step.4 alongside the other three, a new v0.7.76 callout documents the Step.4 wiring (including the distinct per-resource `UpdateName` patterns Step.4 emits: `ClusterConnectivity=...`, `ArcAgent=... [<NodeName>]`, `PhysicalNic=... [<NodeName>/<NicName>]`, `ARB=... [<ArbName>]` - so the SHA256 dedupe key naturally separates a cluster-level disconnect from an individual NIC / Arc-agent / ARB failure), and the section 8 wiring table includes a Step.4 row. The header version pin also bumped from `v0.7.70` to `v0.7.86`.
+- **`Automation-Pipeline-Examples/README.md` section 16 "Related documentation"** now cross-links the three top-level reference docs (`docs/concepts.md`, `docs/rbac.md`, `docs/troubleshooting.md`) directly from the CI/CD runbook. Previously these were only reachable from the top-level module README, so an operator who arrived directly at the CI/CD runbook had no obvious path to the glossary, full RBAC reference, or module-level troubleshooting matrix.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.85'` to `'0.7.86'`. **No inline-script changes** in any YAML.
+
+### Migration
+
+- **Module:** no action required. `Install-Module AzLocal.UpdateManagement -Force` is enough.
+- **Pipelines:** content edits are limited to the human-facing README + appendix; the YAML inline scripts are unchanged. Re-copy the bundled YAMLs only if you want to refresh the `GENERATED_AGAINST_MODULE_VERSION` pin (`Copy-AzLocalPipelineExample -Destination <path> -Update`).
+
+### Background
+
+While reviewing PR #56 before merging v0.7.85, the `Automation-Pipeline-Examples` README and appendix were found to still describe the seven-pipeline layout from before `Step.4 Fleet Connectivity Status` was inserted (v0.7.79) and before `Step.0 Authentication Test` was added (v0.7.70). The follow-up audit also caught two related cross-doc gaps: `ITSM/README.md` had never been updated to reflect that Step.4 ships with opt-in ServiceNow ticketing (v0.7.76 Phase D extension), and the CI/CD `Automation-Pipeline-Examples/README.md` had no direct cross-link to the top-level `docs/concepts.md` / `docs/rbac.md` / `docs/troubleshooting.md` references. The bundled YAMLs themselves were correct; only the human-facing setup runbooks were stale. v0.7.86 republishes the module with the corrected docs.
+
 ## [0.7.85] - 2026-05-21
 
 ### Changed
