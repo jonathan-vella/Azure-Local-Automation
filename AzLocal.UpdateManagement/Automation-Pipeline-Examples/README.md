@@ -34,6 +34,7 @@ It is written in the same step-by-step style as [`ITSM/README.md`](../ITSM/READM
 7. [Optional: open ITSM tickets for clusters needing operator action](#7-optional-open-itsm-tickets-for-clusters-needing-operator-action)
 8. [Scheduling, maintenance windows, and change-freeze periods](#8-scheduling-maintenance-windows-and-change-freeze-periods)
    - [8.3 End-to-end runbook: Apply-Updates Schedule Coverage Audit](#83-end-to-end-runbook-apply-updates-schedule-coverage-audit)
+   - [8.4 Restrict which updates each ring installs (`allowedUpdateVersions`, schema v2)](#84-restrict-which-updates-each-ring-installs-allowedupdateversions-schema-v2)
 9. [Tuning throughput (`-ThrottleLimit`)](#9-tuning-throughput--throttlelimit)
 10. [Standalone HTML report (no pipeline)](#10-standalone-html-report-no-pipeline)
 11. [Security model](#11-security-model)
@@ -1599,6 +1600,100 @@ Test-AzLocalApplyUpdatesScheduleCoverage -View Recommend -Platform GitHubActions
 # Inventory every (Ring, Window) pair with its required cron, export to CSV
 Test-AzLocalApplyUpdatesScheduleCoverage -View Matrix -ExportPath .\windows.csv
 ```
+
+---
+
+### 8.4 Restrict which updates each ring installs (`allowedUpdateVersions`, schema v2)
+
+*New in v0.7.88 (opt-in field) and v0.7.89 (mandatory top-level + `Latest` default).*
+
+The `apply-updates-schedule.yml` schema v2 adds an `allowedUpdateVersions:` field that lets you constrain **which** Azure Local update each ring is allowed to install. Schema v1 had no such control - whatever was the **latest Ready** update on the cluster would be picked up by `Start-AzLocalClusterUpdate`. Schema v2 keeps that behaviour as the default and adds an opt-in allow-list for operators who want stricter, ring-specific policy (e.g. "Production only installs the YY04 / YY10 feature drops, never the YY03 / YY09 cumulative updates").
+
+#### 8.4.1 The model in 60 seconds
+
+- **Top-level field is mandatory on schema v2.** Its value is either:
+  - The reserved sentinel `'Latest'` (case-insensitive) - meaning "no constraint, install the latest Ready update on each cluster" (the historic v0.7.88 / v1 default). This is what the generator and the schema migrator emit by default.
+  - A semicolon-separated list of explicit update names / version strings, e.g. `'10.2604.0.123;10.2610.0.456'` - clusters only install updates whose name / version matches one of those tokens.
+- **Per-row override is optional.** Any row in `schedule:` can carry its own `allowedUpdateVersions:` with either `'Latest'` (explicit opt-out from a fleet-wide allow-list) or its own semicolon-separated list. Per-row values **take precedence over the top-level** for any ring matched by that row.
+- **Mixing `Latest` with explicit values inside a single field is rejected** (e.g. `'Latest;10.2604.0.123'` fails validation). Either you constrain or you don't.
+- **Cross-row UNION semantics.** If two rows match the same `(week, day, ring)` and one row contributes `Latest` while another contributes explicit versions, **`Latest` wins** (the resolved allow-list becomes "no constraint"). This is intentional: an explicit `Latest` on any matching row is the operator saying "I am OK with whatever is Ready on this cluster".
+- **Validation is strict.** `Get-AzLocalApplyUpdatesScheduleConfig` rejects a v2 file with no top-level `allowedUpdateVersions:` and points you at the migrator.
+
+#### 8.4.2 Worked example: "minimum updates" policy for Production
+
+Default a fleet to `Latest`, then narrow Production to a known-good feature build:
+
+```yaml
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2025
+
+# Fleet-wide default: clusters install the latest Ready update on each run.
+allowedUpdateVersions: 'Latest'
+
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek:   'Mon-Fri'
+    rings:        'Canary'
+    notes:        'Canary inherits top-level - whatever is Ready, install it'
+
+  - weeksInCycle: '2'
+    daysOfWeek:   'Mon-Fri'
+    rings:        'Ring1'
+    notes:        'Ring1 inherits top-level'
+
+  - weeksInCycle: '3-4'
+    daysOfWeek:   'Tue,Wed,Thu'
+    rings:        'Production'
+    # Per-row override: Production is restricted to the YY04 / YY10
+    # feature drops. Cumulative updates are installed on Canary / Ring1
+    # earlier in the cycle, but Production waits for the feature build.
+    allowedUpdateVersions: '10.2604.0.123;10.2610.0.456'
+    notes:        'Production - feature updates only'
+```
+
+What this does:
+
+- `Start-AzLocalClusterUpdate` resolves the current ring via `Resolve-AzLocalCurrentUpdateRing`, which now also returns the effective `AllowedUpdateVersions` for that ring.
+- For Canary / Ring1 clusters: effective allow-list = `Latest`, so the picker installs whatever is Ready.
+- For Production clusters: effective allow-list = `10.2604.0.123;10.2610.0.456`, so the picker only installs updates whose name / version matches one of those two tokens. If neither is Ready, the run is a no-op (logged and skipped, not failed).
+
+You can also pass `-AllowedUpdateVersions Latest` (or any explicit list) directly to `Start-AzLocalClusterUpdate` for ad-hoc invocations; that takes precedence over the schedule file.
+
+#### 8.4.3 Finding valid update names / version strings
+
+Two ways:
+
+```powershell
+# Programmatic (recommended for pipelines and scripts):
+Get-AzLocalUpdate -Status Ready | Select-Object -Property ClusterName, Name, Version
+```
+
+Or in the **Azure portal**: **Azure Local** -> **\<cluster\>** -> **Updates** -> the **Name** column on each Ready update row is what you put in `allowedUpdateVersions:`. The cmdlet matches either Name or Version (case-insensitive, exact), so either works - we recommend pinning by Name (e.g. `'10.2604.0.123'`).
+
+#### 8.4.4 Migrating an existing v1 schedule
+
+Use the schema migrator:
+
+```powershell
+Update-AzLocalApplyUpdatesScheduleConfig `
+    -Path .\apply-updates-schedule.yml `
+    -SchemaMigrate
+```
+
+The migration is **additive and idempotent**:
+
+- Bumps `schemaVersion: 1` to `schemaVersion: 2`.
+- Inserts an active `allowedUpdateVersions: 'Latest'` line at the top of the file, immediately above the `schedule:` block, with a documented header block.
+- Adds commented per-row `# allowedUpdateVersions: '...'` examples to each schedule row.
+- Re-running on an already-v2 file is a no-op (the migrator detects the `# >>> ALLOWED-UPDATE-VERSIONS-V2 <<<` marker).
+
+After migration the file is a strict superset of v1 - every cluster still resolves to the same ring and update window, and the fleet-wide allow-list of `'Latest'` preserves the v0.7.88 / v1 install-latest-Ready behaviour. Replace `'Latest'` (top-level or per-row) only when you want stricter policy.
+
+#### 8.4.5 Audit pipeline support
+
+`Step.3_apply-updates-schedule-audit.yml` (GitHub Actions and Azure DevOps) automatically emits an **Allow-list coverage (schema v2)** section in its run summary when a `-SchedulePath` is supplied. The section surfaces the **top-level fleet default**, then a per-row table showing the effective `allowedUpdateVersions` for each schedule row (or `inherits top-level` when no row-level override is set), and recommends edit sites for rows that you might want to override. Schema v1 files get a one-line nudge to run the migrator.
 
 ---
 

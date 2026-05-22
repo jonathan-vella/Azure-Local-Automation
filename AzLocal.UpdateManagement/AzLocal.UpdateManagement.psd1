@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.87'
+    ModuleVersion = '0.7.89'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -77,6 +77,7 @@
         'Private/Resolve-WildcardDateRange.ps1',
         'Private/Set-AzLocalClusterTagsMerge.ps1',
         'Private/Test-AzCliAvailable.ps1',
+        'Private/Test-AzLocalAllowedUpdateVersionsString.ps1',
         'Private/Test-AzLocalUpdateExclusion.ps1',
         'Private/Test-AzLocalUpdateSideloadedAllowed.ps1',
         'Private/Test-AzLocalUpdateVersionInProgressMatch.ps1',
@@ -210,30 +211,44 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.87 - Extract Step.4 fleet-connectivity summary renderer to module function + 21K-cap Pester regression guard
+## Version 0.7.89 - Apply-updates schedule schema v2: mandatory `allowedUpdateVersions` allow-list with `Latest` sentinel
 
 ### Added
 
-- **New public function `New-AzLocalFleetConnectivityStatusSummary`** (`Public/`): a pure markdown renderer that builds the Step.4 fleet-connectivity step-summary previously inlined as a ~22 KB `pwsh` body in both pipelines. Consumes the seven CSV reports produced earlier in the pipeline by `Get-AzLocalFleetConnectivityStatus` (or in-memory object arrays via the `FromObjects` parameter set) plus an explicit `-Counts` hashtable of KPI totals. Pure renderer over already-collected data - no Azure CLI, Resource Graph extension, or `Az.*` modules required. Returns markdown string by default; supports `-OutputPath` (UTF-8 no-BOM) and `-PassThru`. Ships with comprehensive Pester unit tests (parameter-set validation, required-key validation on `-Counts`, markdown structure, empty-input placeholders, orphan-ARB conditionality, multi-cluster-per-RG ARB matching, output-path semantics, CSV-based input with graceful missing-CSV handling).
-- **Pester regression guard for the GitHub Actions 21,000-char expression-length cap.** Enumerates every `run:` / `script:` literal block scalar in every bundled `github-actions/Step.{0..8}.yml` template and asserts each is below 18,000 chars (3K headroom under the 21K cap, covers future feature growth and possible future re-introduction of `${{ }}` substitutions). Two additional asserts verify both the GH and ADO Step.4 YAMLs CALL the renderer function and do NOT inline the markdown summary heading.
+- **Schema v2 with MANDATORY top-level `allowedUpdateVersions` + optional per-row override** (customer-requested "minimum updates" policy). Reserved sentinel `Latest` (case-insensitive, canonicalised to PascalCase) means "no constraint - install latest Ready update on each cluster" (= historic v0.7.88 default). Explicit values match EXACTLY (case-insensitive) on `.name` OR `.properties.version`. Mismatched clusters are SKIPPED with new status `NotInAllowList` (strict no-op). Mixing `Latest` with explicit versions within a single field is REJECTED.
+- **`Start-AzLocalClusterUpdate -AllowedUpdateVersions [string[]]`** optional. `Latest` (case-insensitive) skips filtering. Explicit `-UpdateName` wins over allow-list.
+- **`Resolve-AzLocalCurrentUpdateRing`** returns `AllowedUpdateVersions`, `AllowedUpdateVersionsValue`, `AllowedUpdateVersionsSource ('row'|'top-level'|'none')`. Precedence: per-row > top-level; multiple matching rows UNION; rows without the field are "no opinion". `Latest` collapse: when the resolved UNION contains the sentinel (from any contributing row or top-level), the effective list collapses to empty (= no constraint); the `Source` field is retained so audit logs explain WHERE the `Latest` came from.
+- **Schema migration `1 -> 2`** via `Update-AzLocalApplyUpdatesScheduleConfig`. Idempotent (marker-guarded). Inserts an ACTIVE `allowedUpdateVersions: 'Latest'` so the migrated file satisfies the new mandatory rule with zero behaviour change.
+- **Audit pipeline (Step.3) Allow-list coverage section.** New Markdown section prints the top-level fleet default, a per-row effective-allow-list table (after row > top-level resolution), and recommendation yaml snippets for the first 3 rows inheriting from top-level. v1 schedules see a migration nudge.
 
 ### Changed
 
-- **`github-actions/Step.4_fleet-connectivity-status.yml`**: the 283-line, 20,460-char inline pwsh markdown renderer has been replaced with a 23-line body that calls `New-AzLocalFleetConnectivityStatusSummary`. File shrunk from 863 to 603 lines; renderer step `run:` body is now ~1,083 chars (95% reduction). The renderer step continues to use the step-level `env:` pattern introduced in v0.7.86 (zero `${{ }}` substitutions in the body, so the 21K cap does not apply at all).
-- **`azure-devops/Step.4_fleet-connectivity-status.yml`**: equivalent refactor against the ADO twin so both pipelines call the same module function (single source of truth). As a side-effect this fixes a pre-existing structural anomaly: the Display Summary step's pwsh literal block scalar had silently absorbed the `displayName:` + `condition:` + `env:` indented entries and the subsequent `PublishTestResults@2` task (because L713-L727 sat at indent 12-16 while the block scalar base was indent 8). The parsed ADO pipeline used to have only 10 steps; in v0.7.87 it has 11 steps, with `Display Fleet Connectivity Summary` and `Publish Fleet Connectivity JUnit Diagnostics` now real, distinct ADO tasks that actually run.
+- **Validator** now accepts `schemaVersion: 1` OR `2`. **v2 files MUST have a top-level `allowedUpdateVersions:` field** - omitting it is rejected with a remediation message. v2 field values are parsed and validated (empty tokens, trailing `;`, whitespace inside a token, and mixed `Latest`+explicit all rejected; case-insensitive dedup preserves first-occurrence order).
+- **Generator** emits `schemaVersion: 2` with an ACTIVE top-level `allowedUpdateVersions: 'Latest'` line plus commented per-row `# allowedUpdateVersions: '<explicit>'` examples.
+- **`Automation-Pipeline-Examples/apply-updates-schedule.example.yml`** updated to v2 with the new mandatory field + a Phase-4 Prod-ring per-row override worked example.
+- **`Automation-Pipeline-Examples/README.md`** new Section 8.4 walks operators through model, worked example, finding update names, v1->v2 migration, and audit pipeline support.
+- **Step.6 (GH Actions + ADO)** plumbs the allow-list end-to-end via `RESOLVED_ALLOWED_UPDATE_VERSIONS`. Manual / non-Schedule runs pass empty. `NotInAllowList` added to the `skipped` KPI bucket.
+- **Step.3 audit Markdown gate fix:** previously `$haveSchedule` was undefined in the summary step's scope (separate `pwsh` process), causing the Schedule diff table to silently not render. `HAVE_SCHEDULE` + `SCHEDULE_PATH` are now exported via `GITHUB_OUTPUT` (GH) / `setvariable ... isOutput=true` (ADO).
 
 ### Pipeline pin bumps
 
-- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.86'` to `'0.7.87'`.
+- All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.88'` to `'0.7.89'`. Inline-script changes: Step.6 (allow-list plumbing) + Step.3 (gate fix + Allow-list coverage section), both platforms. The other 14 are pin-only.
 
 ### Migration
 
-- **Module:** run `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`). The new public function is exported automatically. No call-site changes are needed for any existing function.
-- **Pipelines:** the Step.4 GH + ADO YAML refactors require the v0.7.87 module to be installed on the pipeline runner (the new `New-AzLocalFleetConnectivityStatusSummary` cmdlet must be on `Get-Command`). Re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update` to pick up both the Step.4 refactor and the pin bump.
+- **Module:** `Install-Module AzLocal.UpdateManagement -Force`. `-AllowedUpdateVersions` is optional; unset OR `Latest` = historic behaviour unchanged.
+- **Pipelines:** `Copy-AzLocalPipelineExample -Destination <path> -Update`.
+- **`apply-updates-schedule.yml`:** run `Update-AzLocalApplyUpdatesScheduleConfig -Path <path>` to migrate v1 -> v2. The migrator inserts an active `allowedUpdateVersions: 'Latest'` (zero behaviour change). Or hand-edit: bump `schemaVersion: 1` -> `2` AND add `allowedUpdateVersions: 'Latest'` (or explicit) at top-level. v1 files continue to work; only the new field is rejected on v1.
 
-### Background
+## Version 0.7.88 - Step.8 fleet-health step-summary readability polish (section reorder + column rename)
 
-v0.7.85 added a long-form `How to interpret + act on a non-zero reconciliation` subsection to the Step.4 markdown summary. The combined `run:` body in `github-actions/Step.4_fleet-connectivity-status.yml` grew from <21K to ~23.9K chars and, because it still contained 11 `${{ steps.fleet-connectivity.outputs.X }}` substitutions, GitHub Actions parsed the whole `run:` value as a single expression and hit its 21,000-char expression-length cap at workflow-parse time. v0.7.86 mitigated by moving the substitutions to step-level `env:` vars (cap stops applying). v0.7.87 ships the durable fix: extract the renderer into a module function (single source of truth for both pipelines), make the renderer unit-testable, and add a Pester regression guard so any future regrowth is caught in CI before it can hit production parsing. The ADO structural anomaly is fixed as a side-effect of the same refactor.
+For full v0.7.88 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
+
+## Version 0.7.87 - Extract Step.4 fleet-connectivity summary renderer to module function + 21K-cap Pester regression guard
+
+For full v0.7.87 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.86 - Documentation follow-up: Automation-Pipeline-Examples README + appendix refreshed for the 9-step pipeline set
 

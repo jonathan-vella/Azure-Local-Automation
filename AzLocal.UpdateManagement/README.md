@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.87 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.87)
+**Latest Version:** v0.7.89 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.89)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.87](#whats-new-in-v0787)
+- [What's New in v0.7.89](#whats-new-in-v0789)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,21 +86,25 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.87
+## What's New in v0.7.89
 
-v0.7.87 ships a focused architectural hardening of the `Step.4 Fleet Connectivity Status` pipeline. The 285-line markdown renderer that previously lived inline as a ~22 KB `pwsh` `run:` body in both the GitHub Actions and Azure DevOps Step.4 YAML templates has been extracted into a new public module function. This gives both pipelines a single source of truth, makes the markdown layout unit-testable in Pester, and keeps every bundled `run:` body comfortably below the GitHub Actions 21,000-char expression-length cap. A new Pester regression test enforces an 18,000-char ceiling on every `run:` (and `script:`) block in every bundled GitHub Actions YAML so any future regrowth is caught in CI before it can hit production parsing.
+v0.7.89 is a customer-feedback driven feature release: an OPTIONAL `allowedUpdateVersions` allow-list field on `apply-updates-schedule.yml`, supporting both fleet-wide (top-level) and per-row (per-ring) scopes. Customer quote verbatim: *"if a customer only wants to install the 'Minimum number of updates', which is around 4 updates a year, with the YY04 and YY10 being mandatory feature updates, and the cumulative update before each feature update (YY03 and YY09) also sometimes being mandatory, can we have optional logic that we can define in the schema of the `apply-updates-schedule.yml` update, where we can list a specific list of updates that we only want to install, fleet wide, and/or per ring, to allow us to define an `allow list` of updates manually?"* This release ships that ability end-to-end - schema, validator, resolver, picker, schema migration, generator, example, and Step.6 pipeline plumbing (GH + ADO) - while keeping the historic "install the latest Ready update" behaviour unchanged for everyone who doesn't opt in.
 
-**New public function `New-AzLocalFleetConnectivityStatusSummary`.** A pure markdown renderer that consumes the seven CSV reports produced earlier in the Step.4 pipeline by `Get-AzLocalFleetConnectivityStatus` (or the equivalent in-memory object arrays via the `FromObjects` parameter set) plus an explicit `-Counts` hashtable of KPI totals. It is a pure renderer over already-collected data - no Azure CLI, no Resource Graph extension, no `Az.*` modules required, no re-querying Azure. Returns the markdown string by default; `-OutputPath` writes UTF-8 no-BOM and `-PassThru` lets you combine both. ASCII source with Unicode emoji icons emitted via `[char]0xNNNN`. The function ships with comprehensive Pester unit-test coverage (parameter validation, required-key validation on `-Counts`, markdown structure, empty-input placeholders, orphan-ARB section conditionality, multi-cluster-per-RG ARB matching, output-path semantics, CSV-based input with graceful missing-CSV handling).
+**Schema bump v1 -> v2 (additive).** A new optional `allowedUpdateVersions:` field is accepted at the top level (fleet default) and on every individual schedule row (per-ring override). Format mirrors the existing `rings:` convention - a semicolon-separated string of Azure Local solution-update names or `properties.version` strings, e.g. `'10.2604.0.123;10.2610.0.456'`. Matching is EXACT and case-insensitive against BOTH `.name` and `.properties.version` (operators can author either flavour). Empty/whitespace/duplicate-tokens are validator-rejected with location-tagged remediation. Per-row beats top-level; multiple matching rows UNION; rows without the field on a UNION day are "no opinion" (do NOT collapse the UNION). Top-level kicks in only when ZERO matching rows specify the field.
 
-**Step.4 GH + ADO YAML refactor.** The 283-line, 20,460-char inline renderer in `github-actions/Step.4_fleet-connectivity-status.yml` has been replaced with a 23-line body that calls `New-AzLocalFleetConnectivityStatusSummary`. The file shrunk from 863 to 603 lines and the renderer step's `run:` body is now ~1,083 chars - a 95% reduction. The Azure DevOps twin (`azure-devops/Step.4_fleet-connectivity-status.yml`) gets the equivalent refactor so both pipelines call the same module function. As a side-effect this fixes a pre-existing structural anomaly in the ADO YAML: the Display Summary step's `pwsh` literal block scalar had silently absorbed the trailing `displayName:` / `condition:` / `env:` keys AND the subsequent `PublishTestResults@2` task (because those lines sat at indent 12-16 while the block scalar base indent was 8). The parsed ADO pipeline used to have only 10 steps; in v0.7.87 it has 11 steps, with `Display Fleet Connectivity Summary` and `Publish Fleet Connectivity JUnit Diagnostics` now real, distinct ADO tasks that actually run.
+**`Start-AzLocalClusterUpdate -AllowedUpdateVersions [string[]]`.** New optional parameter. When set, restricts the auto-pick pool BEFORE the YYMM-latest selector runs - so the latest update that's IN the allow-list still wins (the picker logic is untouched, just fed a narrower input). When BOTH `-UpdateName` and `-AllowedUpdateVersions` are passed, the explicit `-UpdateName` wins (allow-list logged-and-ignored with a Warning). New result/CSV status `NotInAllowList` is emitted when filtering eliminates every Ready update - the cluster is SKIPPED strictly (the picker never falls back to "latest Ready").
 
-**21K-cap regression guard in Pester.** A new `Regression v0.7.87: bundled GitHub Actions YAML run: blocks stay under GitHub 21,000-char expression cap` Describe block enumerates every `run:` and `script:` literal block scalar in every bundled `github-actions/Step.{0..8}.yml` template and asserts each is below 18,000 chars. The 3K headroom under the 21K cap covers future feature growth and possible future re-introduction of `${{ }}` substitutions (the cap applies to the post-substitution length of any `run:` body that contains at least one `${{ }}`). Two additional asserts verify both the GH and ADO Step.4 YAMLs CALL the new renderer function and do NOT inline the `## Fleet Connectivity Status Summary` heading.
+**`Resolve-AzLocalCurrentUpdateRing`** returns three new properties: `AllowedUpdateVersions [string[]]`, `AllowedUpdateVersionsValue [string]` (`;`-joined for env-var bridge), `AllowedUpdateVersionsSource ('row' | 'top-level' | 'none')`. The `Reason` string also appends `AllowedUpdateVersions (<source>): a, b, c.` when an allow-list is in effect, so the resolver's decision is fully auditable in pipeline logs.
 
-**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.86'` to `'0.7.87'`.
+**Schema migration recipe `1 -> 2`** registered in `Private/Convert-AzLocalScheduleSchemaVersion.ps1`. Run `Update-AzLocalApplyUpdatesScheduleConfig -Path <your-schedule>` to migrate an existing v1 file. The recipe is text-surgery (no YAML reflow), idempotent (marker-guarded `# >>> ALLOWED-UPDATE-VERSIONS-V2 <<<`), and additive - it rewrites only the `schemaVersion: 1` line and inserts a documented commented `# allowedUpdateVersions:` example block above `# ---- Schedule entries ----`. Existing schedule rows + customer comments are preserved verbatim.
 
-**Migration.** Run `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`). The new public function is exported automatically. No call-site changes are needed for any existing function. To pick up both the Step.4 refactor and the pin bump in your pipelines, re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update`. If you stay on the v0.7.86-pinned YAMLs they will continue to work (they call into the v0.7.86 module which does not yet have the new function).
+**Step.6 pipelines (GitHub Actions + Azure DevOps).** `check-readiness` resolver task now also exports `RESOLVED_ALLOWED_UPDATE_VERSIONS` (alongside `RESOLVED_UPDATE_RING`). The `Apply Updates` task consumes it via env var, parses to `[string[]]`, and passes through `-AllowedUpdateVersions` to `Start-AzLocalClusterUpdate`. `workflow_dispatch` / non-Schedule build reasons pass empty (manual runs are not subject to the allow-list, preserving historic ad-hoc behaviour for operators). `NotInAllowList` is added to the `skipped` result-counter bucket so per-stage summary KPIs stay correct.
 
-> Previous release notes (v0.7.86 and earlier) have moved into [`docs/release-history.md`](docs/release-history.md).
+**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.88'` to `'0.7.89'`. Only `Step.6_apply-updates.yml` (both platforms) has inline-script content changes; the other 16 are pin-only bumps.
+
+**Migration.** `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`). `Start-AzLocalClusterUpdate` gains the optional `-AllowedUpdateVersions` parameter (default = unset = historic "install latest Ready update" unchanged). For pipelines, re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update`. To opt-in to the allow-list, run `Update-AzLocalApplyUpdatesScheduleConfig -Path <path>` on your existing `apply-updates-schedule.yml`, then hand-edit the new commented `# allowedUpdateVersions:` block (top-level OR per-row, or both). Files left at v1 continue to work; only the new field is rejected on v1.
+
+> Previous release notes (v0.7.88 and earlier) have moved into [`docs/release-history.md`](docs/release-history.md).
 
 ## Files
 
@@ -565,7 +569,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.81 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.87** stay above under [`What's New in v0.7.87`](#whats-new-in-v0787).
+The most recent release notes for **v0.7.89** stay above under [`What's New in v0.7.89`](#whats-new-in-v0789).
 
 ---
 

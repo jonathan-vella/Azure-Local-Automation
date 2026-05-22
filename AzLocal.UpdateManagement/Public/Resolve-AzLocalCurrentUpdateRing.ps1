@@ -39,14 +39,29 @@ function Resolve-AzLocalCurrentUpdateRing {
 
     .OUTPUTS
         [PSCustomObject] with:
-          Rings           [string[]] - deduped, ordered as-encountered
-          UpdateRingValue [string]   - ';'-joined for direct hand-off
-          CycleWeek       [int]      - 1..CycleWeeks
-          DayOfWeek       [int]      - 0=Sun .. 6=Sat
-          DayOfWeekName   [string]   - 'Sun' .. 'Sat'
-          Reason          [string]   - human-readable summary
-          MatchedRows     [object[]] - the schedule rows that matched
-          NowUtc          [datetime] - the moment used
+          Rings                       [string[]] - deduped, ordered as-encountered
+          UpdateRingValue             [string]   - ';'-joined for direct hand-off
+          CycleWeek                   [int]      - 1..CycleWeeks
+          DayOfWeek                   [int]      - 0=Sun .. 6=Sat
+          DayOfWeekName               [string]   - 'Sun' .. 'Sat'
+          Reason                      [string]   - human-readable summary
+          MatchedRows                 [object[]] - the schedule rows that matched
+          NowUtc                      [datetime] - the moment used
+          AllowedUpdateVersions       [string[]] - resolved allow-list of
+                                                  Azure Local solution-update
+                                                  names / version strings (schema
+                                                  v2 'allowedUpdateVersions'
+                                                  field); empty array when the
+                                                  field is absent everywhere
+                                                  (meaning "no constraint - use
+                                                  cmdlet default of latest Ready
+                                                  update").
+          AllowedUpdateVersionsValue  [string]   - ';'-joined for env-var bridge
+                                                  in CI / CD pipelines; '' when
+                                                  AllowedUpdateVersions is empty.
+          AllowedUpdateVersionsSource [string]   - 'row' | 'top-level' | 'none'
+                                                  - explains where the allow-list
+                                                  came from for audit / logs.
 
     .EXAMPLE
         $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path .\.github\apply-updates-schedule.yml
@@ -207,20 +222,103 @@ function Resolve-AzLocalCurrentUpdateRing {
         }
     }
 
+    # ---- Resolve AllowedUpdateVersions (schema v2) ------------------
+    # Precedence:
+    #   1. If ANY matched row has its own allowedUpdateVersions, take
+    #      the UNION across those rows (rows WITHOUT the field are
+    #      treated as "no opinion" - they do not collapse the allow-list
+    #      to empty). Source = 'row'.
+    #   2. Else if top-level allowedUpdateVersions exists, use it.
+    #      Source = 'top-level'.
+    #   3. Else empty array + Source = 'none' = "no constraint".
+    # The validator pre-parsed both into typed arrays so this resolver
+    # does not re-split.
+    #
+    # 'Latest' sentinel (v0.7.89): If the effective allow-list contains
+    # the reserved sentinel 'Latest' (case-insensitive), the result is
+    # treated as "no constraint" - AllowedUpdateVersions is emitted as
+    # an empty array and the picker / pipeline falls back to the
+    # historic "install latest Ready update" behaviour. The Source field
+    # still reflects the origin (row / top-level) so audit logs explain
+    # WHERE the 'Latest' decision came from. Cross-row UNION semantics:
+    # if any matching row contributes 'Latest', the UNION is 'Latest'
+    # (the explicit allow-lists on sibling rows are ignored for that
+    # day). This is the only way to combine 'Latest' with explicit
+    # versions across rows; mixing them WITHIN a single field is
+    # rejected at validation.
+    $allowList     = New-Object System.Collections.Generic.List[string]
+    $allowSeen     = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    $allowSource   = 'none'
+    $rowsWithAllow = @($matched | Where-Object {
+        $_.PSObject.Properties.Match('AllowedUpdateVersionsParsed').Count -gt 0 -and
+        $null -ne $_.AllowedUpdateVersionsParsed -and
+        @($_.AllowedUpdateVersionsParsed).Count -gt 0
+    })
+    if ($rowsWithAllow.Count -gt 0) {
+        $allowSource = 'row'
+        foreach ($r in $rowsWithAllow) {
+            foreach ($v in @($r.AllowedUpdateVersionsParsed)) {
+                $sv = [string]$v
+                if ($sv -and $allowSeen.Add($sv)) { $allowList.Add($sv) | Out-Null }
+            }
+        }
+    }
+    elseif ($Schedule.PSObject.Properties.Match('AllowedUpdateVersions').Count -gt 0 -and
+            $null -ne $Schedule.AllowedUpdateVersions -and
+            @($Schedule.AllowedUpdateVersions).Count -gt 0) {
+        $allowSource = 'top-level'
+        foreach ($v in @($Schedule.AllowedUpdateVersions)) {
+            $sv = [string]$v
+            if ($sv -and $allowSeen.Add($sv)) { $allowList.Add($sv) | Out-Null }
+        }
+    }
+    # Detect the 'Latest' sentinel in the resolved UNION. When present,
+    # collapse the effective allow-list to empty (= no constraint). Use
+    # ordinal-case-insensitive compare (the validator already
+    # canonicalised tokens to 'Latest', but be defensive in case a
+    # caller constructs the schedule object directly).
+    $hasLatestSentinel = $false
+    foreach ($v in $allowList) {
+        if ([string]::Equals($v, 'Latest', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $hasLatestSentinel = $true
+            break
+        }
+    }
+    if ($hasLatestSentinel) {
+        $allowArray = @()
+        $allowValue = ''
+    }
+    else {
+        $allowArray = $allowList.ToArray()
+        $allowValue = ($allowArray -join ';')
+    }
+
     $reason = if ($matched.Count -eq 0) {
         "No schedule row matches (cycleWeek=$cycleWeek of $cycleWeeks, dayOfWeek=$dowName)."
     } else {
-        "Matched $($matched.Count) schedule row(s) for cycleWeek=$cycleWeek of $cycleWeeks, dayOfWeek=$dowName. Resolved UpdateRing(s): $($rings -join ', ')."
+        $base = "Matched $($matched.Count) schedule row(s) for cycleWeek=$cycleWeek of $cycleWeeks, dayOfWeek=$dowName. Resolved UpdateRing(s): $($rings -join ', ')."
+        if ($allowSource -ne 'none') {
+            if ($hasLatestSentinel) {
+                $base + " AllowedUpdateVersions ($allowSource): Latest (no constraint - install latest Ready update)."
+            } else {
+                $base + " AllowedUpdateVersions ($allowSource): $($allowArray -join ', ')."
+            }
+        } else {
+            $base
+        }
     }
 
     return [pscustomobject]@{
-        Rings           = $rings.ToArray()
-        UpdateRingValue = ($rings -join ';')
-        CycleWeek       = $cycleWeek
-        DayOfWeek       = $dowNum
-        DayOfWeekName   = $dowName
-        Reason          = $reason
-        MatchedRows     = $matched.ToArray()
-        NowUtc          = $nowUtc
+        Rings                       = $rings.ToArray()
+        UpdateRingValue             = ($rings -join ';')
+        CycleWeek                   = $cycleWeek
+        DayOfWeek                   = $dowNum
+        DayOfWeekName               = $dowName
+        Reason                      = $reason
+        MatchedRows                 = $matched.ToArray()
+        NowUtc                      = $nowUtc
+        AllowedUpdateVersions       = $allowArray
+        AllowedUpdateVersionsValue  = $allowValue
+        AllowedUpdateVersionsSource = $allowSource
     }
 }

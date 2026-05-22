@@ -1,8 +1,8 @@
 function Get-AzLocalApplyUpdatesScheduleConfig {
     <#
     .SYNOPSIS
-        Reads and validates an apply-updates-schedule.yml (schema v1)
-        file, returning a typed config object suitable for
+        Reads and validates an apply-updates-schedule.yml file (schema
+        v1 or v2), returning a typed config object suitable for
         Resolve-AzLocalCurrentUpdateRing and the audit cmdlet.
 
     .DESCRIPTION
@@ -10,11 +10,21 @@ function Get-AzLocalApplyUpdatesScheduleConfig {
           1. Read raw text (Get-Content -Raw).
           2. Parse via the private ConvertFrom-AzLocalScheduleYaml
              (zero external deps).
-          3. Validate shape: schemaVersion must be 1; cycleWeeks 1..52;
-             cycleAnchorISOWeek 1..53; cycleAnchorYear 2000..2100;
+          3. Validate shape: schemaVersion must be 1 or 2; cycleWeeks
+             1..52; cycleAnchorISOWeek 1..53; cycleAnchorYear 2000..2100;
              schedule entries must each have weeksInCycle, daysOfWeek,
              rings (notes optional). Selectors are sanity-checked by
              expanding them via the same logic the resolver uses.
+
+          v2 adds the optional 'allowedUpdateVersions' field (top-level
+          fleet default + per-row override). When present, the value
+          must be a non-empty semicolon-separated string; empty tokens
+          after split-and-trim are rejected. v1 files that contain the
+          field are rejected with a remediation pointing at the schema
+          migrator. The validator parses the raw strings into
+          $cfg.AllowedUpdateVersions [string[]] (top-level) and
+          row.AllowedUpdateVersionsParsed [string[]] (per row) so the
+          resolver does not re-split.
 
         Validation errors throw a single multi-line message listing
         every problem found (not just the first), so the operator can
@@ -26,7 +36,8 @@ function Get-AzLocalApplyUpdatesScheduleConfig {
     .OUTPUTS
         [PSCustomObject] - same shape produced by
         ConvertFrom-AzLocalScheduleYaml, plus SourcePath set to the
-        resolved full path.
+        resolved full path and (for v2) AllowedUpdateVersions parsed to
+        an array.
 
     .EXAMPLE
         $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path .\.github\apply-updates-schedule.yml
@@ -54,8 +65,8 @@ function Get-AzLocalApplyUpdatesScheduleConfig {
 
     if ($null -eq $cfg.SchemaVersion -or $cfg.SchemaVersion -isnot [int]) {
         $errors.Add("Top-level 'schemaVersion' must be present and an integer.") | Out-Null
-    } elseif ($cfg.SchemaVersion -ne 1) {
-        $errors.Add("schemaVersion '$($cfg.SchemaVersion)' is not supported by this module version. Expected: 1.") | Out-Null
+    } elseif ($cfg.SchemaVersion -ne 1 -and $cfg.SchemaVersion -ne 2) {
+        $errors.Add("schemaVersion '$($cfg.SchemaVersion)' is not supported by this module version. Expected: 1 or 2.") | Out-Null
     }
 
     if ($null -eq $cfg.CycleWeeks -or $cfg.CycleWeeks -isnot [int] -or $cfg.CycleWeeks -lt 1 -or $cfg.CycleWeeks -gt 52) {
@@ -70,6 +81,37 @@ function Get-AzLocalApplyUpdatesScheduleConfig {
 
     if (-not $cfg.Schedule -or @($cfg.Schedule).Count -eq 0) {
         $errors.Add("'schedule:' list is empty - at least one row is required.") | Out-Null
+    }
+
+    # ---- Validate top-level 'allowedUpdateVersions' (schema v2 only) -
+    # The parser surfaces the raw string as AllowedUpdateVersionsRaw.
+    # Schema v2 makes this field MANDATORY at the top level (the v0.7.89
+    # design decision). It defaults to the reserved sentinel 'Latest'
+    # (case-insensitive) which means "no constraint - install latest
+    # Ready update on each cluster" (the historic v0.7.88 default).
+    # Operators replace 'Latest' with a semicolon-separated list of
+    # explicit update names / version strings to enforce a "minimum
+    # updates" allow-list policy fleet-wide.
+    #
+    # Always start the parsed array as $null so the resolver can tell
+    # "field absent" from "field present with values".
+    $cfg | Add-Member -NotePropertyName 'AllowedUpdateVersions' -NotePropertyValue $null -Force
+    $topAllowRaw = $null
+    if ($cfg.PSObject.Properties.Match('AllowedUpdateVersionsRaw').Count) {
+        $topAllowRaw = $cfg.AllowedUpdateVersionsRaw
+    }
+    if ($null -ne $topAllowRaw) {
+        if ($cfg.SchemaVersion -eq 1) {
+            $errors.Add("Top-level 'allowedUpdateVersions' requires schemaVersion >= 2. Bump 'schemaVersion: 1' to 'schemaVersion: 2' (this file has no breaking changes - the field is additive). See https://github.com/NeilBird/Azure-Local/tree/main/AzLocal.UpdateManagement#allowedupdateversions for details.") | Out-Null
+        }
+        $parsedTop = Test-AzLocalAllowedUpdateVersionsString -Raw $topAllowRaw -Location "top-level 'allowedUpdateVersions'" -Errors $errors
+        if ($null -ne $parsedTop) {
+            $cfg.AllowedUpdateVersions = $parsedTop
+        }
+    }
+    elseif ($cfg.SchemaVersion -ge 2) {
+        # Mandatory on v2+ with no value supplied.
+        $errors.Add("Schema v$($cfg.SchemaVersion) requires a top-level 'allowedUpdateVersions:' field. Set it to 'Latest' to keep the default 'install the latest Ready update' behaviour, or to a semicolon-separated list of explicit update names / version strings (e.g. '10.2604.0.123;10.2610.0.456') to enforce a fleet-wide allow-list. See https://github.com/NeilBird/Azure-Local/tree/main/AzLocal.UpdateManagement#allowedupdateversions for details.") | Out-Null
     }
 
     # ---- Validate each schedule row ---------------------------------
@@ -123,6 +165,24 @@ function Get-AzLocalApplyUpdatesScheduleConfig {
                     } elseif ($t -notmatch $valid) {
                         $errors.Add("schedule[$i]$line daysOfWeek token '$t' is not recognised (expected 0-6, Sun/Mon/... names, or '*').") | Out-Null
                     }
+                }
+            }
+
+            # Per-row 'allowedUpdateVersions' (schema v2). The parser
+            # passes arbitrary continuation keys through generically -
+            # the value will be a string when present. Stamp a
+            # uniformly-named AllowedUpdateVersionsParsed property
+            # ($null when absent) so the resolver doesn't have to
+            # PSObject.Match the camelCase key.
+            $rowHasField = $row.PSObject.Properties.Match('allowedUpdateVersions').Count -gt 0
+            $row | Add-Member -NotePropertyName 'AllowedUpdateVersionsParsed' -NotePropertyValue $null -Force
+            if ($rowHasField) {
+                if ($cfg.SchemaVersion -eq 1) {
+                    $errors.Add("schedule[$i]$line uses 'allowedUpdateVersions' which requires schemaVersion >= 2. Bump 'schemaVersion: 1' to 'schemaVersion: 2'.") | Out-Null
+                }
+                $parsedRow = Test-AzLocalAllowedUpdateVersionsString -Raw $row.allowedUpdateVersions -Location "schedule[$i]$line 'allowedUpdateVersions'" -Errors $errors
+                if ($null -ne $parsedRow) {
+                    $row.AllowedUpdateVersionsParsed = $parsedRow
                 }
             }
         }

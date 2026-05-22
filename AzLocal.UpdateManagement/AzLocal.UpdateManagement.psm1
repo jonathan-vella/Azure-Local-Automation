@@ -151,7 +151,7 @@ Set-StrictMode -Version 1.0
 # bumps to one but not the other are caught before release. Two consumers:
 #   - Start-AzLocalClusterUpdate emits this in the run log header.
 #   - Get-AzLocalFleetStatusData stamps it into exported fleet-state JSON.
-$script:ModuleVersion = '0.7.87'
+$script:ModuleVersion = '0.7.89'
 $script:DefaultApiVersion = '2025-10-01'
 $script:DefaultLogFolder = Join-Path -Path $env:ProgramData -ChildPath 'AzLocal.UpdateManagement'
 
@@ -212,7 +212,15 @@ $script:UpdateVersionInProgressTagName = 'UpdateVersionInProgress'
 # Private/Convert-AzLocalScheduleSchemaVersion.ps1. Customer files on a
 # HIGHER version cause the migrator to refuse with a remediation message
 # pointing at PSGallery.
-$script:ScheduleSchemaCurrentVersion = 1
+#
+# v1 -> v2 (shipped in v0.7.89): adds the optional `allowedUpdateVersions`
+# field (top-level fleet default + per-row override) for operators who want
+# to install only an explicit set of Azure Local solution-update version
+# strings ('minimum updates' style: YY04 + YY10 feature updates +
+# preceding cumulative updates) instead of the cmdlet's default 'latest
+# Ready update' behaviour. v1 files remain readable; the additive field is
+# silently absent.
+$script:ScheduleSchemaCurrentVersion = 2
 
 $script:DayMap = [ordered]@{
     'Mon' = [DayOfWeek]::Monday

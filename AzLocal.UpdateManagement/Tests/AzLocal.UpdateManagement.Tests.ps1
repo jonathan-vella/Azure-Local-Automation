@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.87' {
-            $script:ModuleInfo.Version | Should -Be '0.7.87'
+        It 'Should have version 0.7.89' {
+            $script:ModuleInfo.Version | Should -Be '0.7.89'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -7331,7 +7331,7 @@ Describe 'v0.7.69 Apply-Updates Schedule: New-AzLocalApplyUpdatesScheduleConfig 
         $null = New-AzLocalApplyUpdatesScheduleConfig -OutputPath $out -Rings @('Canary','Ring1','Ring2','Prod') -Force 6>$null
         Test-Path -LiteralPath $out | Should -Be $true
         $text = Get-Content -LiteralPath $out -Raw
-        $text | Should -Match 'schemaVersion:\s*1'
+        $text | Should -Match 'schemaVersion:\s*2'
         $text | Should -Match 'cycleWeeks:\s*4'
         # Active (uncommented) schedule rows must be zero.
         @($text -split "`n" | Where-Object { $_ -match '^\s*-\s+weeksInCycle:' }).Count | Should -Be 0
@@ -7359,10 +7359,11 @@ Describe 'v0.7.69 Apply-Updates Schedule: Update-AzLocalApplyUpdatesScheduleConf
 
         $script:up_live = Join-Path $script:up_tmp 'live.yml'
         $body = @'
-schemaVersion: 1
+schemaVersion: 2
 cycleWeeks: 4
 cycleAnchorISOWeek: 1
 cycleAnchorYear: 2026
+allowedUpdateVersions: 'Latest'
 schedule:
   - weeksInCycle: '1'
     daysOfWeek: 'Mon'
@@ -7386,6 +7387,472 @@ schedule:
         $after = Get-Item -LiteralPath $script:up_live
         $after.Length           | Should -Be $before.Length
         $after.LastWriteTimeUtc | Should -Be $before.LastWriteTimeUtc
+    }
+}
+
+Describe 'v0.7.89 Apply-Updates Schedule v2: allowedUpdateVersions allow-list' {
+    BeforeAll {
+        $script:av_tmp = Join-Path $TestDrive 'sched-allow'
+        New-Item -ItemType Directory -Path $script:av_tmp -Force | Out-Null
+
+        # Anchor Monday-of-ISO-W1-2026 (UTC) for resolver tests.
+        $jan4 = [datetime]::new(2026, 1, 4, 0, 0, 0, [DateTimeKind]::Utc)
+        $isoOff = ((($jan4.DayOfWeek.value__ + 6) % 7))
+        $script:av_wk1Mon = $jan4.AddDays(-1 * $isoOff)
+    }
+
+    Context 'Validator: schemaVersion 2 acceptance + allow-list validation' {
+        It 'Rejects schemaVersion: 2 without a top-level allowedUpdateVersions (mandatory in v0.7.89)' {
+            $p = Join-Path $script:av_tmp 'v2-no-allow.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            { Get-AzLocalApplyUpdatesScheduleConfig -Path $p } |
+                Should -Throw -ExpectedMessage "*requires a top-level 'allowedUpdateVersions:' field*"
+        }
+
+        It "Accepts schemaVersion: 2 with top-level 'Latest' (default = no constraint)" {
+            $p = Join-Path $script:av_tmp 'v2-latest-default.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'Latest'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $cfg.SchemaVersion                       | Should -Be 2
+            @($cfg.AllowedUpdateVersions).Count      | Should -Be 1
+            $cfg.AllowedUpdateVersions[0]            | Should -Be 'Latest'
+        }
+
+        It "Canonicalises 'latest' / 'LATEST' to PascalCase 'Latest' (case-insensitive sentinel)" {
+            foreach ($variant in 'latest','LATEST','LaTeSt') {
+                $p = Join-Path $script:av_tmp "v2-latest-$variant.yml"
+                $body = @"
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: '$variant'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+"@
+                Set-Content -LiteralPath $p -Value $body -Encoding utf8
+                $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+                $cfg.AllowedUpdateVersions[0] | Should -Be 'Latest' -Because "case-insensitive input '$variant' should canonicalise to PascalCase"
+            }
+        }
+
+        It "Rejects mixed 'Latest;<explicit>' (sentinel cannot be combined with explicit versions in a single field)" {
+            $p = Join-Path $script:av_tmp 'v2-mixed.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'Latest;10.2604.0.123'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            { Get-AzLocalApplyUpdatesScheduleConfig -Path $p } |
+                Should -Throw -ExpectedMessage "*mixes the reserved sentinel 'Latest' with explicit*"
+        }
+
+        It 'Parses top-level allowedUpdateVersions into a [string[]] preserving order' {
+            $p = Join-Path $script:av_tmp 'v2-top.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: '10.2604.0.123;10.2610.0.456'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            @($cfg.AllowedUpdateVersions).Count | Should -Be 2
+            $cfg.AllowedUpdateVersions[0]       | Should -Be '10.2604.0.123'
+            $cfg.AllowedUpdateVersions[1]       | Should -Be '10.2610.0.456'
+        }
+
+        It 'Parses per-row allowedUpdateVersions into AllowedUpdateVersionsParsed' {
+            $p = Join-Path $script:av_tmp 'v2-row.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'Latest'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+    allowedUpdateVersions: '10.2604.0.123'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $row = $cfg.Schedule[0]
+            @($row.AllowedUpdateVersionsParsed).Count | Should -Be 1
+            $row.AllowedUpdateVersionsParsed[0]       | Should -Be '10.2604.0.123'
+        }
+
+        It 'Rejects top-level allowedUpdateVersions on schemaVersion 1 with migration remediation hint' {
+            $p = Join-Path $script:av_tmp 'v1-top.yml'
+            $body = @'
+schemaVersion: 1
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: '10.2604.0.123'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            { Get-AzLocalApplyUpdatesScheduleConfig -Path $p } |
+                Should -Throw -ExpectedMessage "*requires schemaVersion >= 2*"
+        }
+
+        It 'Rejects per-row allowedUpdateVersions on schemaVersion 1' {
+            $p = Join-Path $script:av_tmp 'v1-row.yml'
+            $body = @'
+schemaVersion: 1
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+    allowedUpdateVersions: '10.2604.0.123'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            { Get-AzLocalApplyUpdatesScheduleConfig -Path $p } |
+                Should -Throw -ExpectedMessage "*requires schemaVersion >= 2*"
+        }
+
+        It "Rejects empty token from stray ';' (e.g. 'a;;b')" {
+            $p = Join-Path $script:av_tmp 'v2-stray.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'a;;b'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            { Get-AzLocalApplyUpdatesScheduleConfig -Path $p } |
+                Should -Throw -ExpectedMessage "*empty token*"
+        }
+
+        It 'Rejects whitespace inside a token' {
+            $p = Join-Path $script:av_tmp 'v2-ws.yml'
+            # YAML single-quoted strings preserve embedded spaces as data.
+            $body = @"
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: '10.2604.0 .123;10.2610.0.456'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+"@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            { Get-AzLocalApplyUpdatesScheduleConfig -Path $p } |
+                Should -Throw -ExpectedMessage "*contains whitespace*"
+        }
+
+        It 'Deduplicates case-insensitively preserving first-occurrence order' {
+            $p = Join-Path $script:av_tmp 'v2-dedup.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: '10.2604.0.123;10.2610.0.456;10.2604.0.123'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            @($cfg.AllowedUpdateVersions).Count | Should -Be 2
+            $cfg.AllowedUpdateVersions[0]       | Should -Be '10.2604.0.123'
+            $cfg.AllowedUpdateVersions[1]       | Should -Be '10.2610.0.456'
+        }
+    }
+
+    Context 'Resolver: precedence row > top-level + UNION across rows' {
+        It "Per-row overrides top-level when ANY matched row has the field (Source = 'row')" {
+            $p = Join-Path $script:av_tmp 'res-row-wins.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'top.1.2.3'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+    allowedUpdateVersions: 'row.4.5.6'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $r = Resolve-AzLocalCurrentUpdateRing -Schedule $cfg -Now $script:av_wk1Mon.AddHours(12)
+            $r.AllowedUpdateVersionsSource | Should -Be 'row'
+            @($r.AllowedUpdateVersions).Count | Should -Be 1
+            $r.AllowedUpdateVersions[0]    | Should -Be 'row.4.5.6'
+            $r.AllowedUpdateVersionsValue  | Should -Be 'row.4.5.6'
+        }
+
+        It "Falls back to top-level when NO matched row has the field (Source = 'top-level')" {
+            $p = Join-Path $script:av_tmp 'res-top-wins.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'top.1.2.3;top.4.5.6'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $r = Resolve-AzLocalCurrentUpdateRing -Schedule $cfg -Now $script:av_wk1Mon.AddHours(12)
+            $r.AllowedUpdateVersionsSource     | Should -Be 'top-level'
+            @($r.AllowedUpdateVersions).Count  | Should -Be 2
+            $r.AllowedUpdateVersionsValue      | Should -Be 'top.1.2.3;top.4.5.6'
+        }
+
+        It "Top-level 'Latest' resolves to an empty effective allow-list with Source='top-level' (no constraint sentinel)" {
+            $p = Join-Path $script:av_tmp 'res-top-latest.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'Latest'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $r = Resolve-AzLocalCurrentUpdateRing -Schedule $cfg -Now $script:av_wk1Mon.AddHours(12)
+            $r.AllowedUpdateVersionsSource    | Should -Be 'top-level'
+            @($r.AllowedUpdateVersions).Count | Should -Be 0
+            $r.AllowedUpdateVersionsValue     | Should -BeNullOrEmpty
+        }
+
+        It "Cross-row UNION: a row contributing 'Latest' collapses the effective list to empty (Latest wins)" {
+            $p = Join-Path $script:av_tmp 'res-latest-wins.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'Latest'
+schedule:
+  - weeksInCycle: '*'
+    daysOfWeek: 'Fri'
+    rings: 'Canary'
+    allowedUpdateVersions: 'a;b'
+  - weeksInCycle: '*'
+    daysOfWeek: 'Fri'
+    rings: 'Ring1'
+    allowedUpdateVersions: 'Latest'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $wk1Fri = $script:av_wk1Mon.AddDays(4).AddHours(12)
+            $r = Resolve-AzLocalCurrentUpdateRing -Schedule $cfg -Now $wk1Fri
+            $r.AllowedUpdateVersionsSource    | Should -Be 'row'
+            @($r.AllowedUpdateVersions).Count | Should -Be 0
+            $r.AllowedUpdateVersionsValue     | Should -BeNullOrEmpty
+            $r.Reason                         | Should -Match 'AllowedUpdateVersions \(row\): Latest \(no constraint'
+        }
+
+        It 'UNIONs allow-lists across multiple matched rows (with case-insensitive dedup)' {
+            # Friday Wk1: matches both 'Fri' rows; per-row wins; lists union and dedup.
+            $p = Join-Path $script:av_tmp 'res-union.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'Latest'
+schedule:
+  - weeksInCycle: '*'
+    daysOfWeek: 'Fri'
+    rings: 'Canary'
+    allowedUpdateVersions: 'a;b'
+  - weeksInCycle: '*'
+    daysOfWeek: 'Fri'
+    rings: 'Ring1'
+    allowedUpdateVersions: 'B;c'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $wk1Fri = $script:av_wk1Mon.AddDays(4).AddHours(12)
+            $r = Resolve-AzLocalCurrentUpdateRing -Schedule $cfg -Now $wk1Fri
+            $r.AllowedUpdateVersionsSource    | Should -Be 'row'
+            @($r.AllowedUpdateVersions).Count | Should -Be 3
+            ($r.AllowedUpdateVersions -join ';') | Should -Be 'a;b;c'
+        }
+
+        It "Row without the field is 'no opinion' (does not collapse the UNION to empty)" {
+            $p = Join-Path $script:av_tmp 'res-opinion.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'Latest'
+schedule:
+  - weeksInCycle: '*'
+    daysOfWeek: 'Fri'
+    rings: 'Canary'
+    allowedUpdateVersions: 'only.this'
+  - weeksInCycle: '*'
+    daysOfWeek: 'Fri'
+    rings: 'Ring1'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $wk1Fri = $script:av_wk1Mon.AddDays(4).AddHours(12)
+            $r = Resolve-AzLocalCurrentUpdateRing -Schedule $cfg -Now $wk1Fri
+            $r.AllowedUpdateVersionsSource    | Should -Be 'row'
+            @($r.AllowedUpdateVersions).Count | Should -Be 1
+            $r.AllowedUpdateVersions[0]       | Should -Be 'only.this'
+        }
+
+        It "Appends 'AllowedUpdateVersions (source): ...' to Reason when an allow-list is in effect" {
+            $p = Join-Path $script:av_tmp 'res-reason.yml'
+            $body = @'
+schemaVersion: 2
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+allowedUpdateVersions: 'x.y.z'
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+'@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $r = Resolve-AzLocalCurrentUpdateRing -Schedule $cfg -Now $script:av_wk1Mon.AddHours(12)
+            $r.Reason | Should -Match 'AllowedUpdateVersions \(top-level\): x\.y\.z\.'
+        }
+    }
+
+    Context 'Schema migration: 1->2 (additive, idempotent)' {
+        It 'Migrates schemaVersion 1 to 2 and inserts the documented commented block' {
+            $p = Join-Path $script:av_tmp 'mig-v1.yml'
+            $body = @"
+schemaVersion: 1
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+
+# ---- Schedule entries ----
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+"@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $r = Update-AzLocalApplyUpdatesScheduleConfig -Path $p -PassThru -Confirm:$false 6>$null
+            $r.Action      | Should -Be 'Migrated'
+            $r.FromVersion | Should -Be 1
+            $r.ToVersion   | Should -Be 2
+            $migrated = Get-Content -LiteralPath $p -Raw
+            $migrated | Should -Match 'schemaVersion:\s*2'
+            $migrated | Should -Match '# >>> ALLOWED-UPDATE-VERSIONS-V2 <<<'
+            $migrated | Should -Match '#\s+allowedUpdateVersions:'
+            # v0.7.89: migrator inserts an ACTIVE top-level
+            # 'allowedUpdateVersions: ''Latest''' line so the migrated
+            # file satisfies the new mandatory rule with zero behaviour
+            # change ('Latest' = no constraint = historic v0.7.88 default).
+            $migrated | Should -Match "allowedUpdateVersions:\s*'Latest'"
+            # Reader accepts the migrated file.
+            $cfg = Get-AzLocalApplyUpdatesScheduleConfig -Path $p
+            $cfg.SchemaVersion | Should -Be 2
+        }
+
+        It 'Migration is idempotent: running twice produces the same file' {
+            $p = Join-Path $script:av_tmp 'mig-idem.yml'
+            $body = @"
+schemaVersion: 1
+cycleWeeks: 4
+cycleAnchorISOWeek: 1
+cycleAnchorYear: 2026
+
+# ---- Schedule entries ----
+schedule:
+  - weeksInCycle: '1'
+    daysOfWeek: 'Mon'
+    rings: 'Canary'
+"@
+            Set-Content -LiteralPath $p -Value $body -Encoding utf8
+            $null = Update-AzLocalApplyUpdatesScheduleConfig -Path $p -PassThru -Confirm:$false 6>$null
+            $afterFirst = Get-Content -LiteralPath $p -Raw
+            $r2 = Update-AzLocalApplyUpdatesScheduleConfig -Path $p -PassThru -Confirm:$false 6>$null
+            $r2.Action | Should -Be 'Unchanged-SchemaCurrent'
+            $afterSecond = Get-Content -LiteralPath $p -Raw
+            $afterSecond | Should -Be $afterFirst
+            # Marker appears exactly once.
+            ([regex]::Matches($afterSecond, '# >>> ALLOWED-UPDATE-VERSIONS-V2 <<<')).Count | Should -Be 1
+        }
+    }
+
+    Context 'Start-AzLocalClusterUpdate: -AllowedUpdateVersions parameter surface' {
+        BeforeAll { $script:av_cmd = Get-Command Start-AzLocalClusterUpdate }
+        It 'Exposes -AllowedUpdateVersions parameter' {
+            $script:av_cmd.Parameters.Keys | Should -Contain 'AllowedUpdateVersions'
+        }
+        It 'AllowedUpdateVersions is typed as [string[]]' {
+            $script:av_cmd.Parameters['AllowedUpdateVersions'].ParameterType.FullName | Should -Be 'System.String[]'
+        }
+        It 'AllowedUpdateVersions is NOT mandatory (allow-list is optional)' {
+            $param = $script:av_cmd.Parameters['AllowedUpdateVersions']
+            $attrs = $param.Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' }
+            ($attrs | ForEach-Object Mandatory) | Should -Not -Contain $true
+        }
     }
 }
 
