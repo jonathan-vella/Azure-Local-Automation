@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.86 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.86)
+**Latest Version:** v0.7.87 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.87)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.86](#whats-new-in-v0786)
+- [What's New in v0.7.87](#whats-new-in-v0787)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,19 +86,21 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.86
+## What's New in v0.7.87
 
-v0.7.86 is a **documentation follow-up** to v0.7.85 - no code changes anywhere in the module, no YAML inline-script changes. While reviewing PR #56 before merging v0.7.85, the `Automation-Pipeline-Examples` README + appendix were found to still describe the seven-pipeline layout from before `Step.4 Fleet Connectivity Status` was inserted in v0.7.79 (and before `Step.0 Authentication Test` was added in v0.7.70). The follow-up audit also caught two related cross-doc gaps: the `ITSM/README.md` setup guide had never been updated when Step.4 shipped opt-in ServiceNow ticketing in v0.7.76, and the CI/CD `Automation-Pipeline-Examples/README.md` had no direct cross-link to the top-level `docs/concepts.md` / `docs/rbac.md` / `docs/troubleshooting.md` references. The bundled YAMLs themselves were correct; only the human-facing setup runbooks were stale. v0.7.86 republishes the module with the corrected docs.
+v0.7.87 ships a focused architectural hardening of the `Step.4 Fleet Connectivity Status` pipeline. The 285-line markdown renderer that previously lived inline as a ~22 KB `pwsh` `run:` body in both the GitHub Actions and Azure DevOps Step.4 YAML templates has been extracted into a new public module function. This gives both pipelines a single source of truth, makes the markdown layout unit-testable in Pester, and keeps every bundled `run:` body comfortably below the GitHub Actions 21,000-char expression-length cap. A new Pester regression test enforces an 18,000-char ceiling on every `run:` (and `script:`) block in every bundled GitHub Actions YAML so any future regrowth is caught in CI before it can hit production parsing.
 
-**`Automation-Pipeline-Examples/README.md` refreshed end-to-end.** Brought in lock-step with the actual 9-step pipeline lineup (`Step.0` Authentication Test through `Step.8` Fleet Health Status). Stale counts (`seven`/`eight pipelines`, `Step.7 last`) corrected to `nine`/`Step.8 last`; section 1.1 mapping table re-rendered so `Step.4 = Fleet Connectivity Status` (the table had silently shifted off-by-one from when Step.4 was inserted, mis-labelling Step.5..Step.8); section 6.6 fleet-monitoring narrative now covers all three daily steady-state pipelines (Step.4 + Step.7 + Step.8) including the v0.7.85 reconciliation enhancements and the four ARM/ARG scopes Step.4 reads (`Microsoft.ResourceGraph/resources/read`, `Microsoft.AzureStackHCI/edgeDevices/read`, `Microsoft.HybridCompute/machines/read`, `Microsoft.ResourceConnector/appliances/read`); section 13 file layout re-listed in `Step.0..Step.8` numeric order with descriptive comments + cron schedules. Section 16 "Related documentation" now cross-links the three top-level reference docs (`docs/concepts.md`, `docs/rbac.md`, `docs/troubleshooting.md`) directly from the CI/CD runbook.
+**New public function `New-AzLocalFleetConnectivityStatusSummary`.** A pure markdown renderer that consumes the seven CSV reports produced earlier in the Step.4 pipeline by `Get-AzLocalFleetConnectivityStatus` (or the equivalent in-memory object arrays via the `FromObjects` parameter set) plus an explicit `-Counts` hashtable of KPI totals. It is a pure renderer over already-collected data - no Azure CLI, no Resource Graph extension, no `Az.*` modules required, no re-querying Azure. Returns the markdown string by default; `-OutputPath` writes UTF-8 no-BOM and `-PassThru` lets you combine both. ASCII source with Unicode emoji icons emitted via `[char]0xNNNN`. The function ships with comprehensive Pester unit-test coverage (parameter validation, required-key validation on `-Counts`, markdown structure, empty-input placeholders, orphan-ARB section conditionality, multi-cluster-per-RG ARB matching, output-path semantics, CSV-based input with graceful missing-CSV handling).
 
-**`Automation-Pipeline-Examples/docs/appendix-pipelines.md` renumbered + extended.** Sections renumbered from `A.1..A.7` (which had silently drifted off-by-one) to `A.0..A.8` so the appendix section number always matches its `Step.N_*.yml` filename. Two new sections added: `A.0 Authentication Validation and Subscription Scope Report` (v0.7.70) and `A.4 Fleet Connectivity Status` (v0.7.79+; reconciliation enhanced in v0.7.85). The default-triggers at-a-glance table at the top now lists all 9 pipelines. A new "Numbering convention" callout clarifies that `A.N` mirrors `Step.N` (not execution order). Stale in-file anchor links repaired.
+**Step.4 GH + ADO YAML refactor.** The 283-line, 20,460-char inline renderer in `github-actions/Step.4_fleet-connectivity-status.yml` has been replaced with a 23-line body that calls `New-AzLocalFleetConnectivityStatusSummary`. The file shrunk from 863 to 603 lines and the renderer step's `run:` body is now ~1,083 chars - a 95% reduction. The Azure DevOps twin (`azure-devops/Step.4_fleet-connectivity-status.yml`) gets the equivalent refactor so both pipelines call the same module function. As a side-effect this fixes a pre-existing structural anomaly in the ADO YAML: the Display Summary step's `pwsh` literal block scalar had silently absorbed the trailing `displayName:` / `condition:` / `env:` keys AND the subsequent `PublishTestResults@2` task (because those lines sat at indent 12-16 while the block scalar base indent was 8). The parsed ADO pipeline used to have only 10 steps; in v0.7.87 it has 11 steps, with `Display Fleet Connectivity Summary` and `Publish Fleet Connectivity JUnit Diagnostics` now real, distinct ADO tasks that actually run.
 
-**`ITSM/README.md` updated to list four ITSM-wired pipelines instead of three.** Step.4 `fleet-connectivity-status` has shipped with opt-in ServiceNow ticketing since v0.7.76 (gated on `raise_itsm_ticket=true`, sourcing `./reports/fleet-connectivity-status.xml`, using the existing `Critical`/`Warning` rows in the trigger matrix), but the ITSM README was never updated when that wiring shipped - it still described Step.6 / Step.7 / Step.8 only. Section 1 "What this connector does" now lists Step.4 alongside the other three; a new v0.7.76 callout documents the Step.4 wiring (including the per-resource `UpdateName` patterns Step.4 emits: `ClusterConnectivity=...`, `ArcAgent=... [<NodeName>]`, `PhysicalNic=... [<NodeName>/<NicName>]`, `ARB=... [<ArbName>]` - so the SHA256 dedupe key naturally separates a cluster-level disconnect from an individual NIC / Arc-agent / ARB failure); the section 8 wiring table includes a Step.4 row; and the header version pin bumped from v0.7.70 to v0.7.86.
+**21K-cap regression guard in Pester.** A new `Regression v0.7.87: bundled GitHub Actions YAML run: blocks stay under GitHub 21,000-char expression cap` Describe block enumerates every `run:` and `script:` literal block scalar in every bundled `github-actions/Step.{0..8}.yml` template and asserts each is below 18,000 chars. The 3K headroom under the 21K cap covers future feature growth and possible future re-introduction of `${{ }}` substitutions (the cap applies to the post-substitution length of any `run:` body that contains at least one `${{ }}`). Two additional asserts verify both the GH and ADO Step.4 YAMLs CALL the new renderer function and do NOT inline the `## Fleet Connectivity Status Summary` heading.
 
-**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.85'` to `'0.7.86'`. **No inline-script changes** in any YAML. **Migration:** no module-side action required - `Install-Module AzLocal.UpdateManagement -Force` is enough. Re-copy the bundled YAMLs only if you want to refresh the pin (`Copy-AzLocalPipelineExample -Destination <path> -Update`).
+**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.86'` to `'0.7.87'`.
 
-> Previous release notes (including the full v0.7.85 enhancement entry) have moved into [`docs/release-history.md`](docs/release-history.md).
+**Migration.** Run `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`). The new public function is exported automatically. No call-site changes are needed for any existing function. To pick up both the Step.4 refactor and the pin bump in your pipelines, re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update`. If you stay on the v0.7.86-pinned YAMLs they will continue to work (they call into the v0.7.86 module which does not yet have the new function).
+
+> Previous release notes (v0.7.86 and earlier) have moved into [`docs/release-history.md`](docs/release-history.md).
 
 ## Files
 
@@ -563,7 +565,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.81 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.86** stay above under [`What's New in v0.7.86`](#whats-new-in-v0786).
+The most recent release notes for **v0.7.87** stay above under [`What's New in v0.7.87`](#whats-new-in-v0787).
 
 ---
 

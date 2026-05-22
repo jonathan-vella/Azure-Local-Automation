@@ -34,8 +34,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $script:ModuleInfo | Should -Not -BeNullOrEmpty
         }
 
-        It 'Should have version 0.7.86' {
-            $script:ModuleInfo.Version | Should -Be '0.7.86'
+        It 'Should have version 0.7.87' {
+            $script:ModuleInfo.Version | Should -Be '0.7.87'
         }
 
         It 'Module version constants are in sync between .psm1 and .psd1' {
@@ -199,8 +199,8 @@ Describe 'Module: AzLocal.UpdateManagement' {
             $content | Should -Match '\$data\.ArbRows' -Because "Step.4 $Platform must assign `$data.ArbRows from cmdlet output"
         }
 
-        It 'Should export exactly 37 functions' {
-            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 37
+        It 'Should export exactly 38 functions' {
+            $script:ModuleInfo.ExportedFunctions.Count | Should -Be 38
         }
 
         It 'Should export the expected functions' {
@@ -256,7 +256,9 @@ Describe 'Module: AzLocal.UpdateManagement' {
                 # Latest Released Solution Version (v0.7.70 Phase E) - public manifest probe (aka.ms/AzureEdgeUpdates) anchoring the rolling YYMM support window in Step.6
                 'Get-AzLocalLatestSolutionVersion',
                 # Fleet Connectivity Status (v0.7.79) - 4-scope connectivity audit: cluster, Arc agent, physical NIC, ARB
-                'Get-AzLocalFleetConnectivityStatus'
+                'Get-AzLocalFleetConnectivityStatus',
+                # Fleet Connectivity Status Summary Renderer (v0.7.87) - markdown step-summary builder used by Step.4 GH+ADO pipelines
+                'New-AzLocalFleetConnectivityStatusSummary'
             )
             
             foreach ($func in $expectedFunctions) {
@@ -8339,8 +8341,8 @@ Describe 'Function: Get-AzLocalFleetHealthOverview - v0.7.70 (ARG-first fleet he
             $cmd.CommandType | Should -Be 'Function'
         }
 
-        It 'BS7: Module exports exactly 37 functions (was 36 in v0.7.79 before Get-AzLocalFleetConnectivityStatus was added)' {
-            (Get-Module AzLocal.UpdateManagement).ExportedFunctions.Count | Should -Be 37
+        It 'BS7: Module exports exactly 38 functions (was 37 in v0.7.86 before New-AzLocalFleetConnectivityStatusSummary was added in v0.7.87)' {
+            (Get-Module AzLocal.UpdateManagement).ExportedFunctions.Count | Should -Be 38
         }
     }
 
@@ -9474,3 +9476,630 @@ Describe 'Regression v0.7.84: Get-AzLocalFleetConnectivityStatus correctness fix
 }
 
 #endregion v0.7.84: Get-AzLocalFleetConnectivityStatus correctness fixes
+
+#region v0.7.87: New-AzLocalFleetConnectivityStatusSummary (renderer extraction) + 21K-cap regression guard
+
+# v0.7.87 ships a new public renderer function that builds the Step.4 markdown
+# step-summary used by BOTH the GitHub Actions and Azure DevOps pipelines.
+#
+# Background:
+#   v0.7.85 added a 'How to interpret + act on a non-zero reconciliation'
+#   subsection to the inline Step.4 summary script. The combined `run:` body
+#   in the GH Actions YAML grew from <21K to ~23.9K chars while still
+#   containing 11 `${{ steps.fleet-connectivity.outputs.X }}` substitutions,
+#   so GH parsed the whole body as a single expression and hit its 21,000-
+#   char expression-length cap at workflow parse time.
+#
+# v0.7.86 mitigated by moving the 11 step-output substitutions to a step-
+# level `env:` block (so the `run:` body has zero `${{ }}` and is no longer
+# parsed as an expression). v0.7.87 takes the next step and extracts the
+# 285-line markdown renderer into a module function so:
+#   1. Both pipelines call one function instead of duplicating the renderer.
+#   2. The renderer is now Pester-testable (this Describe block).
+#   3. A regression guard test enforces a 21,000-char ceiling on every
+#      `run:` block in every bundled GitHub Actions YAML, catching future
+#      cap-exhaustion BEFORE it hits production parsing.
+#   4. As a side effect, the structural anomaly in the ADO Step.4 YAML
+#      (where the markdown step's PublishTestResults@2 task was absorbed
+#      into the bloated pwsh block scalar and never ran as a real step)
+#      is now fixed - the parsed ADO pipeline goes from 10 to 11 steps.
+
+Describe 'Function: New-AzLocalFleetConnectivityStatusSummary' {
+    Context 'Parameter Validation' {
+        BeforeAll {
+            $script:fcsCmd = Get-Command -Name New-AzLocalFleetConnectivityStatusSummary -ErrorAction Stop
+        }
+
+        It 'Should be exported' {
+            $script:fcsCmd | Should -Not -BeNullOrEmpty
+        }
+
+        It 'Should have OutputType [string]' {
+            $ot = $script:fcsCmd.OutputType
+            ($ot | Where-Object { $_.Type -eq [string] }) | Should -Not -BeNullOrEmpty
+        }
+
+        It 'Should have FromCsvReports parameter set' {
+            $script:fcsCmd.ParameterSets.Name | Should -Contain 'FromCsvReports'
+        }
+
+        It 'Should have FromObjects parameter set' {
+            $script:fcsCmd.ParameterSets.Name | Should -Contain 'FromObjects'
+        }
+
+        It 'Should default to FromCsvReports parameter set' {
+            $script:fcsCmd.DefaultParameterSet | Should -Be 'FromCsvReports'
+        }
+
+        It 'ReportsPath should be mandatory in FromCsvReports' {
+            $p = $script:fcsCmd.Parameters['ReportsPath']
+            $attr = $p.Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' -and $_.ParameterSetName -eq 'FromCsvReports' }
+            $attr.Mandatory | Should -Be $true
+        }
+
+        It 'Counts should be mandatory (both parameter sets)' {
+            $p = $script:fcsCmd.Parameters['Counts']
+            $attrs = $p.Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' }
+            ($attrs | ForEach-Object { $_.Mandatory } | Sort-Object -Unique) | Should -Be $true
+        }
+
+        It 'PassThru should be a switch parameter' {
+            $script:fcsCmd.Parameters['PassThru'].SwitchParameter | Should -Be $true
+        }
+
+        It 'OutputPath should NOT be mandatory' {
+            $p = $script:fcsCmd.Parameters['OutputPath']
+            $attrs = $p.Attributes | Where-Object { $_.TypeId.Name -eq 'ParameterAttribute' }
+            ($attrs | ForEach-Object { $_.Mandatory }) | Should -Not -Contain $true
+        }
+    }
+
+    Context 'Counts hashtable validation' {
+        BeforeAll {
+            $script:emptyObjects = @{
+                ClusterRows = @(); ArcSummary  = @(); ArcRows = @()
+                NicRows     = @(); NicStats    = @(); ArbRows = @()
+            }
+        }
+
+        It 'Throws when Counts is missing keys' {
+            { New-AzLocalFleetConnectivityStatusSummary @script:emptyObjects -Counts @{ ClusterTotal = 0 } } |
+                Should -Throw -ExpectedMessage '*missing required key*'
+        }
+
+        It 'Accepts string values in Counts (env-var pipeline pattern)' {
+            $counts = @{
+                ClusterTotal = '5'; ClusterFail = '1'
+                ArcTotal     = '20'; ArcFail = '2'
+                NicTotal     = '80'; NicFail = '0'
+                ArbTotal     = '5'; ArbFail = '0'
+                TotalFailures = '3'; CriticalCount = '2'; WarningCount = '1'
+            }
+            { New-AzLocalFleetConnectivityStatusSummary @script:emptyObjects -Counts $counts } |
+                Should -Not -Throw
+        }
+
+        It 'Accepts integer values in Counts' {
+            $counts = @{
+                ClusterTotal = 5; ClusterFail = 1
+                ArcTotal     = 20; ArcFail = 2
+                NicTotal     = 80; NicFail = 0
+                ArbTotal     = 5; ArbFail = 0
+                TotalFailures = 3; CriticalCount = 2; WarningCount = 1
+            }
+            { New-AzLocalFleetConnectivityStatusSummary @script:emptyObjects -Counts $counts } |
+                Should -Not -Throw
+        }
+    }
+
+    Context 'Markdown structure and content' {
+        BeforeAll {
+            $script:counts = @{
+                ClusterTotal   = 3
+                ClusterFail    = 1
+                ArcTotal       = 12
+                ArcFail        = 2
+                NicTotal       = 48
+                NicFail        = 3
+                ArbTotal       = 3
+                ArbFail        = 0
+                TotalFailures  = 6
+                CriticalCount  = 4
+                WarningCount   = 2
+            }
+
+            $script:clusterRows = @(
+                [pscustomobject]@{ ClusterName = 'Mobile';   ClusterId = '/sub/abc/rg/x/p/m.azurestackhci/clusters/Mobile';   ConnectivityStatus = 'Connected';         ClusterStatus = 'Healthy'; NodeCount = 4; ResourceGroup = 'rg-mobile';   Location = 'eastus' }
+                [pscustomobject]@{ ClusterName = 'NewYork';  ClusterId = '/sub/abc/rg/y/p/m.azurestackhci/clusters/NewYork';  ConnectivityStatus = 'Disconnected';      ClusterStatus = 'Error';   NodeCount = 4; ResourceGroup = 'rg-newyork';  Location = 'eastus' }
+                [pscustomobject]@{ ClusterName = 'Dallas';   ClusterId = '';                                                  ConnectivityStatus = 'ConnectedRecently'; ClusterStatus = 'Healthy'; NodeCount = 4; ResourceGroup = 'rg-dallas';   Location = 'centralus' }
+            )
+            $script:arcSummary = @(
+                [pscustomobject]@{ AgentStatus = 'Connected';    Count = 10 }
+                [pscustomobject]@{ AgentStatus = 'Disconnected'; Count = 2 }
+            )
+            $script:arcRows = @(
+                [pscustomobject]@{ NodeName = 'nyc-n01'; MachineId = '/sub/abc/rg/y/p/m.hybridcompute/machines/nyc-n01'; ClusterName = 'NewYork'; ClusterId = '/sub/abc/rg/y/p/m.azurestackhci/clusters/NewYork'; AgentStatus = 'Disconnected'; OsSku = 'AzureLocal 25H2'; OsVersion = '10.0.26100.1'; ClusterVersion = '12.2509.1001.22'; LastStatusChange = '2026-05-20T10:00:00Z'; ResourceGroup = 'rg-newyork'; SubscriptionId = 'abc' }
+            )
+            $script:nicRows = @(
+                [pscustomobject]@{ NodeName = 'nyc-n01'; NicName = 'Mgmt1'; NicStatus = 'Disconnected'; DriverVersion = '1.0'; Ip4Address = '10.0.0.10'; InterfaceDescription = 'Intel X710'; ClusterName = 'NewYork' }
+            )
+            $script:nicStats = @(
+                [pscustomobject]@{ NicType = 'Physical'; NicStatus = 'Up';           Count = 40 }
+                [pscustomobject]@{ NicType = 'Physical'; NicStatus = 'Disconnected'; Count = 3 }
+            )
+            $script:arbRows = @(
+                [pscustomobject]@{ ArbName = 'arb-mobile';  ArbId = '/sub/abc/rg/x/p/m.resourceconnector/appliances/arb-mobile';  ArbStatus = 'Running'; ClusterId = '/sub/abc/rg/x/p/m.azurestackhci/clusters/Mobile';  ResourceGroup = 'rg-mobile';  DaysSinceLastModified = 7 }
+                [pscustomobject]@{ ArbName = 'arb-newyork'; ArbId = '/sub/abc/rg/y/p/m.resourceconnector/appliances/arb-newyork'; ArbStatus = 'Failed';  ClusterId = '/sub/abc/rg/y/p/m.azurestackhci/clusters/NewYork'; ResourceGroup = 'rg-newyork'; DaysSinceLastModified = 30 }
+            )
+
+            $script:md = New-AzLocalFleetConnectivityStatusSummary `
+                -ClusterRows $script:clusterRows -ArcSummary $script:arcSummary -ArcRows $script:arcRows `
+                -NicRows $script:nicRows -NicStats $script:nicStats -ArbRows $script:arbRows `
+                -Counts $script:counts
+        }
+
+        It 'Returns a non-empty string' {
+            $script:md | Should -Not -BeNullOrEmpty
+            $script:md.Length | Should -BeGreaterThan 1000
+        }
+
+        It 'Returns markdown well below the 21,000-char GitHub Actions expression cap' {
+            $script:md.Length | Should -BeLessThan 18000 `
+                -Because 'the renderer output must fit comfortably under the GH 21K cap (with headroom) even when emitted by a `run:` block that contains `${{ }}` substitutions in future'
+        }
+
+        It 'Includes the top-level summary heading' {
+            $script:md | Should -Match '## Fleet Connectivity Status Summary'
+        }
+
+        It 'Includes the KPI summary table header' {
+            $script:md | Should -Match '\| Scope \| Total \| Failing \| Healthy \|'
+        }
+
+        It 'Includes the Cluster KPI row with substituted counts' {
+            $script:md | Should -Match '\*\*Clusters\*\* \| 3 \| 1 \| 2'
+        }
+
+        It 'Includes the Arc KPI row with substituted counts' {
+            $script:md | Should -Match '\*\*Arc Agents \(per machine\)\*\* \| 12 \| 2 \| 10'
+        }
+
+        It 'Includes the TOTAL FAILURES row' {
+            $script:md | Should -Match '\*\*TOTAL FAILURES\*\* \| - \| \*\*6\*\* \| \(Critical=4, Warning=2\)'
+        }
+
+        It 'Includes the reconciliation table heading' {
+            $script:md | Should -Match '### Node \+ ARB Coverage Reconciliation'
+        }
+
+        It 'Includes the How-to-interpret subsection' {
+            $script:md | Should -Match '### How to interpret \+ act on a non-zero reconciliation'
+        }
+
+        It 'Includes the Cluster Connectivity (with ARB Status) table heading' {
+            $script:md | Should -Match '### Cluster Connectivity \(with ARB Status\)'
+        }
+
+        It 'Renders cluster rows with portal links when ClusterId is present' {
+            $script:md | Should -Match '\[Mobile\]\(https://portal\.azure\.com/#@/resource/sub/abc/rg/x/p/m\.azurestackhci/clusters/Mobile\)'
+        }
+
+        It 'Renders plain cluster name when ClusterId is empty' {
+            $script:md | Should -Match '\| Dallas \|'
+        }
+
+        It 'Renders ARB cell when cluster has an ARB' {
+            $script:md | Should -Match '\[arb-mobile\]\(https://portal\.azure\.com/#@/resource/sub/abc/rg/x/p/m\.resourceconnector/appliances/arb-mobile\)'
+        }
+
+        It 'Renders _(no ARB)_ placeholder when cluster has no matching ARB' {
+            # Dallas has no ClusterId so cannot match any ARB. The row should
+            # carry the _(no ARB)_ placeholder.
+            $script:md | Should -Match '_\(no ARB\)_'
+        }
+
+        It 'Includes Arc Agent Connection Status Summary heading' {
+            $script:md | Should -Match '### Arc Agent Connection Status Summary'
+        }
+
+        It 'Includes Non-Connected Machines heading' {
+            $script:md | Should -Match '### Non-Connected Machines'
+        }
+
+        It 'Includes Physical NIC Statistics heading' {
+            $script:md | Should -Match '### Physical NIC Statistics \(full inventory\)'
+        }
+
+        It 'Includes Physical NIC Issues heading' {
+            $script:md | Should -Match '### Physical NIC Issues \(Disconnected, non-APIPA IP\)'
+        }
+
+        It 'Includes Reports Available list' {
+            $script:md | Should -Match '### Reports Available'
+            $script:md | Should -Match 'fleet-cluster-connectivity\.csv'
+            $script:md | Should -Match 'fleet-arb-status\.csv'
+        }
+
+        It 'Includes the Generated-at footer' {
+            $script:md | Should -Match '\*Generated at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\*'
+        }
+
+        It 'Includes Unicode emoji icons' {
+            # Check for the white heavy check mark (Pass) and cross mark (Critical).
+            $script:md.Contains([char]0x2705) | Should -Be $true
+            $script:md.Contains([char]0x274C) | Should -Be $true
+        }
+
+        It 'Computes Healthy = max(0, Total - Failing)' {
+            # Counts: ClusterTotal=3, ClusterFail=1, healthy should be 2 (matched above)
+            # ArcTotal=12, ArcFail=2, healthy=10 (matched above)
+            # ArbTotal=3, ArbFail=0, healthy=3
+            $script:md | Should -Match '\*\*Azure Resource Bridges\*\* \| 3 \| 0 \| 3'
+        }
+    }
+
+    Context 'Empty input handling (all-empty fleet)' {
+        BeforeAll {
+            $script:zeroCounts = @{
+                ClusterTotal = 0; ClusterFail = 0
+                ArcTotal     = 0; ArcFail = 0
+                NicTotal     = 0; NicFail = 0
+                ArbTotal     = 0; ArbFail = 0
+                TotalFailures = 0; CriticalCount = 0; WarningCount = 0
+            }
+            $script:mdEmpty = New-AzLocalFleetConnectivityStatusSummary `
+                -ClusterRows @() -ArcSummary @() -ArcRows @() `
+                -NicRows @() -NicStats @() -ArbRows @() `
+                -Counts $script:zeroCounts
+        }
+
+        It 'Emits a non-empty markdown document even with zero inputs' {
+            $script:mdEmpty | Should -Not -BeNullOrEmpty
+            $script:mdEmpty.Length | Should -BeGreaterThan 1000
+        }
+
+        It 'Emits "*No clusters returned.*" placeholder for empty cluster set' {
+            $script:mdEmpty | Should -Match '\*No clusters returned\.\*'
+        }
+
+        It 'Emits "*No Arc-enabled machines returned for the selected scope.*" placeholder' {
+            $script:mdEmpty | Should -Match '\*No Arc-enabled machines returned for the selected scope\.\*'
+        }
+
+        It 'Emits "*All machines are Connected.*" placeholder for empty Arc-rows' {
+            $script:mdEmpty | Should -Match '\*All machines are Connected\.\*'
+        }
+
+        It 'Emits "*No NIC data returned for the selected scope.*" placeholder' {
+            $script:mdEmpty | Should -Match '\*No NIC data returned for the selected scope\.\*'
+        }
+
+        It 'Emits "*No physical NIC issues*" placeholder for empty NIC issues' {
+            $script:mdEmpty | Should -Match '\*No physical NIC issues\.'
+        }
+
+        It 'Does NOT include the Orphan ARBs section when there are no orphans' {
+            $script:mdEmpty | Should -Not -Match '### Orphan ARBs'
+        }
+
+        It 'Stays well under the 21K cap with empty inputs' {
+            $script:mdEmpty.Length | Should -BeLessThan 18000
+        }
+    }
+
+    Context 'Orphan ARBs section appears when orphan ARBs are present' {
+        BeforeAll {
+            $script:orphanCounts = @{
+                ClusterTotal = 1; ClusterFail = 0
+                ArcTotal     = 0; ArcFail = 0
+                NicTotal     = 0; NicFail = 0
+                ArbTotal     = 2; ArbFail = 0
+                TotalFailures = 0; CriticalCount = 0; WarningCount = 0
+            }
+            # One in-scope cluster, but the ARB array has TWO entries: one
+            # matching, one orphaned (ClusterId pointing at a cluster NOT in
+            # the in-scope cluster list).
+            $script:orphanClusters = @(
+                [pscustomobject]@{ ClusterName = 'Mobile'; ClusterId = '/sub/abc/rg/x/p/m.azurestackhci/clusters/Mobile'; ConnectivityStatus = 'Connected'; ClusterStatus = 'Healthy'; NodeCount = 4; ResourceGroup = 'rg-mobile'; Location = 'eastus' }
+            )
+            $script:orphanArbsInput = @(
+                [pscustomobject]@{ ArbName = 'arb-mobile';   ArbId = '/sub/abc/rg/x/p/m.resourceconnector/appliances/arb-mobile';   ArbStatus = 'Running'; ClusterId = '/sub/abc/rg/x/p/m.azurestackhci/clusters/Mobile';      ResourceGroup = 'rg-mobile';   DaysSinceLastModified = 7 }
+                [pscustomobject]@{ ArbName = 'arb-stale';    ArbId = '/sub/abc/rg/z/p/m.resourceconnector/appliances/arb-stale';    ArbStatus = 'Offline'; ClusterId = '/sub/abc/rg/z/p/m.azurestackhci/clusters/DeletedCluster'; ResourceGroup = 'rg-stale';    DaysSinceLastModified = 120 }
+            )
+            $script:mdOrphan = New-AzLocalFleetConnectivityStatusSummary `
+                -ClusterRows $script:orphanClusters -ArcSummary @() -ArcRows @() `
+                -NicRows @() -NicStats @() -ArbRows $script:orphanArbsInput `
+                -Counts $script:orphanCounts
+        }
+
+        It 'Includes the Orphan ARBs section heading' {
+            $script:mdOrphan | Should -Match '### Orphan ARBs \(no matching cluster in scope\)'
+        }
+
+        It 'Lists the orphan ARB by name' {
+            $script:mdOrphan | Should -Match 'arb-stale'
+        }
+
+        It 'Does NOT list the non-orphan ARB in the Orphan ARBs section' {
+            # arb-mobile should appear in the Cluster Connectivity table but
+            # NOT in the Orphan ARBs section. Verify by counting occurrences
+            # of arb-mobile (should be 1 - the cluster table row only).
+            ($script:mdOrphan -split 'arb-mobile').Count - 1 | Should -BeGreaterOrEqual 1
+        }
+
+        It 'Reconciliation table reports the correct orphan ARB count' {
+            $script:mdOrphan | Should -Match '\| Orphan ARBs \| 1 \|'
+        }
+    }
+
+    Context 'Multi-cluster-per-RG ARB (comma-separated ClusterId)' {
+        BeforeAll {
+            $script:mcrgCounts = @{
+                ClusterTotal = 2; ClusterFail = 0
+                ArcTotal     = 0; ArcFail = 0
+                NicTotal     = 0; NicFail = 0
+                ArbTotal     = 1; ArbFail = 0
+                TotalFailures = 0; CriticalCount = 0; WarningCount = 0
+            }
+            $script:mcrgClusters = @(
+                [pscustomobject]@{ ClusterName = 'ClusterA'; ClusterId = '/sub/abc/rg/shared/p/m.azurestackhci/clusters/ClusterA'; ConnectivityStatus = 'Connected'; ClusterStatus = 'Healthy'; NodeCount = 4; ResourceGroup = 'rg-shared'; Location = 'eastus' }
+                [pscustomobject]@{ ClusterName = 'ClusterB'; ClusterId = '/sub/abc/rg/shared/p/m.azurestackhci/clusters/ClusterB'; ConnectivityStatus = 'Connected'; ClusterStatus = 'Healthy'; NodeCount = 4; ResourceGroup = 'rg-shared'; Location = 'eastus' }
+            )
+            # One ARB serving BOTH clusters (multi-cluster-per-RG case).
+            $script:mcrgArbs = @(
+                [pscustomobject]@{ ArbName = 'arb-shared'; ArbId = '/sub/abc/rg/shared/p/m.resourceconnector/appliances/arb-shared'; ArbStatus = 'Running'; ClusterId = '/sub/abc/rg/shared/p/m.azurestackhci/clusters/ClusterA, /sub/abc/rg/shared/p/m.azurestackhci/clusters/ClusterB'; ResourceGroup = 'rg-shared'; DaysSinceLastModified = 5 }
+            )
+            $script:mdMcrg = New-AzLocalFleetConnectivityStatusSummary `
+                -ClusterRows $script:mcrgClusters -ArcSummary @() -ArcRows @() `
+                -NicRows @() -NicStats @() -ArbRows $script:mcrgArbs `
+                -Counts $script:mcrgCounts
+        }
+
+        It 'Matches the shared ARB to BOTH ClusterA and ClusterB' {
+            # arb-shared link should appear twice (once per cluster row).
+            ($script:mdMcrg -split [regex]::Escape('[arb-shared]')).Count - 1 | Should -Be 2
+        }
+
+        It 'Reports zero orphan ARBs (the ARB matches both clusters)' {
+            $script:mdMcrg | Should -Match '\| Orphan ARBs \| 0 \|'
+        }
+
+        It 'Reports two clusters with an ARB in the reconciliation table' {
+            $script:mdMcrg | Should -Match '\| Clusters with an ARB \| 2 \|'
+        }
+    }
+
+    Context 'Output options: -OutputPath, -PassThru' {
+        BeforeAll {
+            $script:tmpDir = Join-Path -Path $env:TEMP -ChildPath ('fcs-test-' + [Guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $script:tmpDir -Force | Out-Null
+            $script:zeroCounts = @{
+                ClusterTotal = 0; ClusterFail = 0
+                ArcTotal     = 0; ArcFail = 0
+                NicTotal     = 0; NicFail = 0
+                ArbTotal     = 0; ArbFail = 0
+                TotalFailures = 0; CriticalCount = 0; WarningCount = 0
+            }
+            $script:emptyArgs = @{
+                ClusterRows = @(); ArcSummary  = @(); ArcRows = @()
+                NicRows     = @(); NicStats    = @(); ArbRows = @()
+                Counts      = $script:zeroCounts
+            }
+        }
+
+        AfterAll {
+            if (Test-Path -LiteralPath $script:tmpDir) {
+                Remove-Item -LiteralPath $script:tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'Returns markdown by default (no OutputPath)' {
+            $result = New-AzLocalFleetConnectivityStatusSummary @script:emptyArgs
+            $result | Should -Not -BeNullOrEmpty
+            $result.GetType().Name | Should -Be 'String'
+        }
+
+        It 'Writes file when -OutputPath is provided (no PassThru -> no return value)' {
+            $outFile = Join-Path -Path $script:tmpDir -ChildPath 'out-1.md'
+            $result = New-AzLocalFleetConnectivityStatusSummary @script:emptyArgs -OutputPath $outFile
+            Test-Path -LiteralPath $outFile | Should -Be $true
+            (Get-Item -LiteralPath $outFile).Length | Should -BeGreaterThan 100
+            $result | Should -BeNullOrEmpty
+        }
+
+        It 'Writes file AND returns string when -OutputPath + -PassThru' {
+            $outFile = Join-Path -Path $script:tmpDir -ChildPath 'out-2.md'
+            $result = New-AzLocalFleetConnectivityStatusSummary @script:emptyArgs -OutputPath $outFile -PassThru
+            Test-Path -LiteralPath $outFile | Should -Be $true
+            $result | Should -Not -BeNullOrEmpty
+            $result.GetType().Name | Should -Be 'String'
+        }
+
+        It 'Writes UTF-8 without BOM' {
+            $outFile = Join-Path -Path $script:tmpDir -ChildPath 'out-3.md'
+            New-AzLocalFleetConnectivityStatusSummary @script:emptyArgs -OutputPath $outFile | Out-Null
+            $bytes = [IO.File]::ReadAllBytes($outFile)
+            # No BOM: first three bytes should NOT be 0xEF 0xBB 0xBF.
+            ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -Be $false
+        }
+
+        It 'Creates parent directory if it does not exist' {
+            $nestedFile = Join-Path -Path $script:tmpDir -ChildPath 'nested/sub/out.md'
+            New-AzLocalFleetConnectivityStatusSummary @script:emptyArgs -OutputPath $nestedFile | Out-Null
+            Test-Path -LiteralPath $nestedFile | Should -Be $true
+        }
+    }
+
+    Context 'CSV-based input (FromCsvReports parameter set)' {
+        BeforeAll {
+            $script:csvDir = Join-Path -Path $env:TEMP -ChildPath ('fcs-csv-' + [Guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $script:csvDir -Force | Out-Null
+
+            @([pscustomobject]@{ ClusterName = 'Mobile'; ClusterId = '/sub/abc/rg/x/p/m.azurestackhci/clusters/Mobile'; ConnectivityStatus = 'Connected'; ClusterStatus = 'Healthy'; NodeCount = 4; ResourceGroup = 'rg-mobile'; Location = 'eastus' }) |
+                Export-Csv -Path (Join-Path $script:csvDir 'fleet-cluster-connectivity.csv') -NoTypeInformation
+            @([pscustomobject]@{ AgentStatus = 'Connected'; Count = 4 }) |
+                Export-Csv -Path (Join-Path $script:csvDir 'fleet-arc-status-summary.csv') -NoTypeInformation
+            # Intentionally omit other CSVs to verify missing-file handling.
+
+            $script:csvCounts = @{
+                ClusterTotal = 1; ClusterFail = 0
+                ArcTotal     = 4; ArcFail = 0
+                NicTotal     = 0; NicFail = 0
+                ArbTotal     = 0; ArbFail = 0
+                TotalFailures = 0; CriticalCount = 0; WarningCount = 0
+            }
+            $script:mdCsv = New-AzLocalFleetConnectivityStatusSummary -ReportsPath $script:csvDir -Counts $script:csvCounts
+        }
+
+        AfterAll {
+            if (Test-Path -LiteralPath $script:csvDir) {
+                Remove-Item -LiteralPath $script:csvDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'Reads CSVs from the ReportsPath folder' {
+            $script:mdCsv | Should -Match '\[Mobile\]'
+        }
+
+        It 'Treats missing CSV files as empty (no error)' {
+            # No fleet-arb-status.csv, no fleet-physical-nics.csv etc.
+            # Should still produce a complete markdown document.
+            $script:mdCsv | Should -Match '### Cluster Connectivity \(with ARB Status\)'
+            $script:mdCsv | Should -Match '\*No physical NIC issues\.'
+        }
+
+        It 'Respects the Counts hashtable even when CSVs are missing' {
+            $script:mdCsv | Should -Match '\*\*Clusters\*\* \| 1 \|'
+            $script:mdCsv | Should -Match '\*\*Arc Agents \(per machine\)\*\* \| 4 \|'
+        }
+    }
+}
+
+Describe 'Regression v0.7.87: bundled GitHub Actions YAML run: blocks stay under GitHub 21,000-char expression cap' {
+    # Defensive regression guard. GitHub Actions enforces a 21,000-char
+    # expression-length cap on any `run:` block that contains `${{ ... }}`
+    # substitutions (the whole `run:` body is parsed as one expression).
+    # v0.7.85 inadvertently exceeded this cap by appending a long
+    # 'How to interpret + act on a non-zero reconciliation' subsection
+    # to the Step.4 markdown summary while keeping 11 step-output
+    # substitutions inline. v0.7.86 + v0.7.87 mitigated by moving the
+    # substitutions to step-level `env:` blocks (zero `${{ }}` in body)
+    # AND extracting the renderer into a module function.
+    #
+    # This test enforces an 18,000-char ceiling on every `run:` block
+    # in every bundled GitHub Actions YAML, regardless of whether the
+    # block currently contains `${{ }}`. The 3K headroom under the
+    # 21K cap allows for:
+    #   - growth during development of new features,
+    #   - future re-introduction of `${{ }}` substitutions (the
+    #     post-substitution length matters, not the pre-substitution
+    #     length, and substitutions can expand).
+    #
+    # Failing this test means a `run:` block has grown too large.
+    # The fix is one of:
+    #   1. Extract the renderer/logic into a module function (the
+    #      v0.7.87 pattern - see New-AzLocalFleetConnectivityStatusSummary).
+    #   2. Move static prose into a separate file consumed via
+    #      `Get-Content -Raw`.
+    #   3. Move inline `${{ }}` substitutions to step-level `env:`
+    #      vars so the cap stops applying (though the test still
+    #      enforces the ceiling defensively).
+
+    # Pester v5 NOTE: code at this level (outside BeforeAll/It) runs at
+    # DISCOVERY phase. $PSScriptRoot is available here, so we can enumerate
+    # the bundled YAML files now and use the resulting case array as the
+    # argument to `It -ForEach`. (Computing the array inside BeforeAll would
+    # be too late - -ForEach is evaluated at discovery.)
+    $script:repoRootForCap = Split-Path -Path $PSScriptRoot -Parent
+    $script:ghActionsDir   = Join-Path -Path $script:repoRootForCap -ChildPath 'Automation-Pipeline-Examples/github-actions'
+    $script:GhYamlCapCases = @(
+        Get-ChildItem -Path $script:ghActionsDir -Filter '*.yml' -File |
+            ForEach-Object { @{ FileName = $_.Name; FullPath = $_.FullName } }
+    )
+
+    BeforeAll {
+        $script:RunBlockCharCeiling = 18000
+        $script:repoRootForCap      = Split-Path -Path $PSScriptRoot -Parent
+        $script:ghActionsDir        = Join-Path -Path $script:repoRootForCap -ChildPath 'Automation-Pipeline-Examples/github-actions'
+
+        # Helper: enumerate `run: |` (and `script: |`) literal block scalars
+        # in a YAML file by tracking indentation. A block scalar terminates
+        # at the first non-blank line whose indent is <= the indent of the
+        # `run:` (or `script:`) key. Each block also reports whether its
+        # body contains any `${{ ... }}` GitHub Actions expression - the
+        # 21,000-char cap only applies to expression-bearing blocks.
+        function script:Get-YamlBlockScalars {
+            param([Parameter(Mandatory)][string]$Path)
+
+            $lines  = Get-Content -LiteralPath $Path
+            $blocks = [System.Collections.Generic.List[object]]::new()
+            $inBlk  = $false
+            $start  = -1
+            $keyInd = 0
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                $ln = $lines[$i]
+                if (-not $inBlk -and $ln -match '^(\s+)(run|script):\s*\|') {
+                    $inBlk  = $true
+                    $start  = $i
+                    $keyInd = $Matches[1].Length
+                    continue
+                }
+                if ($inBlk) {
+                    $curInd = if ($ln -match '^( *)\S') { $Matches[1].Length } else { -1 }
+                    if ($curInd -ge 0 -and $curInd -le $keyInd) {
+                        $body = ($lines[($start + 1)..($i - 1)] -join "`n")
+                        $blocks.Add([pscustomobject]@{
+                                StartLine     = $start + 1
+                                EndLine       = $i
+                                Chars         = $body.Length
+                                HasExpression = ($body -match '\$\{\{')
+                            })
+                        $inBlk = $false
+                    }
+                }
+            }
+            if ($inBlk) {
+                $body = ($lines[($start + 1)..($lines.Count - 1)] -join "`n")
+                $blocks.Add([pscustomobject]@{
+                        StartLine     = $start + 1
+                        EndLine       = $lines.Count
+                        Chars         = $body.Length
+                        HasExpression = ($body -match '\$\{\{')
+                    })
+            }
+            return , $blocks.ToArray()
+        }
+    }
+
+    It 'every <FileName> expression-bearing run/script block stays under the 18,000-char ceiling (3K headroom under GH 21K expression cap)' -ForEach $script:GhYamlCapCases {
+        $blocks = & (Get-Command -Name Get-YamlBlockScalars) -Path $FullPath
+        # The 21,000-char cap only applies to run: blocks that contain
+        # `${{ }}` expressions (GH evaluates expressions as one unit).
+        # Static run: blocks (no expressions) are not subject to the cap.
+        $exprBlocks = @($blocks | Where-Object { $_.HasExpression })
+        foreach ($b in $exprBlocks) {
+            $b.Chars | Should -BeLessThan $script:RunBlockCharCeiling `
+                -Because "$FileName has a run: block at L$($b.StartLine)-L$($b.EndLine) that is $($b.Chars) chars AND contains `${{ }}` expressions. The GitHub Actions expression-length cap is 21,000 chars; this test enforces an 18,000 ceiling with 3K headroom. Fix by extracting the logic into a module function (see New-AzLocalFleetConnectivityStatusSummary in v0.7.87) or moving `${{ }}` substitutions to step-level env: vars."
+        }
+    }
+
+    It 'Step.4 GH YAML uses the new renderer function (no inline 22 KB markdown)' {
+        $step4 = Join-Path -Path $script:ghActionsDir -ChildPath 'Step.4_fleet-connectivity-status.yml'
+        $raw   = Get-Content -LiteralPath $step4 -Raw
+        $raw | Should -Match 'New-AzLocalFleetConnectivityStatusSummary' `
+            -Because 'Step.4 must call the v0.7.87 renderer function rather than inlining the markdown summary'
+        $raw | Should -Not -Match '## Fleet Connectivity Status Summary' `
+            -Because 'the markdown summary heading must NOT appear inline in the YAML - the renderer function owns the markdown'
+    }
+
+    It 'Step.4 ADO YAML uses the new renderer function (no inline 22 KB markdown)' {
+        $step4 = Join-Path -Path $script:repoRootForCap -ChildPath 'Automation-Pipeline-Examples/azure-devops/Step.4_fleet-connectivity-status.yml'
+        $raw   = Get-Content -LiteralPath $step4 -Raw
+        $raw | Should -Match 'New-AzLocalFleetConnectivityStatusSummary' `
+            -Because 'Step.4 ADO must call the same v0.7.87 renderer function as the GH twin'
+        $raw | Should -Not -Match '## Fleet Connectivity Status Summary' `
+            -Because 'the markdown summary heading must NOT appear inline in the YAML - the renderer function owns the markdown'
+    }
+}
+
+#endregion v0.7.87: New-AzLocalFleetConnectivityStatusSummary (renderer extraction) + 21K-cap regression guard

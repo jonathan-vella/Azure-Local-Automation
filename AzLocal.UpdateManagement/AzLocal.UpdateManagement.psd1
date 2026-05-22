@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.86'
+    ModuleVersion = '0.7.87'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -123,7 +123,8 @@
         'Public/Test-AzLocalUpdateScheduleAllowed.ps1',
         'Public/Update-AzLocalApplyUpdatesScheduleConfig.ps1',
         'Public/Update-AzLocalPipelineExample.ps1',
-        'Public/Get-AzLocalFleetConnectivityStatus.ps1'
+        'Public/Get-AzLocalFleetConnectivityStatus.ps1',
+        'Public/New-AzLocalFleetConnectivityStatusSummary.ps1'
     )
 
     FunctionsToExport = @(
@@ -178,7 +179,9 @@
         # Latest Released Solution Version (v0.7.70) - public manifest probe (aka.ms/AzureEdgeUpdates) that anchors the rolling YYMM support window
         'Get-AzLocalLatestSolutionVersion',
         # Fleet Connectivity Status (v0.7.79) - 4-scope connectivity audit: cluster, Arc agent, physical NIC, ARB
-        'Get-AzLocalFleetConnectivityStatus'
+        'Get-AzLocalFleetConnectivityStatus',
+        # Fleet Connectivity Status Summary Renderer (v0.7.87) - markdown step-summary builder used by Step.4 GH+ADO pipelines
+        'New-AzLocalFleetConnectivityStatusSummary'
     )
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -207,42 +210,40 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.86 - Documentation follow-up: Automation-Pipeline-Examples README + appendix refreshed for the 9-step pipeline set
+## Version 0.7.87 - Extract Step.4 fleet-connectivity summary renderer to module function + 21K-cap Pester regression guard
+
+### Added
+
+- **New public function `New-AzLocalFleetConnectivityStatusSummary`** (`Public/`): a pure markdown renderer that builds the Step.4 fleet-connectivity step-summary previously inlined as a ~22 KB `pwsh` body in both pipelines. Consumes the seven CSV reports produced earlier in the pipeline by `Get-AzLocalFleetConnectivityStatus` (or in-memory object arrays via the `FromObjects` parameter set) plus an explicit `-Counts` hashtable of KPI totals. Pure renderer over already-collected data - no Azure CLI, Resource Graph extension, or `Az.*` modules required. Returns markdown string by default; supports `-OutputPath` (UTF-8 no-BOM) and `-PassThru`. Ships with comprehensive Pester unit tests (parameter-set validation, required-key validation on `-Counts`, markdown structure, empty-input placeholders, orphan-ARB conditionality, multi-cluster-per-RG ARB matching, output-path semantics, CSV-based input with graceful missing-CSV handling).
+- **Pester regression guard for the GitHub Actions 21,000-char expression-length cap.** Enumerates every `run:` / `script:` literal block scalar in every bundled `github-actions/Step.{0..8}.yml` template and asserts each is below 18,000 chars (3K headroom under the 21K cap, covers future feature growth and possible future re-introduction of `${{ }}` substitutions). Two additional asserts verify both the GH and ADO Step.4 YAMLs CALL the renderer function and do NOT inline the markdown summary heading.
 
 ### Changed
 
-- **`Automation-Pipeline-Examples/README.md` refreshed end-to-end** to bring it in lock-step with the actual 9-step pipeline lineup (`Step.0` Authentication Test through `Step.8` Fleet Health Status). Stale counts (`seven`/`eight pipelines`, `Step.7 last`) corrected to `nine`/`Step.8 last`; section 1.1 mapping table re-rendered so `Step.4 = Fleet Connectivity Status` (previously the table had silently shifted from when Step.4 was inserted, mis-labelling Step.5-Step.8); section 6.6 fleet-monitoring narrative now covers all three daily steady-state pipelines (Step.4 + Step.7 + Step.8) including the v0.7.85 reconciliation enhancements and the four ARM/ARG scopes Step.4 reads; section 13 file layout re-listed in `Step.0..Step.8` numeric order with descriptive comments + cron schedules.
-- **`Automation-Pipeline-Examples/docs/appendix-pipelines.md` renumbered + extended.** Sections renumbered from `A.1..A.7` (which had silently drifted off-by-one) to `A.0..A.8` so the appendix section number always matches its `Step.N_*.yml` filename. Two new sections added: `A.0 Authentication Validation and Subscription Scope Report` (v0.7.70) and `A.4 Fleet Connectivity Status` (v0.7.79+; reconciliation enhanced in v0.7.85). The default-triggers at-a-glance table at the top now lists all 9 pipelines.
-- **`ITSM/README.md` updated** to list **four** ITSM-wired pipelines instead of three (Step.4 fleet-connectivity has shipped opt-in ITSM ticketing since v0.7.76 - the README was overdue). Section 8 wiring table now includes a `Step.4_fleet-connectivity-status` row.
-- **`Automation-Pipeline-Examples/README.md` section 16 "Related documentation"** now cross-links the three top-level reference docs (`docs/concepts.md`, `docs/rbac.md`, `docs/troubleshooting.md`) directly from the CI/CD runbook.
+- **`github-actions/Step.4_fleet-connectivity-status.yml`**: the 283-line, 20,460-char inline pwsh markdown renderer has been replaced with a 23-line body that calls `New-AzLocalFleetConnectivityStatusSummary`. File shrunk from 863 to 603 lines; renderer step `run:` body is now ~1,083 chars (95% reduction). The renderer step continues to use the step-level `env:` pattern introduced in v0.7.86 (zero `${{ }}` substitutions in the body, so the 21K cap does not apply at all).
+- **`azure-devops/Step.4_fleet-connectivity-status.yml`**: equivalent refactor against the ADO twin so both pipelines call the same module function (single source of truth). As a side-effect this fixes a pre-existing structural anomaly: the Display Summary step's pwsh literal block scalar had silently absorbed the `displayName:` + `condition:` + `env:` indented entries and the subsequent `PublishTestResults@2` task (because L713-L727 sat at indent 12-16 while the block scalar base was indent 8). The parsed ADO pipeline used to have only 10 steps; in v0.7.87 it has 11 steps, with `Display Fleet Connectivity Summary` and `Publish Fleet Connectivity JUnit Diagnostics` now real, distinct ADO tasks that actually run.
 
 ### Pipeline pin bumps
 
-- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.85'` to `'0.7.86'`. **No inline-script changes** in any YAML.
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.86'` to `'0.7.87'`.
 
 ### Migration
 
-- **Module:** no action required. `Install-Module AzLocal.UpdateManagement -Force` is enough.
-- **Pipelines:** content edits are limited to the human-facing README + appendix; the YAML inline scripts are unchanged. Re-copying the bundled YAMLs is only needed if you want to refresh the `GENERATED_AGAINST_MODULE_VERSION` pin.
+- **Module:** run `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`). The new public function is exported automatically. No call-site changes are needed for any existing function.
+- **Pipelines:** the Step.4 GH + ADO YAML refactors require the v0.7.87 module to be installed on the pipeline runner (the new `New-AzLocalFleetConnectivityStatusSummary` cmdlet must be on `Get-Command`). Re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update` to pick up both the Step.4 refactor and the pin bump.
 
 ### Background
 
-PR #56 pre-merge review found the `Automation-Pipeline-Examples` README + appendix still described the seven-pipeline layout from before `Step.0` (v0.7.70) and `Step.4` (v0.7.79) were added, and that the `ITSM/README.md` had not been updated when Step.4 shipped opt-in ITSM ticketing in v0.7.76. Bundled YAMLs were correct; only the human-facing runbooks were stale. v0.7.86 republishes the module with the corrected docs.
+v0.7.85 added a long-form `How to interpret + act on a non-zero reconciliation` subsection to the Step.4 markdown summary. The combined `run:` body in `github-actions/Step.4_fleet-connectivity-status.yml` grew from <21K to ~23.9K chars and, because it still contained 11 `${{ steps.fleet-connectivity.outputs.X }}` substitutions, GitHub Actions parsed the whole `run:` value as a single expression and hit its 21,000-char expression-length cap at workflow-parse time. v0.7.86 mitigated by moving the substitutions to step-level `env:` vars (cap stops applying). v0.7.87 ships the durable fix: extract the renderer into a module function (single source of truth for both pipelines), make the renderer unit-testable, and add a Pester regression guard so any future regrowth is caught in CI before it can hit production parsing. The ADO structural anomaly is fixed as a side-effect of the same refactor.
+
+## Version 0.7.86 - Documentation follow-up: Automation-Pipeline-Examples README + appendix refreshed for the 9-step pipeline set
+
+For full v0.7.86 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.85 - Step.4 reconciliation table: bidirectional interpretation + actionable guidance
 
-### Changed
-
-- **Step.4 `Node + ARB Coverage Reconciliation` table** in both bundled YAMLs (GitHub Actions + Azure DevOps): renames `Arc-joined physical nodes` -> `Arc-tagged physical nodes` (the count was never a join against `cluster.reportedProperties.nodes` - it is a raw count of `microsoft.hybridcompute/machines` tagged `provider=AzSHCI`, so legitimate disagreement in EITHER direction is now documented). Fixes stale `Cluster-reported node count (sum)` Notes that still referenced the pre-v0.7.84 non-existent `nodeCount` property; now correctly says `array_length(properties.reportedProperties.nodes)`. Rewrites `Node coverage delta` Notes with BIDIRECTIONAL semantics (positive = clusters claim more nodes than Arc has; negative = Arc has more AzSHCI-tagged machines than clusters claim) + likely causes for each direction.
-- **New `### How to interpret + act on a non-zero reconciliation` subsection** appended to the Step.4 step-summary. Concrete remediation steps for `Node coverage delta` (positive + negative), `Clusters without an ARB > 0`, and `Orphan ARBs > 0`, plus an inline Resource Graph query template to enumerate the specific Arc machines causing a NEGATIVE delta. Operators no longer need external context to act on the numbers.
-
-### Pipeline pin bumps
-
-- All 18 bundled `Step.{0..8}.yml` templates: `'0.7.84'` -> `'0.7.85'`. No other inline-script changes outside Step.4.
-
-### Migration
-
-No action required for the module. Run `Copy-AzLocalPipelineExample -Destination <path> -Update` to refresh bundled YAMLs and pick up the enhanced Step.4 step-summary.
+For full v0.7.85 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.84 - HOTFIX: Get-AzLocalFleetConnectivityStatus correctness (3 bugs) + cross-call ARG throttle cooldown
 

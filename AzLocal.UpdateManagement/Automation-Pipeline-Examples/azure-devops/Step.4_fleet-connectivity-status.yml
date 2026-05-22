@@ -102,7 +102,7 @@ variables:
   # the version actually installed and to the latest on PSGallery, and emits a warning
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.86'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.87'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -428,298 +428,61 @@ stages:
 
     # Create the markdown summary FIRST (before PublishTestResults below) so the
     # uploaded summary appears at the top of the pipeline run extensions view.
+    # NOTE: step outputs from `collect.*` are surfaced via step-level `env:` (NOT
+    # `$(collect.*)` macro substitutions inside the `pwsh:` body). ADO does not enforce
+    # GitHub's 21,000-char expression cap, but we keep the env-var pattern in lock-step
+    # with the GitHub Actions copy so future authors don't accidentally re-inline a
+    # large-and-growing summary block that would breach the GH cap when ported.
     - pwsh: |
-        $clusterTotal = "$(collect.clusterTotal)"
-        $clusterFail  = "$(collect.clusterFail)"
-        $arcTotal     = "$(collect.arcTotal)"
-        $arcFail      = "$(collect.arcFail)"
-        $nicTotal     = "$(collect.nicTotal)"
-        $nicFail      = "$(collect.nicFail)"
-        $arbTotal     = "$(collect.arbTotal)"
-        $arbFail      = "$(collect.arbFail)"
-        $totalFail    = "$(collect.totalFailures)"
-        $crit         = "$(collect.criticalCount)"
-        $warn         = "$(collect.warningCount)"
-
-        Write-Host "##vso[task.uploadsummary]Fleet Connectivity: $totalFail failure(s) across the fleet ($crit Critical / $warn Warning). Clusters=$clusterFail/$clusterTotal failing; Arc=$arcFail/$arcTotal; NIC=$nicFail/$nicTotal; ARB=$arbFail/$arbTotal."
-
-        $clusterRows = if (Test-Path '$(reportsPath)/fleet-cluster-connectivity.csv')         { @(Import-Csv -Path '$(reportsPath)/fleet-cluster-connectivity.csv') }         else { @() }
-        $arcSummary  = if (Test-Path '$(reportsPath)/fleet-arc-status-summary.csv')          { @(Import-Csv -Path '$(reportsPath)/fleet-arc-status-summary.csv') }          else { @() }
-        $arcRows     = if (Test-Path '$(reportsPath)/fleet-arc-non-connected-machines.csv')  { @(Import-Csv -Path '$(reportsPath)/fleet-arc-non-connected-machines.csv') }  else { @() }
-        $nicRows     = if (Test-Path '$(reportsPath)/fleet-physical-nics.csv')               { @(Import-Csv -Path '$(reportsPath)/fleet-physical-nics.csv') }               else { @() }
-        $nicStats    = if (Test-Path '$(reportsPath)/fleet-physical-nic-stats.csv')          { @(Import-Csv -Path '$(reportsPath)/fleet-physical-nic-stats.csv') }          else { @() }
-        $arbRows     = if (Test-Path '$(reportsPath)/fleet-arb-status.csv')                  { @(Import-Csv -Path '$(reportsPath)/fleet-arb-status.csv') }                  else { @() }
-
-        $okIcon   = "$([char]0x2705)"
-        $critIcon = "$([char]0x274C)"
-        $warnIcon = "$([char]0x26A0)$([char]0xFE0F)"
-        function Get-StatusIcon([string]$Severity) { switch ($Severity) { 'Pass' { $okIcon } 'Critical' { $critIcon } 'Warning' { $warnIcon } default { $warnIcon } } }
-        function Get-ClusterSev([string]$s) { switch -Regex ($s) { '^(Connected|ConnectedRecently)$' { 'Pass'; break } '^(Disconnected|Expired|Offline|Error)$' { 'Critical'; break } default { 'Warning' } } }
-        function Get-ArcSev([string]$s)     { switch -Regex ($s) { '^(Connected)$'                   { 'Pass'; break } '^(Disconnected|Expired|Offline|Error)$' { 'Critical'; break } default { 'Warning' } } }
-        function Get-NicSev([string]$s)     { switch -Regex ($s) { '^(Connected|Up)$'                { 'Pass'; break } '^(Disconnected|Down|Disabled)$'         { 'Critical'; break } default { 'Warning' } } }
-        function Get-ArbSev([string]$s)     { switch -Regex ($s) { '^(Running)$'                     { 'Pass'; break } '^(Offline|Failed)$'                    { 'Critical'; break } default { 'Warning' } } }
-
-        # --- Build ClusterId <-> ARB lookups once. The reconciliation block
-        # (immediately below the KPI summary table) and both the merged
-        # Cluster+ARB table and the Orphan ARBs section further down all
-        # reference these. The ARB ClusterId field can be comma-separated
-        # when one RG hosts multiple HCI clusters (multi-cluster-per-RG
-        # case from the summarize/make_set ARB query).
-        $arbByClusterId = @{}
-        foreach ($a in $arbRows) {
-            # v0.7.83: [string[]] cast prevents single-cluster ClusterId from
-            # collapsing to a bare [string] (which would then iterate as a
-            # scalar in foreach - currently safe, but brittle). See the
-            # ARB Add-Suite block above for the bug this guards against.
-            [string[]]$ids = if ($a.ClusterId) { ($a.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }
-            foreach ($id in $ids) {
-                $key = $id.Trim().ToLowerInvariant()
-                if ($key -and -not $arbByClusterId.ContainsKey($key)) { $arbByClusterId[$key] = $a }
-            }
+        # Build the markdown step summary by calling the module renderer
+        # function. All long-form content (markdown tables, the
+        # 'How to interpret + act on a non-zero reconciliation' subsection,
+        # KQL examples, etc.) lives in the function body, NOT inline here.
+        # The lock-step env: pattern below mirrors the GitHub Actions twin
+        # for ease of management (single mental model across pipelines).
+        $counts = @{
+            ClusterTotal   = $env:CLUSTER_TOTAL
+            ClusterFail    = $env:CLUSTER_FAIL
+            ArcTotal       = $env:ARC_TOTAL
+            ArcFail        = $env:ARC_FAIL
+            NicTotal       = $env:NIC_TOTAL
+            NicFail        = $env:NIC_FAIL
+            ArbTotal       = $env:ARB_TOTAL
+            ArbFail        = $env:ARB_FAIL
+            TotalFailures  = $env:TOTAL_FAILURES
+            CriticalCount  = $env:CRITICAL_COUNT
+            WarningCount   = $env:WARNING_COUNT
         }
-        $clusterIdsLower = @{}
-        foreach ($c in $clusterRows) {
-            if ($c.ClusterId) { $clusterIdsLower[$c.ClusterId.ToLowerInvariant()] = $true }
-        }
-        $orphanArbs = @($arbRows | Where-Object {
-            # v0.7.83: [string[]] cast - see note on $arbByClusterId loop above.
-            [string[]]$ids = if ($_.ClusterId) { ($_.ClusterId -split ',\s*') | Where-Object { $_ } } else { @() }
-            $matched = $false
-            foreach ($id in $ids) { if ($clusterIdsLower.ContainsKey($id.Trim().ToLowerInvariant())) { $matched = $true; break } }
-            -not $matched
-        })
+        $mdPath = Join-Path -Path '$(reportsPath)' -ChildPath 'fleet-connectivity-summary.md'
+        New-AzLocalFleetConnectivityStatusSummary -ReportsPath '$(reportsPath)' -Counts $counts -OutputPath $mdPath | Out-Null
+        Write-Host "##vso[task.uploadsummary]$mdPath"
+      displayName: 'Create Fleet Connectivity Summary'
+      condition: always()
+      env:
+        CLUSTER_TOTAL:  $(collect.clusterTotal)
+        CLUSTER_FAIL:   $(collect.clusterFail)
+        ARC_TOTAL:      $(collect.arcTotal)
+        ARC_FAIL:       $(collect.arcFail)
+        NIC_TOTAL:      $(collect.nicTotal)
+        NIC_FAIL:       $(collect.nicFail)
+        ARB_TOTAL:      $(collect.arbTotal)
+        ARB_FAIL:       $(collect.arbFail)
+        TOTAL_FAILURES: $(collect.totalFailures)
+        CRITICAL_COUNT: $(collect.criticalCount)
+        WARNING_COUNT:  $(collect.warningCount)
 
-        # Reconciliation counts. Cross-scope numbers come from different
-        # KQL queries (clusters / Arc machines / ARB appliances); the delta
-        # column in the reconciliation table below helps spot Arc-onboarding
-        # lag, missing ARBs, stale cluster reportedProperties data, or scope
-        # mismatches.
-        $clusterNodeSum = ($clusterRows | Measure-Object -Property NodeCount -Sum).Sum
-        if ($null -eq $clusterNodeSum) { $clusterNodeSum = 0 }
-        $clustersWithArb    = @($clusterRows | Where-Object { $_.ClusterId -and $arbByClusterId.ContainsKey($_.ClusterId.ToLowerInvariant()) }).Count
-        $clustersWithoutArb = [math]::Max(0, $clusterRows.Count - $clustersWithArb)
-        $nodeCoverageDelta  = [int]$clusterNodeSum - [int]$arcTotal
-
-        $md = @"
-        ## Fleet Connectivity Status Summary
-
-        | Scope | Total | Failing | Healthy |
-        |-------|-------|---------|---------|
-        | **Clusters** | $clusterTotal | $clusterFail | $([math]::Max(0, [int]$clusterTotal - [int]$clusterFail)) |
-        | **Arc Agents (per machine)** | $arcTotal | $arcFail | $([math]::Max(0, [int]$arcTotal - [int]$arcFail)) |
-        | **Physical NICs (issues only)** | - | $nicFail | - |
-        | **Azure Resource Bridges** | $arbTotal | $arbFail | $([math]::Max(0, [int]$arbTotal - [int]$arbFail)) |
-        | **TOTAL FAILURES** | - | **$totalFail** | (Critical=$crit, Warning=$warn) |
-
-        > _**Physical NICs** is filtered at the query layer to actionable issues only: NicStatus=Disconnected with a non-APIPA IPv4 address. 'Up' adapters and adapters without a real IP are intentionally NOT reported (noise reduction)._
-
-        ### Node + ARB Coverage Reconciliation
-
-        _Cross-scope consistency check. The Cluster-reported count and the Arc-tagged count come from **independent** KQL queries (``microsoft.azurestackhci/clusters.reportedProperties.nodes`` vs ``microsoft.hybridcompute/machines`` with ``provider=AzSHCI``). They can legitimately disagree in **EITHER** direction. Read the delta sign first, then jump to the 'How to interpret + act' subsection below the table for the matching remediation step._
-
-        | Source | Count | Notes |
-        |--------|-------|-------|
-        | Clusters in scope | $clusterTotal | One row per ``microsoft.azurestackhci/clusters`` resource |
-        | Cluster-reported node count (sum) | $clusterNodeSum | Sum of ``array_length(properties.reportedProperties.nodes)`` across all clusters (the ``nodes`` array - NOT a non-existent ``nodeCount`` field; pre-v0.7.84 used the wrong property name) |
-        | Arc-tagged physical nodes | $arcTotal | Count of ``microsoft.hybridcompute/machines`` with ``properties.detectedProperties.cloudprovider=AzSHCI`` and ``kind!=HCI``. **NOT** a join against ``cluster.reportedProperties.nodes`` - it is the raw Arc-side count and can be greater OR less than the Cluster-reported sum |
-        | Node coverage delta | $nodeCoverageDelta | (Cluster-reported) - (Arc-tagged). **Positive** = clusters claim more nodes than Arc has (Arc-onboarding lag / deleted Arc resource / missing ``AzSHCI`` provider tag / stale ``cluster.reportedProperties.nodes`` array). **Negative** = Arc has more ``AzSHCI``-tagged machines than clusters claim (orphan/decommissioned Arc resource / pre-staged node not yet joined / mis-tagged non-cluster machine). See 'How to interpret + act' below |
-        | ARBs in scope | $arbTotal | One row per ``resourceconnector/appliances`` (multi-cluster-per-RG collapsed via summarize/make_set) |
-        | Clusters with an ARB | $clustersWithArb | Clusters matched to an ARB by ClusterId |
-        | Clusters without an ARB | $clustersWithoutArb | Clusters that show ``_(no ARB)_`` in the per-cluster table below |
-        | Orphan ARBs | $($orphanArbs.Count) | ARBs whose RG contains no in-scope HCI cluster (listed in the Orphan ARBs section below when > 0) |
-
-        ### How to interpret + act on a non-zero reconciliation
-
-        Each non-zero row above points to drift between two control planes (Azure Local cluster state vs Arc/ARB state). Read the direction first, then take the matching remediation step. Goal is parity: delta = 0, no orphan ARBs, every cluster has exactly one ARB.
-
-        **``Node coverage delta`` is POSITIVE** _(cluster-reported > Arc-tagged: clusters claim more nodes than Arc has)_
-
-        - **Arc-onboarding lag** - new node added on-prem, Arc agent still bootstrapping. Usually resolves within an hour; re-run this pipeline to confirm.
-        - **Arc resource deleted** - the ``microsoft.hybridcompute/machines`` record was removed but the cluster still lists the node. Re-onboard the Arc agent on the affected node (``azcmagent connect``).
-        - **Missing ``AzSHCI`` provider tag** - the Arc machine exists but does not carry ``properties.detectedProperties.cloudprovider=AzSHCI``. Run the AzSHCI onboarding extension to re-stamp the provider tag.
-        - **Stale ``cluster.reportedProperties.nodes``** - the cluster service has not refreshed after a node-remove. Compare the array against ``Get-ClusterNode`` on the cluster.
-
-        **``Node coverage delta`` is NEGATIVE** _(Arc-tagged > cluster-reported: Arc sees AzSHCI machines that no in-scope cluster claims)_
-
-        - **Orphan / decommissioned Arc resource** - node removed from the cluster but its Arc record was never deleted. Delete the orphan Arc resource (or re-attach the node if removal was unintentional).
-        - **Pre-staged node** - Arc agent installed on hardware being prepared to join a cluster but not yet added to ``nodes[]``. Track against your build sheet; no action until commissioning completes.
-        - **Mis-tagged Arc machine** - non-cluster machine accidentally tagged ``provider=AzSHCI``. Clear the provider tag or remove the machine from AzSHCI scope.
-
-        To find the specific Arc machines causing a negative delta, run this Resource Graph query (replace the placeholder with your in-scope cluster IDs):
-
-        ``````kusto
-        resources
-        | where type =~ 'microsoft.hybridcompute/machines'
-        | where tolower(tostring(properties.detectedProperties.cloudprovider)) == 'azshci'
-        | where tolower(tostring(kind)) != 'hci'
-        | extend parentClusterId = tolower(tostring(properties.parentClusterResourceId))
-        | where isempty(parentClusterId) or not(parentClusterId in~ (/* in-scope cluster IDs, lowercased */))
-        | project name, parentClusterId, status = properties.status, lastStatusChange = properties.lastStatusChange
-        ``````
-
-        **``Clusters without an ARB`` > 0** _(every cluster should have exactly one ``microsoft.resourceconnector/appliances``)_
-
-        Look for the cluster rows showing ``_(no ARB)_`` in the per-cluster table below. Causes:
-
-        - **ARB never deployed** - run the AzSHCI extension installer to create the ARB.
-        - **ARB deleted but cluster still present** - re-create the ARB via the cluster's 'Connect' experience in the portal.
-        - **ARB resource provider not registered** on the subscription: ``az provider register --namespace Microsoft.ResourceConnector`` and re-run.
-
-        An ARB that exists but is ``Offline`` / ``Failed`` still counts toward 'Clusters with an ARB' - check the ARB Status column in the per-cluster table and the 'Azure Resource Bridges' table further down for remediation.
-
-        **``Orphan ARBs`` > 0** _(ARBs whose RG contains no in-scope HCI cluster)_
-
-        Inspect the 'Orphan ARBs (no matching cluster in scope)' section below for the full resource IDs. Causes:
-
-        - **Cluster deleted but its ARB was not cleaned up** - delete the orphan ARB.
-        - **ARB in a different sub/RG from the cluster it serves** - scope-list drift; correct the input parameter list to include the matching cluster.
-        - **ARB created for a cluster excluded from this run** (e.g. environment filter) - verify the filter; no action if expected.
-        "@
-
-        # --- Merged Cluster + ARB per-cluster table. The $arbByClusterId
-        # lookup was built above (before the KPI summary) so this section
-        # and the reconciliation block share the same data. ---
-        $md += "`n`n### Cluster Connectivity (with ARB Status)`n"
-        $md += "`n_One row per cluster, left-joined to the cluster's Azure Resource Bridge (ARB) appliance status. Each cluster has at most one ARB. ARBs without a matching cluster in scope are listed separately as 'Orphan ARBs'._`n"
-        if ($clusterRows.Count -eq 0) {
-            $md += "`n*No clusters returned.*`n"
-        } else {
-            $md += "`n| Cluster | Connectivity | Cluster Status | Nodes | ARB | ARB Status | ARB Days Since LastModified | Resource Group | Location |`n"
-            $md += "|---------|---------------|-----------------|-------|-----|-------------|------------------------------|----------------|----------|`n"
-            foreach ($r in ($clusterRows | Select-Object -First 100)) {
-                $sev          = Get-ClusterSev $r.ConnectivityStatus
-                $icon         = Get-StatusIcon $sev
-                $clusterCell  = if ($r.ClusterId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ClusterName, $r.ClusterId } else { $r.ClusterName }
-
-                $arb = $null
-                if ($r.ClusterId) { $arb = $arbByClusterId[$r.ClusterId.ToLowerInvariant()] }
-
-                if ($arb) {
-                    $arbSev        = Get-ArbSev $arb.ArbStatus
-                    $arbIcon       = Get-StatusIcon $arbSev
-                    $arbCell       = if ($arb.ArbId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $arb.ArbName, $arb.ArbId } else { $arb.ArbName }
-                    $arbStatusCell = '{0} {1}' -f $arbIcon, $arb.ArbStatus
-                    $arbDaysCell   = $arb.DaysSinceLastModified
-                } else {
-                    $arbCell       = '_(no ARB)_'
-                    $arbStatusCell = '-'
-                    $arbDaysCell   = '-'
-                }
-
-                $md += ('| {0} | {1} {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} |' -f $clusterCell, $icon, $r.ConnectivityStatus, $r.ClusterStatus, $r.NodeCount, $arbCell, $arbStatusCell, $arbDaysCell, $r.ResourceGroup, $r.Location) + "`n"
-            }
-            if ($clusterRows.Count -gt 100) { $md += "`n*Showing first 100 of $($clusterRows.Count); see ``fleet-cluster-connectivity.csv`` and ``fleet-arb-status.csv`` for the full lists.*`n" }
-        }
-
-        # --- Orphan ARBs ($orphanArbs was computed above so the
-        # reconciliation block could count them. ARB appliances whose RG
-        # contains no HCI cluster in scope - may indicate a stale/zombie
-        # appliance, or a cluster outside the configured subscription/RG
-        # scope.) ---
-        if ($orphanArbs.Count -gt 0) {
-            $md += "`n### Orphan ARBs (no matching cluster in scope)`n"
-            $md += "`n_ARB appliances whose resource group does not contain any HCI cluster visible to this run. May indicate a stale appliance, or a cluster outside the configured scope._`n"
-            $md += "`n| ARB | Status | Resource Group | Days Since LastModified |`n"
-            $md += "|-----|--------|----------------|--------------------------|`n"
-            foreach ($a in ($orphanArbs | Select-Object -First 50)) {
-                $arbSev  = Get-ArbSev $a.ArbStatus
-                $arbIcon = Get-StatusIcon $arbSev
-                $arbCell = if ($a.ArbId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $a.ArbName, $a.ArbId } else { $a.ArbName }
-                $md += ('| {0} | {1} {2} | {3} | {4} |' -f $arbCell, $arbIcon, $a.ArbStatus, $a.ResourceGroup, $a.DaysSinceLastModified) + "`n"
-            }
-        }
-
-        $md += "`n### Arc Agent Connection Status Summary`n"
-        if ($arcSummary.Count -eq 0) {
-            $md += "`n*No Arc-enabled machines returned for the selected scope.*`n"
-        } else {
-            $md += "`n| Status | Machine Count | Severity |`n"
-            $md += "|--------|----------------|----------|`n"
-            foreach ($r in ($arcSummary | Sort-Object @{Expression={[int]$_.Count};Descending=$true})) {
-                $sev  = Get-ArcSev $r.AgentStatus
-                $icon = Get-StatusIcon $sev
-                $md += ('| {0} | {1} | {2} {3} |' -f $r.AgentStatus, $r.Count, $icon, $sev) + "`n"
-            }
-        }
-
-        $md += "`n### Non-Connected Machines`n"
-        $md += "`n_Physical machines whose Arc agent status is NOT 'Connected' (Disconnected, Expired, Error, Unknown, etc.). Columns mirror the cluster-management dashboard's 'Non-Connected Machines' view._`n"
-        if ($arcRows.Count -eq 0) {
-            $md += "`n*All machines are Connected.*`n"
-        } else {
-            $arcSorted = $arcRows | Sort-Object LastStatusChange, ClusterName, NodeName
-            $md += "`n| Machine Name | Cluster Name | Status | OS SKU | OS Version | Cluster Version | Disconnected Since | Resource Group | Subscription |`n"
-            $md += "|--------------|--------------|--------|--------|------------|------------------|---------------------|----------------|--------------|`n"
-            foreach ($r in ($arcSorted | Select-Object -First 100)) {
-                $sev   = Get-ArcSev $r.AgentStatus
-                $icon  = Get-StatusIcon $sev
-                $nodeCell    = if ($r.MachineId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.NodeName, $r.MachineId } else { $r.NodeName }
-                $clusterCell = if ($r.ClusterId) { '[{0}](https://portal.azure.com/#@/resource{1})' -f $r.ClusterName, $r.ClusterId } else { $r.ClusterName }
-                $md += ('| {0} | {1} | {2} {3} | {4} | {5} | {6} | {7} | {8} | {9} |' -f $nodeCell, $clusterCell, $icon, $r.AgentStatus, $r.OsSku, $r.OsVersion, $r.ClusterVersion, $r.LastStatusChange, $r.ResourceGroup, $r.SubscriptionId) + "`n"
-            }
-            if ($arcRows.Count -gt 100) { $md += "`n*Showing first 100 of $($arcRows.Count); see ``fleet-arc-non-connected-machines.csv`` for the full list.*`n" }
-        }
-
-        $md += "`n### Physical NIC Statistics (full inventory)`n"
-        $md += "`n_One row per (NicType, NicStatus) pair across every NIC reported by every Azure Local edge device in scope. Use this to spot fleet-wide patterns (e.g. many Physical NICs in 'Disconnected' state across multiple clusters)._`n"
-        if ($nicStats.Count -eq 0) {
-            $md += "`n*No NIC data returned for the selected scope.*`n"
-        } else {
-            $md += "`n| NIC Type | NIC Status | Count | Severity |`n"
-            $md += "|----------|------------|-------|----------|`n"
-            foreach ($r in ($nicStats | Sort-Object NicType, @{Expression={[int]$_.Count};Descending=$true})) {
-                $sev  = Get-NicSev $r.NicStatus
-                $icon = Get-StatusIcon $sev
-                $md += ('| {0} | {1} | {2} | {3} {4} |' -f $r.NicType, $r.NicStatus, $r.Count, $icon, $sev) + "`n"
-            }
-        }
-
-        $md += "`n### Physical NIC Issues (Disconnected, non-APIPA IP)`n"
-        if ($nicRows.Count -eq 0) {
-            $md += "`n*No physical NIC issues. All physical adapters either Up, or Disconnected without a real IP (filtered as noise).*`n"
-        } else {
-            $nicSorted = $nicRows | Sort-Object ClusterName, NodeName, NicName
-            $md += "`n| Node | NIC | Status | Driver | IP | Interface | Cluster |`n"
-            $md += "|------|-----|--------|--------|-----|-----------|---------|`n"
-            foreach ($r in ($nicSorted | Select-Object -First 100)) {
-                $sev   = Get-NicSev $r.NicStatus
-                $icon  = Get-StatusIcon $sev
-                $md += ('| {0} | {1} | {2} {3} | {4} | {5} | {6} | {7} |' -f $r.NodeName, $r.NicName, $icon, $r.NicStatus, $r.DriverVersion, $r.Ip4Address, $r.InterfaceDescription, $r.ClusterName) + "`n"
-            }
-            if ($nicRows.Count -gt 100) { $md += "`n*Showing first 100 of $($nicRows.Count); see ``fleet-physical-nics.csv`` for the full list.*`n" }
-        }
-
-        $md += @"
-
-        ### Reports Available in Artifacts
-        - ``fleet-cluster-connectivity.csv`` - one row per cluster (connectivityStatus + cluster.status)
-        - ``fleet-arc-status-summary.csv`` - one row per distinct Arc agent status value (histogram)
-        - ``fleet-arc-non-connected-machines.csv`` - one row per machine whose Arc agent status is NOT Connected (full column set: Machine Name, Cluster Name, Status, OS SKU, OS Version, Cluster Version, Disconnected Since, Resource Group, Subscription)
-        - ``fleet-physical-nics.csv`` - one row per physical NIC issue (Disconnected, non-APIPA IP)
-        - ``fleet-physical-nic-all.csv`` - full unfiltered NIC inventory (every NIC across every edge device; Physical + Virtual; all statuses)
-        - ``fleet-physical-nic-stats.csv`` - NIC histogram by NicType + NicStatus (one row per pair, with count)
-        - ``fleet-arb-status.csv`` - one row per ARB appliance (status + days since lastModified; multi-cluster-per-RG safe via summarize/make_set)
-        - JSON copies of each, same shape, machine-readable
-        - ``fleet-connectivity-status.xml`` - JUnit XML (see Tests tab)
-
-        _Note: test sections prefixed **[JUnit Debug]** in the Tests tab are a diagnostic mirror of the tables above (for CI tooling/ITSM integration). For primary readability, use this summary and the CSV artifacts._
-        "@
-
-                Write-Host $md
-            displayName: 'Display Fleet Connectivity Summary'
-            condition: always()
-
-        # Publish JUnit test results LAST so the Test Results tab is populated but the
-        # markdown summary above is the first thing visible on the run extensions view.
-        - task: PublishTestResults@2
-            displayName: 'Publish Fleet Connectivity JUnit Diagnostics'
-            condition: always()
-            inputs:
-                testResultsFormat: 'JUnit'
-                testResultsFiles: '$(reportsPath)/fleet-connectivity-status.xml'
-                testRunTitle: '[JUnit Debug] Fleet Connectivity Status - $(Build.BuildNumber)'
-                mergeTestResults: false
-                failTaskOnFailedTests: false  # Don't fail pipeline on connectivity failures
+    # Publish JUnit test results AFTER the markdown summary so the summary
+    # appears at the top of the pipeline run extensions view. Mirrors the
+    # GitHub Actions twin (dorny/test-reporter@v3 there; PublishTestResults@2 here).
+    - task: PublishTestResults@2
+      displayName: 'Publish Fleet Connectivity JUnit Diagnostics'
+      condition: always()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '$(reportsPath)/fleet-connectivity-status.xml'
+        testRunTitle: '[JUnit Debug] Fleet Connectivity Status - $(Build.BuildNumber)'
+        mergeTestResults: false
+        failTaskOnFailedTests: false  # Do not fail pipeline on connectivity failures
 
     # ----------------------------------------------------------------------
     # ITSM Connector (ServiceNow auto-raise on connectivity failures)

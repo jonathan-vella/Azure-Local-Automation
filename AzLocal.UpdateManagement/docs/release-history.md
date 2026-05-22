@@ -4,7 +4,13 @@
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
 >
-> **For v0.7.86 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0786) `What's New in v0.7.86` section.
+> **For v0.7.87 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0787) `What's New in v0.7.87` section.
+
+---
+
+### What's New in v0.7.86
+
+v0.7.86 was a **documentation follow-up** to v0.7.85 - no code changes anywhere in the module, no YAML inline-script changes. While reviewing PR #56 before merging v0.7.85, the `Automation-Pipeline-Examples` README + appendix were found to still describe the seven-pipeline layout from before `Step.4 Fleet Connectivity Status` was inserted in v0.7.79 (and before `Step.0 Authentication Test` was added in v0.7.70). The follow-up audit also caught two related cross-doc gaps: the `ITSM/README.md` setup guide had never been updated when Step.4 shipped opt-in ServiceNow ticketing in v0.7.76, and the CI/CD `Automation-Pipeline-Examples/README.md` had no direct cross-link to the top-level `docs/concepts.md` / `docs/rbac.md` / `docs/troubleshooting.md` references. The bundled YAMLs themselves were correct; only the human-facing setup runbooks were stale. v0.7.86 republished the module with the corrected docs: section 1.1 mapping table re-rendered so `Step.4 = Fleet Connectivity Status` (off-by-one row labels corrected for Step.5..Step.8); section 6.6 fleet-monitoring narrative now covers all three daily steady-state pipelines (Step.4 + Step.7 + Step.8) including the v0.7.85 reconciliation enhancements and the four ARM/ARG scopes Step.4 reads; section 13 file layout re-listed in `Step.0..Step.8` numeric order with descriptive comments + cron schedules; `Automation-Pipeline-Examples/docs/appendix-pipelines.md` renumbered from `A.1..A.7` to `A.0..A.8` so the appendix section number always matches its `Step.N_*.yml` filename, with two new sections added (`A.0 Authentication Validation and Subscription Scope Report` and `A.4 Fleet Connectivity Status`); `ITSM/README.md` updated to list four ITSM-wired pipelines (Step.4 alongside Step.6/Step.7/Step.8) including a v0.7.76 callout documenting the Step.4 wiring and per-resource `UpdateName` patterns. All 18 bundled `Step.{0..8}.yml` templates bumped `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.85'` to `'0.7.86'` (pin-only; no inline-script changes).
 
 ---
 
