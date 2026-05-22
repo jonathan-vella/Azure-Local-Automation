@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.84'
+    ModuleVersion = '0.7.86'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -207,79 +207,67 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.84 - HOTFIX: Get-AzLocalFleetConnectivityStatus correctness (4 bugs in Step.4 summary)
+## Version 0.7.86 - Documentation follow-up: Automation-Pipeline-Examples README + appendix refreshed for the 9-step pipeline set
 
-### Fixed
+### Changed
 
-- **Cluster `Nodes` column = 0 for every cluster (and `Node coverage delta` = -(Arc-joined nodes)).** Root cause: the code read `properties.reportedProperties.nodeCount` which does NOT exist in the Azure Local cluster ARG schema. The correct property is `properties.reportedProperties.nodes` (an array of node objects). All clusters reported 0 nodes regardless of actual size; the delta math then attributed every Arc-joined node as missing cluster coverage. Fix: count `@($nodes).Count` from the array.
-- **`Non-Connected Machines` table `ClusterName` column corrupted to a single character** (cluster `Mobile` -> `e`, `alrs-cc` -> `c`). Root cause: `CoerceStr (([string]($clusterId -split '/'))[-1])` applied the `[string]` cast to the WHOLE split ARRAY (joining the elements with spaces), then `[-1]` returned the last CHARACTER of the joined string instead of the last array element. This is the SAME bug class as the v0.7.82/v0.7.83 `[char].Trim()` scalar-collapse bug. Fix: drop the `[string]` cast so `[-1]` indexes the array directly.
-- **`Azure Resource Bridges` table `DaysSinceLastModified` = -1 for EVERY ARB (both Running and Offline).** Root cause: (1) the default ARG `resources` response often omitted/stripped `systemData` so `Get-NestedProp $a 'systemData.lastModifiedAt'` returned `$null`, and (2) Running ARBs were short-circuited to `-1` as an opaque sentinel. Fix: ARB KQL now explicitly extends the column with `| extend lastModifiedAt = tostring(systemData.lastModifiedAt)`, and the Running short-circuit is dropped so real days is shown for ALL ARBs. `-1` is now reserved only for genuinely missing/unparseable timestamps.
-
-### Added
-
-- **Cross-call ARG throttle cooldown in `Invoke-AzResourceGraphQuery`.** Complements the v0.7.68 per-page retry loop with cross-call coordination: when one call observes ARG throttling, subsequent calls voluntarily sleep out a short cooldown window on entry. Cooldown duration scales with `-RetryBaseSeconds` (capped at 10s); the consecutive-throttle counter decays by 1 on every clean call. New `$script:LastResourceGraphCrossCallCooldownSeconds` diagnostic and `-DisableCrossCallCooldown` switch. 4 new Pester tests in `Cross-call throttle coordination (v0.7.84)` Context.
-- Pester `Regression v0.7.84` Describe block (10 tests across 3 contexts): static regex guards on the source file detect regression of any of the three fixes; execution tests mock realistic ARG payloads (3-node `Mobile` cluster, Disconnected Arc machine with real ARM-ID `parentClusterResourceId`, Running + Offline ARBs with `systemData.lastModifiedAt` set 5/10 days ago) and assert the row values. Negative-control test re-executes the pre-fix `[string](array)[-1]` shape and proves it still returns `'e'` for cluster `Mobile`.
-- The existing v0.7.79 cluster fixture (`reportedProperties = @{ nodeCount = 2 }`) used the WRONG property name and silently masked Bug A in unit tests for multiple releases. Fixture corrected to use the realistic `nodes = @(...)` array shape so future schema-shape regressions are caught.
+- **`Automation-Pipeline-Examples/README.md` refreshed end-to-end** to bring it in lock-step with the actual 9-step pipeline lineup (`Step.0` Authentication Test through `Step.8` Fleet Health Status). Stale counts (`seven`/`eight pipelines`, `Step.7 last`) corrected to `nine`/`Step.8 last`; section 1.1 mapping table re-rendered so `Step.4 = Fleet Connectivity Status` (previously the table had silently shifted from when Step.4 was inserted, mis-labelling Step.5-Step.8); section 6.6 fleet-monitoring narrative now covers all three daily steady-state pipelines (Step.4 + Step.7 + Step.8) including the v0.7.85 reconciliation enhancements and the four ARM/ARG scopes Step.4 reads; section 13 file layout re-listed in `Step.0..Step.8` numeric order with descriptive comments + cron schedules.
+- **`Automation-Pipeline-Examples/docs/appendix-pipelines.md` renumbered + extended.** Sections renumbered from `A.1..A.7` (which had silently drifted off-by-one) to `A.0..A.8` so the appendix section number always matches its `Step.N_*.yml` filename. Two new sections added: `A.0 Authentication Validation and Subscription Scope Report` (v0.7.70) and `A.4 Fleet Connectivity Status` (v0.7.79+; reconciliation enhanced in v0.7.85). The default-triggers at-a-glance table at the top now lists all 9 pipelines.
+- **`ITSM/README.md` updated** to list **four** ITSM-wired pipelines instead of three (Step.4 fleet-connectivity has shipped opt-in ITSM ticketing since v0.7.76 - the README was overdue). Section 8 wiring table now includes a `Step.4_fleet-connectivity-status` row.
+- **`Automation-Pipeline-Examples/README.md` section 16 "Related documentation"** now cross-links the three top-level reference docs (`docs/concepts.md`, `docs/rbac.md`, `docs/troubleshooting.md`) directly from the CI/CD runbook.
 
 ### Pipeline pin bumps
 
-- All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.83'` to `'0.7.84'`.
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.85'` to `'0.7.86'`. **No inline-script changes** in any YAML.
 
 ### Migration
 
-No action required. `Install-Module AzLocal.UpdateManagement -Force` picks up the fix. Refresh bundled Step.4 / Step.6 YAMLs (which call `Get-AzLocalFleetConnectivityStatus`) with `Copy-AzLocalPipelineExample -Destination <path> -Update` to silence the pipeline drift warning.
+- **Module:** no action required. `Install-Module AzLocal.UpdateManagement -Force` is enough.
+- **Pipelines:** content edits are limited to the human-facing README + appendix; the YAML inline scripts are unchanged. Re-copying the bundled YAMLs is only needed if you want to refresh the `GENERATED_AGAINST_MODULE_VERSION` pin.
+
+### Background
+
+PR #56 pre-merge review found the `Automation-Pipeline-Examples` README + appendix still described the seven-pipeline layout from before `Step.0` (v0.7.70) and `Step.4` (v0.7.79) were added, and that the `ITSM/README.md` had not been updated when Step.4 shipped opt-in ITSM ticketing in v0.7.76. Bundled YAMLs were correct; only the human-facing runbooks were stale. v0.7.86 republishes the module with the corrected docs.
+
+## Version 0.7.85 - Step.4 reconciliation table: bidirectional interpretation + actionable guidance
+
+### Changed
+
+- **Step.4 `Node + ARB Coverage Reconciliation` table** in both bundled YAMLs (GitHub Actions + Azure DevOps): renames `Arc-joined physical nodes` -> `Arc-tagged physical nodes` (the count was never a join against `cluster.reportedProperties.nodes` - it is a raw count of `microsoft.hybridcompute/machines` tagged `provider=AzSHCI`, so legitimate disagreement in EITHER direction is now documented). Fixes stale `Cluster-reported node count (sum)` Notes that still referenced the pre-v0.7.84 non-existent `nodeCount` property; now correctly says `array_length(properties.reportedProperties.nodes)`. Rewrites `Node coverage delta` Notes with BIDIRECTIONAL semantics (positive = clusters claim more nodes than Arc has; negative = Arc has more AzSHCI-tagged machines than clusters claim) + likely causes for each direction.
+- **New `### How to interpret + act on a non-zero reconciliation` subsection** appended to the Step.4 step-summary. Concrete remediation steps for `Node coverage delta` (positive + negative), `Clusters without an ARB > 0`, and `Orphan ARBs > 0`, plus an inline Resource Graph query template to enumerate the specific Arc machines causing a NEGATIVE delta. Operators no longer need external context to act on the numbers.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates: `'0.7.84'` -> `'0.7.85'`. No other inline-script changes outside Step.4.
+
+### Migration
+
+No action required for the module. Run `Copy-AzLocalPipelineExample -Destination <path> -Update` to refresh bundled YAMLs and pick up the enhanced Step.4 step-summary.
+
+## Version 0.7.84 - HOTFIX: Get-AzLocalFleetConnectivityStatus correctness (3 bugs) + cross-call ARG throttle cooldown
+
+For full v0.7.84 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.83 - HOTFIX: Step.4 ARB [char].Trim() bug on single-cluster ClusterId
 
-### Fixed
-
-- **Step.4 ARB JUnit-XML generation crashed with `[System.Char] does not contain a method named 'Trim'`** whenever an Azure Resource Bridge failure case had a single (non-comma-separated) `ClusterId`. The pattern `$clusterIdList = if (...) { @(... | Where-Object {...}) } else { @() }; $clusterIdList[0].Trim()` looks safe but is NOT: PowerShell's collection-unwrap silently undoes the `@()` wrap when `Where-Object` yields a single scalar, so `$clusterIdList` collapses to a bare `[string]`, indexing returns `[char]`, and `.Trim()` throws. Multi-cluster RG ARBs (comma-separated `ClusterId`) were unaffected, which is why string-match smoke tests missed it.
-- Fixed in both Step.4 YAMLs via `[string[]]$clusterIdList = ...` (forces array shape) + `([string]$clusterIdList[0]).Trim()` (defence-in-depth cast at the indexing site). The same `if-@-else` shape existed twice more per file in the orphan-ARB reconciliation block (currently safe-by-accident due to `foreach` scalar iteration, but brittle); both call sites are now also `[string[]]`-cast.
-
-### Added
-
-- Pester regression block `Regression v0.7.83: Step.4 ARB inline script handles single-cluster ClusterId without [char].Trim() bug` (9 tests). Static checks (regex on YAML content) ensure the casts are present in shipped YAML; dynamic checks re-execute the exact two-line pattern against single-cluster, comma-separated, null, and empty `ClusterId` payloads. Negative-control test proves the pre-fix shape still throws.
-
-### Pipeline pin bumps
-
-- All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.82'` to `'0.7.83'`.
-
-### Migration
-
-No action required. `Install-Module AzLocal.UpdateManagement -Force` picks up the fix; bundled Step.4 YAMLs refreshed via `Copy-AzLocalPipelineExample -Destination <path> -Update`.
+For full v0.7.83 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.82 - Bundled custom-role JSON artifact
 
-- New file `Automation-Pipeline-Examples/azlocal-update-management-custom-role.json`
-  bundled with the module. Content matches the canonical role definition
-  in `docs/rbac.md` verbatim (13 actions). Replace the
-  `<your-subscription-id>` placeholder in `AssignableScopes` before
-  `az role definition create`.
-- New callout in `Automation-Pipeline-Examples/README.md` Section 4.1
-  and `docs/rbac.md` flagging (a) the CLI/PowerShell vs Azure-portal
-  ARM-`properties`-wrapped JSON shape difference and (b) the UTF-8 BOM
-  gotcha that breaks `az`'s Python JSON parser. The shipped file is
-  BOM-free. YAML pin bumps `0.7.81` -> `0.7.82`.
+For full v0.7.82 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.81 - Pipeline RBAC guidance: custom role first
 
-- `Automation-Pipeline-Examples/README.md` permission guidance now leads
-  with the least-privilege `Azure Stack HCI Update Operator` custom role
-  for every environment; the built-in `Azure Stack HCI Administrator`
-  role is demoted to a fallback. YAML pin bump only (`0.7.80` -> `0.7.81`).
+For full v0.7.81 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.80 - RBAC custom role: fleet-connectivity reads
 
-- The documented custom role in `docs/rbac.md` was missing three reads
-  required by `Get-AzLocalFleetConnectivityStatus` (introduced in v0.7.79):
-  `Microsoft.HybridCompute/machines/read`,
-  `Microsoft.AzureStackHCI/edgeDevices/read`,
-  `Microsoft.ResourceConnector/appliances/read`. Pipelines using the
-  pre-v0.7.80 role saw 0 Arc agents/NICs/ARBs (ARG returns empty `.data`
-  for resource types the caller cannot read).
-- **Migration:** refresh the role JSON and run
-  `az role definition update --role-definition <file>`. GUID stays stable -
-  no re-assignment. Bundled YAML pin bumps `0.7.79` -> `0.7.80`.
+For full v0.7.80 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.79 - Step.5 default schedule enabled
 

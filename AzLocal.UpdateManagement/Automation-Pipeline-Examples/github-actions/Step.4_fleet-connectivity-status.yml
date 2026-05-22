@@ -109,7 +109,7 @@ env:
   # PSGallery, and emits a ::notice annotation if the YAML appears stale -
   # prompting you to refresh via Copy-AzLocalPipelineExample -Update. See
   # Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.84'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.86'
   # Resolution order for the module version pin (leave all unset to install
   # the latest, the default "fix-forward" behaviour): manual workflow_dispatch
   # input > repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -546,18 +546,65 @@ jobs:
 
         ### Node + ARB Coverage Reconciliation
 
-        _Cross-scope consistency check. These numbers come from different KQL queries (clusters / Arc machines / ARB appliances); the delta rows help spot Arc-onboarding lag, missing ARBs, stale cluster.reportedProperties data, or scope mismatches._
+        _Cross-scope consistency check. The Cluster-reported count and the Arc-tagged count come from **independent** KQL queries (``microsoft.azurestackhci/clusters.reportedProperties.nodes`` vs ``microsoft.hybridcompute/machines`` with ``provider=AzSHCI``). They can legitimately disagree in **EITHER** direction. Read the delta sign first, then jump to the 'How to interpret + act' subsection below the table for the matching remediation step._
 
         | Source | Count | Notes |
         |--------|-------|-------|
         | Clusters in scope | $clusterTotal | One row per ``microsoft.azurestackhci/clusters`` resource |
-        | Cluster-reported node count (sum) | $clusterNodeSum | Sum of ``properties.reportedProperties.nodeCount`` across all clusters |
-        | Arc-joined physical nodes | $arcTotal | Nodes in ``cluster.reportedProperties.nodes`` matched to an Arc machine (provider=AzSHCI, kind!=HCI) |
-        | Node coverage delta | $nodeCoverageDelta | Cluster-reported minus Arc-joined. Non-zero indicates Arc-onboarding lag, deleted Arc resource, missing AzSHCI provider tag, or stale cluster.reportedProperties.nodes array |
+        | Cluster-reported node count (sum) | $clusterNodeSum | Sum of ``array_length(properties.reportedProperties.nodes)`` across all clusters (the ``nodes`` array - NOT a non-existent ``nodeCount`` field; pre-v0.7.84 used the wrong property name) |
+        | Arc-tagged physical nodes | $arcTotal | Count of ``microsoft.hybridcompute/machines`` with ``properties.detectedProperties.cloudprovider=AzSHCI`` and ``kind!=HCI``. **NOT** a join against ``cluster.reportedProperties.nodes`` - it is the raw Arc-side count and can be greater OR less than the Cluster-reported sum |
+        | Node coverage delta | $nodeCoverageDelta | (Cluster-reported) - (Arc-tagged). **Positive** = clusters claim more nodes than Arc has (Arc-onboarding lag / deleted Arc resource / missing ``AzSHCI`` provider tag / stale ``cluster.reportedProperties.nodes`` array). **Negative** = Arc has more ``AzSHCI``-tagged machines than clusters claim (orphan/decommissioned Arc resource / pre-staged node not yet joined / mis-tagged non-cluster machine). See 'How to interpret + act' below |
         | ARBs in scope | $arbTotal | One row per ``resourceconnector/appliances`` (multi-cluster-per-RG collapsed via summarize/make_set) |
         | Clusters with an ARB | $clustersWithArb | Clusters matched to an ARB by ClusterId |
         | Clusters without an ARB | $clustersWithoutArb | Clusters that show ``_(no ARB)_`` in the per-cluster table below |
         | Orphan ARBs | $($orphanArbs.Count) | ARBs whose RG contains no in-scope HCI cluster (listed in the Orphan ARBs section below when > 0) |
+
+        ### How to interpret + act on a non-zero reconciliation
+
+        Each non-zero row above points to drift between two control planes (Azure Local cluster state vs Arc/ARB state). Read the direction first, then take the matching remediation step. Goal is parity: delta = 0, no orphan ARBs, every cluster has exactly one ARB.
+
+        **``Node coverage delta`` is POSITIVE** _(cluster-reported > Arc-tagged: clusters claim more nodes than Arc has)_
+
+        - **Arc-onboarding lag** - new node added on-prem, Arc agent still bootstrapping. Usually resolves within an hour; re-run this pipeline to confirm.
+        - **Arc resource deleted** - the ``microsoft.hybridcompute/machines`` record was removed but the cluster still lists the node. Re-onboard the Arc agent on the affected node (``azcmagent connect``).
+        - **Missing ``AzSHCI`` provider tag** - the Arc machine exists but does not carry ``properties.detectedProperties.cloudprovider=AzSHCI``. Run the AzSHCI onboarding extension to re-stamp the provider tag.
+        - **Stale ``cluster.reportedProperties.nodes``** - the cluster service has not refreshed after a node-remove. Compare the array against ``Get-ClusterNode`` on the cluster.
+
+        **``Node coverage delta`` is NEGATIVE** _(Arc-tagged > cluster-reported: Arc sees AzSHCI machines that no in-scope cluster claims)_
+
+        - **Orphan / decommissioned Arc resource** - node removed from the cluster but its Arc record was never deleted. Delete the orphan Arc resource (or re-attach the node if removal was unintentional).
+        - **Pre-staged node** - Arc agent installed on hardware being prepared to join a cluster but not yet added to ``nodes[]``. Track against your build sheet; no action until commissioning completes.
+        - **Mis-tagged Arc machine** - non-cluster machine accidentally tagged ``provider=AzSHCI``. Clear the provider tag or remove the machine from AzSHCI scope.
+
+        To find the specific Arc machines causing a negative delta, run this Resource Graph query (replace the placeholder with your in-scope cluster IDs):
+
+        ``````kusto
+        resources
+        | where type =~ 'microsoft.hybridcompute/machines'
+        | where tolower(tostring(properties.detectedProperties.cloudprovider)) == 'azshci'
+        | where tolower(tostring(kind)) != 'hci'
+        | extend parentClusterId = tolower(tostring(properties.parentClusterResourceId))
+        | where isempty(parentClusterId) or not(parentClusterId in~ (/* in-scope cluster IDs, lowercased */))
+        | project name, parentClusterId, status = properties.status, lastStatusChange = properties.lastStatusChange
+        ``````
+
+        **``Clusters without an ARB`` > 0** _(every cluster should have exactly one ``microsoft.resourceconnector/appliances``)_
+
+        Look for the cluster rows showing ``_(no ARB)_`` in the per-cluster table below. Causes:
+
+        - **ARB never deployed** - run the AzSHCI extension installer to create the ARB.
+        - **ARB deleted but cluster still present** - re-create the ARB via the cluster's 'Connect' experience in the portal.
+        - **ARB resource provider not registered** on the subscription: ``az provider register --namespace Microsoft.ResourceConnector`` and re-run.
+
+        An ARB that exists but is ``Offline`` / ``Failed`` still counts toward 'Clusters with an ARB' - check the ARB Status column in the per-cluster table and the 'Azure Resource Bridges' table further down for remediation.
+
+        **``Orphan ARBs`` > 0** _(ARBs whose RG contains no in-scope HCI cluster)_
+
+        Inspect the 'Orphan ARBs (no matching cluster in scope)' section below for the full resource IDs. Causes:
+
+        - **Cluster deleted but its ARB was not cleaned up** - delete the orphan ARB.
+        - **ARB in a different sub/RG from the cluster it serves** - scope-list drift; correct the input parameter list to include the matching cluster.
+        - **ARB created for a cluster excluded from this run** (e.g. environment filter) - verify the filter; no action if expected.
         "@
 
         # --- Merged Cluster + ARB per-cluster table. The $arbByClusterId

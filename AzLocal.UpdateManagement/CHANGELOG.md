@@ -5,6 +5,65 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.86] - 2026-05-22
+
+### Changed
+
+- **`Automation-Pipeline-Examples/README.md` refreshed end-to-end** to bring the runbook in lock-step with the actual 9-step pipeline lineup (`Step.0` Authentication Test through `Step.8` Fleet Health Status). Stale counts (`seven`/`eight pipelines`, `Step.7 last`) corrected to `nine`/`Step.8 last`; section 1.1 mapping table re-rendered so `Step.4 = Fleet Connectivity Status` (the table had silently shifted off-by-one from when Step.4 was inserted in v0.7.79, mis-labelling Step.5..Step.8); section 6.6 fleet-monitoring narrative now covers all three daily steady-state pipelines (Step.4 + Step.7 + Step.8) including the v0.7.85 reconciliation enhancements and the four ARM/ARG scopes Step.4 reads (`Microsoft.ResourceGraph/resources/read`, `Microsoft.AzureStackHCI/edgeDevices/read`, `Microsoft.HybridCompute/machines/read`, `Microsoft.ResourceConnector/appliances/read`); section 13 file layout re-listed in `Step.0..Step.8` numeric order with descriptive comments + cron schedules.
+- **`Automation-Pipeline-Examples/docs/appendix-pipelines.md` renumbered + extended.** Sections renumbered from `A.1..A.7` (which had silently drifted off-by-one) to `A.0..A.8` so the appendix section number always matches its `Step.N_*.yml` filename. Two new sections added: `A.0 Authentication Validation and Subscription Scope Report` (v0.7.70) and `A.4 Fleet Connectivity Status` (v0.7.79+; reconciliation enhanced in v0.7.85). The default-triggers at-a-glance table at the top now lists all 9 pipelines (added rows for `authentication-test` and `fleet-connectivity-status`). A new "Numbering convention" callout clarifies that `A.N` mirrors `Step.N` (not execution order). Stale in-file anchor links repaired (`#a4-apply-updates` -> `docs/appendix-pipelines.md#a6-apply-updates`; `#83-end-to-end-runbook-...` -> `../README.md#83-...`; `#8-scheduling-...` -> `../README.md#8-scheduling-...`).
+- **`ITSM/README.md` updated to list four ITSM-wired pipelines instead of three.** Step.4 `fleet-connectivity-status` has shipped with opt-in ServiceNow ticketing since v0.7.76 (gated on `raise_itsm_ticket=true`, sourcing `./reports/fleet-connectivity-status.xml`, using the existing `Critical`/`Warning` rows in the trigger matrix), but the ITSM README was never updated when that wiring shipped - it still described Step.6 / Step.7 / Step.8 only. Section 1 "What this connector does" now lists Step.4 alongside the other three, a new v0.7.76 callout documents the Step.4 wiring (including the distinct per-resource `UpdateName` patterns Step.4 emits: `ClusterConnectivity=...`, `ArcAgent=... [<NodeName>]`, `PhysicalNic=... [<NodeName>/<NicName>]`, `ARB=... [<ArbName>]` - so the SHA256 dedupe key naturally separates a cluster-level disconnect from an individual NIC / Arc-agent / ARB failure), and the section 8 wiring table includes a Step.4 row. The header version pin also bumped from `v0.7.70` to `v0.7.86`.
+- **`Automation-Pipeline-Examples/README.md` section 16 "Related documentation"** now cross-links the three top-level reference docs (`docs/concepts.md`, `docs/rbac.md`, `docs/troubleshooting.md`) directly from the CI/CD runbook. Previously these were only reachable from the top-level module README, so an operator who arrived directly at the CI/CD runbook had no obvious path to the glossary, full RBAC reference, or module-level troubleshooting matrix.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.85'` to `'0.7.86'`. **No inline-script changes** in any YAML.
+
+### Migration
+
+- **Module:** no action required. `Install-Module AzLocal.UpdateManagement -Force` is enough.
+- **Pipelines:** content edits are limited to the human-facing README + appendix; the YAML inline scripts are unchanged. Re-copy the bundled YAMLs only if you want to refresh the `GENERATED_AGAINST_MODULE_VERSION` pin (`Copy-AzLocalPipelineExample -Destination <path> -Update`).
+
+### Background
+
+While reviewing PR #56 before merging v0.7.85, the `Automation-Pipeline-Examples` README and appendix were found to still describe the seven-pipeline layout from before `Step.4 Fleet Connectivity Status` was inserted (v0.7.79) and before `Step.0 Authentication Test` was added (v0.7.70). The follow-up audit also caught two related cross-doc gaps: `ITSM/README.md` had never been updated to reflect that Step.4 ships with opt-in ServiceNow ticketing (v0.7.76 Phase D extension), and the CI/CD `Automation-Pipeline-Examples/README.md` had no direct cross-link to the top-level `docs/concepts.md` / `docs/rbac.md` / `docs/troubleshooting.md` references. The bundled YAMLs themselves were correct; only the human-facing setup runbooks were stale. v0.7.86 republishes the module with the corrected docs.
+
+## [0.7.85] - 2026-05-21
+
+### Changed
+
+- **`Step.4` `Node + ARB Coverage Reconciliation` table now reads as a bidirectional consistency check + offers actionable remediation** (operator feedback against v0.7.84 production output).
+
+  - **Column rename: `Arc-joined physical nodes` -> `Arc-tagged physical nodes`.** The previous label was a misnomer: this value has never been a join against `cluster.reportedProperties.nodes`. It is the raw count of `microsoft.hybridcompute/machines` carrying `properties.detectedProperties.cloudprovider=AzSHCI` and `kind!=HCI`. The rename + the Notes column rewrite make it explicit that this value comes from a separate KQL query and can legitimately be greater or less than the cluster-reported sum.
+  - **Notes column: `Cluster-reported node count (sum)`.** Fixed stale wording that still referenced the pre-v0.7.84 non-existent `nodeCount` scalar property. Now correctly describes the value as `Sum of array_length(properties.reportedProperties.nodes) across all clusters`.
+  - **Notes column: `Node coverage delta`.** Rewritten with explicit BIDIRECTIONAL semantics. POSITIVE (cluster-reported > Arc-tagged) means clusters claim more nodes than Arc has, with likely causes: Arc-onboarding lag, deleted Arc resource, missing `AzSHCI` provider tag, or stale `cluster.reportedProperties.nodes` array. NEGATIVE (Arc-tagged > cluster-reported) means Arc sees AzSHCI machines that no in-scope cluster claims, with likely causes: orphan/decommissioned Arc resource, pre-staged-but-not-yet-joined node, or mis-tagged non-cluster machine.
+  - **Intro paragraph rewritten** to point operators to the new `### How to interpret + act on a non-zero reconciliation` subsection below the table whenever a delta row is non-zero.
+
+### Added
+
+- **New `### How to interpret + act on a non-zero reconciliation` subsection** appended to the Step.4 step-summary `$md` here-string, after the reconciliation table and before the per-cluster connectivity table. Provides:
+
+  - Per-direction remediation lists for `Node coverage delta` POSITIVE (Arc-onboarding lag -> wait + re-run; Arc resource deleted -> `azcmagent connect`; missing `AzSHCI` tag -> re-run onboarding extension; stale `cluster.reportedProperties.nodes` -> compare with `Get-ClusterNode`) and NEGATIVE (orphan/decommissioned Arc resource -> delete or re-attach; pre-staged node -> wait; mis-tagged machine -> clear tag).
+  - **Inline Resource Graph query template** to enumerate the specific Arc machines causing a NEGATIVE node coverage delta (`resources | where type =~ 'microsoft.hybridcompute/machines' | where ... cloudprovider == 'azshci' | where parentClusterId notin~ (...)`).
+  - Cause + remediation list for `Clusters without an ARB > 0` (ARB never deployed -> AzSHCI extension installer; ARB deleted but cluster present -> portal Connect; RP not registered -> `az provider register --namespace Microsoft.ResourceConnector`).
+  - Cause + remediation list for `Orphan ARBs > 0` (cluster deleted but ARB not cleaned up; ARB in different sub/RG than the cluster it serves; ARB for a cluster excluded from the current run).
+
+### Tests
+
+- Existing Step.4 static-content guards (`Regression v0.7.83` block) re-checked: none keyed off any of the renamed/rewritten strings, so no test changes required for the YAML edits. Module version pin updated from `'0.7.84'` to `'0.7.85'`.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.84'` to `'0.7.85'`. Only `Step.4_fleet-connectivity-status.yml` had inline-script content changes; the other 17 are pin-only bumps.
+
+### Migration
+
+- **Module:** no action required. `Install-Module AzLocal.UpdateManagement -Force` is enough.
+- **Pipelines:** to pick up the enhanced Step.4 step-summary in your CI, run `Copy-AzLocalPipelineExample -Destination <path> -Update` to refresh the bundled `Step.{0..8}.yml` templates.
+
+### Background
+
+This is a follow-up to v0.7.84 which fixed the underlying correctness bugs in `Get-AzLocalFleetConnectivityStatus`. After v0.7.84 shipped, a production operator running Step.4 against a 20-cluster fleet saw `Node coverage delta = -6` (cluster-reported = 38, Arc-tagged = 44) and asked what it meant. The label `Arc-joined physical nodes` (implying a join was computed) and the one-directional caption (which only described positive-delta causes) made it harder than necessary to interpret. v0.7.85 makes the table self-explanatory and actionable so operators can act on non-zero numbers without external context.
+
 ## [0.7.84] - 2026-05-21
 
 ### Fixed

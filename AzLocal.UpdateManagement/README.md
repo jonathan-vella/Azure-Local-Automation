@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.84 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.84)
+**Latest Version:** v0.7.86 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.86)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.84](#whats-new-in-v0784)
+- [What's New in v0.7.86](#whats-new-in-v0786)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,23 +86,19 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.84
+## What's New in v0.7.86
 
-v0.7.84 is a **HOTFIX** for 4 correctness bugs in `Get-AzLocalFleetConnectivityStatus` (the cmdlet that powers the Step.4 fleet-connectivity summary). Reported against a real 20-cluster fleet via the same GitHub Actions Step.4 run on 2026-05-21 that validated the v0.7.83 hotfix. All four are pure read-path correctness fixes; no behavioural changes to writes/state.
+v0.7.86 is a **documentation follow-up** to v0.7.85 - no code changes anywhere in the module, no YAML inline-script changes. While reviewing PR #56 before merging v0.7.85, the `Automation-Pipeline-Examples` README + appendix were found to still describe the seven-pipeline layout from before `Step.4 Fleet Connectivity Status` was inserted in v0.7.79 (and before `Step.0 Authentication Test` was added in v0.7.70). The follow-up audit also caught two related cross-doc gaps: the `ITSM/README.md` setup guide had never been updated when Step.4 shipped opt-in ServiceNow ticketing in v0.7.76, and the CI/CD `Automation-Pipeline-Examples/README.md` had no direct cross-link to the top-level `docs/concepts.md` / `docs/rbac.md` / `docs/troubleshooting.md` references. The bundled YAMLs themselves were correct; only the human-facing setup runbooks were stale. v0.7.86 republishes the module with the corrected docs.
 
-**Bug A - `Nodes` column = 0 for every cluster** + `Cluster-reported node count (sum)` = 0 + `Node coverage delta` = -(Arc-joined node count). Root cause: the code read `properties.reportedProperties.nodeCount` which does NOT exist in the Azure Local cluster ARG schema. The correct property is `properties.reportedProperties.nodes` - an ARRAY of node objects. All clusters reported 0 nodes regardless of actual size; the delta math then attributed every Arc-joined node as missing cluster coverage. Fix: `$nodes = Get-NestedProp $r 'properties.reportedProperties.nodes'; $nodeCount = if ($nodes) { @($nodes).Count } else { 0 }`.
+**`Automation-Pipeline-Examples/README.md` refreshed end-to-end.** Brought in lock-step with the actual 9-step pipeline lineup (`Step.0` Authentication Test through `Step.8` Fleet Health Status). Stale counts (`seven`/`eight pipelines`, `Step.7 last`) corrected to `nine`/`Step.8 last`; section 1.1 mapping table re-rendered so `Step.4 = Fleet Connectivity Status` (the table had silently shifted off-by-one from when Step.4 was inserted, mis-labelling Step.5..Step.8); section 6.6 fleet-monitoring narrative now covers all three daily steady-state pipelines (Step.4 + Step.7 + Step.8) including the v0.7.85 reconciliation enhancements and the four ARM/ARG scopes Step.4 reads (`Microsoft.ResourceGraph/resources/read`, `Microsoft.AzureStackHCI/edgeDevices/read`, `Microsoft.HybridCompute/machines/read`, `Microsoft.ResourceConnector/appliances/read`); section 13 file layout re-listed in `Step.0..Step.8` numeric order with descriptive comments + cron schedules. Section 16 "Related documentation" now cross-links the three top-level reference docs (`docs/concepts.md`, `docs/rbac.md`, `docs/troubleshooting.md`) directly from the CI/CD runbook.
 
-**Bug B - `Non-Connected Machines` table `ClusterName` column corrupted to a single character** (cluster `Mobile` -> `e`, `alrs-cc` -> `c`, etc.). Root cause: `CoerceStr (([string]($clusterId -split '/'))[-1])` applied the `[string]` cast to the WHOLE split ARRAY (PowerShell array-to-string coercion joins elements with single spaces), then `[-1]` indexed the resulting joined STRING and returned the last CHARACTER instead of the last array element. **Same bug class as the v0.7.82/v0.7.83 [char].Trim() scalar-collapse.** Fix: drop the `[string]` cast so `[-1]` indexes the split array directly: `$clusterName = if ($clusterId) { CoerceStr (($clusterId -split '/')[-1]) } else { '' }`.
+**`Automation-Pipeline-Examples/docs/appendix-pipelines.md` renumbered + extended.** Sections renumbered from `A.1..A.7` (which had silently drifted off-by-one) to `A.0..A.8` so the appendix section number always matches its `Step.N_*.yml` filename. Two new sections added: `A.0 Authentication Validation and Subscription Scope Report` (v0.7.70) and `A.4 Fleet Connectivity Status` (v0.7.79+; reconciliation enhanced in v0.7.85). The default-triggers at-a-glance table at the top now lists all 9 pipelines. A new "Numbering convention" callout clarifies that `A.N` mirrors `Step.N` (not execution order). Stale in-file anchor links repaired.
 
-**Bug C - `Azure Resource Bridges` table `DaysSinceLastModified` = -1 for EVERY ARB.** Two root causes: (1) the default ARG `resources` response sometimes omitted/stripped `systemData` so `Get-NestedProp $a 'systemData.lastModifiedAt'` returned `$null` and the code fell through to the `-1` sentinel; (2) Running ARBs were intentionally short-circuited to `-1` as an opaque "N/A" sentinel - confusing because the column header gave no indication that `-1` meant "Running". Fix (1): the ARB KQL now explicitly extends the field with `| extend lastModifiedAt = tostring(systemData.lastModifiedAt)` so the column is guaranteed top-level in the response; the PowerShell read order is `$a.lastModifiedAt` first, fall back to `systemData.lastModifiedAt` if absent (defence in depth). Fix (2): dropped the Running short-circuit so real days is computed for ALL ARBs regardless of status; `-1` is now reserved only for genuinely missing or unparseable timestamps.
+**`ITSM/README.md` updated to list four ITSM-wired pipelines instead of three.** Step.4 `fleet-connectivity-status` has shipped with opt-in ServiceNow ticketing since v0.7.76 (gated on `raise_itsm_ticket=true`, sourcing `./reports/fleet-connectivity-status.xml`, using the existing `Critical`/`Warning` rows in the trigger matrix), but the ITSM README was never updated when that wiring shipped - it still described Step.6 / Step.7 / Step.8 only. Section 1 "What this connector does" now lists Step.4 alongside the other three; a new v0.7.76 callout documents the Step.4 wiring (including the per-resource `UpdateName` patterns Step.4 emits: `ClusterConnectivity=...`, `ArcAgent=... [<NodeName>]`, `PhysicalNic=... [<NodeName>/<NicName>]`, `ARB=... [<ArbName>]` - so the SHA256 dedupe key naturally separates a cluster-level disconnect from an individual NIC / Arc-agent / ARB failure); the section 8 wiring table includes a Step.4 row; and the header version pin bumped from v0.7.70 to v0.7.86.
 
-A new Pester `Regression v0.7.84` Describe block (10 tests across 3 contexts) backs the fixes with both **static guards** (regex on the source file detecting regression of any individual fix) and **execution tests with realistic mock payloads** (mock `Invoke-AzResourceGraphQuery` with a 3-node `Mobile` cluster, a Disconnected Arc machine with real ARM-ID `parentClusterResourceId`, and Running + Offline ARBs with `systemData.lastModifiedAt` set 5 and 10 days ago - then assert the resulting row values: NodeCount = 3, ClusterName = `'Mobile'`, DaysSinceLastModified approximately 5/10). A negative-control test re-executes the pre-fix `([string]($id -split '/'))[-1]` shape and asserts the result is `'e'` - so if PowerShell ever changes its array-to-string coercion semantics, the regression fires loudly.
+**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.85'` to `'0.7.86'`. **No inline-script changes** in any YAML. **Migration:** no module-side action required - `Install-Module AzLocal.UpdateManagement -Force` is enough. Re-copy the bundled YAMLs only if you want to refresh the pin (`Copy-AzLocalPipelineExample -Destination <path> -Update`).
 
-**Also new: cross-call ARG throttle cooldown in `Invoke-AzResourceGraphQuery`.** Complements the v0.7.68 per-page retry loop with cross-call coordination so that a throttle event observed in one call causes subsequent calls to voluntarily sleep out a short cooldown window on entry. This matters for fan-out fleet queries that issue many sequential ARG calls back-to-back (e.g. `Get-AzLocalFleetConnectivityStatus` issues 5 sequential calls): the v0.7.68 retry handles bursts WITHIN one call, but call N+1 was previously starting from zero and could immediately re-hit the limiter. Cooldown duration scales with `-RetryBaseSeconds` (capped at 10s); the consecutive-throttle counter decays by 1 on every clean call so cooldown does not accumulate forever. New `$script:LastResourceGraphCrossCallCooldownSeconds` diagnostic and `-DisableCrossCallCooldown` switch (for unit tests or callers with their own upstream rate-limiting). A new Pester `Cross-call throttle coordination (v0.7.84)` Context adds 4 tests for the behaviour.
-
-The existing v0.7.79 cluster mock fixture used `properties.reportedProperties = @{ nodeCount = 2 }` - the WRONG property name relative to the real ARG schema - which is why unit tests passed for multiple releases despite Bug A being live in production. The fixture has been corrected to use the realistic `nodes = @(...)` array shape so future schema-shape regressions are caught at test time, not production time. This is a textbook case of the recurring "mock fixtures must match real API response schema" lesson; the related `Executable-YAML test strategy` backlog item from the post-v0.7.76 cycle remains open for the broader Step.*.yml inline-script coverage gap. All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.83'` to `'0.7.84'` (no code changes in the YAMLs). **Migration:** no action required for `Install-Module AzLocal.UpdateManagement -Force`; downstream consumers parsing `ArbRows` should treat `-1` exclusively as "timestamp missing / unparseable" (Running ARBs now show real days).
-
-> Previous release notes have moved into [`docs/release-history.md`](docs/release-history.md).
+> Previous release notes (including the full v0.7.85 enhancement entry) have moved into [`docs/release-history.md`](docs/release-history.md).
 
 ## Files
 
@@ -197,24 +193,15 @@ Import-Module .\AzLocal.UpdateManagement.psd1
 Connect-AzLocalServicePrincipal
 ```
 
-### 2. Install or Import the Module
+### 2. Install and Import the Module
 
-**Option A: Install from PowerShell Gallery (Recommended)**
+**Install from PowerShell Gallery**
 ```powershell
 # Install from PowerShell Gallery
 Install-Module -Name AzLocal.UpdateManagement -Scope CurrentUser
 
 # Import the module
 Import-Module AzLocal.UpdateManagement
-```
-
-**Option B: Import from Local Clone**
-```powershell
-# Import the module from the current directory
-Import-Module .\AzLocal.UpdateManagement.psd1
-
-# Or import using the full path
-Import-Module "C:\Path\To\AzLocal.UpdateManagement\AzLocal.UpdateManagement.psd1"
 ```
 
 **Optional: copy the CI/CD pipeline samples out of the module install folder**
@@ -576,7 +563,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.81 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.84** stay above under [`What's New in v0.7.84`](#whats-new-in-v0784).
+The most recent release notes for **v0.7.86** stay above under [`What's New in v0.7.86`](#whats-new-in-v0786).
 
 ---
 
