@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.84 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.84)
+**Latest Version:** v0.7.85 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.85)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.84](#whats-new-in-v0784)
+- [What's New in v0.7.85](#whats-new-in-v0785)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,23 +86,17 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.84
+## What's New in v0.7.85
 
-v0.7.84 is a **HOTFIX** for 4 correctness bugs in `Get-AzLocalFleetConnectivityStatus` (the cmdlet that powers the Step.4 fleet-connectivity summary). Reported against a real 20-cluster fleet via the same GitHub Actions Step.4 run on 2026-05-21 that validated the v0.7.83 hotfix. All four are pure read-path correctness fixes; no behavioural changes to writes/state.
+v0.7.85 is a **documentation enhancement** for the Step.4 fleet-connectivity step-summary - no code changes in `Get-AzLocalFleetConnectivityStatus` itself. After v0.7.84 fixed the underlying correctness bugs, a production operator running Step.4 against a 20-cluster fleet saw `Node coverage delta = -6` (cluster-reported = 38, Arc-tagged = 44) and asked what it meant. The previous label `Arc-joined physical nodes` (implying a join was computed) plus a one-directional caption (which only described positive-delta causes) made it harder than necessary to interpret. v0.7.85 makes the table self-explanatory and actionable so operators can act on non-zero numbers without external context.
 
-**Bug A - `Nodes` column = 0 for every cluster** + `Cluster-reported node count (sum)` = 0 + `Node coverage delta` = -(Arc-joined node count). Root cause: the code read `properties.reportedProperties.nodeCount` which does NOT exist in the Azure Local cluster ARG schema. The correct property is `properties.reportedProperties.nodes` - an ARRAY of node objects. All clusters reported 0 nodes regardless of actual size; the delta math then attributed every Arc-joined node as missing cluster coverage. Fix: `$nodes = Get-NestedProp $r 'properties.reportedProperties.nodes'; $nodeCount = if ($nodes) { @($nodes).Count } else { 0 }`.
+**Column rename + Notes column rewrites in the `Node + ARB Coverage Reconciliation` table.** `Arc-joined physical nodes` -> `Arc-tagged physical nodes`. The previous label was a misnomer: this value has never been a join against `cluster.reportedProperties.nodes` - it is the raw count of `microsoft.hybridcompute/machines` carrying `properties.detectedProperties.cloudprovider=AzSHCI` and `kind!=HCI`. The Notes column now explicitly calls out that the two counts come from independent KQL queries and can legitimately disagree in EITHER direction. Stale wording on `Cluster-reported node count (sum)` that still referenced the pre-v0.7.84 non-existent `nodeCount` scalar has been replaced with the correct `Sum of array_length(properties.reportedProperties.nodes) across all clusters`. The `Node coverage delta` Notes are now BIDIRECTIONAL: POSITIVE = clusters claim more nodes than Arc has (Arc-onboarding lag / deleted Arc resource / missing `AzSHCI` provider tag / stale `cluster.reportedProperties.nodes` array); NEGATIVE = Arc has more `AzSHCI`-tagged machines than clusters claim (orphan/decommissioned Arc resource / pre-staged-but-not-yet-joined node / mis-tagged non-cluster machine).
 
-**Bug B - `Non-Connected Machines` table `ClusterName` column corrupted to a single character** (cluster `Mobile` -> `e`, `alrs-cc` -> `c`, etc.). Root cause: `CoerceStr (([string]($clusterId -split '/'))[-1])` applied the `[string]` cast to the WHOLE split ARRAY (PowerShell array-to-string coercion joins elements with single spaces), then `[-1]` indexed the resulting joined STRING and returned the last CHARACTER instead of the last array element. **Same bug class as the v0.7.82/v0.7.83 [char].Trim() scalar-collapse.** Fix: drop the `[string]` cast so `[-1]` indexes the split array directly: `$clusterName = if ($clusterId) { CoerceStr (($clusterId -split '/')[-1]) } else { '' }`.
+**New `### How to interpret + act on a non-zero reconciliation` subsection appended after the table.** Per-direction remediation lists for `Node coverage delta` POSITIVE (Arc-onboarding lag -> wait + re-run; Arc resource deleted -> `azcmagent connect`; missing `AzSHCI` tag -> re-run onboarding extension; stale `cluster.reportedProperties.nodes` -> compare against `Get-ClusterNode`) and NEGATIVE (orphan/decommissioned Arc resource -> delete or re-attach; pre-staged node -> wait for commissioning; mis-tagged machine -> clear the tag). Includes an inline Resource Graph query template to enumerate the specific Arc machines causing a NEGATIVE node coverage delta. Also documents `Clusters without an ARB > 0` causes (ARB never deployed / ARB deleted but cluster present / RP not registered) and `Orphan ARBs > 0` causes (cluster deleted but ARB not cleaned up / scope-list drift / ARB for an excluded cluster).
 
-**Bug C - `Azure Resource Bridges` table `DaysSinceLastModified` = -1 for EVERY ARB.** Two root causes: (1) the default ARG `resources` response sometimes omitted/stripped `systemData` so `Get-NestedProp $a 'systemData.lastModifiedAt'` returned `$null` and the code fell through to the `-1` sentinel; (2) Running ARBs were intentionally short-circuited to `-1` as an opaque "N/A" sentinel - confusing because the column header gave no indication that `-1` meant "Running". Fix (1): the ARB KQL now explicitly extends the field with `| extend lastModifiedAt = tostring(systemData.lastModifiedAt)` so the column is guaranteed top-level in the response; the PowerShell read order is `$a.lastModifiedAt` first, fall back to `systemData.lastModifiedAt` if absent (defence in depth). Fix (2): dropped the Running short-circuit so real days is computed for ALL ARBs regardless of status; `-1` is now reserved only for genuinely missing or unparseable timestamps.
+Applied identically to both bundled Step.4 YAMLs (`Automation-Pipeline-Examples/github-actions/Step.4_fleet-connectivity-status.yml` and `Automation-Pipeline-Examples/azure-devops/Step.4_fleet-connectivity-status.yml`); all 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.84'` to `'0.7.85'`. Only Step.4 has inline-script content changes; the other 17 are pin-only bumps. **Migration:** no module-side action required - `Install-Module AzLocal.UpdateManagement -Force` is enough. To pick up the enhanced Step.4 step-summary in your pipelines, run `Copy-AzLocalPipelineExample -Destination <path> -Update`.
 
-A new Pester `Regression v0.7.84` Describe block (10 tests across 3 contexts) backs the fixes with both **static guards** (regex on the source file detecting regression of any individual fix) and **execution tests with realistic mock payloads** (mock `Invoke-AzResourceGraphQuery` with a 3-node `Mobile` cluster, a Disconnected Arc machine with real ARM-ID `parentClusterResourceId`, and Running + Offline ARBs with `systemData.lastModifiedAt` set 5 and 10 days ago - then assert the resulting row values: NodeCount = 3, ClusterName = `'Mobile'`, DaysSinceLastModified approximately 5/10). A negative-control test re-executes the pre-fix `([string]($id -split '/'))[-1]` shape and asserts the result is `'e'` - so if PowerShell ever changes its array-to-string coercion semantics, the regression fires loudly.
-
-**Also new: cross-call ARG throttle cooldown in `Invoke-AzResourceGraphQuery`.** Complements the v0.7.68 per-page retry loop with cross-call coordination so that a throttle event observed in one call causes subsequent calls to voluntarily sleep out a short cooldown window on entry. This matters for fan-out fleet queries that issue many sequential ARG calls back-to-back (e.g. `Get-AzLocalFleetConnectivityStatus` issues 5 sequential calls): the v0.7.68 retry handles bursts WITHIN one call, but call N+1 was previously starting from zero and could immediately re-hit the limiter. Cooldown duration scales with `-RetryBaseSeconds` (capped at 10s); the consecutive-throttle counter decays by 1 on every clean call so cooldown does not accumulate forever. New `$script:LastResourceGraphCrossCallCooldownSeconds` diagnostic and `-DisableCrossCallCooldown` switch (for unit tests or callers with their own upstream rate-limiting). A new Pester `Cross-call throttle coordination (v0.7.84)` Context adds 4 tests for the behaviour.
-
-The existing v0.7.79 cluster mock fixture used `properties.reportedProperties = @{ nodeCount = 2 }` - the WRONG property name relative to the real ARG schema - which is why unit tests passed for multiple releases despite Bug A being live in production. The fixture has been corrected to use the realistic `nodes = @(...)` array shape so future schema-shape regressions are caught at test time, not production time. This is a textbook case of the recurring "mock fixtures must match real API response schema" lesson; the related `Executable-YAML test strategy` backlog item from the post-v0.7.76 cycle remains open for the broader Step.*.yml inline-script coverage gap. All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.83'` to `'0.7.84'` (no code changes in the YAMLs). **Migration:** no action required for `Install-Module AzLocal.UpdateManagement -Force`; downstream consumers parsing `ArbRows` should treat `-1` exclusively as "timestamp missing / unparseable" (Running ARBs now show real days).
-
-> Previous release notes have moved into [`docs/release-history.md`](docs/release-history.md).
+> Previous release notes (including the full v0.7.84 hotfix entry) have moved into [`docs/release-history.md`](docs/release-history.md).
 
 ## Files
 
@@ -576,7 +570,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.81 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.84** stay above under [`What's New in v0.7.84`](#whats-new-in-v0784).
+The most recent release notes for **v0.7.85** stay above under [`What's New in v0.7.85`](#whats-new-in-v0785).
 
 ---
 

@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.84'
+    ModuleVersion = '0.7.85'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -207,46 +207,43 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.84 - HOTFIX: Get-AzLocalFleetConnectivityStatus correctness (4 bugs in Step.4 summary)
+## Version 0.7.85 - Step.4 reconciliation table: bidirectional interpretation + actionable guidance
 
-### Fixed
+### Changed
 
-- **Cluster `Nodes` column = 0 for every cluster (and `Node coverage delta` = -(Arc-joined nodes)).** Root cause: the code read `properties.reportedProperties.nodeCount` which does NOT exist in the Azure Local cluster ARG schema. The correct property is `properties.reportedProperties.nodes` (an array of node objects). All clusters reported 0 nodes regardless of actual size; the delta math then attributed every Arc-joined node as missing cluster coverage. Fix: count `@($nodes).Count` from the array.
-- **`Non-Connected Machines` table `ClusterName` column corrupted to a single character** (cluster `Mobile` -> `e`, `alrs-cc` -> `c`). Root cause: `CoerceStr (([string]($clusterId -split '/'))[-1])` applied the `[string]` cast to the WHOLE split ARRAY (joining the elements with spaces), then `[-1]` returned the last CHARACTER of the joined string instead of the last array element. This is the SAME bug class as the v0.7.82/v0.7.83 `[char].Trim()` scalar-collapse bug. Fix: drop the `[string]` cast so `[-1]` indexes the array directly.
-- **`Azure Resource Bridges` table `DaysSinceLastModified` = -1 for EVERY ARB (both Running and Offline).** Root cause: (1) the default ARG `resources` response often omitted/stripped `systemData` so `Get-NestedProp $a 'systemData.lastModifiedAt'` returned `$null`, and (2) Running ARBs were short-circuited to `-1` as an opaque sentinel. Fix: ARB KQL now explicitly extends the column with `| extend lastModifiedAt = tostring(systemData.lastModifiedAt)`, and the Running short-circuit is dropped so real days is shown for ALL ARBs. `-1` is now reserved only for genuinely missing/unparseable timestamps.
-
-### Added
-
-- **Cross-call ARG throttle cooldown in `Invoke-AzResourceGraphQuery`.** Complements the v0.7.68 per-page retry loop with cross-call coordination: when one call observes ARG throttling, subsequent calls voluntarily sleep out a short cooldown window on entry. Cooldown duration scales with `-RetryBaseSeconds` (capped at 10s); the consecutive-throttle counter decays by 1 on every clean call. New `$script:LastResourceGraphCrossCallCooldownSeconds` diagnostic and `-DisableCrossCallCooldown` switch. 4 new Pester tests in `Cross-call throttle coordination (v0.7.84)` Context.
-- Pester `Regression v0.7.84` Describe block (10 tests across 3 contexts): static regex guards on the source file detect regression of any of the three fixes; execution tests mock realistic ARG payloads (3-node `Mobile` cluster, Disconnected Arc machine with real ARM-ID `parentClusterResourceId`, Running + Offline ARBs with `systemData.lastModifiedAt` set 5/10 days ago) and assert the row values. Negative-control test re-executes the pre-fix `[string](array)[-1]` shape and proves it still returns `'e'` for cluster `Mobile`.
-- The existing v0.7.79 cluster fixture (`reportedProperties = @{ nodeCount = 2 }`) used the WRONG property name and silently masked Bug A in unit tests for multiple releases. Fixture corrected to use the realistic `nodes = @(...)` array shape so future schema-shape regressions are caught.
+- **Step.4 `Node + ARB Coverage Reconciliation` table** in both bundled YAMLs (GitHub Actions + Azure DevOps): renames `Arc-joined physical nodes` -> `Arc-tagged physical nodes` (the count was never a join against `cluster.reportedProperties.nodes` - it is a raw count of `microsoft.hybridcompute/machines` tagged `provider=AzSHCI`, so legitimate disagreement in EITHER direction is now documented). Fixes stale `Cluster-reported node count (sum)` Notes that still referenced the pre-v0.7.84 non-existent `nodeCount` property; now correctly says `array_length(properties.reportedProperties.nodes)`. Rewrites `Node coverage delta` Notes with BIDIRECTIONAL semantics (positive = clusters claim more nodes than Arc has; negative = Arc has more AzSHCI-tagged machines than clusters claim) + likely causes for each direction.
+- **New `### How to interpret + act on a non-zero reconciliation` subsection** appended to the Step.4 step-summary. Concrete remediation steps for `Node coverage delta` (positive + negative), `Clusters without an ARB > 0`, and `Orphan ARBs > 0`, plus an inline Resource Graph query template to enumerate the specific Arc machines causing a NEGATIVE delta. Operators no longer need external context to act on the numbers.
 
 ### Pipeline pin bumps
 
-- All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.83'` to `'0.7.84'`.
+- All 18 bundled `Step.{0..8}.yml` templates: `'0.7.84'` -> `'0.7.85'`. No other inline-script changes outside Step.4.
 
 ### Migration
 
-No action required. `Install-Module AzLocal.UpdateManagement -Force` picks up the fix. Refresh bundled Step.4 / Step.6 YAMLs (which call `Get-AzLocalFleetConnectivityStatus`) with `Copy-AzLocalPipelineExample -Destination <path> -Update` to silence the pipeline drift warning.
+No action required for the module. Run `Copy-AzLocalPipelineExample -Destination <path> -Update` to refresh bundled YAMLs and pick up the enhanced Step.4 step-summary.
+
+## Version 0.7.84 - HOTFIX: Get-AzLocalFleetConnectivityStatus correctness (3 bugs) + cross-call ARG throttle cooldown
+
+### Fixed (Step.4 summary)
+
+- Cluster `Nodes` column = 0 for every cluster (code read non-existent `properties.reportedProperties.nodeCount` instead of the `properties.reportedProperties.nodes` array). All clusters reported 0 nodes; node coverage delta therefore equalled `-(Arc-joined nodes)`.
+- `Non-Connected Machines` table `ClusterName` corrupted to a single character (`Mobile` -> `e`) via a `[string](array)[-1]` scalar-collapse bug (same class as the v0.7.82/v0.7.83 `[char].Trim()` bug).
+- `Azure Resource Bridges` table `DaysSinceLastModified` = -1 for EVERY ARB - ARG's default response stripped `systemData`; KQL now extends `lastModifiedAt` explicitly and the Running-short-circuit-to-`-1` UX wart is gone (real days shown for all ARBs; `-1` reserved only for genuinely missing timestamps).
+
+### Added
+
+- Cross-call ARG throttle cooldown in `Invoke-AzResourceGraphQuery` - voluntary entry-side sleep when a prior call observed throttling; counter decays on clean calls. `-DisableCrossCallCooldown` switch + `$script:LastResourceGraphCrossCallCooldownSeconds` diagnostic. Pester `Cross-call throttle coordination (v0.7.84)` Context (4 tests).
+- Pester `Regression v0.7.84` Describe (10 tests across 3 contexts). v0.7.79 cluster fixture corrected from the wrong-named scalar `nodeCount = 2` to a realistic `nodes = @(...)` array (it had been silently masking Bug A in unit tests for multiple releases).
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates: `'0.7.83'` -> `'0.7.84'`.
+
+See `CHANGELOG.md` for the full v0.7.84 entry.
 
 ## Version 0.7.83 - HOTFIX: Step.4 ARB [char].Trim() bug on single-cluster ClusterId
 
-### Fixed
-
-- **Step.4 ARB JUnit-XML generation crashed with `[System.Char] does not contain a method named 'Trim'`** whenever an Azure Resource Bridge failure case had a single (non-comma-separated) `ClusterId`. The pattern `$clusterIdList = if (...) { @(... | Where-Object {...}) } else { @() }; $clusterIdList[0].Trim()` looks safe but is NOT: PowerShell's collection-unwrap silently undoes the `@()` wrap when `Where-Object` yields a single scalar, so `$clusterIdList` collapses to a bare `[string]`, indexing returns `[char]`, and `.Trim()` throws. Multi-cluster RG ARBs (comma-separated `ClusterId`) were unaffected, which is why string-match smoke tests missed it.
-- Fixed in both Step.4 YAMLs via `[string[]]$clusterIdList = ...` (forces array shape) + `([string]$clusterIdList[0]).Trim()` (defence-in-depth cast at the indexing site). The same `if-@-else` shape existed twice more per file in the orphan-ARB reconciliation block (currently safe-by-accident due to `foreach` scalar iteration, but brittle); both call sites are now also `[string[]]`-cast.
-
-### Added
-
-- Pester regression block `Regression v0.7.83: Step.4 ARB inline script handles single-cluster ClusterId without [char].Trim() bug` (9 tests). Static checks (regex on YAML content) ensure the casts are present in shipped YAML; dynamic checks re-execute the exact two-line pattern against single-cluster, comma-separated, null, and empty `ClusterId` payloads. Negative-control test proves the pre-fix shape still throws.
-
-### Pipeline pin bumps
-
-- All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.82'` to `'0.7.83'`.
-
-### Migration
-
-No action required. `Install-Module AzLocal.UpdateManagement -Force` picks up the fix; bundled Step.4 YAMLs refreshed via `Copy-AzLocalPipelineExample -Destination <path> -Update`.
+- Step.4 ARB JUnit-XML generation crashed with `[System.Char] does not contain a method named 'Trim'` whenever a failing ARB had a single (non-comma-separated) `ClusterId`. PowerShell's collection-unwrap silently undid an `@()` wrap when `Where-Object` returned a single scalar, collapsing the array to a `[string]`; `[0]` then returned a `[char]`. Fixed in both Step.4 YAMLs via `[string[]]$clusterIdList = ...` + `([string]$clusterIdList[0]).Trim()` belt-and-braces casts. The same shape existed twice more per file in the orphan-ARB reconciliation block - both call sites are also `[string[]]`-cast now. Pester `Regression v0.7.83` block (9 tests) covers static + dynamic + negative-control checks. All 18 bundled `Step.{0..8}.yml` templates: `'0.7.82'` -> `'0.7.83'`. See `CHANGELOG.md` for the full v0.7.83 entry.
 
 ## Version 0.7.82 - Bundled custom-role JSON artifact
 
