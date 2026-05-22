@@ -85,6 +85,14 @@ function Get-AzLocalApplyUpdatesScheduleConfig {
 
     # ---- Validate top-level 'allowedUpdateVersions' (schema v2 only) -
     # The parser surfaces the raw string as AllowedUpdateVersionsRaw.
+    # Schema v2 makes this field MANDATORY at the top level (the v0.7.89
+    # design decision). It defaults to the reserved sentinel 'Latest'
+    # (case-insensitive) which means "no constraint - install latest
+    # Ready update on each cluster" (the historic v0.7.88 default).
+    # Operators replace 'Latest' with a semicolon-separated list of
+    # explicit update names / version strings to enforce a "minimum
+    # updates" allow-list policy fleet-wide.
+    #
     # Always start the parsed array as $null so the resolver can tell
     # "field absent" from "field present with values".
     $cfg | Add-Member -NotePropertyName 'AllowedUpdateVersions' -NotePropertyValue $null -Force
@@ -100,6 +108,10 @@ function Get-AzLocalApplyUpdatesScheduleConfig {
         if ($null -ne $parsedTop) {
             $cfg.AllowedUpdateVersions = $parsedTop
         }
+    }
+    elseif ($cfg.SchemaVersion -ge 2) {
+        # Mandatory on v2+ with no value supplied.
+        $errors.Add("Schema v$($cfg.SchemaVersion) requires a top-level 'allowedUpdateVersions:' field. Set it to 'Latest' to keep the default 'install the latest Ready update' behaviour, or to a semicolon-separated list of explicit update names / version strings (e.g. '10.2604.0.123;10.2610.0.456') to enforce a fleet-wide allow-list. See https://github.com/NeilBird/Azure-Local/tree/main/AzLocal.UpdateManagement#allowedupdateversions for details.") | Out-Null
     }
 
     # ---- Validate each schedule row ---------------------------------

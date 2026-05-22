@@ -291,6 +291,13 @@ stages:
           "##vso[task.setvariable variable=ringMissing;isOutput=true]$($ringMissing.Count)"     | Write-Host
           "##vso[task.setvariable variable=ringOrphan;isOutput=true]$($ringOrphan.Count)"       | Write-Host
           "##vso[task.setvariable variable=haveSchedule;isOutput=true]$([int]$haveSchedule)"    | Write-Host
+          # v0.7.89: surface the schedule file path to the summary step
+          # so it can re-load the schedule for the allow-list coverage
+          # section (separate pwsh process - module + file have to be
+          # re-loaded). Empty when -SchedulePath was not supplied.
+          if ($haveSchedule) {
+              "##vso[task.setvariable variable=schedulePath;isOutput=true]$schedulePath" | Write-Host
+          }
 
           Write-Host ""
           Write-Host "Audit complete:"
@@ -329,6 +336,7 @@ stages:
         $ringMissing = "$(audit.ringMissing)"
         $ringOrphan  = "$(audit.ringOrphan)"
         $haveSchedule = ("$(audit.haveSchedule)" -eq '1')
+        $schedulePath = "$(audit.schedulePath)"
 
         Write-Host "##vso[task.uploadsummary]Schedule Coverage: $covered covered, $uncovered uncovered, $partial partial, $malformed malformed, $unparseable unparseable, $ringMissing missing-from-schedule, $ringOrphan orphan-in-schedule"
 
@@ -368,7 +376,10 @@ stages:
         # (RingMissingFromSchedule / RingOrphanedInSchedule) come FIRST -
         # higher blast radius because a missing-from-schedule ring means
         # apply-updates NEVER fires for those clusters. The Schedule
-        # sub-table is suppressed when -SchedulePath was not supplied.
+        # sub-table is rendered whenever -SchedulePath was supplied (so
+        # operators see the "no gaps" confirmation) OR whenever any
+        # Schedule-section rows are present (defensive fallback in case
+        # $haveSchedule didn't make it across step scopes).
         $scheduleRowsMd = @($rows | Where-Object { $_.Section -eq 'Schedule' })
         $cronRowsMd     = @($rows | Where-Object { $_.Section -ne 'Schedule' })
 
@@ -390,10 +401,94 @@ stages:
             return $body
         }
 
-        if ($haveSchedule) {
+        if ($haveSchedule -or $scheduleRowsMd.Count -gt 0) {
             $md += "`n### Audit Detail - Schedule (ring-file gap)`n"
             $md += "`n> **Higher blast radius.** A ``RingMissingFromSchedule`` row means apply-updates will NEVER fire on those clusters until you either add the ring to ``apply-updates-schedule.yml`` or retag them onto an existing scheduled ring.`n"
             $md += (Add-DetailTable -Heading '' -DetailRows $scheduleRowsMd -EmptyText 'Schedule and fleet ring sets match - no gaps.')
+        }
+
+        # v0.7.89: Allow-list coverage section. When -SchedulePath was
+        # supplied, re-load the schedule file (the summary step is a
+        # separate pwsh process so we have to import the module + read
+        # the schedule here too) and surface the effective
+        # 'allowedUpdateVersions' for each schedule row. For schema v1
+        # we just nudge the operator to migrate. For schema v2 we
+        # render a per-row table and recommend per-ring override
+        # snippets for rows that inherit the top-level default. Wrapped
+        # in try/catch so a malformed schedule never blocks the summary.
+        if ($haveSchedule -and -not [string]::IsNullOrWhiteSpace($schedulePath) -and (Test-Path -LiteralPath $schedulePath)) {
+            try {
+                Import-Module AzLocal.UpdateManagement -Force -ErrorAction Stop
+                $sched = Get-AzLocalApplyUpdatesScheduleConfig -Path $schedulePath -ErrorAction Stop
+            } catch {
+                $sched = $null
+                $md += "`n### Allow-list coverage`n`n*Could not load schedule file ``$schedulePath`` for allow-list analysis: $($_.Exception.Message)*`n"
+            }
+            if ($sched) {
+                $md += "`n### Allow-list coverage (schema v$($sched.SchemaVersion))`n"
+                if ($sched.SchemaVersion -lt 2) {
+                    $md += "`n*This schedule is on schema v1. Schema v2 adds ``allowedUpdateVersions`` for fleet-wide + per-ring update allow-lists (e.g. enforce a 'minimum updates' policy on Prod). Migrate the file with:*`n"
+                    $md += "`n``````powershell`n"
+                    $md += "Update-AzLocalApplyUpdatesScheduleConfig -Path '$schedulePath' -SchemaMigrate`n"
+                    $md += "``````n"
+                } else {
+                    $topAllow = @($sched.AllowedUpdateVersions)
+                    $topIsLatest = ($topAllow.Count -eq 1 -and $topAllow[0] -eq 'Latest')
+                    if ($topIsLatest) {
+                        $topLabel = "``Latest`` _(no constraint - install the latest Ready update on each cluster)_"
+                    } else {
+                        $topLabel = "``$($topAllow -join '; ')`` _(explicit allow-list - clusters only install matching updates)_"
+                    }
+                    $md += "`n**Top-level fleet default:** $topLabel`n"
+
+                    $md += "`n| Row | weeksInCycle | daysOfWeek | rings | Effective allowedUpdateVersions |`n"
+                    $md += "|----:|--------------|------------|-------|---------------------------------|`n"
+                    $rowsMissingOverride = New-Object System.Collections.Generic.List[object]
+                    $rowIdx = 0
+                    foreach ($r in @($sched.Schedule)) {
+                        $rowIdx++
+                        $rowAllow = @()
+                        if ($r.PSObject.Properties.Match('AllowedUpdateVersionsParsed').Count -and $r.AllowedUpdateVersionsParsed) {
+                            $rowAllow = @($r.AllowedUpdateVersionsParsed)
+                        }
+                        if ($rowAllow.Count -gt 0) {
+                            if ($rowAllow.Count -eq 1 -and $rowAllow[0] -eq 'Latest') {
+                                $effLabel = "``Latest`` _(row override: no constraint)_"
+                            } else {
+                                $effLabel = "``$($rowAllow -join '; ')`` _(row override)_"
+                            }
+                        } else {
+                            if ($topIsLatest) {
+                                $effLabel = "``Latest`` _(inherits top-level - no constraint)_"
+                            } else {
+                                $effLabel = "``$($topAllow -join '; ')`` _(inherits top-level)_"
+                            }
+                            $rowsMissingOverride.Add([pscustomobject]@{
+                                Row          = $rowIdx
+                                WeeksInCycle = $r.weeksInCycle
+                                DaysOfWeek   = $r.daysOfWeek
+                                Rings        = $r.rings
+                            })
+                        }
+                        $md += ('| {0} | {1} | {2} | {3} | {4} |' -f $rowIdx, $r.weeksInCycle, $r.daysOfWeek, $r.rings, $effLabel) + "`n"
+                    }
+
+                    if ($rowsMissingOverride.Count -gt 0) {
+                        $md += "`n> **Tip - per-ring overrides.** Rows above without a row-level ``allowedUpdateVersions:`` inherit the top-level. To enforce a 'minimum updates' policy on a specific ring (e.g. keep Prod on the latest feature drop only - YY04 / YY10 - and skip cumulative updates), add a per-row override. Use ``Get-AzLocalUpdate -Status Ready`` (or the Azure portal -> Azure Local -> Updates) to find valid update names / version strings. Suggested edit sites for this schedule (first 3 inheriting rows):`n"
+                        $md += "`n``````yaml`n"
+                        foreach ($m in ($rowsMissingOverride | Select-Object -First 3)) {
+                            $md += "# Row $($m.Row): rings='$($m.Rings)' weeksInCycle='$($m.WeeksInCycle)' daysOfWeek='$($m.DaysOfWeek)'`n"
+                            $md += "#   allowedUpdateVersions: '10.2604.0.123;10.2610.0.456'`n"
+                        }
+                        $md += "``````n"
+                        if ($rowsMissingOverride.Count -gt 3) {
+                            $md += "`n*Showing first 3 of $($rowsMissingOverride.Count) rows that inherit the top-level allow-list.*`n"
+                        }
+                    } else {
+                        $md += "`n*Every schedule row has an explicit ``allowedUpdateVersions:`` override - no inheritance from the top-level default.*`n"
+                    }
+                }
+            }
         }
 
         $md += (Add-DetailTable -Heading '### Audit Detail - Cron coverage (Uncovered / Partial / Malformed first)' -DetailRows $cronRowsMd -EmptyText 'No tagged clusters found - nothing to audit.')

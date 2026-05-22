@@ -32,9 +32,18 @@ function Start-AzLocalClusterUpdate {
         status 'NotInAllowList' (CSV + result row) and the next cluster proceeds -
         this is a strict no-op, never falls back to "latest". Typical use: install
         only the YY04 + YY10 feature updates plus the preceding cumulative updates
-        each year (the 'minimum updates' policy). In pipeline scenarios, the
-        Step.6 YAML resolves this list from the apply-updates-schedule.yml file's
-        new (schema v2) 'allowedUpdateVersions' field via Resolve-AzLocalCurrentUpdateRing.
+        each year (the 'minimum updates' policy).
+
+        Reserved sentinel: passing the single value 'Latest' (case-insensitive)
+        explicitly disables the allow-list filter and keeps the default
+        "install latest Ready update" behaviour. The pipeline resolver emits
+        empty (no -AllowedUpdateVersions argument) when the schedule file's
+        effective list resolves to 'Latest', but operators may also pass
+        -AllowedUpdateVersions Latest manually.
+
+        In pipeline scenarios, the Step.6 YAML resolves this list from the
+        apply-updates-schedule.yml file's (schema v2) 'allowedUpdateVersions'
+        field via Resolve-AzLocalCurrentUpdateRing.
     .PARAMETER ApiVersion
         Azure REST API version to use. Default: "2025-10-01".
     .PARAMETER Force
@@ -907,7 +916,25 @@ function Start-AzLocalClusterUpdate {
                 # When -UpdateName is set, the explicit operator choice
                 # wins over the policy allow-list. Warn loudly so audit
                 # logs surface the override.
-                if ($AllowedUpdateVersions -and @($AllowedUpdateVersions).Count -gt 0) {
+                # 'Latest' sentinel: if the supplied allow-list contains
+                # ONLY 'Latest' (case-insensitive), the filter is skipped
+                # entirely - 'Latest' means "no constraint, install the
+                # latest Ready update". The pipeline resolver normally
+                # strips 'Latest' before calling this cmdlet (emits empty
+                # to the env var), but be defensive in case an operator
+                # invokes -AllowedUpdateVersions Latest manually.
+                $allowListEffective = @($AllowedUpdateVersions | Where-Object {
+                    -not [string]::IsNullOrWhiteSpace([string]$_)
+                })
+                $allowOnlyLatest = ($allowListEffective.Count -gt 0) -and (
+                    -not (@($allowListEffective | Where-Object {
+                        -not [string]::Equals([string]$_, 'Latest', [System.StringComparison]::OrdinalIgnoreCase)
+                    }).Count -gt 0)
+                )
+                if ($allowOnlyLatest) {
+                    Write-Log -Message "AllowedUpdateVersions = 'Latest' (no-constraint sentinel) - skipping allow-list filter for cluster '$clusterName'; will install the latest Ready update." -Level Info
+                }
+                if ($allowListEffective.Count -gt 0 -and -not $allowOnlyLatest) {
                     if ($UpdateName) {
                         Write-Log -Message ("Both -UpdateName ('$UpdateName') and -AllowedUpdateVersions ({0} entries) were supplied for cluster '$clusterName'. -UpdateName takes precedence; allow-list is logged-and-ignored for this cluster." -f @($AllowedUpdateVersions).Count) -Level Warning
                     }

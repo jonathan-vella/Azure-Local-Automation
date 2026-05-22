@@ -211,31 +211,34 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.89 - Apply-updates schedule schema v2: `allowedUpdateVersions` allow-list (customer-requested "minimum updates" policy support)
+## Version 0.7.89 - Apply-updates schedule schema v2: mandatory `allowedUpdateVersions` allow-list with `Latest` sentinel
 
 ### Added
 
-- **`apply-updates-schedule.yml` schema bumped 1 -> 2 with a new optional `allowedUpdateVersions` field (top-level fleet default + per-row override).** Customer feedback: ability to define an allow-list of specific Azure Local solution updates to install (fleet-wide AND/OR per-ring), enabling a "minimum updates" policy (e.g. only YY04+YY10 feature updates + their preceding cumulative updates). Listed update names or version strings are matched EXACTLY (case-insensitive) against each cluster's Ready updates' `name` AND `properties.version`. Clusters with no Ready update in the allow-list are SKIPPED with new status `NotInAllowList` - strict no-op, never falls back to "latest Ready". Format mirrors the existing `rings:` convention (semicolon-separated string, e.g. `'10.2604.0.123;10.2610.0.456'`).
-- **`Start-AzLocalClusterUpdate -AllowedUpdateVersions [string[]]`** - new optional parameter. When set, restricts the auto-pick pool BEFORE the YYMM-latest selector runs. When BOTH `-UpdateName` and `-AllowedUpdateVersions` are supplied, the explicit `-UpdateName` wins (allow-list logged-and-ignored with a Warning). Status `NotInAllowList` emitted when filtering eliminates every Ready update.
-- **`Resolve-AzLocalCurrentUpdateRing`** returns three new properties: `AllowedUpdateVersions [string[]]`, `AllowedUpdateVersionsValue [string]` (`;`-joined for env-var bridge), `AllowedUpdateVersionsSource ('row' | 'top-level' | 'none')`. Precedence: per-row OVERRIDES top-level; multiple matching rows UNION; rows WITHOUT the field on a UNION day are "no opinion" (not "allow nothing"); top-level kicks in only when ZERO matching rows specify the field.
-- **Schema migration recipe `1 -> 2`** registered in `Private/Convert-AzLocalScheduleSchemaVersion.ps1`. Additive, idempotent (marker-guarded). Run via `Update-AzLocalApplyUpdatesScheduleConfig`. Rewrites the `schemaVersion:` line and inserts a documented commented `# allowedUpdateVersions:` example block above `# ---- Schedule entries ----`. Existing schedule rows + customer comments are preserved verbatim.
+- **Schema v2 with MANDATORY top-level `allowedUpdateVersions` + optional per-row override** (customer-requested "minimum updates" policy). Reserved sentinel `Latest` (case-insensitive, canonicalised to PascalCase) means "no constraint - install latest Ready update on each cluster" (= historic v0.7.88 default). Explicit values match EXACTLY (case-insensitive) on `.name` OR `.properties.version`. Mismatched clusters are SKIPPED with new status `NotInAllowList` (strict no-op). Mixing `Latest` with explicit versions within a single field is REJECTED.
+- **`Start-AzLocalClusterUpdate -AllowedUpdateVersions [string[]]`** optional. `Latest` (case-insensitive) skips filtering. Explicit `-UpdateName` wins over allow-list.
+- **`Resolve-AzLocalCurrentUpdateRing`** returns `AllowedUpdateVersions`, `AllowedUpdateVersionsValue`, `AllowedUpdateVersionsSource ('row'|'top-level'|'none')`. Precedence: per-row > top-level; multiple matching rows UNION; rows without the field are "no opinion". `Latest` collapse: when the resolved UNION contains the sentinel (from any contributing row or top-level), the effective list collapses to empty (= no constraint); the `Source` field is retained so audit logs explain WHERE the `Latest` came from.
+- **Schema migration `1 -> 2`** via `Update-AzLocalApplyUpdatesScheduleConfig`. Idempotent (marker-guarded). Inserts an ACTIVE `allowedUpdateVersions: 'Latest'` so the migrated file satisfies the new mandatory rule with zero behaviour change.
+- **Audit pipeline (Step.3) Allow-list coverage section.** New Markdown section prints the top-level fleet default, a per-row effective-allow-list table (after row > top-level resolution), and recommendation yaml snippets for the first 3 rows inheriting from top-level. v1 schedules see a migration nudge.
 
 ### Changed
 
-- **Validator (`Get-AzLocalApplyUpdatesScheduleConfig`)** now accepts `schemaVersion: 1` OR `2`. v1 files containing `allowedUpdateVersions` are rejected with a remediation pointing at the schema migrator. v2 files have the field validated: non-empty semicolon-separated string; empty tokens, trailing `;`, or whitespace inside a token are rejected.
-- **Generator (`New-AzLocalApplyUpdatesScheduleConfig`)** now emits `schemaVersion: 2` + commented `# allowedUpdateVersions:` example blocks at both top-level and per-row positions.
-- **`Automation-Pipeline-Examples/apply-updates-schedule.example.yml`** updated to schema v2 with the new field documented + a per-row override worked example.
-- **Step.6 (GitHub Actions + Azure DevOps) plumbs the allow-list end-to-end:** the resolver task exports `RESOLVED_ALLOWED_UPDATE_VERSIONS` alongside `RESOLVED_UPDATE_RING`; the apply task parses to `[string[]]` and passes via `-AllowedUpdateVersions`. Manual / non-Schedule runs pass empty (allow-list applies to Schedule firings only). `NotInAllowList` is added to the `skipped` KPI bucket.
+- **Validator** now accepts `schemaVersion: 1` OR `2`. **v2 files MUST have a top-level `allowedUpdateVersions:` field** - omitting it is rejected with a remediation message. v2 field values are parsed and validated (empty tokens, trailing `;`, whitespace inside a token, and mixed `Latest`+explicit all rejected; case-insensitive dedup preserves first-occurrence order).
+- **Generator** emits `schemaVersion: 2` with an ACTIVE top-level `allowedUpdateVersions: 'Latest'` line plus commented per-row `# allowedUpdateVersions: '<explicit>'` examples.
+- **`Automation-Pipeline-Examples/apply-updates-schedule.example.yml`** updated to v2 with the new mandatory field + a Phase-4 Prod-ring per-row override worked example.
+- **`Automation-Pipeline-Examples/README.md`** new Section 8.4 walks operators through model, worked example, finding update names, v1->v2 migration, and audit pipeline support.
+- **Step.6 (GH Actions + ADO)** plumbs the allow-list end-to-end via `RESOLVED_ALLOWED_UPDATE_VERSIONS`. Manual / non-Schedule runs pass empty. `NotInAllowList` added to the `skipped` KPI bucket.
+- **Step.3 audit Markdown gate fix:** previously `$haveSchedule` was undefined in the summary step's scope (separate `pwsh` process), causing the Schedule diff table to silently not render. `HAVE_SCHEDULE` + `SCHEDULE_PATH` are now exported via `GITHUB_OUTPUT` (GH) / `setvariable ... isOutput=true` (ADO).
 
 ### Pipeline pin bumps
 
-- All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.88'` to `'0.7.89'`. Only `Step.6_apply-updates.yml` (both platforms) has inline-script content changes; the other 16 are pin-only bumps.
+- All 18 bundled `Step.{0..8}.yml` templates bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.88'` to `'0.7.89'`. Inline-script changes: Step.6 (allow-list plumbing) + Step.3 (gate fix + Allow-list coverage section), both platforms. The other 14 are pin-only.
 
 ### Migration
 
-- **Module:** `Install-Module AzLocal.UpdateManagement -Force`. `Start-AzLocalClusterUpdate -AllowedUpdateVersions` is optional; unset = historic "install latest Ready update" unchanged.
-- **Pipelines:** re-copy YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update`.
-- **`apply-updates-schedule.yml`:** run `Update-AzLocalApplyUpdatesScheduleConfig -Path <path>` to migrate v1 -> v2 (additive). Files left at v1 continue to work; only the new field is rejected on v1.
+- **Module:** `Install-Module AzLocal.UpdateManagement -Force`. `-AllowedUpdateVersions` is optional; unset OR `Latest` = historic behaviour unchanged.
+- **Pipelines:** `Copy-AzLocalPipelineExample -Destination <path> -Update`.
+- **`apply-updates-schedule.yml`:** run `Update-AzLocalApplyUpdatesScheduleConfig -Path <path>` to migrate v1 -> v2. The migrator inserts an active `allowedUpdateVersions: 'Latest'` (zero behaviour change). Or hand-edit: bump `schemaVersion: 1` -> `2` AND add `allowedUpdateVersions: 'Latest'` (or explicit) at top-level. v1 files continue to work; only the new field is rejected on v1.
 
 ## Version 0.7.88 - Step.8 fleet-health step-summary readability polish (section reorder + column rename)
 

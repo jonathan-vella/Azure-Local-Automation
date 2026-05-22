@@ -233,6 +233,19 @@ function Resolve-AzLocalCurrentUpdateRing {
     #   3. Else empty array + Source = 'none' = "no constraint".
     # The validator pre-parsed both into typed arrays so this resolver
     # does not re-split.
+    #
+    # 'Latest' sentinel (v0.7.89): If the effective allow-list contains
+    # the reserved sentinel 'Latest' (case-insensitive), the result is
+    # treated as "no constraint" - AllowedUpdateVersions is emitted as
+    # an empty array and the picker / pipeline falls back to the
+    # historic "install latest Ready update" behaviour. The Source field
+    # still reflects the origin (row / top-level) so audit logs explain
+    # WHERE the 'Latest' decision came from. Cross-row UNION semantics:
+    # if any matching row contributes 'Latest', the UNION is 'Latest'
+    # (the explicit allow-lists on sibling rows are ignored for that
+    # day). This is the only way to combine 'Latest' with explicit
+    # versions across rows; mixing them WITHIN a single field is
+    # rejected at validation.
     $allowList     = New-Object System.Collections.Generic.List[string]
     $allowSeen     = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
     $allowSource   = 'none'
@@ -259,15 +272,37 @@ function Resolve-AzLocalCurrentUpdateRing {
             if ($sv -and $allowSeen.Add($sv)) { $allowList.Add($sv) | Out-Null }
         }
     }
-    $allowArray = $allowList.ToArray()
-    $allowValue = ($allowArray -join ';')
+    # Detect the 'Latest' sentinel in the resolved UNION. When present,
+    # collapse the effective allow-list to empty (= no constraint). Use
+    # ordinal-case-insensitive compare (the validator already
+    # canonicalised tokens to 'Latest', but be defensive in case a
+    # caller constructs the schedule object directly).
+    $hasLatestSentinel = $false
+    foreach ($v in $allowList) {
+        if ([string]::Equals($v, 'Latest', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $hasLatestSentinel = $true
+            break
+        }
+    }
+    if ($hasLatestSentinel) {
+        $allowArray = @()
+        $allowValue = ''
+    }
+    else {
+        $allowArray = $allowList.ToArray()
+        $allowValue = ($allowArray -join ';')
+    }
 
     $reason = if ($matched.Count -eq 0) {
         "No schedule row matches (cycleWeek=$cycleWeek of $cycleWeeks, dayOfWeek=$dowName)."
     } else {
         $base = "Matched $($matched.Count) schedule row(s) for cycleWeek=$cycleWeek of $cycleWeeks, dayOfWeek=$dowName. Resolved UpdateRing(s): $($rings -join ', ')."
         if ($allowSource -ne 'none') {
-            $base + " AllowedUpdateVersions ($allowSource): $($allowArray -join ', ')."
+            if ($hasLatestSentinel) {
+                $base + " AllowedUpdateVersions ($allowSource): Latest (no constraint - install latest Ready update)."
+            } else {
+                $base + " AllowedUpdateVersions ($allowSource): $($allowArray -join ', ')."
+            }
         } else {
             $base
         }

@@ -15,6 +15,16 @@ function Test-AzLocalAllowedUpdateVersionsString {
           - Empty tokens after trim are rejected ('a;;b' is a typo).
           - Whitespace inside a token is rejected (Azure Local solution
             update names + versions do not contain spaces).
+          - 'Latest' (case-insensitive) is a RESERVED SENTINEL meaning
+            "no constraint - install the latest Ready update on each
+            cluster" (the historic v0.7.88 default behaviour). It is
+            canonicalised to 'Latest' (PascalCase) in the returned
+            array.
+          - 'Latest' MUST appear alone. Mixing 'Latest' with explicit
+            update names / versions in the same field is rejected with
+            a clear error - the operator's intent is ambiguous.
+            (Cross-row UNION with 'Latest' is handled by the resolver,
+            not here; this helper only validates a single field.)
           - Single quotes wrapping the whole string come from YAML and
             are stripped by the parser already - this helper does not
             try to re-strip them.
@@ -55,20 +65,22 @@ function Test-AzLocalAllowedUpdateVersionsString {
     )
 
     if ($null -eq $Raw -or $Raw -isnot [string]) {
-        $Errors.Add("$Location must be a non-empty semicolon-separated string of Azure Local solution-update names or version strings (e.g. '10.2604.0.123;10.2610.0.456'). Got: $(if ($null -eq $Raw) { '<null>' } else { $Raw.GetType().FullName })") | Out-Null
+        $Errors.Add("$Location must be a non-empty semicolon-separated string. Use 'Latest' (no constraint - install latest Ready update) or a list of Azure Local solution-update names / version strings (e.g. '10.2604.0.123;10.2610.0.456'). Got: $(if ($null -eq $Raw) { '<null>' } else { $Raw.GetType().FullName })") | Out-Null
         return $null
     }
 
     $raw = [string]$Raw
     if ([string]::IsNullOrWhiteSpace($raw)) {
-        $Errors.Add("$Location is empty or whitespace-only. Omit the field entirely to disable allow-list filtering, or set it to a non-empty semicolon-separated list of update versions to install (e.g. '10.2604.0.123;10.2610.0.456').") | Out-Null
+        $Errors.Add("$Location is empty or whitespace-only. Set to 'Latest' to keep the default 'install the latest Ready update' behaviour, or to a non-empty semicolon-separated list of update versions to install (e.g. '10.2604.0.123;10.2610.0.456').") | Out-Null
         return $null
     }
 
-    $tokens   = $raw -split ';'
-    $seen     = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
-    $result   = New-Object System.Collections.Generic.List[string]
-    $bad      = $false
+    $tokens         = $raw -split ';'
+    $seen           = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    $result         = New-Object System.Collections.Generic.List[string]
+    $bad            = $false
+    $hasLatest      = $false
+    $hasExplicit    = $false
     foreach ($tok in $tokens) {
         $t = $tok.Trim()
         if ([string]::IsNullOrEmpty($t)) {
@@ -81,6 +93,15 @@ function Test-AzLocalAllowedUpdateVersionsString {
             $bad = $true
             continue
         }
+        # Canonicalise the reserved 'Latest' sentinel to PascalCase so
+        # downstream consumers can do a simple ordinal compare.
+        if ([string]::Equals($t, 'Latest', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $t          = 'Latest'
+            $hasLatest  = $true
+        }
+        else {
+            $hasExplicit = $true
+        }
         if ($seen.Add($t)) {
             $result.Add($t) | Out-Null
         }
@@ -92,5 +113,10 @@ function Test-AzLocalAllowedUpdateVersionsString {
         $Errors.Add("$Location resolved to zero tokens after split-and-trim. Got: '$raw'.") | Out-Null
         return $null
     }
+    if ($hasLatest -and $hasExplicit) {
+        $Errors.Add("$Location mixes the reserved sentinel 'Latest' with explicit update names / version strings. 'Latest' must appear alone (it already means 'no constraint - install the latest Ready update'). Either set to 'Latest', or list only explicit versions (e.g. '10.2604.0.123;10.2610.0.456'). Got: '$raw'.") | Out-Null
+        return $null
+    }
     return ,$result.ToArray()
 }
+
