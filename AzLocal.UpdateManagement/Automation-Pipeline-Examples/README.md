@@ -50,14 +50,16 @@ It is written in the same step-by-step style as [`ITSM/README.md`](../ITSM/READM
 By the end of this guide you will have:
 
 - A federated identity (no client secrets) wired into your CI/CD platform with the **minimum** Azure RBAC needed for cluster update management.
-- Seven working pipelines committed to your repo and visible in the Actions / Pipelines UI:
-  - **Inventory** - enumerate every Azure Local cluster the identity can see and export a CSV. *Scheduled weekly + manual.*
-  - **Manage UpdateRing tags** - bulk-apply `UpdateRing`, `UpdateWindow`, `UpdateExclusions` tags from that CSV. *Manual only.*
-  - **Assess Update Readiness** - pre-flight, report-only readiness + blocking-health snapshot, published as JUnit XML. *Manual only.*
-  - **Apply Updates** - apply updates to a single `UpdateRing` wave at a time, with WhatIf / dry-run support. *Manual only by default - **you must add a schedule** that lines up with your cluster `UpdateWindow` tags, see [Appendix A.4](#a4-apply-updates) and [section 8](#8-scheduling-maintenance-windows-and-change-freeze-periods).*
-  - **Fleet Update Status** - scheduled daily snapshot of fleet update state, surfaced in the Tests tab. *Scheduled daily 06:00 UTC + manual.*
-  - **Fleet Health Status** (v0.7.65) - scheduled daily snapshot of 24-hour system health-check failures, surfaced in the Tests tab. *Scheduled daily 07:00 UTC + manual.*
-  - **Apply-Updates Schedule Coverage Audit** (v0.7.65) - read-only weekly audit that compares the cron(s) in your `apply-updates` pipeline to the `UpdateWindow` tags actually present on your clusters and flags any (UpdateRing, UpdateWindow) pair that no cron will reach. *Scheduled weekly Mon 05:00 UTC + manual.*
+- Nine working pipelines committed to your repo and visible in the Actions / Pipelines UI:
+  - **Authentication Validation and Subscription Scope Report** (Step.0) - probe the federated identity end-to-end, emit a JUnit-rendered authentication / scope / Resource Graph report, and capture the subscription set the pipeline identity can read. *Manual only - re-run after every RBAC change.*
+  - **Inventory** (Step.1) - enumerate every Azure Local cluster the identity can see and export a CSV. *Scheduled weekly + manual.*
+  - **Manage UpdateRing tags** (Step.2) - bulk-apply `UpdateRing`, `UpdateWindow`, `UpdateExclusions` tags from that CSV. *Manual only.*
+  - **Apply-Updates Schedule Coverage Audit** (Step.3, v0.7.65) - read-only weekly audit that compares the cron(s) in your `apply-updates` pipeline to the `UpdateWindow` tags actually present on your clusters and flags any (UpdateRing, UpdateWindow) pair that no cron will reach. *Scheduled weekly Mon 05:00 UTC + manual.*
+  - **Fleet Connectivity Status** (Step.4, v0.7.79+, enhanced in v0.7.85) - read-only daily snapshot of Arc agent connectivity, physical NIC health, Azure Resource Bridge status, and the node-count reconciliation between cluster `reportedProperties.nodes` and Arc-tagged physical machines. *Scheduled daily 05:30 UTC + manual.*
+  - **Assess Update Readiness** (Step.5) - pre-flight, report-only readiness + blocking-health snapshot, published as JUnit XML. *Manual only.*
+  - **Apply Updates** (Step.6) - apply updates to a single `UpdateRing` wave at a time, with WhatIf / dry-run support. *Manual only by default - **you must add a schedule** that lines up with your cluster `UpdateWindow` tags, see [Appendix A.6](docs/appendix-pipelines.md#a6-apply-updates) and [section 8](#8-scheduling-maintenance-windows-and-change-freeze-periods).*
+  - **Fleet Update Status** (Step.7) - scheduled daily snapshot of fleet update state, surfaced in the Tests tab. *Scheduled daily 06:00 UTC + manual.*
+  - **Fleet Health Status** (Step.8, v0.7.65) - scheduled daily snapshot of 24-hour system health-check failures, surfaced in the Tests tab. *Scheduled daily 07:00 UTC + manual.*
 - An end-to-end "ring-based" rollout pattern: Pilot -> Wave2 -> Production, with each ring gated on the previous wave's success.
 - **Optional**: a ServiceNow integration that opens deduped incidents for clusters whose run status indicates the module's own retries cannot recover (failures, blocking health checks, sideloaded payload missing) - see [section 7](#7-optional-open-itsm-tickets-for-clusters-needing-operator-action).
 
@@ -65,7 +67,7 @@ The pipelines are **fully opt-in additive layers** over the module. The PowerShe
 
 ### 1.1 Why the pipelines are named `Step.N - <description>`
 
-The eight YAMLs ship with a `Step.N_` filename prefix **and** a matching `Step.N - <description>` value in each workflow's `name:` field (GitHub Actions) / header title (Azure DevOps):
+The nine YAMLs ship with a `Step.N_` filename prefix **and** a matching `Step.N - <description>` value in each workflow's `name:` field (GitHub Actions) / header title (Azure DevOps):
 
 | Step | File / Workflow name |
 |---:|---|
@@ -73,12 +75,13 @@ The eight YAMLs ship with a `Step.N_` filename prefix **and** a matching `Step.N
 | 1 | Step.1 - Inventory Azure Local Clusters |
 | 2 | Step.2 - Manage UpdateRing Tags |
 | 3 | Step.3 - Apply-Updates Schedule Coverage Audit |
-| 4 | Step.4 - Assess Update Readiness |
-| 5 | Step.5 - Apply Updates |
-| 6 | Step.6 - Fleet Update Status |
-| 7 | Step.7 - Fleet Health Status |
+| 4 | Step.4 - Fleet Connectivity Status |
+| 5 | Step.5 - Assess Update Readiness |
+| 6 | Step.6 - Apply Updates |
+| 7 | Step.7 - Fleet Update Status |
+| 8 | Step.8 - Fleet Health Status |
 
-- **GitHub Actions**: the Actions sidebar sorts workflows alphabetically by the `name:` field inside the YAML. Because every `name:` starts with `Step.N - `, the sidebar lists the eight workflows in execution order (Step.0 first, Step.7 last) instead of the cosmetically confusing alphabetical scatter (`Apply Updates`, `Apply-Updates Schedule Coverage Audit`, `Assess Update Readiness`, ...).
+- **GitHub Actions**: the Actions sidebar sorts workflows alphabetically by the `name:` field inside the YAML. Because every `name:` starts with `Step.N - `, the sidebar lists the nine workflows in execution order (Step.0 first, Step.8 last) instead of the cosmetically confusing alphabetical scatter (`Apply Updates`, `Apply-Updates Schedule Coverage Audit`, `Assess Update Readiness`, ...).
 - **Azure DevOps**: the Pipelines list sorts by the pipeline **definition name** chosen at *import time* (not by the YAML filename and not by any top-level `name:` field - the `name:` field in an ADO YAML controls the per-run *build number*, not the pipeline display name). When you import each YAML, the import wizard prefills the suggested pipeline name from the YAML's leading title comment; the YAMLs in this repo open with `# Step.N - <description>`, so the suggested name is already correct. **Accept the suggested name** (or paste `Step.N - <description>` yourself), and the Pipelines list will sort in execution order. You can rename a pipeline later via *Pipeline -> Edit -> Settings -> Name*.
 
 If you prefer a different naming scheme (e.g. `00 - Auth`, `01 - Inventory`, ...), just change the `name:` field in each GH Actions YAML and / or pick a different prefix at ADO import time. Nothing else in the module depends on these display names.
@@ -134,7 +137,7 @@ First create the Service Principal:
 az ad sp create --id <appId-from-step-1>
 ```
 
-Assign the least-privilege **`Azure Stack HCI Update Operator`** custom role. This grants the Service Principal only the actions the seven pipelines need (read clusters, read/apply updates, read update runs, read/write tags, Resource Graph queries). The full JSON role definition and `az role definition create` command live in [section 4 below](#4-required-azure-permissions) - run that block once per tenant first, then assign:
+Assign the least-privilege **`Azure Stack HCI Update Operator`** custom role. This grants the Service Principal only the actions the nine pipelines need (read clusters, read/apply updates, read update runs, read/write tags, Resource Graph queries, plus the Arc / edgeDevice / Resource Bridge reads that Step.4 Fleet Connectivity Status calls). The full JSON role definition and `az role definition create` command live in [section 4 below](#4-required-azure-permissions) - run that block once per tenant first, then assign:
 
 ```bash
 az role assignment create `
@@ -950,7 +953,7 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    | `Error: Could not fetch access token for Azure` (no AADSTS code) | The workflow lacks `permissions: id-token: write` or the secrets are missing/misspelt. | Confirm the `permissions:` block is present and run `gh secret list --repo $repo` shows all three `AZURE_*` secrets. |
    | Environment-scoped run hangs in **Waiting for review** | The environment has required-reviewers protection (good!) and is waiting for you to approve. | Approve in the **Actions** tab, or remove required reviewers from the validation run via the environment settings. |
 
-   Once the run is green, leave `Step.0_authentication-test.yml` in place and schedule yourself to re-run it monthly (or whenever you change RBAC / federated credentials / subscription assignments). If you used the `Copy-AzLocalPipelineExample` shortcut, the other seven workflows are already on the default branch - skip to step 4 to run them. Otherwise, proceed to step 2 to copy the remaining workflow files.
+   Once the run is green, leave `Step.0_authentication-test.yml` in place and schedule yourself to re-run it monthly (or whenever you change RBAC / federated credentials / subscription assignments). If you used the `Copy-AzLocalPipelineExample` shortcut, the other eight workflows are already on the default branch - skip to step 4 to run them. Otherwise, proceed to step 2 to copy the remaining workflow files.
 
 2. Copy every file from [`github-actions/`](./github-actions/) into `.github/workflows/` in your repo:
     ```text
@@ -958,22 +961,23 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
       workflows/
         Step.1_inventory-clusters.yml
         Step.2_manage-updatering-tags.yml
+        Step.3_apply-updates-schedule-audit.yml
+        Step.4_fleet-connectivity-status.yml
         Step.5_assess-update-readiness.yml
         Step.6_apply-updates.yml
         Step.7_fleet-update-status.yml
         Step.8_fleet-health-status.yml
-        Step.3_apply-updates-schedule-audit.yml
     ```
 3. Commit and push. The workflows appear in the **Actions** tab.
-4. Each workflow exposes its inputs via the **Run workflow** button (workflow_dispatch). The scheduled triggers (e.g. `Step.7_fleet-update-status.yml` runs daily at 06:00 UTC, `Step.8_fleet-health-status.yml` runs daily at 07:00 UTC, `Step.3_apply-updates-schedule-audit.yml` runs weekly on Mondays at 05:00 UTC) activate automatically once the file is on the default branch.
+4. Each workflow exposes its inputs via the **Run workflow** button (workflow_dispatch). The scheduled triggers (e.g. `Step.4_fleet-connectivity-status.yml` runs daily at 05:30 UTC, `Step.7_fleet-update-status.yml` runs daily at 06:00 UTC, `Step.8_fleet-health-status.yml` runs daily at 07:00 UTC, `Step.3_apply-updates-schedule-audit.yml` runs weekly on Mondays at 05:00 UTC) activate automatically once the file is on the default branch.
 
 ### 5.2 Azure DevOps
 
-1. **Run the Authentication Validation and Subscription Scope Report first (strongly recommended).** Before importing all seven pipelines, validate that the service connection (Workload Identity Federation), App Registration, and RBAC role assignment all line up - and capture the count + per-subscription detail of subscriptions visible to the pipeline identity - by running **`Step.0 - Authentication Validation and Subscription Scope Report`**. This narrows any failure to *one* small YAML file instead of debugging seven interacting pipelines simultaneously. **Re-run periodically** (recommended monthly, or after any RBAC change in the tenant) to confirm the pipeline identity's subscription scope has not silently widened or narrowed - drift here is the earliest signal that downstream fleet reports are about to under- or over-count clusters.
+1. **Run the Authentication Validation and Subscription Scope Report first (strongly recommended).** Before importing all eight remaining pipelines, validate that the service connection (Workload Identity Federation), App Registration, and RBAC role assignment all line up - and capture the count + per-subscription detail of subscriptions visible to the pipeline identity - by running **`Step.0 - Authentication Validation and Subscription Scope Report`**. This narrows any failure to *one* small YAML file instead of debugging eight interacting pipelines simultaneously. **Re-run periodically** (recommended monthly, or after any RBAC change in the tenant) to confirm the pipeline identity's subscription scope has not silently widened or narrowed - drift here is the earliest signal that downstream fleet reports are about to under- or over-count clusters.
 
    The validation pipeline ships with the module at [`azure-devops/Step.0_authentication-test.yml`](./azure-devops/Step.0_authentication-test.yml). v0.7.70 emits a **JUnit XML** report (Authentication / Subscription Scope / Resource Graph Reachability) published via `PublishTestResults@2` and rendered in the run's **Tests** tab, a **markdown summary** with the subscription count + subscription detail table uploaded to the run's **Summary** tab via `##vso[task.uploadsummary]`, and a `auth-report` pipeline artifact (XML + `subscriptions.json` + `subscriptions.csv`) for ITSM / dashboard ingest.
 
-   If you used the `Copy-AzLocalPipelineExample` shortcut above, the file is already in your chosen pipelines folder alongside the other seven pipeline YAMLs - those YAMLs sit dormant until you import each one as a pipeline, so they're harmless at rest. Otherwise, copy just that one file into your repo. Either way, import it as a new pipeline:
+   If you used the `Copy-AzLocalPipelineExample` shortcut above, the file is already in your chosen pipelines folder alongside the other eight pipeline YAMLs - those YAMLs sit dormant until you import each one as a pipeline, so they're harmless at rest. Otherwise, copy just that one file into your repo. Either way, import it as a new pipeline:
 
    - **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file -> `/azure-devops/Step.0_authentication-test.yml`**.
    - **Save and run**. If your service connection has a name other than `AzureLocal-ServiceConnection`, edit `azureSubscription:` in the YAML first (the only configurable line).
@@ -1006,10 +1010,10 @@ Both platforms expect the YAML files inside this folder to land in a platform-sp
    | `AuthorizationFailed` on `az graph query` (but `az account show` succeeded) | Auth works, but the role assignment is missing, scoped wrong, or not yet propagated. | Re-check section 3.2 ran against the correct subscription, then re-run the validation pipeline - role propagation can take 1-2 minutes. |
    | `(InvalidScope) The scope '/subscriptions/<id>' is not valid` from `az role assignment list` | The service connection scope is set narrower than the role assignment, e.g. resource-group-scoped. | Widen the service connection scope to the subscription, or pass `--scope` explicitly to `az role assignment list`. |
 
-   Once the run is green, leave the imported pipeline in place and schedule yourself to re-run it monthly (or whenever you change RBAC / service connection / subscription assignments). If you used the `Copy-AzLocalPipelineExample` shortcut, the other seven YAML files are already in your repo - skip to step 3 to import each as a pipeline. Otherwise, proceed to step 2 to copy the remaining pipeline files.
+   Once the run is green, leave the imported pipeline in place and schedule yourself to re-run it monthly (or whenever you change RBAC / service connection / subscription assignments). If you used the `Copy-AzLocalPipelineExample` shortcut, the other eight YAML files are already in your repo - skip to step 3 to import each as a pipeline. Otherwise, proceed to step 2 to copy the remaining pipeline files.
 
 2. Copy every file from [`azure-devops/`](./azure-devops/) into your repository at a path of your choice (the README assumes the same folder layout as this repo).
-3. **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file**, then point at the path of each file. Repeat for all seven.
+3. **Pipelines -> New pipeline -> Azure Repos Git -> your repo -> Existing Azure Pipelines YAML file**, then point at the path of each file. Repeat for all eight.
 4. After the pipeline is created, click **Save** (not **Run**) until you are ready to execute.
 5. Each pipeline references a service connection named `AzureLocal-ServiceConnection`. Either name your service connection to match, or change `azureSubscription:` in each YAML.
 
@@ -1115,12 +1119,17 @@ This is the canonical "nothing wired -> staged rollout working" sequence. Follow
                               v
 +-----------------------------------------------------------------------+
 |                          PHASE 4: STEADY STATE                         |
+|  6.6  Step.4_fleet-connectivity-status.yml  (scheduled, daily 05:30 UTC)      |
+|       - v0.7.79+, reconciliation enhanced in v0.7.85                   |
+|       - "Are Arc agents Connected, NICs healthy, Resource Bridges      |
+|          reachable, and does the cluster's node count reconcile        |
+|          with Arc-tagged physical machines?"                           |
 |  6.6  Step.7_fleet-update-status.yml  (scheduled, daily 06:00 UTC)            |
 |       - "Is each cluster up-to-date?"                                  |
-|  6.7  Step.8_fleet-health-status.yml  (scheduled, daily 07:00 UTC) - v0.7.65  |
+|  6.6  Step.8_fleet-health-status.yml  (scheduled, daily 07:00 UTC) - v0.7.65  |
 |       - "Do clusters have actionable health issues even when           |
 |          up-to-date?" Surfaces 24-hour system health-check failures.   |
-|  6.8  Step.3_apply-updates-schedule-audit.yml  (scheduled, weekly Mon 05:00   |
+|  6.7  Step.3_apply-updates-schedule-audit.yml  (scheduled, weekly Mon 05:00   |
 |       UTC) - v0.7.65                                                   |
 |       - "Will any tagged UpdateWindow never be reached by the cron     |
 |          schedule in Step.6_apply-updates.yml?" Read-only drift advisor.      |
@@ -1203,6 +1212,7 @@ Key handoffs to remember:
 - **`cluster-readiness.csv`** carries `ClusterResourceId` from Assess into Apply. Apply does not re-query ARG to pick targets - it consumes the ID column directly, so a stale or malformed readiness CSV silently produces zero ready clusters. Always treat the most recent readiness run as the source of truth for the next Apply.
 - **`apply-updates-results.xml`** (JUnit) is what surfaces in the Tests tab on GH Actions and Azure DevOps. Failed-first ordering means actionable rows appear at the top of the reporter UI.
 - **`schedule-coverage-recommend.md`** is the only artifact intended to be pasted by hand - directly back into `Step.6_apply-updates.yml`'s `on.schedule` / ADO trigger block when the audit reports `Uncovered` or `PartiallyCovered` rows.
+- **Step.4 Fleet Connectivity Status runs parallel to (not downstream of) the apply-updates artifact chain.** It reads ARG directly and emits its own per-scope CSVs (`fleet-cluster-connectivity.csv`, `fleet-arc-status-summary.csv`, `fleet-arc-non-connected-machines.csv`, `fleet-physical-nics.csv`, `fleet-physical-nic-stats.csv`, `fleet-arb-status.csv`) plus a JUnit XML (`fleet-connectivity-status.xml`). No dependency on `cluster-readiness.csv` or `cluster-inventory.csv` - it is the upstream "can we see the fleet at all?" probe. Use it to triage why the apply-updates chain is empty or under-counting.
 
 ### 6.1 Inventory the estate
 
@@ -1314,14 +1324,17 @@ For tighter control around production rollouts, add a manual approval gate betwe
 
 ### 6.6 Continuous fleet monitoring
 
-The "steady-state" phase ships **two complementary pipelines**, both read-only, both scheduled, designed to be run together as your daily fleet operations baseline:
+The "steady-state" phase ships **three complementary pipelines**, all read-only, all scheduled, designed to be run together as your daily fleet operations baseline:
 
 | Pipeline | Daily | Answers | Output |
 |----------|-------|---------|--------|
+| `Step.4_fleet-connectivity-status.yml` *(v0.7.79+, enhanced in v0.7.85)* | 05:30 UTC | *"Are all clusters' Arc agents Connected? Are physical NICs healthy? Are Azure Resource Bridges reachable? Does the cluster's reported node count match the Arc-tagged physical machines we see?"* | JUnit + per-scope CSV/JSON + Markdown summary; one test case per cluster, with reconciliation rows that include "How to interpret + act" remediation guidance for any non-zero node-coverage delta |
 | `Step.7_fleet-update-status.yml` | 06:00 UTC | *"Is each cluster up-to-date? Which ones need an apply, which ones are SBE-blocked, which ones failed?"* | JUnit + CSV/JSON + Markdown summary; one test case per cluster |
 | `Step.8_fleet-health-status.yml` *(v0.7.65)* | 07:00 UTC | *"Do clusters have actionable health issues even when up-to-date? What failure reasons hit the most clusters?"* | JUnit + CSV/JSON + Markdown summary; one test case per (cluster, failing 24-hour health check) grouped under Critical / Warning testsuites |
 
-The two run in distinct (offset) cron slots so they don't contend for the same agent.
+The three run in distinct (offset) cron slots so they don't contend for the same agent.
+
+**Fleet Connectivity Status** *(introduced in v0.7.79, enhanced in v0.7.85)* runs daily at 05:30 UTC and answers the upstream question every other steady-state pipeline depends on: *"can the pipeline identity actually see every cluster, every physical node, and every Resource Bridge it is supposed to manage?"* The Step.4 reconciliation table compares each cluster's `reportedProperties.nodes` count against the Arc-tagged physical machines visible in Resource Graph and flags both directions of drift (positive = Arc has more machines than the cluster reports; negative = cluster reports more nodes than Arc can see). The v0.7.85 *"How to interpret + act on a non-zero reconciliation"* subsection in the pipeline summary gives operators per-direction remediation lists and an inline Resource Graph query template for triage. RBAC: `Reader` plus `Microsoft.ResourceGraph/resources/read`, `Microsoft.AzureStackHCI/edgeDevices/read`, `Microsoft.HybridCompute/machines/read`, and `Microsoft.ResourceConnector/appliances/read` - all already in the **`Azure Stack HCI Update Operator`** custom role definition shipped in [section 4.1](#41-custom-role-azure-stack-hci-update-operator).
 
 **Fleet Update Status** is scheduled to run daily at 06:00 UTC once you push the YAML. It does no writes - it builds a fleet-wide JUnit + CSV + JSON snapshot for dashboards and alerting.
 
@@ -1699,21 +1712,25 @@ Automation-Pipeline-Examples/
     templates/
       incident-body.md                #   - Mustache-style ticket body template.
   github-actions/
-    Step.1_inventory-clusters.yml            # 1. Inventory.
-    Step.2_manage-updatering-tags.yml        # 2. Apply UpdateRing / UpdateWindow / UpdateExclusions tags.
-    Step.5_assess-update-readiness.yml       # 3. Pre-flight readiness report (v0.7.0).
-    Step.6_apply-updates.yml                 # 4. Apply updates to one UpdateRing (with optional ITSM step, v0.7.4).
-    Step.7_fleet-update-status.yml           # 5. Scheduled fleet update-status snapshot (daily 06:00 UTC).
-    Step.8_fleet-health-status.yml           # 6. Scheduled fleet 24-hour health-check failure report (daily 07:00 UTC, v0.7.65).
-    Step.3_apply-updates-schedule-audit.yml  # 7. Weekly read-only audit: UpdateWindow tags vs apply-updates cron (Mon 05:00 UTC, v0.7.65).
+    Step.0_authentication-test.yml           # 0. Authentication validation + subscription scope report (manual; v0.7.70).
+    Step.1_inventory-clusters.yml            # 1. Inventory (weekly Mon 06:00 UTC + manual).
+    Step.2_manage-updatering-tags.yml        # 2. Apply UpdateRing / UpdateWindow / UpdateExclusions tags (manual).
+    Step.3_apply-updates-schedule-audit.yml  # 3. Weekly read-only audit: UpdateWindow tags vs apply-updates cron (Mon 05:00 UTC, v0.7.65).
+    Step.4_fleet-connectivity-status.yml     # 4. Daily fleet connectivity / Arc / NIC / Resource Bridge snapshot + node-coverage reconciliation (daily 05:30 UTC, v0.7.79+; reconciliation enhanced in v0.7.85).
+    Step.5_assess-update-readiness.yml       # 5. Pre-flight readiness report (manual; v0.7.0).
+    Step.6_apply-updates.yml                 # 6. Apply updates to one UpdateRing (with optional ITSM step, v0.7.4).
+    Step.7_fleet-update-status.yml           # 7. Scheduled fleet update-status snapshot (daily 06:00 UTC).
+    Step.8_fleet-health-status.yml           # 8. Scheduled fleet 24-hour health-check failure report (daily 07:00 UTC, v0.7.65).
   azure-devops/
+    Step.0_authentication-test.yml
     Step.1_inventory-clusters.yml
     Step.2_manage-updatering-tags.yml
+    Step.3_apply-updates-schedule-audit.yml
+    Step.4_fleet-connectivity-status.yml
     Step.5_assess-update-readiness.yml
     Step.6_apply-updates.yml
     Step.7_fleet-update-status.yml
     Step.8_fleet-health-status.yml
-    Step.3_apply-updates-schedule-audit.yml
 ```
 
 ---
