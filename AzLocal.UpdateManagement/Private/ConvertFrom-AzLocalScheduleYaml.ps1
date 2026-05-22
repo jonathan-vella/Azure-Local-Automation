@@ -204,13 +204,22 @@ function ConvertFrom-AzLocalScheduleYaml {
     # ---- Project to a stable shape -----------------------------------
     # Always emit the four scalar keys (as $null when missing) plus an
     # array Schedule. Validator decides what's required.
+    # v0.7.89 (schema v2) added an optional top-level
+    # 'allowedUpdateVersions' string (semicolon-separated). It is
+    # surfaced here as AllowedUpdateVersionsRaw (the raw string, or
+    # $null when absent) so the validator + resolver can split + dedupe
+    # it without re-parsing the file. Per-row 'allowedUpdateVersions' is
+    # passed through generically via the row PSCustomObject (the
+    # tokenizer accepts any continuation key) - no projection needed
+    # here.
     $obj = [ordered]@{
-        SchemaVersion       = $topLevel['schemaVersion']
-        CycleWeeks          = $topLevel['cycleWeeks']
-        CycleAnchorISOWeek  = $topLevel['cycleAnchorISOWeek']
-        CycleAnchorYear     = $topLevel['cycleAnchorYear']
-        Schedule            = @($schedule)
-        SourcePath          = $SourcePath
+        SchemaVersion              = $topLevel['schemaVersion']
+        CycleWeeks                 = $topLevel['cycleWeeks']
+        CycleAnchorISOWeek         = $topLevel['cycleAnchorISOWeek']
+        CycleAnchorYear            = $topLevel['cycleAnchorYear']
+        AllowedUpdateVersionsRaw   = $topLevel['allowedUpdateVersions']
+        Schedule                   = @($schedule)
+        SourcePath                 = $SourcePath
     }
     return [pscustomobject]$obj
 }

@@ -112,7 +112,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.88'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.89'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -153,6 +153,14 @@ jobs:
       # the manual `update_ring` input). When the trigger was `schedule:`, this
       # is a ';'-joined UpdateRing value ready for -UpdateRingValue.
       resolved_update_ring: ${{ steps.resolve-ring.outputs.RESOLVED_UPDATE_RING }}
+      # v0.7.89: ';'-joined allow-list of update names / version strings
+      # resolved from the schema-v2 'allowedUpdateVersions' field of
+      # apply-updates-schedule.yml (top-level OR per matched-row, with per-row
+      # winning). Empty string when the trigger was workflow_dispatch OR
+      # when no allow-list is configured anywhere in the schedule. Downstream
+      # apply step passes this via -AllowedUpdateVersions; when empty, the
+      # cmdlet falls back to its default "install latest Ready update".
+      resolved_allowed_update_versions: ${{ steps.resolve-ring.outputs.RESOLVED_ALLOWED_UPDATE_VERSIONS }}
     
     steps:
     - name: Checkout repository
@@ -240,9 +248,10 @@ jobs:
       run: |
         Import-Module AzLocal.UpdateManagement -Force
         $resolved = ''
+        $resolvedAllow = ''
         if ($env:TRIGGER_EVENT -eq 'workflow_dispatch') {
             $resolved = $env:INPUT_UPDATE_RING
-            Write-Host "Trigger='workflow_dispatch' - using manual input UpdateRing='$resolved' (schedule file ignored)."
+            Write-Host "Trigger='workflow_dispatch' - using manual input UpdateRing='$resolved' (schedule file ignored). AllowedUpdateVersions is not applied for manual runs - the cmdlet's default 'latest Ready update' (or -update_name input) is used."
         }
         else {
             $schedulePath = $env:APPLY_UPDATES_SCHEDULE_PATH
@@ -257,6 +266,13 @@ jobs:
             if ($decision.Rings -and $decision.Rings.Count -gt 0) {
                 $resolved = $decision.UpdateRingValue
                 Write-Host "Resolved UpdateRing='$resolved' (cycleWeek=$($decision.CycleWeek), dayOfWeek=$($decision.DayOfWeekName))."
+                if ($decision.AllowedUpdateVersions -and $decision.AllowedUpdateVersions.Count -gt 0) {
+                    $resolvedAllow = $decision.AllowedUpdateVersionsValue
+                    Write-Host "Resolved AllowedUpdateVersions ($($decision.AllowedUpdateVersionsSource)): $resolvedAllow"
+                }
+                else {
+                    Write-Host "Resolved AllowedUpdateVersions: <none> - apply-updates will install the latest Ready update on each cluster."
+                }
             }
             else {
                 Write-Host "::notice title=No UpdateRing scheduled for today::$($decision.Reason)"
@@ -265,8 +281,10 @@ jobs:
             }
         }
         # Bridge: env var for later steps in this job + step output for cross-job consumption.
-        "RESOLVED_UPDATE_RING=$resolved" | Out-File -FilePath $env:GITHUB_ENV    -Encoding utf8 -Append
-        "RESOLVED_UPDATE_RING=$resolved" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        "RESOLVED_UPDATE_RING=$resolved"               | Out-File -FilePath $env:GITHUB_ENV    -Encoding utf8 -Append
+        "RESOLVED_UPDATE_RING=$resolved"               | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        "RESOLVED_ALLOWED_UPDATE_VERSIONS=$resolvedAllow" | Out-File -FilePath $env:GITHUB_ENV    -Encoding utf8 -Append
+        "RESOLVED_ALLOWED_UPDATE_VERSIONS=$resolvedAllow" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
     
     - name: Check Cluster Readiness
       shell: pwsh
@@ -425,12 +443,21 @@ jobs:
         INPUT_UPDATE_RING: ${{ needs.check-readiness.outputs.resolved_update_ring }}
         INPUT_UPDATE_NAME: ${{ github.event.inputs.update_name }}
         INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        # v0.7.89: ';'-joined allow-list resolved from apply-updates-schedule.yml
+        # 'allowedUpdateVersions' (schema v2). Empty for workflow_dispatch or
+        # when no allow-list is configured - in either case the cmdlet falls
+        # back to "install latest Ready update" (or to -UpdateName when set).
+        INPUT_ALLOWED_UPDATE_VERSIONS: ${{ needs.check-readiness.outputs.resolved_allowed_update_versions }}
       run: |
         Import-Module AzLocal.UpdateManagement -Force
         
-        $updateRing = $env:INPUT_UPDATE_RING
-        $updateName = $env:INPUT_UPDATE_NAME
-        $dryRun = $env:INPUT_DRY_RUN -eq "true"
+        $updateRing            = $env:INPUT_UPDATE_RING
+        $updateName            = $env:INPUT_UPDATE_NAME
+        $dryRun                = $env:INPUT_DRY_RUN -eq "true"
+        $allowedUpdateVersions = @()
+        if (-not [string]::IsNullOrWhiteSpace($env:INPUT_ALLOWED_UPDATE_VERSIONS)) {
+            $allowedUpdateVersions = @($env:INPUT_ALLOWED_UPDATE_VERSIONS -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        }
         
         # Create output directory
         $outputDir = "./artifacts"
@@ -482,7 +509,12 @@ jobs:
             $params['UpdateName'] = $updateName
             Write-Host "Applying specific update: $updateName"
         }
-        
+
+        if ($allowedUpdateVersions.Count -gt 0) {
+            $params['AllowedUpdateVersions'] = $allowedUpdateVersions
+            Write-Host "AllowedUpdateVersions allow-list (schema v2): [$($allowedUpdateVersions -join ', ')]. Clusters with no Ready update matching the list will be skipped with status 'NotInAllowList'."
+        }
+
         if ($dryRun) {
             $params['WhatIf'] = $true
             Write-Host "DRY RUN MODE - No updates will be applied"
@@ -502,7 +534,7 @@ jobs:
         
         # Count results
         $succeeded = ($results | Where-Object { $_.Status -eq 'Started' -or $_.Status -eq 'Success' -or $_.Status -eq 'UpdateStarted' }).Count
-        $skipped = ($results | Where-Object { $_.Status -in @('Skipped', 'NotReady', 'NoUpdatesAvailable', 'NoReadyUpdates', 'NotFound', 'UpdateNotFound') }).Count
+        $skipped = ($results | Where-Object { $_.Status -in @('Skipped', 'NotReady', 'NoUpdatesAvailable', 'NoReadyUpdates', 'NotFound', 'UpdateNotFound', 'NotInAllowList') }).Count
         $failed = ($results | Where-Object { $_.Status -in @('Failed', 'Error') }).Count
         $healthBlocked = ($results | Where-Object { $_.Status -eq 'HealthCheckBlocked' }).Count
         $scheduleBlocked = ($results | Where-Object { $_.Status -eq 'ScheduleBlocked' }).Count

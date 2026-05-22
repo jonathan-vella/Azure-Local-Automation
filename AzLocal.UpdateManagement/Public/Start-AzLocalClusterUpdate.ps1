@@ -21,6 +21,20 @@ function Start-AzLocalClusterUpdate {
         Azure subscription ID (defaults to current subscription).
     .PARAMETER UpdateName
         Specific update name to apply. If not specified, applies the latest ready update.
+        Takes precedence over -AllowedUpdateVersions: when both are set, the explicit
+        update is used and the allow-list is logged-and-ignored (with a Warning).
+    .PARAMETER AllowedUpdateVersions
+        Optional allow-list of Azure Local solution-update names or version strings.
+        When set, the cmdlet's automatic "pick the latest Ready update" behaviour is
+        constrained to only those updates whose 'name' OR 'properties.version' is an
+        EXACT (case-insensitive) match for one of the supplied entries. If no Ready
+        update on a cluster matches the allow-list, that cluster is SKIPPED with
+        status 'NotInAllowList' (CSV + result row) and the next cluster proceeds -
+        this is a strict no-op, never falls back to "latest". Typical use: install
+        only the YY04 + YY10 feature updates plus the preceding cumulative updates
+        each year (the 'minimum updates' policy). In pipeline scenarios, the
+        Step.6 YAML resolves this list from the apply-updates-schedule.yml file's
+        new (schema v2) 'allowedUpdateVersions' field via Resolve-AzLocalCurrentUpdateRing.
     .PARAMETER ApiVersion
         Azure REST API version to use. Default: "2025-10-01".
     .PARAMETER Force
@@ -75,6 +89,9 @@ function Start-AzLocalClusterUpdate {
 
         [Parameter(Mandatory = $false)]
         [string]$UpdateName,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$AllowedUpdateVersions,
 
         [Parameter(Mandatory = $false)]
         [string]$ApiVersion = $script:DefaultApiVersion,
@@ -876,6 +893,65 @@ function Start-AzLocalClusterUpdate {
                 Write-Log -Message "Available updates in 'Ready' state:" -Level Success
                 foreach ($update in $readyUpdates) {
                     Write-Log -Message "  - $($update.name) (Version: $($update.properties.version), State: $($update.properties.state))" -Level Info
+                }
+
+                # Step 4b (v0.7.89): AllowedUpdateVersions allow-list filter
+                # ---------------------------------------------------------
+                # When -AllowedUpdateVersions is set AND -UpdateName is NOT
+                # set, restrict the auto-pick pool to Ready updates whose
+                # 'name' OR 'properties.version' is an EXACT
+                # (case-insensitive) match for one of the supplied entries.
+                # If the filter empties the pool, this cluster is SKIPPED
+                # with status 'NotInAllowList' - strict no-op, never falls
+                # back to "latest Ready".
+                # When -UpdateName is set, the explicit operator choice
+                # wins over the policy allow-list. Warn loudly so audit
+                # logs surface the override.
+                if ($AllowedUpdateVersions -and @($AllowedUpdateVersions).Count -gt 0) {
+                    if ($UpdateName) {
+                        Write-Log -Message ("Both -UpdateName ('$UpdateName') and -AllowedUpdateVersions ({0} entries) were supplied for cluster '$clusterName'. -UpdateName takes precedence; allow-list is logged-and-ignored for this cluster." -f @($AllowedUpdateVersions).Count) -Level Warning
+                    }
+                    else {
+                        $allowSet = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+                        foreach ($a in @($AllowedUpdateVersions)) {
+                            $sa = [string]$a
+                            if (-not [string]::IsNullOrWhiteSpace($sa)) { [void]$allowSet.Add($sa.Trim()) }
+                        }
+                        $filtered = @($readyUpdates | Where-Object {
+                            ($_.name -and $allowSet.Contains([string]$_.name)) -or
+                            ($_.properties -and $_.properties.version -and $allowSet.Contains([string]$_.properties.version))
+                        })
+                        $allowDisplay = (@($allowSet) -join ', ')
+                        if ($filtered.Count -eq 0) {
+                            $readyDisplay = (@($readyUpdates | ForEach-Object { "$($_.name) (v$($_.properties.version))" }) -join '; ')
+                            Write-Log -Message "Cluster '$clusterName': none of the $($readyUpdates.Count) Ready update(s) match the AllowedUpdateVersions allow-list. Allow-list: [$allowDisplay]. Available Ready: [$readyDisplay]. Skipping cluster (status='NotInAllowList')." -Level Warning
+
+                            # Parse Resource Group and Subscription ID from cluster resource ID
+                            $clusterRgName = ($clusterInfo.id -split '/resourceGroups/')[1] -split '/' | Select-Object -First 1
+                            $clusterSubId  = ($clusterInfo.id -split '/subscriptions/')[1]  -split '/' | Select-Object -First 1
+                            $healthState   = if ($updateSummary.properties.healthState) { $updateSummary.properties.healthState } else { "Unknown" }
+                            Write-UpdateCsvLog -LogType Skipped `
+                                -ClusterName $clusterName `
+                                -ResourceGroup $clusterRgName `
+                                -SubscriptionId $clusterSubId `
+                                -Message "Update skipped - no Ready update matches AllowedUpdateVersions allow-list [$allowDisplay]. Available Ready: $readyDisplay" `
+                                -UpdateState $updateSummary.properties.state `
+                                -HealthState $healthState
+
+                            $results.Add([PSCustomObject]@{
+                                ClusterName   = $clusterName
+                                Status        = "NotInAllowList"
+                                Message       = "No Ready update matches AllowedUpdateVersions allow-list [$allowDisplay]"
+                                UpdateName    = $null
+                                StartTime     = $clusterStartTime
+                                EndTime       = Get-Date
+                                Duration      = $null
+                            }) | Out-Null
+                            continue
+                        }
+                        Write-Log -Message "AllowedUpdateVersions filter kept $($filtered.Count)/$($readyUpdates.Count) Ready update(s) for cluster '$clusterName'. Allow-list: [$allowDisplay]." -Level Info
+                        $readyUpdates = $filtered
+                    }
                 }
 
                 # Step 5: Select update to apply

@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.88 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.88)
+**Latest Version:** v0.7.89 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.89)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.88](#whats-new-in-v0788)
+- [What's New in v0.7.89](#whats-new-in-v0789)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,19 +86,25 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.88
+## What's New in v0.7.89
 
-v0.7.88 is a small Step.8 step-summary readability polish. The bundled `Step.8 fleet-health-status` GitHub Actions and Azure DevOps pipelines now render the per-cluster fleet rollup right below the KPI summary - above the failure breakdown - so an operator triaging unhealthy clusters sees Health status, Update Status, current version, SBE version, Azure Connection state, last-check timestamp + age and node count at a glance, then dives into `Health Check Failures By Reason` and `Detailed Results` for context. The fleet-rollup column that used to be labelled `Age (days)` is now `Health Check Age (days)`, which is unambiguous next to the `Last Checked` timestamp column - the value is the age in days of the cluster's last 24-hour Azure Stack HCI health-check result (sourced from `Get-AzLocalFleetHealthOverview.HealthResultsAgeDays`), with negative values continuing to mean "no LastChecked timestamp at all".
+v0.7.89 is a customer-feedback driven feature release: an OPTIONAL `allowedUpdateVersions` allow-list field on `apply-updates-schedule.yml`, supporting both fleet-wide (top-level) and per-row (per-ring) scopes. Customer quote verbatim: *"if a customer only wants to install the 'Minimum number of updates', which is around 4 updates a year, with the YY04 and YY10 being mandatory feature updates, and the cumulative update before each feature update (YY03 and YY09) also sometimes being mandatory, can we have optional logic that we can define in the schema of the `apply-updates-schedule.yml` update, where we can list a specific list of updates that we only want to install, fleet wide, and/or per ring, to allow us to define an `allow list` of updates manually?"* This release ships that ability end-to-end - schema, validator, resolver, picker, schema migration, generator, example, and Step.6 pipeline plumbing (GH + ADO) - while keeping the historic "install the latest Ready update" behaviour unchanged for everyone who doesn't opt in.
 
-**Step.8 markdown section order.** Both GH + ADO pipelines now emit: **KPI summary table -> `### Fleet Health Overview (fleet rollup)` -> `### Health Check Failures By Reason (most widespread first)` -> `### Detailed Results (per-cluster, per-failure)` -> `### Reports Available`**. Previously the fleet rollup sat at the very end of the summary, requiring operators to scroll past every failure row to reach the per-cluster overview.
+**Schema bump v1 -> v2 (additive).** A new optional `allowedUpdateVersions:` field is accepted at the top level (fleet default) and on every individual schedule row (per-ring override). Format mirrors the existing `rings:` convention - a semicolon-separated string of Azure Local solution-update names or `properties.version` strings, e.g. `'10.2604.0.123;10.2610.0.456'`. Matching is EXACT and case-insensitive against BOTH `.name` and `.properties.version` (operators can author either flavour). Empty/whitespace/duplicate-tokens are validator-rejected with location-tagged remediation. Per-row beats top-level; multiple matching rows UNION; rows without the field on a UNION day are "no opinion" (do NOT collapse the UNION). Top-level kicks in only when ZERO matching rows specify the field.
 
-**Step.8 fleet-rollup column rename.** `Age (days)` -> `Health Check Age (days)`. The previous label was ambiguous (could plausibly mean cluster age, node age, current-version age, or update-readiness age); the new label is unambiguous and matches the underlying `Get-AzLocalFleetHealthOverview.HealthResultsAgeDays` data source.
+**`Start-AzLocalClusterUpdate -AllowedUpdateVersions [string[]]`.** New optional parameter. When set, restricts the auto-pick pool BEFORE the YYMM-latest selector runs - so the latest update that's IN the allow-list still wins (the picker logic is untouched, just fed a narrower input). When BOTH `-UpdateName` and `-AllowedUpdateVersions` are passed, the explicit `-UpdateName` wins (allow-list logged-and-ignored with a Warning). New result/CSV status `NotInAllowList` is emitted when filtering eliminates every Ready update - the cluster is SKIPPED strictly (the picker never falls back to "latest Ready").
 
-**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.87'` to `'0.7.88'`. Only `Step.8_fleet-health-status.yml` had inline-script content changes; the other 17 are pin-only bumps.
+**`Resolve-AzLocalCurrentUpdateRing`** returns three new properties: `AllowedUpdateVersions [string[]]`, `AllowedUpdateVersionsValue [string]` (`;`-joined for env-var bridge), `AllowedUpdateVersionsSource ('row' | 'top-level' | 'none')`. The `Reason` string also appends `AllowedUpdateVersions (<source>): a, b, c.` when an allow-list is in effect, so the resolver's decision is fully auditable in pipeline logs.
 
-**Migration.** No public-surface or behaviour changes outside the Step.8 markdown layout. Run `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`) to update the module. To pick up both the Step.8 markdown reorder + column rename and the pin bump in your pipelines, re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update`.
+**Schema migration recipe `1 -> 2`** registered in `Private/Convert-AzLocalScheduleSchemaVersion.ps1`. Run `Update-AzLocalApplyUpdatesScheduleConfig -Path <your-schedule>` to migrate an existing v1 file. The recipe is text-surgery (no YAML reflow), idempotent (marker-guarded `# >>> ALLOWED-UPDATE-VERSIONS-V2 <<<`), and additive - it rewrites only the `schemaVersion: 1` line and inserts a documented commented `# allowedUpdateVersions:` example block above `# ---- Schedule entries ----`. Existing schedule rows + customer comments are preserved verbatim.
 
-> Previous release notes (v0.7.87 and earlier) have moved into [`docs/release-history.md`](docs/release-history.md).
+**Step.6 pipelines (GitHub Actions + Azure DevOps).** `check-readiness` resolver task now also exports `RESOLVED_ALLOWED_UPDATE_VERSIONS` (alongside `RESOLVED_UPDATE_RING`). The `Apply Updates` task consumes it via env var, parses to `[string[]]`, and passes through `-AllowedUpdateVersions` to `Start-AzLocalClusterUpdate`. `workflow_dispatch` / non-Schedule build reasons pass empty (manual runs are not subject to the allow-list, preserving historic ad-hoc behaviour for operators). `NotInAllowList` is added to the `skipped` result-counter bucket so per-stage summary KPIs stay correct.
+
+**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.88'` to `'0.7.89'`. Only `Step.6_apply-updates.yml` (both platforms) has inline-script content changes; the other 16 are pin-only bumps.
+
+**Migration.** `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`). `Start-AzLocalClusterUpdate` gains the optional `-AllowedUpdateVersions` parameter (default = unset = historic "install latest Ready update" unchanged). For pipelines, re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update`. To opt-in to the allow-list, run `Update-AzLocalApplyUpdatesScheduleConfig -Path <path>` on your existing `apply-updates-schedule.yml`, then hand-edit the new commented `# allowedUpdateVersions:` block (top-level OR per-row, or both). Files left at v1 continue to work; only the new field is rejected on v1.
+
+> Previous release notes (v0.7.88 and earlier) have moved into [`docs/release-history.md`](docs/release-history.md).
 
 ## Files
 
@@ -563,7 +569,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.81 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.88** stay above under [`What's New in v0.7.88`](#whats-new-in-v0788).
+The most recent release notes for **v0.7.89** stay above under [`What's New in v0.7.89`](#whats-new-in-v0789).
 
 ---
 

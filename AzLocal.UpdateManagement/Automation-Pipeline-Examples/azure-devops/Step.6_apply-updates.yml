@@ -98,7 +98,7 @@ variables:
   # log if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
   - name: GENERATED_AGAINST_MODULE_VERSION
-    value: '0.7.88'
+    value: '0.7.89'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): queue-time parameter > pipeline variable
   # 'REQUIRED_MODULE_VERSION' overridden at queue time > empty (latest).
@@ -204,10 +204,11 @@ stages:
               script: |
                 $ErrorActionPreference = 'Stop'
                 Import-Module AzLocal.UpdateManagement -Force
-                $resolved = ''
+                $resolved      = ''
+                $resolvedAllow = ''
                 if ($env:BUILD_REASON -ne 'Schedule') {
                     $resolved = $env:MANUAL_UPDATE_RING
-                    Write-Host "Build.Reason='$($env:BUILD_REASON)' - using manual parameter UpdateRing='$resolved' (schedule file ignored)."
+                    Write-Host "Build.Reason='$($env:BUILD_REASON)' - using manual parameter UpdateRing='$resolved' (schedule file ignored). AllowedUpdateVersions is not applied for manual runs - the cmdlet's default 'latest Ready update' (or -updateName parameter) is used."
                 }
                 else {
                     $schedulePath = $env:APPLY_UPDATES_SCHEDULE_PATH
@@ -222,6 +223,13 @@ stages:
                     if ($decision.Rings -and $decision.Rings.Count -gt 0) {
                         $resolved = $decision.UpdateRingValue
                         Write-Host "Resolved UpdateRing='$resolved' (cycleWeek=$($decision.CycleWeek), dayOfWeek=$($decision.DayOfWeekName))."
+                        if ($decision.AllowedUpdateVersions -and $decision.AllowedUpdateVersions.Count -gt 0) {
+                            $resolvedAllow = $decision.AllowedUpdateVersionsValue
+                            Write-Host "Resolved AllowedUpdateVersions ($($decision.AllowedUpdateVersionsSource)): $resolvedAllow"
+                        }
+                        else {
+                            Write-Host "Resolved AllowedUpdateVersions: <none> - apply-updates will install the latest Ready update on each cluster."
+                        }
                     }
                     else {
                         Write-Host "##vso[task.logissue type=warning]No UpdateRing scheduled for today: $($decision.Reason)"
@@ -230,6 +238,7 @@ stages:
                     }
                 }
                 Write-Host "##vso[task.setvariable variable=RESOLVED_UPDATE_RING;isOutput=true]$resolved"
+                Write-Host "##vso[task.setvariable variable=RESOLVED_ALLOWED_UPDATE_VERSIONS;isOutput=true]$resolvedAllow"
           
           - task: AzureCLI@2
             displayName: 'Check Cluster Readiness'
@@ -355,6 +364,10 @@ stages:
           # parameter input verbatim; for Schedule firings this is the ring(s)
           # the resolver picked from apply-updates-schedule.yml.
           resolvedUpdateRing: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['resolveRing.RESOLVED_UPDATE_RING'] ]
+          # v0.7.89: ';'-joined allow-list resolved from apply-updates-schedule.yml
+          # schema-v2 'allowedUpdateVersions' field. Empty when build was not a
+          # Schedule firing or when no allow-list is configured.
+          resolvedAllowedUpdateVersions: $[ stageDependencies.CheckReadiness.ReadinessCheck.outputs['resolveRing.RESOLVED_ALLOWED_UPDATE_VERSIONS'] ]
         
         steps:
           - checkout: self
@@ -432,6 +445,15 @@ stages:
               # task (manual parameter for Manual/IndividualCI runs, schedule-
               # resolved ring for Schedule firings).
               RESOLVED_UPDATE_RING: $(resolvedUpdateRing)
+              # v0.7.89: ';'-joined allow-list resolved from
+              # apply-updates-schedule.yml schema-v2 'allowedUpdateVersions'
+              # field. Empty for non-Schedule firings or when no allow-list
+              # is configured. When non-empty, Start-AzLocalClusterUpdate
+              # filters Ready updates to only those whose 'name' OR
+              # 'properties.version' is an EXACT (case-insensitive) match;
+              # clusters with no matching Ready update are skipped with
+              # status 'NotInAllowList'.
+              RESOLVED_ALLOWED_UPDATE_VERSIONS: $(resolvedAllowedUpdateVersions)
             inputs:
               azureSubscription: 'AzureLocal-ServiceConnection'  # Update with your service connection name
               scriptType: 'pscore'
@@ -442,6 +464,10 @@ stages:
                 $updateRing = $env:RESOLVED_UPDATE_RING
                 $updateName = "${{ parameters.updateName }}"
                 $dryRun = [System.Convert]::ToBoolean("${{ parameters.dryRun }}")
+                $allowedUpdateVersions = @()
+                if (-not [string]::IsNullOrWhiteSpace($env:RESOLVED_ALLOWED_UPDATE_VERSIONS)) {
+                    $allowedUpdateVersions = @($env:RESOLVED_ALLOWED_UPDATE_VERSIONS -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                }
                 
                 # Create output directory
                 $outputDir = "$(Build.ArtifactStagingDirectory)"
@@ -490,6 +516,11 @@ stages:
                     $params['UpdateName'] = $updateName
                     Write-Host "Applying specific update: $updateName"
                 }
+
+                if ($allowedUpdateVersions.Count -gt 0) {
+                    $params['AllowedUpdateVersions'] = $allowedUpdateVersions
+                    Write-Host "AllowedUpdateVersions allow-list (schema v2): [$($allowedUpdateVersions -join ', ')]. Clusters with no Ready update matching the list will be skipped with status 'NotInAllowList'."
+                }
                 
                 if ($dryRun) {
                     $params['WhatIf'] = $true
@@ -510,7 +541,7 @@ stages:
                 
                 # Count results
                 $succeeded = ($results | Where-Object { $_.Status -eq 'Started' -or $_.Status -eq 'Success' -or $_.Status -eq 'UpdateStarted' }).Count
-                $skipped = ($results | Where-Object { $_.Status -in @('Skipped', 'NotReady', 'NoUpdatesAvailable', 'NoReadyUpdates', 'NotFound', 'UpdateNotFound') }).Count
+                $skipped = ($results | Where-Object { $_.Status -in @('Skipped', 'NotReady', 'NoUpdatesAvailable', 'NoReadyUpdates', 'NotFound', 'UpdateNotFound', 'NotInAllowList') }).Count
                 $failed = ($results | Where-Object { $_.Status -in @('Failed', 'Error') }).Count
                 $healthBlocked = ($results | Where-Object { $_.Status -eq 'HealthCheckBlocked' }).Count
                 $scheduleBlocked = ($results | Where-Object { $_.Status -eq 'ScheduleBlocked' }).Count

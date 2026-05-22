@@ -4,7 +4,19 @@
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
 >
-> **For v0.7.88 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0788) `What's New in v0.7.88` section.
+> **For v0.7.89 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0789) `What's New in v0.7.89` section.
+
+---
+
+### What's New in v0.7.88
+
+v0.7.88 was a focused Step.8 step-summary readability polish. The bundled `Step.8 fleet-health-status` GitHub Actions and Azure DevOps pipelines now render the per-cluster fleet rollup right below the KPI summary - above the failure breakdown - so an operator triaging unhealthy clusters sees Health status, Update Status, current version, SBE version, Azure Connection state, last-check timestamp + age and node count at a glance, then dives into `Health Check Failures By Reason` and `Detailed Results` for context. The fleet-rollup column that used to be labelled `Age (days)` was renamed to `Health Check Age (days)`, which is unambiguous next to the `Last Checked` timestamp column - the value is the age in days of the cluster's last 24-hour Azure Stack HCI health-check result (sourced from `Get-AzLocalFleetHealthOverview.HealthResultsAgeDays`), with negative values continuing to mean "no LastChecked timestamp at all".
+
+**Step.8 markdown section order.** Both GH + ADO pipelines now emit: **KPI summary table -> `### Fleet Health Overview (fleet rollup)` -> `### Health Check Failures By Reason (most widespread first)` -> `### Detailed Results (per-cluster, per-failure)` -> `### Reports Available`**. Previously the fleet rollup sat at the very end of the summary, requiring operators to scroll past every failure row to reach the per-cluster overview.
+
+**Step.8 fleet-rollup column rename.** `Age (days)` -> `Health Check Age (days)`. The previous label was ambiguous (could plausibly mean cluster age, node age, current-version age, or update-readiness age); the new label is unambiguous and matches the underlying `Get-AzLocalFleetHealthOverview.HealthResultsAgeDays` data source.
+
+All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bumped `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.87'` to `'0.7.88'`. Only `Step.8_fleet-health-status.yml` had inline-script content changes; the other 17 were pin-only bumps.
 
 ---
 

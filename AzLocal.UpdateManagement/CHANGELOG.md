@@ -5,6 +5,33 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.89] - 2026-05-23
+
+### Added
+
+- **`apply-updates-schedule.yml` schema v2 - new optional `allowedUpdateVersions` allow-list field (top-level + per-row).** Customer feedback verbatim: *"if a customer only wants to install the 'Minimum number of updates', which is around 4 updates a year, with the YY04 and YY10 being mandatory feature updates, and the cumulative update before each feature update (YY03 and YY09) also sometimes being mandatory, can we have optional logic that we can define in the schema of the `apply-updates-schedule.yml` update, where we can list a specific list of updates that we only want to install, fleet wide, and/or per ring, to allow us to define an `allow list` of updates manually?"* When the allow-list is set, Step.6 (apply-updates) will only install updates whose `.name` OR `.properties.version` is an EXACT (case-insensitive) match for one of the listed entries. If a cluster has no Ready update in the list, the cluster is **SKIPPED** with new status `NotInAllowList` (strict no-op; the picker never falls back to "latest Ready"). Format mirrors the existing `rings:` convention (semicolon-separated string).
+- **`Start-AzLocalClusterUpdate -AllowedUpdateVersions [string[]]`** new parameter (optional). When set, restricts the auto-pick pool BEFORE the YYMM-latest selector runs. When BOTH `-UpdateName` and `-AllowedUpdateVersions` are supplied, the explicit `-UpdateName` wins (allow-list logged-and-ignored with a Warning). New CSV/result status `NotInAllowList` is emitted when filtering eliminates every Ready update.
+- **`Resolve-AzLocalCurrentUpdateRing`** returns three new properties: `AllowedUpdateVersions [string[]]`, `AllowedUpdateVersionsValue [string]` (`;`-joined for env-var bridge), `AllowedUpdateVersionsSource ('row' | 'top-level' | 'none')`. Precedence: per-row OVERRIDES top-level. Multiple matching rows UNION their allow-lists; rows WITHOUT the field on a UNION day are treated as "no opinion" (not "allow nothing"). Top-level only kicks in when ZERO matching rows specify the field.
+- **Schema migration recipe `1 -> 2`** registered in `Private/Convert-AzLocalScheduleSchemaVersion.ps1`. Customer v1 schedule files are migrated additively: `schemaVersion: 1` -> `schemaVersion: 2` and a documented commented-out `# allowedUpdateVersions:` example block is inserted above the `# ---- Schedule entries` banner. Existing schedule rows + customer comments are preserved verbatim. The recipe is idempotent (marker-guarded). Run via `Update-AzLocalApplyUpdatesScheduleConfig`.
+- **New private helper `Test-AzLocalAllowedUpdateVersionsString`** shared between the top-level and per-row validation paths. Rejects non-strings, empty/whitespace, empty tokens after split-and-trim (e.g. `'a;;b'`), whitespace inside a token, etc.; deduplicates case-insensitively preserving first-occurrence order.
+
+### Changed
+
+- **Validator (`Get-AzLocalApplyUpdatesScheduleConfig`)** now accepts `schemaVersion: 1` OR `2`. v1 files containing `allowedUpdateVersions` (top-level OR per-row) are rejected with a remediation pointing at the schema migrator (the field is additive, so the migration is a no-op for the row data). v2 files have the field parsed and validated; the resulting `[string[]]` is stamped on `$cfg.AllowedUpdateVersions` (top-level) and `row.AllowedUpdateVersionsParsed` (per row).
+- **Generator (`New-AzLocalApplyUpdatesScheduleConfig`)** now emits `schemaVersion: 2`, a documented commented top-level `# allowedUpdateVersions:` example block, an additional `# allowedUpdateVersions:` line on every strawman schedule row, and a row-fields documentation block describing the new field.
+- **`Automation-Pipeline-Examples/apply-updates-schedule.example.yml`** updated to schema v2 with the new field documented + a per-row override worked example on the Phase-4 production row (illustrating "Prod ring waits for feature updates"). Customer's "minimum updates" use case explicitly called out in the section header.
+- **Step.6 GitHub Actions + Azure DevOps templates plumb the allow-list end-to-end:** `check-readiness` resolver now exports `RESOLVED_ALLOWED_UPDATE_VERSIONS` alongside `RESOLVED_UPDATE_RING`. The apply step consumes it, parses to `[string[]]`, and passes via `-AllowedUpdateVersions` to `Start-AzLocalClusterUpdate`. `workflow_dispatch` / non-Schedule build reasons pass empty (manual runs are not subject to the allow-list - operators get the historic behaviour). `NotInAllowList` is added to the `skipped` result-counter bucket so the per-stage summary KPIs stay correct.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.88'` to `'0.7.89'`. Only `Step.6_apply-updates.yml` (both platforms) has inline-script content changes; the other 16 are pin-only bumps.
+
+### Migration
+
+- **Module:** `Install-Module AzLocal.UpdateManagement -Force`. `Start-AzLocalClusterUpdate` gains the optional `-AllowedUpdateVersions` parameter (default = unset = historic "install latest Ready update" behaviour unchanged).
+- **Pipelines:** re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update` to pick up Step.6's allow-list plumbing + the 18-template pin bump.
+- **`apply-updates-schedule.yml`:** if you already have a v1 schedule file checked in, run `Update-AzLocalApplyUpdatesScheduleConfig -Path <path>` to migrate it to v2 (additive; existing schedule rows are preserved). Or hand-edit: bump `schemaVersion: 1` to `schemaVersion: 2` and OPTIONALLY add `allowedUpdateVersions: 'v1;v2;...'` (top-level) or per-row. Files left at v1 continue to work; only the new field is rejected on v1.
+
 ## [0.7.88] - 2026-05-22
 
 ### Changed

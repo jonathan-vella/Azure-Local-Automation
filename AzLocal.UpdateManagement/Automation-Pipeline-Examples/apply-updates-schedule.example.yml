@@ -1,13 +1,14 @@
 # =====================================================================
-# AzLocal.UpdateManagement - Apply-Updates ring schedule (schema v1)
+# AzLocal.UpdateManagement - Apply-Updates ring schedule (schema v2)
 # =====================================================================
 #
 # This is the single source of truth for "which UpdateRing(s) is/are
 # eligible to apply updates on a given UTC date". It is consumed by:
 #
 #   * Step.6_apply-updates.yml    - reads it at every cron firing and
-#                                   resolves the UpdateRingValue to use
-#                                   for that run.
+#                                   resolves the UpdateRingValue (and,
+#                                   schema v2+, the AllowedUpdateVersions
+#                                   allow-list) to use for that run.
 #   * Step.3_apply-updates-schedule-audit.yml
 #                                 - audits this file against the live
 #                                   fleet (UpdateRing + UpdateWindow
@@ -34,7 +35,7 @@
 #   New-AzLocalApplyUpdatesScheduleConfig -OutputPath .\.github\apply-updates-schedule.yml
 # =====================================================================
 
-schemaVersion: 1
+schemaVersion: 2
 
 # ---- Cycle anchor --------------------------------------------------
 # Every cron firing in UTC is mapped to a (cycleWeek, dayOfWeek) pair
@@ -56,6 +57,33 @@ cycleWeeks:           8
 cycleAnchorISOWeek:   1
 cycleAnchorYear:      2026
 
+# ---- AllowedUpdateVersions (schema v2, optional) -------------------
+# >>> ALLOWED-UPDATE-VERSIONS-V2 <<<
+# OPTIONAL fleet-wide allow-list of Azure Local solution-update names
+# or version strings. When set, Step.6 (apply-updates) only installs
+# updates whose `name` OR `properties.version` is an EXACT (case-
+# insensitive) match for one of the entries. If a cluster has no Ready
+# update that matches the list, that cluster is SKIPPED with status
+# 'NotInAllowList' (strict no-op; never falls back to "latest").
+#
+# Format: semicolon-separated string (same convention as 'rings:').
+#
+# Typical use - "minimum updates" policy (~4 updates per year, customer
+# ask in v0.7.89): install ONLY the YY04 + YY10 feature updates plus
+# the cumulative updates immediately preceding each feature update
+# (YY03 + YY09). With v2 schema you list those four version strings
+# here once and Step.6 ignores every other 'Ready' update.
+#
+# Per-row override: any schedule row below may set its own
+# `allowedUpdateVersions:` field. Per-row beats top-level; multiple
+# matching rows UNION their lists; rows WITHOUT the field on a UNION
+# day are treated as "no opinion" (not "allow nothing").
+#
+# Uncomment + edit the example below to enable. Leave commented (or
+# omit entirely) to keep the default behaviour: "install the latest
+# Ready update on each cluster".
+# allowedUpdateVersions: '10.2604.0.123;10.2610.0.456'
+
 # ---- Schedule entries ----------------------------------------------
 # UNION semantics: if multiple rows match the current (cycleWeek, dow)
 # tuple, the resolver concatenates their `rings` columns with ';' and
@@ -72,6 +100,12 @@ cycleAnchorYear:      2026
 #                 care - matches the Set/Start cmdlet semantics).
 #   notes         Free text. Surfaced in audit reports and ITSM
 #                 tickets. Recommended: change-control reference.
+#   allowedUpdateVersions  OPTIONAL (schema v2). ';'-separated allow-list
+#                 of update names or version strings. When set on a row,
+#                 it OVERRIDES the top-level allowedUpdateVersions for
+#                 that (cycleWeek, dayOfWeek) match. Useful for per-ring
+#                 policies (canary gets new cumulative immediately, prod
+#                 ring waits for the feature update).
 schedule:
   - weeksInCycle: '1'
     daysOfWeek:   'Mon-Fri'
@@ -92,6 +126,13 @@ schedule:
     daysOfWeek:   'Tue,Wed,Thu'
     rings:        'Prod'
     notes:        'Phase 4 - full production - mid-week only'
+    # Per-row override example: production ring is restricted to feature
+    # updates only - cumulative updates (YY03 / YY09) are installed on
+    # earlier rings, but Prod waits for the YY04 / YY10 feature drop.
+    # Comment this row override out (or omit it) to fall back to the
+    # top-level allowedUpdateVersions, or to "latest Ready" when top-
+    # level is also unset.
+    # allowedUpdateVersions: '10.2604.0.123;10.2610.0.456'
 
   # Example: ALWAYS-ON canary that runs every Monday throughout the
   # whole 8-week cycle in addition to the phase-specific rows above.

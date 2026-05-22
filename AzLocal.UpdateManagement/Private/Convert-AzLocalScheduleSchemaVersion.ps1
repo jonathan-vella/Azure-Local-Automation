@@ -134,6 +134,97 @@ function Convert-AzLocalScheduleSchemaVersion {
 #      hop in isolation AND chained from version 1.
 # =====================================================================
 $script:ScheduleSchemaRecipes = [ordered]@{
-    # v0.7.69 ships schema v1 only. No real hops yet; the dispatch table
-    # exists so v0.7.70+ can plug in '1->2' without touching the framework.
+    # =====================================================================
+    # 1 -> 2  (shipped in v0.7.89)
+    # =====================================================================
+    # v2 adds the optional top-level + per-row 'allowedUpdateVersions'
+    # field. The migration is PURELY ADDITIVE:
+    #   * The 'schemaVersion: 1' line is rewritten to 'schemaVersion: 2'
+    #     in place (preserving leading whitespace and any trailing
+    #     comment).
+    #   * A documented commented-out top-level example is inserted just
+    #     above the '# ---- Schedule entries ----' header (or, if that
+    #     header is missing, just before the 'schedule:' key) so v1
+    #     operators discover the new feature on first run.
+    # The recipe is idempotent:
+    #   * 'schemaVersion: 2' is left alone if it is already there.
+    #   * The commented example block is keyed off the literal marker
+    #     '# >>> ALLOWED-UPDATE-VERSIONS-V2 <<<'. If that marker is
+    #     present anywhere in the file, the block is not re-inserted.
+    # No existing schedule rows are touched - per-row allowedUpdateVersions
+    # opt-in is the operator's choice on their own schedule rows.
+    '1->2' = {
+        param([string]$Text)
+        $changes = New-Object System.Collections.Generic.List[string]
+        $work    = $Text
+
+        # 1. Rewrite schemaVersion line.
+        $svPattern = '(?m)^(\s*)schemaVersion(\s*:\s*)1(\s*(?:#.*)?)$'
+        $svRegex   = [regex]::new($svPattern)
+        $svMatch   = $svRegex.Match($work)
+        if ($svMatch.Success) {
+            $work = $svRegex.Replace($work, { param($m)
+                "$($m.Groups[1].Value)schemaVersion$($m.Groups[2].Value)2$($m.Groups[3].Value)"
+            }, 1)
+            $changes.Add("Rewrote 'schemaVersion: 1' to 'schemaVersion: 2'.") | Out-Null
+        }
+
+        # 2. Insert documented commented example (idempotent via marker).
+        $marker = '# >>> ALLOWED-UPDATE-VERSIONS-V2 <<<'
+        if ($work -notmatch [regex]::Escape($marker)) {
+            $block = @(
+                '',
+                '# ---- AllowedUpdateVersions (schema v2, optional) ------------------',
+                "# $marker",
+                "# OPTIONAL fleet-wide allow-list of Azure Local solution-update names",
+                "# or version strings. When set, Step.6 (apply-updates) only installs",
+                "# updates whose 'name' OR 'properties.version' is an EXACT (case-",
+                "# insensitive) match for one of the entries. If a cluster has no Ready",
+                "# update that matches, that cluster is SKIPPED with status",
+                "# 'NotInAllowList' (strict no-op; never falls back to 'latest').",
+                "#",
+                "# Typical use: 'minimum updates' policy - only YY04 + YY10 feature",
+                "# updates plus the preceding cumulative updates per year.",
+                "#",
+                "# Format: semicolon-separated string (same convention as 'rings:').",
+                "# Per-row override: set 'allowedUpdateVersions:' on any schedule row",
+                "# below. Per-row beats top-level; multiple matching rows UNION their",
+                "# lists; rows without the field on a UNION day are treated as",
+                "# 'no opinion' (not 'allow nothing').",
+                "#",
+                "# Uncomment + edit to enable. Leave commented (or omit entirely) to",
+                "# keep the default behaviour of 'install the latest Ready update'.",
+                "# allowedUpdateVersions: '10.2604.0.123;10.2610.0.456'",
+                ''
+            ) -join "`r`n"
+
+            # Prefer to insert right before the '# ---- Schedule entries' banner.
+            # Fall back to inserting just before the bare 'schedule:' key.
+            $headerRx = [regex]::new('(?m)^(?<spc>[ \t]*)# ---- Schedule entries[^\r\n]*[\r\n]+')
+            $schedRx  = [regex]::new('(?m)^(?<spc>[ \t]*)schedule\s*:')
+            $headerM  = $headerRx.Match($work)
+            if ($headerM.Success) {
+                $work = $work.Insert($headerM.Index, $block)
+                $changes.Add("Inserted commented top-level 'allowedUpdateVersions' example block above '# ---- Schedule entries ----'.") | Out-Null
+            }
+            else {
+                $schedM = $schedRx.Match($work)
+                if ($schedM.Success) {
+                    $work = $work.Insert($schedM.Index, $block)
+                    $changes.Add("Inserted commented top-level 'allowedUpdateVersions' example block above 'schedule:'.") | Out-Null
+                }
+                else {
+                    # No anchor found - append at end. Should be rare; the
+                    # validator already requires a 'schedule:' key.
+                    $work = $work.TrimEnd("`r","`n") + "`r`n" + $block + "`r`n"
+                    $changes.Add("Appended commented top-level 'allowedUpdateVersions' example block at end (no 'schedule:' anchor found).") | Out-Null
+                }
+            }
+        }
+
+        return @{
+            Text    = $work
+            Changes = $changes.ToArray()
+        }
+    }
 }
