@@ -115,7 +115,7 @@ env:
   # this to the version actually installed and to the latest on PSGallery, and emits a
   # ::notice annotation if the YAML appears stale - prompting you to refresh via
   # Copy-AzLocalPipelineExample -Update. See Automation-Pipeline-Examples/README.md section 5.
-  GENERATED_AGAINST_MODULE_VERSION: '0.7.87'
+  GENERATED_AGAINST_MODULE_VERSION: '0.7.88'
   # Resolution order for the module version pin (leave all unset to install the latest,
   # which is the default "fix-forward" behaviour): manual workflow_dispatch input >
   # repository variable 'REQUIRED_MODULE_VERSION' > empty (latest).
@@ -466,9 +466,48 @@ jobs:
         | **Distinct Failure Reasons** | $reasons |
 
         > _**Healthy** / **Unhealthy** count clusters via ``Get-AzLocalFleetHealthOverview``; **Unhealthy** = at least one Critical or Warning health-check failure. **Total Failing Checks** counts individual failing checks (one cluster can contribute multiple)._
-
-        ### Health Check Failures By Reason (most widespread first)
         "@
+
+        # Fleet Health Overview (fleet rollup, one row per cluster) - rendered
+        # immediately below the KPI summary table so administrators see the
+        # per-cluster context (Health status, Update Status, current version,
+        # Azure connection state, last-check timestamp + age) BEFORE diving
+        # into the failure breakdown. Sourced from Get-AzLocalFleetHealthOverview.
+        # The 'Health Check Age (days)' column surfaces clusters whose 24-hour
+        # health check has not run in a while (negative = no LastChecked at all).
+        $md += "`n### Fleet Health Overview (fleet rollup)`n"
+        if ($overviewRows.Count -eq 0) {
+            $md += "`n*No clusters returned from Get-AzLocalFleetHealthOverview.*`n"
+        } else {
+            $md += "`n| Cluster | Health | Update Status | Current Version | SBE Version | Azure Connection | Last Checked | Health Check Age (days) | Node Count |`n"
+            $md += "|---------|--------|---------------|------------------|--------------|------------------|---------------|--------------------------|------------|`n"
+            foreach ($o in ($overviewRows | Select-Object -First 100)) {
+                $clusterCell = if ($o.ClusterPortalUrl) {
+                    '[{0}]({1})' -f $o.ClusterName, $o.ClusterPortalUrl
+                } else {
+                    $o.ClusterName
+                }
+                # replace bracketed labels with emoji icons (icon + text) so the
+                # at-a-glance Health column is visually scannable. Label is retained for
+                # greppability (CI log searches by 'Healthy' / 'Critical' / etc.). Uses
+                # literal Unicode (not GH ':name:' shortcodes) so the Azure DevOps twin
+                # of this pipeline renders identically.
+                $healthTag = switch ($o.HealthStatus) {
+                    'Healthy'              { "$([char]0x2705) Healthy" }       # white heavy check mark
+                    'Critical'             { "$([char]0x274C) Critical" }      # cross mark
+                    'Warning'              { "$([char]0x26A0)$([char]0xFE0F) Warning" }       # warning sign + VS16
+                    'In progress'          { "$([char]0x23F3) In progress" }   # hourglass with flowing sand
+                    'Health check failed'  { "$([char]0x274C) Failed" }
+                    default                { '[' + $o.HealthStatus + ']' }
+                }
+                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} |' -f $clusterCell, $healthTag, $o.UpdateStatus, $o.CurrentVersion, $o.SbeVersion, $o.AzureConnection, $o.LastChecked, $o.HealthResultsAgeDays, $o.NodeCount) + "`n"
+            }
+            if ($overviewRows.Count -gt 100) {
+                $md += "`n*Showing first 100 clusters of $($overviewRows.Count); see ``fleet-health-overview.csv`` artifact for the full list.*`n"
+            }
+        }
+
+        $md += "`n### Health Check Failures By Reason (most widespread first)`n"
 
         if ($summaryRows.Count -eq 0) {
             $md += "`n`n*No Critical or Warning health-check failures across the fleet.*`n"
@@ -527,41 +566,6 @@ jobs:
             }
             if ($detailRows.Count -gt 100) {
                 $md += "`n*Showing first 100 rows of $($detailRows.Count); see ``fleet-health-detail.csv`` artifact for the full list.*`n"
-            }
-        }
-
-        # NEW section - Fleet Health Overview (fleet rollup, one row per cluster).
-        # Sourced from Get-AzLocalFleetHealthOverview. HealthResultsAgeDays surfaces clusters whose
-        # 24-hour health check has not run in a while (negative = no LastChecked at all).
-        $md += "`n### Fleet Health Overview (fleet rollup)`n"
-        if ($overviewRows.Count -eq 0) {
-            $md += "`n*No clusters returned from Get-AzLocalFleetHealthOverview.*`n"
-        } else {
-            $md += "`n| Cluster | Health | Update Status | Current Version | SBE Version | Azure Connection | Last Checked | Age (days) | Node Count |`n"
-            $md += "|---------|--------|---------------|------------------|--------------|------------------|---------------|------------|------------|`n"
-            foreach ($o in ($overviewRows | Select-Object -First 100)) {
-                $clusterCell = if ($o.ClusterPortalUrl) {
-                    '[{0}]({1})' -f $o.ClusterName, $o.ClusterPortalUrl
-                } else {
-                    $o.ClusterName
-                }
-                # replace bracketed labels with emoji icons (icon + text) so the
-                # at-a-glance Health column is visually scannable. Label is retained for
-                # greppability (CI log searches by 'Healthy' / 'Critical' / etc.). Uses
-                # literal Unicode (not GH ':name:' shortcodes) so the Azure DevOps twin
-                # of this pipeline renders identically.
-                $healthTag = switch ($o.HealthStatus) {
-                    'Healthy'              { "$([char]0x2705) Healthy" }       # white heavy check mark
-                    'Critical'             { "$([char]0x274C) Critical" }      # cross mark
-                    'Warning'              { "$([char]0x26A0)$([char]0xFE0F) Warning" }       # warning sign + VS16
-                    'In progress'          { "$([char]0x23F3) In progress" }   # hourglass with flowing sand
-                    'Health check failed'  { "$([char]0x274C) Failed" }
-                    default                { '[' + $o.HealthStatus + ']' }
-                }
-                $md += ('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} |' -f $clusterCell, $healthTag, $o.UpdateStatus, $o.CurrentVersion, $o.SbeVersion, $o.AzureConnection, $o.LastChecked, $o.HealthResultsAgeDays, $o.NodeCount) + "`n"
-            }
-            if ($overviewRows.Count -gt 100) {
-                $md += "`n*Showing first 100 clusters of $($overviewRows.Count); see ``fleet-health-overview.csv`` artifact for the full list.*`n"
             }
         }
 

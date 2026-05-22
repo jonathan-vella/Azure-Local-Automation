@@ -3,7 +3,7 @@
     RootModule = 'AzLocal.UpdateManagement.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.7.87'
+    ModuleVersion = '0.7.88'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop', 'Core')
@@ -210,30 +210,26 @@
 
             # ReleaseNotes of this module
             ReleaseNotes = @'
-## Version 0.7.87 - Extract Step.4 fleet-connectivity summary renderer to module function + 21K-cap Pester regression guard
-
-### Added
-
-- **New public function `New-AzLocalFleetConnectivityStatusSummary`** (`Public/`): a pure markdown renderer that builds the Step.4 fleet-connectivity step-summary previously inlined as a ~22 KB `pwsh` body in both pipelines. Consumes the seven CSV reports produced earlier in the pipeline by `Get-AzLocalFleetConnectivityStatus` (or in-memory object arrays via the `FromObjects` parameter set) plus an explicit `-Counts` hashtable of KPI totals. Pure renderer over already-collected data - no Azure CLI, Resource Graph extension, or `Az.*` modules required. Returns markdown string by default; supports `-OutputPath` (UTF-8 no-BOM) and `-PassThru`. Ships with comprehensive Pester unit tests (parameter-set validation, required-key validation on `-Counts`, markdown structure, empty-input placeholders, orphan-ARB conditionality, multi-cluster-per-RG ARB matching, output-path semantics, CSV-based input with graceful missing-CSV handling).
-- **Pester regression guard for the GitHub Actions 21,000-char expression-length cap.** Enumerates every `run:` / `script:` literal block scalar in every bundled `github-actions/Step.{0..8}.yml` template and asserts each is below 18,000 chars (3K headroom under the 21K cap, covers future feature growth and possible future re-introduction of `${{ }}` substitutions). Two additional asserts verify both the GH and ADO Step.4 YAMLs CALL the renderer function and do NOT inline the markdown summary heading.
+## Version 0.7.88 - Step.8 fleet-health step-summary readability polish (section reorder + column rename)
 
 ### Changed
 
-- **`github-actions/Step.4_fleet-connectivity-status.yml`**: the 283-line, 20,460-char inline pwsh markdown renderer has been replaced with a 23-line body that calls `New-AzLocalFleetConnectivityStatusSummary`. File shrunk from 863 to 603 lines; renderer step `run:` body is now ~1,083 chars (95% reduction). The renderer step continues to use the step-level `env:` pattern introduced in v0.7.86 (zero `${{ }}` substitutions in the body, so the 21K cap does not apply at all).
-- **`azure-devops/Step.4_fleet-connectivity-status.yml`**: equivalent refactor against the ADO twin so both pipelines call the same module function (single source of truth). As a side-effect this fixes a pre-existing structural anomaly: the Display Summary step's pwsh literal block scalar had silently absorbed the `displayName:` + `condition:` + `env:` indented entries and the subsequent `PublishTestResults@2` task (because L713-L727 sat at indent 12-16 while the block scalar base was indent 8). The parsed ADO pipeline used to have only 10 steps; in v0.7.87 it has 11 steps, with `Display Fleet Connectivity Summary` and `Publish Fleet Connectivity JUnit Diagnostics` now real, distinct ADO tasks that actually run.
+- **Step.8 markdown section order rearranged so the per-cluster fleet rollup sits above the failure breakdown.** Both `Automation-Pipeline-Examples/github-actions/Step.8_fleet-health-status.yml` and `Automation-Pipeline-Examples/azure-devops/Step.8_fleet-health-status.yml` now emit: **KPI summary table -> `### Fleet Health Overview (fleet rollup)` -> `### Health Check Failures By Reason (most widespread first)` -> `### Detailed Results (per-cluster, per-failure)` -> `### Reports Available`**. Previously the fleet rollup sat at the very end of the markdown summary, requiring operators to scroll past every failure row to see per-cluster context (Health, Update Status, current/SBE version, Azure Connection state, last-check timestamp + age, node count).
+- **Step.8 fleet-rollup column rename: `Age (days)` -> `Health Check Age (days)`.** The previous label was ambiguous; the new label is unambiguous next to the `Last Checked` neighbour column - the value is the age in days of the cluster's last 24-hour Azure Stack HCI health-check result (sourced from `Get-AzLocalFleetHealthOverview.HealthResultsAgeDays`). Negative values continue to mean "no LastChecked timestamp at all".
 
 ### Pipeline pin bumps
 
-- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.86'` to `'0.7.87'`.
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.87'` to `'0.7.88'`. Only `Step.8_fleet-health-status.yml` had inline-script content changes; the other 17 are pin-only bumps.
 
 ### Migration
 
-- **Module:** run `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`). The new public function is exported automatically. No call-site changes are needed for any existing function.
-- **Pipelines:** the Step.4 GH + ADO YAML refactors require the v0.7.87 module to be installed on the pipeline runner (the new `New-AzLocalFleetConnectivityStatusSummary` cmdlet must be on `Get-Command`). Re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update` to pick up both the Step.4 refactor and the pin bump.
+- **Module:** no public-surface changes - `Install-Module AzLocal.UpdateManagement -Force` is enough.
+- **Pipelines:** re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update` to pick up both the Step.8 markdown reorder + column rename and the pin bump.
 
-### Background
+## Version 0.7.87 - Extract Step.4 fleet-connectivity summary renderer to module function + 21K-cap Pester regression guard
 
-v0.7.85 added a long-form `How to interpret + act on a non-zero reconciliation` subsection to the Step.4 markdown summary. The combined `run:` body in `github-actions/Step.4_fleet-connectivity-status.yml` grew from <21K to ~23.9K chars and, because it still contained 11 `${{ steps.fleet-connectivity.outputs.X }}` substitutions, GitHub Actions parsed the whole `run:` value as a single expression and hit its 21,000-char expression-length cap at workflow-parse time. v0.7.86 mitigated by moving the substitutions to step-level `env:` vars (cap stops applying). v0.7.87 ships the durable fix: extract the renderer into a module function (single source of truth for both pipelines), make the renderer unit-testable, and add a Pester regression guard so any future regrowth is caught in CI before it can hit production parsing. The ADO structural anomaly is fixed as a side-effect of the same refactor.
+For full v0.7.87 release notes see:
+https://github.com/NeilBird/Azure-Local/blob/main/AzLocal.UpdateManagement/CHANGELOG.md
 
 ## Version 0.7.86 - Documentation follow-up: Automation-Pipeline-Examples README + appendix refreshed for the 9-step pipeline set
 

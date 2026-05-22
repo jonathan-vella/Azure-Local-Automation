@@ -2,7 +2,7 @@
 
 > ⚠️ **Disclaimer**: This module is **NOT** a Microsoft supported service offering or product. It is provided as example code only, with no warranty or official support. Refer to the [MIT license](https://github.com/NeilBird/Azure-Local/blob/main/LICENSE) for further information.
 
-**Latest Version:** v0.7.87 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.87)
+**Latest Version:** v0.7.88 - [Published in PowerShell Gallery](https://www.powershellgallery.com/packages/AzLocal.UpdateManagement/0.7.88)
 
 > 📢 **Renamed in v0.7.3**: this module was previously published as `AzStackHci.ManageUpdates`. The new module name aligns with the Azure Local product name (_Microsoft retired the *Azure Stack HCI* brand in late 2024_). The module GUID is preserved across the rename. If you have the old name installed, run:
 >
@@ -23,7 +23,7 @@ Azure Local REST API specification (includes update management endpoints): https
 **This README (overview + most-recent release notes):**
 
 - [Where to Start](#where-to-start)
-- [What's New in v0.7.87](#whats-new-in-v0787)
+- [What's New in v0.7.88](#whats-new-in-v0788)
 - [Files](#files)
 - [Prerequisites](#prerequisites)
 - [RBAC Requirements](#rbac-requirements) (summary; full reference in [docs/rbac.md](docs/rbac.md))
@@ -86,21 +86,19 @@ If you are new to this module, work through these in order from a regular PowerS
 
 > Most CI/CD pipelines in [Automation-Pipeline-Examples/](Automation-Pipeline-Examples/) are direct implementations of one of these workflows. Start there if you want a copy-pasteable end-to-end pipeline.
 
-## What's New in v0.7.87
+## What's New in v0.7.88
 
-v0.7.87 ships a focused architectural hardening of the `Step.4 Fleet Connectivity Status` pipeline. The 285-line markdown renderer that previously lived inline as a ~22 KB `pwsh` `run:` body in both the GitHub Actions and Azure DevOps Step.4 YAML templates has been extracted into a new public module function. This gives both pipelines a single source of truth, makes the markdown layout unit-testable in Pester, and keeps every bundled `run:` body comfortably below the GitHub Actions 21,000-char expression-length cap. A new Pester regression test enforces an 18,000-char ceiling on every `run:` (and `script:`) block in every bundled GitHub Actions YAML so any future regrowth is caught in CI before it can hit production parsing.
+v0.7.88 is a small Step.8 step-summary readability polish. The bundled `Step.8 fleet-health-status` GitHub Actions and Azure DevOps pipelines now render the per-cluster fleet rollup right below the KPI summary - above the failure breakdown - so an operator triaging unhealthy clusters sees Health status, Update Status, current version, SBE version, Azure Connection state, last-check timestamp + age and node count at a glance, then dives into `Health Check Failures By Reason` and `Detailed Results` for context. The fleet-rollup column that used to be labelled `Age (days)` is now `Health Check Age (days)`, which is unambiguous next to the `Last Checked` timestamp column - the value is the age in days of the cluster's last 24-hour Azure Stack HCI health-check result (sourced from `Get-AzLocalFleetHealthOverview.HealthResultsAgeDays`), with negative values continuing to mean "no LastChecked timestamp at all".
 
-**New public function `New-AzLocalFleetConnectivityStatusSummary`.** A pure markdown renderer that consumes the seven CSV reports produced earlier in the Step.4 pipeline by `Get-AzLocalFleetConnectivityStatus` (or the equivalent in-memory object arrays via the `FromObjects` parameter set) plus an explicit `-Counts` hashtable of KPI totals. It is a pure renderer over already-collected data - no Azure CLI, no Resource Graph extension, no `Az.*` modules required, no re-querying Azure. Returns the markdown string by default; `-OutputPath` writes UTF-8 no-BOM and `-PassThru` lets you combine both. ASCII source with Unicode emoji icons emitted via `[char]0xNNNN`. The function ships with comprehensive Pester unit-test coverage (parameter validation, required-key validation on `-Counts`, markdown structure, empty-input placeholders, orphan-ARB section conditionality, multi-cluster-per-RG ARB matching, output-path semantics, CSV-based input with graceful missing-CSV handling).
+**Step.8 markdown section order.** Both GH + ADO pipelines now emit: **KPI summary table -> `### Fleet Health Overview (fleet rollup)` -> `### Health Check Failures By Reason (most widespread first)` -> `### Detailed Results (per-cluster, per-failure)` -> `### Reports Available`**. Previously the fleet rollup sat at the very end of the summary, requiring operators to scroll past every failure row to reach the per-cluster overview.
 
-**Step.4 GH + ADO YAML refactor.** The 283-line, 20,460-char inline renderer in `github-actions/Step.4_fleet-connectivity-status.yml` has been replaced with a 23-line body that calls `New-AzLocalFleetConnectivityStatusSummary`. The file shrunk from 863 to 603 lines and the renderer step's `run:` body is now ~1,083 chars - a 95% reduction. The Azure DevOps twin (`azure-devops/Step.4_fleet-connectivity-status.yml`) gets the equivalent refactor so both pipelines call the same module function. As a side-effect this fixes a pre-existing structural anomaly in the ADO YAML: the Display Summary step's `pwsh` literal block scalar had silently absorbed the trailing `displayName:` / `condition:` / `env:` keys AND the subsequent `PublishTestResults@2` task (because those lines sat at indent 12-16 while the block scalar base indent was 8). The parsed ADO pipeline used to have only 10 steps; in v0.7.87 it has 11 steps, with `Display Fleet Connectivity Summary` and `Publish Fleet Connectivity JUnit Diagnostics` now real, distinct ADO tasks that actually run.
+**Step.8 fleet-rollup column rename.** `Age (days)` -> `Health Check Age (days)`. The previous label was ambiguous (could plausibly mean cluster age, node age, current-version age, or update-readiness age); the new label is unambiguous and matches the underlying `Get-AzLocalFleetHealthOverview.HealthResultsAgeDays` data source.
 
-**21K-cap regression guard in Pester.** A new `Regression v0.7.87: bundled GitHub Actions YAML run: blocks stay under GitHub 21,000-char expression cap` Describe block enumerates every `run:` and `script:` literal block scalar in every bundled `github-actions/Step.{0..8}.yml` template and asserts each is below 18,000 chars. The 3K headroom under the 21K cap covers future feature growth and possible future re-introduction of `${{ }}` substitutions (the cap applies to the post-substitution length of any `run:` body that contains at least one `${{ }}`). Two additional asserts verify both the GH and ADO Step.4 YAMLs CALL the new renderer function and do NOT inline the `## Fleet Connectivity Status Summary` heading.
+**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.87'` to `'0.7.88'`. Only `Step.8_fleet-health-status.yml` had inline-script content changes; the other 17 are pin-only bumps.
 
-**Pipeline pin bumps.** All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.86'` to `'0.7.87'`.
+**Migration.** No public-surface or behaviour changes outside the Step.8 markdown layout. Run `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`) to update the module. To pick up both the Step.8 markdown reorder + column rename and the pin bump in your pipelines, re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update`.
 
-**Migration.** Run `Install-Module AzLocal.UpdateManagement -Force` (or `Update-Module`). The new public function is exported automatically. No call-site changes are needed for any existing function. To pick up both the Step.4 refactor and the pin bump in your pipelines, re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update`. If you stay on the v0.7.86-pinned YAMLs they will continue to work (they call into the v0.7.86 module which does not yet have the new function).
-
-> Previous release notes (v0.7.86 and earlier) have moved into [`docs/release-history.md`](docs/release-history.md).
+> Previous release notes (v0.7.87 and earlier) have moved into [`docs/release-history.md`](docs/release-history.md).
 
 ## Files
 
@@ -565,7 +563,7 @@ This code is provided as-is for educational and reference purposes.
 
 The full What's-New history (v0.7.81 and earlier) has moved to [docs/release-history.md](docs/release-history.md).
 
-The most recent release notes for **v0.7.87** stay above under [`What's New in v0.7.87`](#whats-new-in-v0787).
+The most recent release notes for **v0.7.88** stay above under [`What's New in v0.7.88`](#whats-new-in-v0788).
 
 ---
 

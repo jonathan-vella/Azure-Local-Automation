@@ -4,7 +4,21 @@
 >
 > **For older releases**, this is the canonical reference; the main README intentionally stays slim so the most recent block is easy to find.
 >
-> **For v0.7.87 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0787) `What's New in v0.7.87` section.
+> **For v0.7.88 (the current release)**, see the main [README.md](../README.md#whats-new-in-v0788) `What's New in v0.7.88` section.
+
+---
+
+### What's New in v0.7.87
+
+v0.7.87 shipped a focused architectural hardening of the `Step.4 Fleet Connectivity Status` pipeline. The 285-line markdown renderer that previously lived inline as a ~22 KB `pwsh` `run:` body in both the GitHub Actions and Azure DevOps Step.4 YAML templates was extracted into a new public module function. This gave both pipelines a single source of truth, made the markdown layout unit-testable in Pester, and kept every bundled `run:` body comfortably below the GitHub Actions 21,000-char expression-length cap. A new Pester regression test enforces an 18,000-char ceiling on every `run:` (and `script:`) block in every bundled GitHub Actions YAML so any future regrowth is caught in CI before it can hit production parsing.
+
+**New public function `New-AzLocalFleetConnectivityStatusSummary`.** A pure markdown renderer that consumes the seven CSV reports produced earlier in the Step.4 pipeline by `Get-AzLocalFleetConnectivityStatus` (or the equivalent in-memory object arrays via the `FromObjects` parameter set) plus an explicit `-Counts` hashtable of KPI totals. It is a pure renderer over already-collected data - no Azure CLI, no Resource Graph extension, no `Az.*` modules required, no re-querying Azure. Returns the markdown string by default; `-OutputPath` writes UTF-8 no-BOM and `-PassThru` lets you combine both. ASCII source with Unicode emoji icons emitted via `[char]0xNNNN`. The function shipped with comprehensive Pester unit-test coverage (parameter validation, required-key validation on `-Counts`, markdown structure, empty-input placeholders, orphan-ARB section conditionality, multi-cluster-per-RG ARB matching, output-path semantics, CSV-based input with graceful missing-CSV handling).
+
+**Step.4 GH + ADO YAML refactor.** The 283-line, 20,460-char inline renderer in `github-actions/Step.4_fleet-connectivity-status.yml` was replaced with a 23-line body that calls `New-AzLocalFleetConnectivityStatusSummary`. The file shrunk from 863 to 603 lines and the renderer step's `run:` body became ~1,083 chars - a 95% reduction. The Azure DevOps twin (`azure-devops/Step.4_fleet-connectivity-status.yml`) got the equivalent refactor so both pipelines call the same module function. As a side-effect this fixed a pre-existing structural anomaly in the ADO YAML: the Display Summary step's `pwsh` literal block scalar had silently absorbed the trailing `displayName:` / `condition:` / `env:` keys AND the subsequent `PublishTestResults@2` task (because those lines sat at indent 12-16 while the block scalar base indent was 8). The parsed ADO pipeline used to have only 10 steps; in v0.7.87 it had 11 steps, with `Display Fleet Connectivity Summary` and `Publish Fleet Connectivity JUnit Diagnostics` now real, distinct ADO tasks that actually run.
+
+**21K-cap regression guard in Pester.** A new `Regression v0.7.87: bundled GitHub Actions YAML run: blocks stay under GitHub 21,000-char expression cap` Describe block enumerates every `run:` and `script:` literal block scalar in every bundled `github-actions/Step.{0..8}.yml` template and asserts each is below 18,000 chars. The 3K headroom under the 21K cap covers future feature growth and possible future re-introduction of `${{ }}` substitutions (the cap applies to the post-substitution length of any `run:` body that contains at least one `${{ }}`). Two additional asserts verify both the GH and ADO Step.4 YAMLs CALL the new renderer function and do NOT inline the `## Fleet Connectivity Status Summary` heading.
+
+All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bumped `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.86'` to `'0.7.87'`.
 
 ---
 

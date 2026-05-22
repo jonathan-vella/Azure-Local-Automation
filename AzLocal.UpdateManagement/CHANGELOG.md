@@ -5,6 +5,22 @@ All notable changes to the AzLocal.UpdateManagement module (renamed from AzStack
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.88] - 2026-05-22
+
+### Changed
+
+- **Step.8 `fleet-health-status` step-summary section order rearranged so that the per-cluster fleet rollup is visible above the failure breakdown.** Both the GitHub Actions and Azure DevOps Step.8 pipelines now render `### Fleet Health Overview (fleet rollup)` immediately below the KPI summary table (Total Clusters in Subscription / Healthy / Unhealthy / Total Failing Checks / Critical / Warning / Distinct Failure Reasons) and ABOVE `### Health Check Failures By Reason (most widespread first)`. The previous order placed the fleet rollup at the very end of the markdown summary, requiring operators to scroll past `Failures By Reason` and `Detailed Results (per-cluster, per-failure)` to see the at-a-glance per-cluster context (Health status, Update Status, current version, SBE version, Azure Connection state, last-check timestamp + age, node count). New order: **KPI summary table -> Fleet Health Overview (fleet rollup) -> Health Check Failures By Reason -> Detailed Results -> Reports Available**.
+- **Step.8 `Fleet Health Overview` table - column rename: `Age (days)` -> `Health Check Age (days)`.** The previous label was ambiguous - it could plausibly have meant cluster age, node age, current-version age, or update-readiness age. The new label is unambiguous: it is the age in days of the cluster's last 24-hour Azure Stack HCI health-check result (sourced from `Get-AzLocalFleetHealthOverview.HealthResultsAgeDays`; the same value the `Last Checked` neighbour column derives from). Negative values continue to mean "no LastChecked timestamp at all" - i.e. the health check has not run since the cluster was Arc-onboarded.
+
+### Pipeline pin bumps
+
+- All 18 bundled `Step.{0..8}.yml` templates (9 GitHub Actions + 9 Azure DevOps) bump `GENERATED_AGAINST_MODULE_VERSION` from `'0.7.87'` to `'0.7.88'`. Only `Step.8_fleet-health-status.yml` had inline-script content changes; the other 17 are pin-only bumps.
+
+### Migration
+
+- **Module:** no public-surface changes - `Install-Module AzLocal.UpdateManagement -Force` is enough.
+- **Pipelines:** the Step.8 markdown summary edit is the entire reason to refresh - re-copy the bundled YAMLs with `Copy-AzLocalPipelineExample -Destination <path> -Update` to pick up both the section reorder + column rename and the pin bump.
+
 ## [0.7.87] - 2026-05-23
 
 ### Added
